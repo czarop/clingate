@@ -19,13 +19,13 @@ use std::{
 /// # Example
 ///
 /// ```rust
-/// use flow_gates::GateHierarchy;
+/// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
 ///
 /// let mut hierarchy = GateHierarchy::new();
 ///
 /// // Build hierarchy: root -> parent -> child
-/// hierarchy.add_child("root", "parent");
-/// hierarchy.add_child("parent", "child");
+/// hierarchy.add_child("root", "parent", 0);
+/// hierarchy.add_child("parent", "child", 0);
 ///
 /// // Get ancestors
 /// let ancestors = hierarchy.get_ancestors("child");
@@ -36,7 +36,7 @@ use std::{
 /// assert_eq!(chain.len(), 3);
 ///
 /// // Prevent cycles
-/// assert!(!hierarchy.add_child("child", "root")); // Would create cycle
+/// assert!(!hierarchy.add_child("child", "root", 0)); // Would create cycle
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct GateHierarchy {
@@ -326,11 +326,11 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent1", "child");
+    /// hierarchy.add_child("parent1", "child", 0);
     /// hierarchy.reparent("child", "parent2")?;
     /// assert_eq!(hierarchy.get_parent("child").map(|s| s.as_ref()), Some("parent2"));
     /// # Ok(())
@@ -403,12 +403,12 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent1", "child");
-    /// hierarchy.add_child("child", "grandchild");
+    /// hierarchy.add_child("parent1", "child", 0);
+    /// hierarchy.add_child("child", "grandchild", 0);
     /// hierarchy.reparent_subtree("child", "parent2")?;
     /// // Both "child" and "grandchild" are now under "parent2"
     /// # Ok(())
@@ -465,12 +465,12 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent", "child");
-    /// hierarchy.add_child("child", "grandchild");
+    /// hierarchy.add_child("parent", "child", 0);
+    /// hierarchy.add_child("child", "grandchild", 0);
     ///
     /// let cloned = hierarchy.clone_subtree("child", |id| format!("{}_copy", id))?;
     /// // cloned contains "child_copy" -> "grandchild_copy"
@@ -557,11 +557,11 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent", "child");
-    /// hierarchy.add_child("child", "grandchild");
+    /// hierarchy.add_child("parent", "child", 0);
+    /// hierarchy.add_child("child", "grandchild", 0);
     ///
     /// let deleted = hierarchy.delete_subtree("child");
     /// assert_eq!(deleted.len(), 2); // "child" and "grandchild"
@@ -600,14 +600,14 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::sync::Arc;
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent", "child");
-    /// hierarchy.add_child("child", "grandchild1");
-    /// hierarchy.add_child("child", "grandchild2");
+    /// hierarchy.add_child("parent", "child", 0);
+    /// hierarchy.add_child("child", "grandchild1", 0);
+    /// hierarchy.add_child("child", "grandchild2", 0);
     ///
     /// let reparented = hierarchy.delete_node_keep_children("child", Some(Arc::from("parent")))?;
     /// assert_eq!(reparented.len(), 2);
@@ -690,12 +690,12 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent", "child");
-    /// hierarchy.add_child("child", "grandchild");
+    /// hierarchy.add_child("parent", "child", 0);
+    /// hierarchy.add_child("child", "grandchild", 0);
     ///
     /// let orphaned = hierarchy.delete_node("child")?;
     /// assert_eq!(orphaned.len(), 1); // "grandchild" is now orphaned
@@ -721,11 +721,11 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_gate_child("parent", "child")?;
+    /// hierarchy.add_gate_child("parent", "child", None)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -769,14 +769,14 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     /// use std::sync::Arc;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let relationships = vec![
-    ///     (Arc::from("root"), Arc::from("child1")),
-    ///     (Arc::from("root"), Arc::from("child2")),
-    ///     (Arc::from("child1"), Arc::from("grandchild")),
+    /// let relationships: Vec<(Arc<str>, Arc<str>, Option<u64>)> = vec![
+    ///     (Arc::from("root"), Arc::from("child1"), Some(0)),
+    ///     (Arc::from("root"), Arc::from("child2"), Some(1)),
+    ///     (Arc::from("child1"), Arc::from("grandchild"), Some(0)),
     /// ];
     /// let hierarchy = GateHierarchy::from_relationships(&relationships)?;
     /// # Ok(())
@@ -803,11 +803,11 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("a", "b");
-    /// hierarchy.add_child("a", "c");
+    /// hierarchy.add_child("a", "b", 0);
+    /// hierarchy.add_child("a", "c", 0);
     ///
     /// let order: Vec<_> = hierarchy.iter_topological().collect();
     /// // "a" will come before "b" and "c"
@@ -829,12 +829,12 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("root", "child1");
-    /// hierarchy.add_child("root", "child2");
-    /// hierarchy.add_child("child1", "grandchild");
+    /// hierarchy.add_child("root", "child1", 0);
+    /// hierarchy.add_child("root", "child2", 0);
+    /// hierarchy.add_child("child1", "grandchild", 0);
     ///
     /// let order: Vec<_> = hierarchy.iter_dfs("root").collect();
     /// // Order: root, child1, grandchild, child2 (or similar DFS order)
@@ -870,11 +870,11 @@ impl GateHierarchy {
     ///
     /// # Example
     /// ```rust
-    /// use flow_gates::GateHierarchy;
+    /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
-    /// hierarchy.add_child("parent", "child");
+    /// hierarchy.add_child("parent", "child", 0);
     /// hierarchy.validate()?; // Should pass
     /// # Ok(())
     /// # }
@@ -917,5 +917,399 @@ impl GateHierarchy {
         }
 
         Ok(())
+    }
+}
+
+//cargo test gate_hierarchy_tests -- --nocapture
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod gate_hierarchy_tests {
+    use super::*;
+
+    /// root -> a -> b -> c, plus a second branch root -> x
+    fn linear_tree() -> GateHierarchy {
+        let mut h = GateHierarchy::new();
+        h.add_child("root", "a", 0);
+        h.add_child("a", "b", 0);
+        h.add_child("b", "c", 0);
+        h.add_child("root", "x", 1);
+        h
+    }
+
+    fn ids(v: Vec<Arc<str>>) -> Vec<String> {
+        v.into_iter().map(|a| a.to_string()).collect()
+    }
+
+    fn sorted_ids(v: Vec<Arc<str>>) -> Vec<String> {
+        let mut s = ids(v);
+        s.sort();
+        s
+    }
+
+    // ── Construction and basic relationships ──────────────────────────────────
+
+    #[test]
+    fn new_hierarchy_is_empty() {
+        let h = GateHierarchy::new();
+        assert!(h.get_roots().is_empty());
+        assert!(h.get_leaves().is_empty());
+        assert_eq!(h.topological_sort().map(|v| v.len()), Some(0));
+    }
+
+    #[test]
+    fn add_child_links_both_directions() {
+        let mut h = GateHierarchy::new();
+        assert!(h.add_child("parent", "child", 0));
+
+        assert_eq!(h.get_parent("child").map(|p| p.to_string()), Some("parent".to_string()));
+        assert_eq!(ids(h.get_children("parent").into_iter().cloned().collect()), vec!["child"]);
+    }
+
+    #[test]
+    fn add_root_registers_a_parentless_gate() {
+        let mut h = GateHierarchy::new();
+        h.add_root("solo");
+
+        assert!(h.is_root("solo"));
+        assert!(h.is_leaf("solo"));
+        assert_eq!(ids(h.get_roots()), vec!["solo"]);
+    }
+
+    #[test]
+    fn ancestors_run_from_closest_to_root() {
+        let h = linear_tree();
+        assert_eq!(ids(h.get_ancestors("c")), vec!["b", "a", "root"]);
+    }
+
+    #[test]
+    fn chain_to_root_runs_root_first_and_includes_self() {
+        let h = linear_tree();
+        assert_eq!(ids(h.get_chain_to_root("c")), vec!["root", "a", "b", "c"]);
+    }
+
+    /// The gating chain is what filter_events_by_hierarchy_to_mask ANDs together,
+    /// so a root gate must still yield itself rather than an empty chain.
+    #[test]
+    fn chain_to_root_of_a_root_is_just_itself() {
+        let h = linear_tree();
+        assert_eq!(ids(h.get_chain_to_root("root")), vec!["root"]);
+    }
+
+    #[test]
+    fn descendants_include_the_whole_subtree_but_not_self() {
+        let h = linear_tree();
+        assert_eq!(sorted_ids(h.get_descendants("a")), vec!["b", "c"]);
+        assert!(h.get_descendants("c").is_empty());
+    }
+
+    #[test]
+    fn depth_counts_ancestors_with_root_at_zero() {
+        let h = linear_tree();
+        assert_eq!(h.get_depth("root"), 0);
+        assert_eq!(h.get_depth("a"), 1);
+        assert_eq!(h.get_depth("c"), 3);
+    }
+
+    #[test]
+    fn roots_and_leaves_are_identified() {
+        let h = linear_tree();
+        assert_eq!(ids(h.get_roots()), vec!["root"]);
+        assert_eq!(sorted_ids(h.get_leaves()), vec!["c", "x"]);
+        assert!(h.is_root("root"));
+        assert!(!h.is_root("a"));
+        assert!(h.is_leaf("c"));
+        assert!(!h.is_leaf("b"));
+    }
+
+    /// A gate that was never added is vacuously a leaf and a root - callers rely
+    /// on this not panicking when probing an unknown id.
+    #[test]
+    fn unknown_gate_queries_do_not_panic() {
+        let h = linear_tree();
+        assert!(h.get_parent("nope").is_none());
+        assert!(h.get_children("nope").is_empty());
+        assert!(h.get_descendants("nope").is_empty());
+        assert!(h.get_ancestors("nope").is_empty());
+        assert!(h.is_leaf("nope"));
+        assert!(h.is_root("nope"));
+    }
+
+    // ── Sibling ordering (Omiq's `ord` field) ─────────────────────────────────
+
+    #[test]
+    fn children_are_kept_sorted_by_order() {
+        let mut h = GateHierarchy::new();
+        h.add_child("p", "third", 30);
+        h.add_child("p", "first", 10);
+        h.add_child("p", "second", 20);
+
+        assert_eq!(
+            ids(h.get_children("p").into_iter().cloned().collect()),
+            vec!["first", "second", "third"]
+        );
+    }
+
+    #[test]
+    fn reordering_applies_when_a_child_is_re_added() {
+        let mut h = GateHierarchy::new();
+        h.add_child("p", "a", 10);
+        h.add_child("p", "b", 20);
+        // Re-adding with a lower order should move it to the front.
+        h.add_child("p", "b", 5);
+
+        assert_eq!(
+            ids(h.get_children("p").into_iter().cloned().collect()),
+            vec!["b", "a"]
+        );
+    }
+
+    #[test]
+    fn add_gate_child_defaults_the_order_when_none_given() {
+        let mut h = GateHierarchy::new();
+        h.add_gate_child("p", "a", None).unwrap();
+        assert_eq!(h.get_parent("a").map(|p| p.to_string()), Some("p".to_string()));
+    }
+
+    // ── Cycle prevention ──────────────────────────────────────────────────────
+
+    #[test]
+    fn direct_cycle_is_rejected() {
+        let mut h = GateHierarchy::new();
+        h.add_child("a", "b", 0);
+        assert!(!h.add_child("b", "a", 0));
+        assert_eq!(h.get_parent("b").map(|p| p.to_string()), Some("a".to_string()));
+    }
+
+    #[test]
+    fn indirect_cycle_is_rejected() {
+        let h = linear_tree();
+        let mut h = h;
+        // root -> a -> b -> c; making root a child of c closes the loop.
+        assert!(!h.add_child("c", "root", 0));
+    }
+
+    #[test]
+    fn add_gate_child_reports_a_cycle_as_an_error() {
+        let mut h = GateHierarchy::new();
+        h.add_child("a", "b", 0);
+        assert!(h.add_gate_child("b", "a", None).is_err());
+    }
+
+    // ── Moving a child between parents ────────────────────────────────────────
+
+    #[test]
+    fn adding_an_existing_child_moves_it_off_its_old_parent() {
+        let mut h = GateHierarchy::new();
+        h.add_child("p1", "child", 0);
+        h.add_child("p2", "child", 0);
+
+        assert_eq!(h.get_parent("child").map(|p| p.to_string()), Some("p2".to_string()));
+        assert!(h.get_children("p1").is_empty(), "stale child left on the old parent");
+        assert_eq!(ids(h.get_children("p2").into_iter().cloned().collect()), vec!["child"]);
+    }
+
+    #[test]
+    fn reparent_moves_a_gate_and_keeps_the_tree_valid() {
+        let mut h = linear_tree();
+        h.reparent("c", "x").unwrap();
+
+        assert_eq!(h.get_parent("c").map(|p| p.to_string()), Some("x".to_string()));
+        assert!(h.get_children("b").is_empty());
+        h.validate().unwrap();
+    }
+
+    #[test]
+    fn reparent_rejects_an_unknown_gate() {
+        let mut h = linear_tree();
+        assert!(h.reparent("ghost", "root").is_err());
+    }
+
+    #[test]
+    fn reparent_subtree_carries_the_descendants_along() {
+        let mut h = linear_tree();
+        h.reparent_subtree("a", "x").unwrap();
+
+        assert_eq!(h.get_parent("a").map(|p| p.to_string()), Some("x".to_string()));
+        // b and c must still hang off a.
+        assert_eq!(ids(h.get_chain_to_root("c")), vec!["root", "x", "a", "b", "c"]);
+        h.validate().unwrap();
+    }
+
+    #[test]
+    fn reparent_subtree_rejects_a_move_into_its_own_descendant() {
+        let mut h = linear_tree();
+        assert!(h.reparent_subtree("a", "c").is_err());
+        // The tree must be untouched after the rejection.
+        assert_eq!(ids(h.get_chain_to_root("c")), vec!["root", "a", "b", "c"]);
+    }
+
+    // ── Deletion ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_subtree_returns_the_gate_and_all_descendants() {
+        let mut h = linear_tree();
+        let deleted = sorted_ids(h.delete_subtree("a"));
+
+        assert_eq!(deleted, vec!["a", "b", "c"]);
+        assert!(h.get_parent("a").is_none());
+        assert!(h.get_parent("c").is_none());
+        assert!(h.get_children("root").len() == 1, "x should survive");
+    }
+
+    /// gate_store::remove_gate reads each doomed gate's parent to clean up the
+    /// per-plot view index. delete_subtree unlinks as it goes, so the parent is
+    /// only available beforehand - this pins that behaviour down.
+    #[test]
+    fn delete_subtree_unlinks_parents_so_they_must_be_read_first() {
+        let mut h = linear_tree();
+        assert_eq!(h.get_parent("b").map(|p| p.to_string()), Some("a".to_string()));
+
+        h.delete_subtree("a");
+
+        assert!(
+            h.get_parent("b").is_none(),
+            "parent lookups after deletion silently fall back to the root"
+        );
+    }
+
+    #[test]
+    fn delete_node_keep_children_reparents_to_the_grandparent() {
+        let mut h = linear_tree();
+        let moved = h.delete_node_keep_children("b", Some(Arc::from("a"))).unwrap();
+
+        assert_eq!(ids(moved), vec!["c"]);
+        assert_eq!(h.get_parent("c").map(|p| p.to_string()), Some("a".to_string()));
+        assert!(h.get_parent("b").is_none());
+        h.validate().unwrap();
+    }
+
+    #[test]
+    fn delete_node_orphans_the_children_when_no_new_parent_given() {
+        let mut h = linear_tree();
+        h.delete_node("b").unwrap();
+
+        assert!(h.get_parent("c").is_none());
+        assert!(h.is_root("c"));
+    }
+
+    #[test]
+    fn delete_node_on_a_leaf_removes_just_that_leaf() {
+        let mut h = linear_tree();
+        let moved = h.delete_node("c").unwrap();
+
+        assert!(moved.is_empty());
+        assert!(h.get_parent("c").is_none());
+        assert!(h.is_leaf("b"));
+    }
+
+    #[test]
+    fn remove_child_detaches_only_that_link() {
+        let mut h = linear_tree();
+        h.remove_child("a", "b");
+
+        assert!(h.get_children("a").is_empty());
+        assert!(h.get_parent("b").is_none());
+        // c is still attached to b.
+        assert_eq!(ids(h.get_children("b").into_iter().cloned().collect()), vec!["c"]);
+    }
+
+    #[test]
+    fn clear_empties_the_hierarchy() {
+        let mut h = linear_tree();
+        h.clear();
+
+        assert!(h.get_roots().is_empty());
+        assert!(h.get_parent("c").is_none());
+    }
+
+    // ── Ordering guarantees relied on by the importer ─────────────────────────
+
+    #[test]
+    fn topological_sort_puts_parents_before_children() {
+        let h = linear_tree();
+        let order = ids(h.topological_sort().expect("acyclic"));
+
+        let pos = |id: &str| order.iter().position(|o| o == id).expect("present");
+        assert!(pos("root") < pos("a"));
+        assert!(pos("a") < pos("b"));
+        assert!(pos("b") < pos("c"));
+        assert!(pos("root") < pos("x"));
+    }
+
+    #[test]
+    fn iter_topological_agrees_with_topological_sort() {
+        let h = linear_tree();
+        assert_eq!(ids(h.iter_topological().collect()), ids(h.topological_sort().unwrap()));
+    }
+
+    #[test]
+    fn iter_dfs_walks_the_subtree_from_the_given_root() {
+        let h = linear_tree();
+        let walked = sorted_ids(h.iter_dfs("a").collect());
+        assert!(walked.contains(&"b".to_string()));
+        assert!(walked.contains(&"c".to_string()));
+        assert!(!walked.contains(&"x".to_string()));
+    }
+
+    // ── Bulk construction and validation ──────────────────────────────────────
+
+    #[test]
+    fn from_relationships_builds_the_tree() {
+        let rels: Vec<(Arc<str>, Arc<str>, Option<u64>)> = vec![
+            (Arc::from("root"), Arc::from("a"), Some(0)),
+            (Arc::from("a"), Arc::from("b"), Some(0)),
+        ];
+        let h = GateHierarchy::from_relationships(&rels).unwrap();
+
+        assert_eq!(ids(h.get_chain_to_root("b")), vec!["root", "a", "b"]);
+        h.validate().unwrap();
+    }
+
+    #[test]
+    fn from_relationships_rejects_a_cycle() {
+        let rels: Vec<(Arc<str>, Arc<str>, Option<u64>)> = vec![
+            (Arc::from("a"), Arc::from("b"), Some(0)),
+            (Arc::from("b"), Arc::from("a"), Some(0)),
+        ];
+        assert!(GateHierarchy::from_relationships(&rels).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_a_well_formed_tree() {
+        linear_tree().validate().unwrap();
+    }
+
+    // ── A realistic gating tree ───────────────────────────────────────────────
+
+    /// Mirrors a typical imported panel: singlets -> live -> CD3 -> {CD4, CD8},
+    /// with a quadrant's four subgates hanging off CD4.
+    #[test]
+    fn realistic_panel_resolves_chains_and_ordering() {
+        let mut h = GateHierarchy::new();
+        h.add_gate_child("root", "singlets", Some(0)).unwrap();
+        h.add_gate_child("singlets", "live", Some(0)).unwrap();
+        h.add_gate_child("live", "cd3", Some(0)).unwrap();
+        h.add_gate_child("cd3", "cd4", Some(0)).unwrap();
+        h.add_gate_child("cd3", "cd8", Some(1)).unwrap();
+        for (i, q) in ["q_bl", "q_br", "q_tr", "q_tl"].iter().enumerate() {
+            h.add_gate_child("cd4", *q, Some(i as u64)).unwrap();
+        }
+
+        assert_eq!(
+            ids(h.get_chain_to_root("q_tr")),
+            vec!["root", "singlets", "live", "cd3", "cd4", "q_tr"]
+        );
+        assert_eq!(
+            ids(h.get_children("cd4").into_iter().cloned().collect()),
+            vec!["q_bl", "q_br", "q_tr", "q_tl"]
+        );
+        assert_eq!(sorted_ids(h.get_leaves()), vec!["cd8", "q_bl", "q_br", "q_tl", "q_tr"]);
+        h.validate().unwrap();
+
+        // Deleting the quadrant's parent takes all four subgates with it.
+        let deleted = sorted_ids(h.delete_subtree("cd4"));
+        assert_eq!(deleted, vec!["cd4", "q_bl", "q_br", "q_tl", "q_tr"]);
+        h.validate().unwrap();
     }
 }

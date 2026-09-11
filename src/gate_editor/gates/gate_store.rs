@@ -458,41 +458,90 @@ impl<Lens> Store<GateState, Lens> {
             }
         }
 
+        // Record each doomed gate's parent *before* touching the hierarchy.
+        // delete_subtree unlinks every node it removes, so afterwards get_parent
+        // returns None and the view key below would be built against the root -
+        // leaving the deleted gate's id in gate_ids_by_view, still rendering.
         let mut gates_to_delete: HashSet<Arc<str>> = HashSet::default();
+        let mut parents: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
 
-        for brother in roots {
-            gates_to_delete.extend(state.hierarchy.delete_subtree(&brother));
+        for brother in &roots {
+            let subtree = std::iter::once(brother.clone())
+                .chain(state.hierarchy.get_descendants(brother))
+                .collect::<Vec<_>>();
+
+            for doomed in subtree {
+                let parent = state
+                    .hierarchy
+                    .get_parent(&doomed)
+                    .cloned()
+                    .unwrap_or_else(|| ROOTGATE.clone());
+                parents.insert(doomed.clone(), parent);
+                gates_to_delete.insert(doomed);
+            }
         }
 
-        for child_gate_id in gates_to_delete {
+        // A composite is registered under its own id as well as under each of its
+        // subgate ids, but only the subgates live in the hierarchy. Pick the owning
+        // composite up explicitly or its registry entry outlives the delete and keeps
+        // appearing in every resolver built from the registry.
+        let mut owners: Vec<(Arc<str>, Arc<str>)> = Vec::new();
+        for id in &gates_to_delete {
+            if let Some(gate) = state.gate_store.primary_and_subgate_registry.get(id) {
+                let owner = gate.get_id();
+                if owner != *id && !gates_to_delete.contains(&owner) {
+                    let parent = parents.get(id).cloned().unwrap_or_else(|| ROOTGATE.clone());
+                    owners.push((owner, parent));
+                }
+            }
+        }
+        for (owner, parent) in owners {
+            parents.insert(owner.clone(), parent);
+            gates_to_delete.insert(owner);
+        }
+
+        for brother in roots {
+            state.hierarchy.delete_subtree(&brother);
+        }
+
+        for doomed_id in &gates_to_delete {
             if let Some((id, gate)) = state
                 .gate_store
                 .primary_and_subgate_registry
-                .remove_entry(&child_gate_id)
+                .remove_entry(doomed_id)
             {
                 let drawable_gate_id = gate.get_id();
                 let params = gate.get_params();
-                let parent = state
-                    .hierarchy
-                    .get_parent(&id)
-                    .unwrap_or_else(|| &ROOTGATE)
-                    .clone();
+                let parent = parents
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| ROOTGATE.clone());
 
                 let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
                 if let Some(gate_list) = state.gate_ids_by_view.get_mut(&key) {
                     gate_list.retain(|id| id != &drawable_gate_id);
                 }
-
-                state
-                    .gate_store
-                    .sample_position_overrides
-                    .retain(|(gid, _file_id), _| gid != &gate_id);
-                state
-                    .gate_store
-                    .group_position_overrides
-                    .retain(|(gid, _group_id), _| gid != &gate_id);
             }
         }
+
+        // Drop the position overrides for every gate that went, not just the one
+        // that was asked for.
+        state
+            .gate_store
+            .sample_position_overrides
+            .retain(|(gid, _file_id), _| !gates_to_delete.contains(gid));
+        state
+            .gate_store
+            .group_position_overrides
+            .retain(|(gid, _group_id), _| !gates_to_delete.contains(gid));
+
+        // Stop deleted boolean gates lingering as dependents of surviving gates.
+        for dependents in state.boolean_gate_links.values_mut() {
+            dependents.retain(|id| !gates_to_delete.contains(id));
+        }
+        state
+            .boolean_gate_links
+            .retain(|id, dependents| !dependents.is_empty() && !gates_to_delete.contains(id));
         Ok(())
     }
 

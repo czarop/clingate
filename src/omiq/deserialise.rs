@@ -279,24 +279,27 @@ pub enum GateSerialized {
 }
 
 impl GateSerialized {
-    pub fn get_params(&self) -> (Arc<str>, Arc<str>) {
+    /// `None` for an Omiq gate type this build doesn't model (the `Unknown`
+    /// catch-all), so an unrecognised gate is skipped rather than taking the
+    /// whole import down.
+    pub fn get_params(&self) -> Option<(Arc<str>, Arc<str>)> {
         match self {
             GateSerialized::Rectangle {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Polygon {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Ellipse {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Line {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Angle {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
-            GateSerialized::Unknown => panic!("unsupported gate type"),
+            } => Some((x_param.clone(), y_param.clone())),
+            GateSerialized::Unknown => None,
         }
     }
     pub fn to_drawable(
@@ -426,12 +429,14 @@ impl GateSerialized {
                 };
                 Ok(Arc::new(LineGate::try_new(gate, 0f32, true)?))
             }
-            GateSerialized::Angle { .. } => {
-                panic!(
-                    "Angle gates are only part of composites and should not be directly deserialized into DrawableGates. They are handled separately in the composite gate logic."
-                );
-            }
-            GateSerialized::Unknown => todo!(),
+            GateSerialized::Angle { .. } => Err(anyhow::anyhow!(
+                "Angle gates are only part of composites and should not be directly deserialized into DrawableGates. They are handled separately in the composite gate logic."
+            )),
+            GateSerialized::Unknown => Err(anyhow::anyhow!(
+                "Unsupported Omiq gate type for gate '{}' ({})",
+                name,
+                id
+            )),
         }
     }
 }
@@ -535,10 +540,7 @@ pub fn find_atomic_params(
     all_containers: &std::collections::HashMap<GateId, FilterContainer>,
 ) -> Option<(Arc<str>, Arc<str>)> {
     match all_containers.get(current_id)? {
-        FilterContainer::Atomic(atomic) => {
-            let (x, y) = atomic.default_filter.get_params();
-            Some((x.clone(), y.clone()))
-        }
+        FilterContainer::Atomic(atomic) => atomic.default_filter.get_params(),
         FilterContainer::Compound(compound) => {
             let first_child_id = compound.filter_container_ids.first()?;
             find_atomic_params(first_child_id, all_containers)
@@ -969,7 +971,7 @@ pub fn extract_axis_range_from_axis_settings(
     let y_axis_range = y_axis.axis_lower..=y_axis.axis_upper;
 
     let x_trans = x_axis.transform.clone();
-    let y_trans = x_axis.transform.clone();
+    let y_trans = y_axis.transform.clone();
 
     Ok((x_axis_range, y_axis_range, x_trans, y_trans))
 }
