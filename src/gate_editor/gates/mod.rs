@@ -14,3 +14,9 @@ pub mod gate_traits;
 
 #[cfg(test)]
 mod gate_filtering_tests;
+#[cfg(test)]
+mod gate_drag_tests;
+#[cfg(test)]
+mod gate_types_tests;
+#[cfg(test)]
+mod gate_stats_tests;

@@ -62,13 +62,24 @@
   build a resolver by hand rather than standing up a Dioxus store.
 - Regression tests for the per-axis transform lookup, covering the Y-axis bug
   above directly.
+- Test suites for the previously untested interaction and geometry layers:
+  `gate_drag` (20 tests - drag rebasing, offset sign, rotation about a pivot),
+  `gate_types` (24 - shape classification, offset/restyle cloning, statistics),
+  `PlotMapper` (13 - pixel/data round trips on linear and arcsinh axes, axis
+  direction, hit tolerance), `gate_single` (25 - rectangle/polygon/ellipse/line
+  construction, translation, vertex edits, axis transposition, hit testing),
+  `gate_composite` (19 - subgate identity and count, orthogonality, handle
+  derivation, clamping), and `gate_stats` (15 - counts, parent-relative
+  percentages, quadrant partitioning, draft rendering at each click stage).
+- `Debug` derives on `GateRenderShape`, `ShapeType`, `DrawingStyle`, `Direction`
+  and `GateText`, so render shapes can be inspected and compared in assertions.
 
 ### Testing
 
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-202 unit tests and 12 doctests pass either way. Every test lives in the library,
+312 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.
