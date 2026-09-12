@@ -276,10 +276,6 @@ impl AxisInfo {
 
 //cargo test axis_info_tests -- --nocapture
 // ─── Tests ────────────────────────────────────────────────────────────────────
-//
-// NOTE: written without a compiler - the flow-fcs/flow-gates git dependencies
-// were not reachable in the environment these were authored in, so this module
-// has never been built or run. Treat a failure here as suspect-the-test first.
 
 #[cfg(test)]
 mod axis_info_tests {

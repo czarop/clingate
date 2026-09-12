@@ -4,10 +4,6 @@
 //! editor and the eventual autogater work on arrives through here, and the
 //! export path will have to reproduce it exactly in reverse.
 //!
-//! NOTE: written without a compiler - the flow-fcs/flow-gates git dependencies
-//! were not reachable in the environment these were authored in, so this module
-//! has never been built or run. Treat a failure here as suspect-the-test first.
-//!
 //! cargo test omiq -- --nocapture
 
 #![cfg(test)]

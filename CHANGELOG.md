@@ -48,13 +48,20 @@
   for each numerical fix above. The pre-existing `flow_tests` modules print their
   results and pass unconditionally, including on `Err`, so they cannot catch a
   regression; they are left in place as exploratory harnesses.
-- Test suite for the Omiq interchange layer (`src/omiq/tests.rs`) and for the axis
-  transforms (`axis_info`). See the note below.
+- Test suite for the Omiq interchange layer (`src/omiq/tests.rs`, 30 tests): tree
+  and node parsing, every gate geometry Omiq emits, the `Unknown` catch-all,
+  composite group-id classification, per-file and per-group override routing,
+  boolean operand resolution through nested compounds, skewed-quadrant winding,
+  and ellipse reconstruction from Omiq's four control points.
+- Test suite for the axis transforms (`axis_info`, 22 tests): arcsinh round-trips,
+  cofactor changes preserving raw positions, and axis-limit edits.
 
 ### Testing
 
-`flow-fcs`, `flow-plots` and `flow-gates` come from the private `czarop/flow`
-repository. The `gate_hierarchy` and `gate_move` suites are independent of those
-crates and have been run (117 tests, plus 12 doctests). The `omiq` and `axis_info`
-suites were written without a compiler available and have **never been built** -
-treat a failure there as suspect-the-test first.
+    cargo test --no-default-features
+
+176 unit tests and 12 doctests pass. `--no-default-features` drops dioxus's
+`desktop` feature: the tests all live in the library, and the desktop feature
+pulls in `gdk-sys`, which needs GTK system packages (`libgtk-3-dev`,
+`libwebkit2gtk-4.1-dev`) that a headless CI image will not usually have. A plain
+`cargo test` fails at the `gdk-3.0` pkg-config probe before running anything.
