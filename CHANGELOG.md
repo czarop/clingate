@@ -53,15 +53,27 @@
   composite group-id classification, per-file and per-group override routing,
   boolean operand resolution through nested compounds, skewed-quadrant winding,
   and ellipse reconstruction from Omiq's four control points.
-- Test suite for the axis transforms (`axis_info`, 22 tests): arcsinh round-trips,
+- Test suite for the axis transforms (`axis_info`, 24 tests): arcsinh round-trips,
   cofactor changes preserving raw positions, and axis-limit edits.
+- Test suite for event filtering (`gate_filtering_tests.rs`, 21 tests): rectangle,
+  polygon and ellipse masks including boundary and concave cases, all three
+  boolean operations and their nesting, operand-resolution failures, and
+  hierarchy chain narrowing. `GateOverrideResolver` has public fields, so these
+  build a resolver by hand rather than standing up a Dioxus store.
+- Regression tests for the per-axis transform lookup, covering the Y-axis bug
+  above directly.
 
 ### Testing
 
-    cargo test --no-default-features
+    cargo test                        # needs the GTK system packages below
+    cargo test --no-default-features  # no system packages needed
 
-176 unit tests and 12 doctests pass. `--no-default-features` drops dioxus's
-`desktop` feature: the tests all live in the library, and the desktop feature
-pulls in `gdk-sys`, which needs GTK system packages (`libgtk-3-dev`,
-`libwebkit2gtk-4.1-dev`) that a headless CI image will not usually have. A plain
-`cargo test` fails at the `gdk-3.0` pkg-config probe before running anything.
+202 unit tests and 12 doctests pass either way. Every test lives in the library,
+so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
+feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
+those packages a plain `cargo test` fails at that probe before running anything.
+
+Building the desktop binary (or testing with default features) needs:
+
+    libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+    libayatana-appindicator3-dev librsvg2-dev

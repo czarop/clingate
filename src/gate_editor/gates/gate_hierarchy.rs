@@ -12,6 +12,20 @@ use std::{
 /// are applied to events that pass through their parent gates. This enables
 /// sequential gating strategies common in flow cytometry analysis.
 ///
+/// # Relationship to `flow_gates::GateHierarchy`
+///
+/// This is a deliberate fork of `flow_gates::hierarchy::GateHierarchy`, kept
+/// separate rather than merged back. The difference is sibling ordering: this
+/// version carries an `orders` map and threads a `u64` order through
+/// [`add_child`](Self::add_child) and [`add_gate_child`](Self::add_gate_child),
+/// so children sort by Omiq's `ord` field and an imported gating tree renders in
+/// the order Omiq showed it. The flow-gates version takes no order argument and
+/// leaves siblings in insertion order.
+///
+/// Keep the two in step by hand when fixing a bug in shared logic. The tests at
+/// the bottom of this file cover this version's behaviour and are the spec if
+/// the two are ever reconciled.
+///
 /// The hierarchy is represented as a directed acyclic graph (DAG), preventing
 /// cycles while allowing multiple parents per child (though this implementation
 /// currently supports single-parent hierarchies).

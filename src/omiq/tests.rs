@@ -714,3 +714,101 @@ fn the_major_radius_is_never_smaller_than_the_minor_one() {
         _ => panic!("expected an ellipse geometry"),
     }
 }
+
+// ─── Axis settings lookup ─────────────────────────────────────────────────────
+//
+// This feeds the infinite bounds of every quadrant and skewed-quadrant gate on
+// import, so getting the per-axis transform right matters.
+
+use crate::gate_editor::AxisInfo;
+use crate::gate_editor::plots::axis_store::Param;
+use flow_fcs::TransformType;
+use rustc_hash::FxBuildHasher;
+
+fn axis(name: &str, lower: f32, upper: f32, transform: TransformType) -> AxisInfo {
+    AxisInfo {
+        param: Param {
+            marker: Arc::from(name),
+            fluoro: Arc::from(name),
+        },
+        axis_lower: lower,
+        axis_upper: upper,
+        transform,
+    }
+}
+
+fn settings(entries: Vec<AxisInfo>) -> im::HashMap<Arc<str>, AxisInfo, FxBuildHasher> {
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for a in entries {
+        map.insert(a.param.fluoro.clone(), a);
+    }
+    map
+}
+
+#[test]
+fn axis_ranges_are_read_from_the_matching_parameter() {
+    let x: Arc<str> = Arc::from("FSC-A");
+    let y: Arc<str> = Arc::from("CD3");
+    let s = settings(vec![
+        axis("FSC-A", 0.0, 100.0, TransformType::Linear),
+        axis("CD3", -1.0, 4.5, TransformType::Arcsinh { cofactor: 6000.0 }),
+    ]);
+
+    let (x_range, y_range, _, _) =
+        extract_axis_range_from_axis_settings(&(&x, &y), &s).expect("both axes present");
+
+    assert_eq!((*x_range.start(), *x_range.end()), (0.0, 100.0));
+    assert_eq!((*y_range.start(), *y_range.end()), (-1.0, 4.5));
+}
+
+/// Regression: the Y transform was cloned from the X axis, so any plot whose two
+/// axes were scaled differently - a linear scatter channel against an arcsinh
+/// fluorescence channel, which is most of them - imported its composite gates
+/// with the wrong infinite bounds on Y.
+#[test]
+fn each_axis_reports_its_own_transform() {
+    let x: Arc<str> = Arc::from("FSC-A");
+    let y: Arc<str> = Arc::from("CD3");
+    let s = settings(vec![
+        axis("FSC-A", 0.0, 100.0, TransformType::Linear),
+        axis("CD3", -1.0, 4.5, TransformType::Arcsinh { cofactor: 6000.0 }),
+    ]);
+
+    let (_, _, x_transform, y_transform) =
+        extract_axis_range_from_axis_settings(&(&x, &y), &s).unwrap();
+
+    assert!(
+        matches!(x_transform, TransformType::Linear),
+        "x should keep its own linear transform"
+    );
+    assert!(
+        matches!(y_transform, TransformType::Arcsinh { cofactor } if cofactor == 6000.0),
+        "y must report its own transform, not a copy of x's"
+    );
+}
+
+#[test]
+fn the_two_axes_keep_distinct_cofactors() {
+    let x: Arc<str> = Arc::from("CD4");
+    let y: Arc<str> = Arc::from("CD8");
+    let s = settings(vec![
+        axis("CD4", -1.0, 4.0, TransformType::Arcsinh { cofactor: 500.0 }),
+        axis("CD8", -1.0, 4.0, TransformType::Arcsinh { cofactor: 9000.0 }),
+    ]);
+
+    let (_, _, x_transform, y_transform) =
+        extract_axis_range_from_axis_settings(&(&x, &y), &s).unwrap();
+
+    assert!(matches!(x_transform, TransformType::Arcsinh { cofactor } if cofactor == 500.0));
+    assert!(matches!(y_transform, TransformType::Arcsinh { cofactor } if cofactor == 9000.0));
+}
+
+#[test]
+fn a_missing_axis_setting_is_an_error() {
+    let x: Arc<str> = Arc::from("FSC-A");
+    let missing: Arc<str> = Arc::from("not-configured");
+    let s = settings(vec![axis("FSC-A", 0.0, 100.0, TransformType::Linear)]);
+
+    assert!(extract_axis_range_from_axis_settings(&(&x, &missing), &s).is_err());
+    assert!(extract_axis_range_from_axis_settings(&(&missing, &x), &s).is_err());
+}
