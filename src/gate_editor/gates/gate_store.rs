@@ -286,6 +286,53 @@ impl GateState {
             .contains_key(gate_id)
     }
 
+    /// The gate that applies to one sample: a per-sample override wins, then a
+    /// per-group override, then the global position.
+    ///
+    /// The same precedence `get_current_sample` uses, for one gate rather than
+    /// all of them - the export needs it per file when writing `perFileFilters`.
+    pub fn gate_for_file(
+        &self,
+        gate_id: &GateId,
+        file_id: &FileId,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+    ) -> Option<Arc<dyn DrawableGate>> {
+        if let Some(gate) = self
+            .gate_store
+            .sample_position_overrides
+            .get(&(gate_id.clone(), file_id.clone()))
+        {
+            return Some(gate.clone());
+        }
+
+        if let Some(groups) = metadata.get(file_id) {
+            for (parameter, group) in groups {
+                let key = MetaDataKey {
+                    parameter: parameter.clone(),
+                    group: group.clone(),
+                };
+                if let Some(gate) = self
+                    .gate_store
+                    .group_position_overrides
+                    .get(&(gate_id.clone(), key))
+                {
+                    return Some(gate.clone());
+                }
+            }
+        }
+
+        self.registered_gate(gate_id)
+    }
+
+    /// Every gate id in the registry.
+    pub fn registered_ids(&self) -> Vec<GateId> {
+        self.gate_store
+            .primary_and_subgate_registry
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// The gate registered under an id, if any.
     pub fn registered_gate(&self, gate_id: &GateId) -> Option<Arc<dyn DrawableGate>> {
         self.gate_store

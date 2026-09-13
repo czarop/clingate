@@ -256,3 +256,168 @@ pub fn gate_to_serialized(
         }
     })
 }
+
+// ─── Assembling the document ──────────────────────────────────────────────────
+
+use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
+use crate::omiq::deserialise::{
+    AtomicContainer, BooleanOpType, CompoundContainer, FilterContainer, GatingNode,
+};
+use crate::omiq::metadata::MetaDataFileMap;
+use crate::omiq::rebuild::OmiqRebuildData;
+use std::collections::HashMap;
+
+fn boolean_op(op: flow_gates::BooleanOperation) -> BooleanOpType {
+    match op {
+        flow_gates::BooleanOperation::And => BooleanOpType::And,
+        flow_gates::BooleanOperation::Or => BooleanOpType::Or,
+        flow_gates::BooleanOperation::Not => BooleanOpType::Not,
+    }
+}
+
+/// The name Omiq shows for this container. A composite's parts each carry their
+/// own name, so ask the gate for the one belonging to this id.
+fn container_name(gate: &Arc<dyn DrawableGate>, container_id: &GateId) -> Arc<str> {
+    gate.get_gate_ref(Some(container_id))
+        .map(|inner| Arc::from(inner.name.as_str()))
+        .unwrap_or_else(|| Arc::from(gate.get_name()))
+}
+
+/// Build the filter container for one gate.
+fn container_for(
+    state: &GateState,
+    gate: &Arc<dyn DrawableGate>,
+    container_id: &GateId,
+    rebuild: Option<&OmiqRebuildData>,
+    metadata: &MetaDataFileMap,
+    axes: &AxisSettings,
+) -> anyhow::Result<FilterContainer> {
+    // A boolean has no geometry; it is a compound container naming its operands.
+    if let Some(boolean) = gate.as_any().downcast_ref::<BooleanGate>() {
+        return Ok(FilterContainer::Compound(CompoundContainer {
+            id: container_id.clone(),
+            name: Arc::from(boolean.get_name()),
+            operation: boolean_op(boolean.get_operation()),
+            filter_container_ids: boolean.get_operands().to_vec(),
+        }));
+    }
+
+    let source_type = rebuild.and_then(|r| r.source_type);
+    let default_filter = gate_to_serialized(gate, container_id, source_type, axes)?;
+
+    // Omiq stores one entry per file, even when a metadata column is what
+    // actually drives the position - so fan a group override back out over
+    // exactly the files the original listed, rather than a set derived from the
+    // metadata, which could differ.
+    let mut per_file_filters = rustc_hash::FxHashMap::default();
+    if let Some(rebuild) = rebuild {
+        for file_id in &rebuild.per_file_ids {
+            let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
+                continue;
+            };
+            let filter = gate_to_serialized(&for_file, container_id, source_type, axes)?;
+            per_file_filters.insert(file_id.clone(), filter);
+        }
+    }
+
+    Ok(FilterContainer::Atomic(AtomicContainer {
+        id: container_id.clone(),
+        name: container_name(gate, container_id),
+        default_filter,
+        group_id: rebuild.and_then(|r| r.group_id.clone()),
+        md: rebuild.and_then(|r| r.md.clone()),
+        per_file_filters,
+    }))
+}
+
+/// Which registry ids are containers in the file.
+///
+/// A composite occupies its own key as well as one per subgate, but only the
+/// subgates are containers - the composite itself is a grouping the editor
+/// invents, tied together by `groupId`.
+fn container_ids(state: &GateState) -> Vec<GateId> {
+    state
+        .registered_ids()
+        .into_iter()
+        .filter(|id| {
+            let Some(gate) = state.registered_gate(id) else {
+                return false;
+            };
+            !(gate.is_composite() && gate.get_id() == *id)
+        })
+        .collect()
+}
+
+/// Write the whole gating document.
+///
+/// Built from scratch: the geometry comes from the gates, the document identity
+/// from what was captured on import, and anything unreachable is passed through
+/// verbatim.
+pub fn to_omiq_document(
+    state: &GateState,
+    metadata: &MetaDataFileMap,
+    axes: &AxisSettings,
+) -> anyhow::Result<serde_json::Value> {
+    let rebuild = state.omiq_rebuild();
+
+    let mut nodes: HashMap<Arc<str>, GatingNode> = HashMap::new();
+    let mut containers: HashMap<Arc<str>, FilterContainer> = HashMap::new();
+
+    for container_id in container_ids(state) {
+        let Some(gate) = state.registered_gate(&container_id) else {
+            continue;
+        };
+        let entry = rebuild.get(&container_id);
+
+        containers.insert(
+            container_id.clone(),
+            container_for(state, &gate, &container_id, entry, metadata, axes)?,
+        );
+
+        // One node per placement: the same gate can be applied at several
+        // points in the tree, and each of those is its own node. A container
+        // with no placements is a ghost kept alive by a boolean that references
+        // it - it belongs in the file but not in the tree.
+        if let Some(entry) = entry {
+            for placement in &entry.nodes {
+                nodes.insert(
+                    placement.node_id.clone(),
+                    GatingNode {
+                        id: placement.node_id.clone(),
+                        parent_id: placement.parent_node_id.clone(),
+                        filter_container_id: container_id.clone(),
+                        ord: placement.ord,
+                        collapsed: placement.collapsed,
+                    },
+                );
+            }
+        }
+    }
+
+    let mut tree = serde_json::json!({
+        "nodes": serde_json::to_value(&nodes)?,
+        "filterContainers": serde_json::to_value(&containers)?,
+    });
+
+    // Containers no live gate reaches are written back untouched. One that a
+    // live boolean references is indistinguishable from these until the
+    // reachability walk says otherwise, and dropping it would break that
+    // boolean in Omiq.
+    if let Some(map) = tree
+        .get_mut("filterContainers")
+        .and_then(|c| c.as_object_mut())
+    {
+        for (id, raw) in &rebuild.ghost_containers {
+            map.entry(id.to_string()).or_insert_with(|| raw.clone());
+        }
+    }
+
+    let mut document = serde_json::to_value(&rebuild.header)?;
+    let Some(object) = document.as_object_mut() else {
+        return Err(anyhow!("document header did not serialise to an object"));
+    };
+    object.insert("tree".to_string(), tree);
+
+    Ok(document)
+}

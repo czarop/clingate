@@ -116,13 +116,23 @@
   gate in both fixtures round-trips against what the file actually said.
 - `Serialize` on the wire types, so one definition owns the format in both
   directions. Absent optionals are omitted rather than written as null.
+- `to_omiq_document` assembles a whole gating file from scratch: nodes, filter
+  containers, per-file position fan-out, boolean compounds, the document header
+  with its unmodelled fields, and the verbatim pass-through of unreachable
+  containers.
+- Linked gates are preserved. Omiq keys nodes separately from filter
+  containers, so one gate can be applied at several points in the tree - in a
+  real file, 38 of 146 containers were shared this way and one appeared at nine
+  points. `OmiqRebuildData` records every placement.
+- `a_real_gating_file_survives_a_round_trip`, gated on `OMIQ_GATING_FILE`,
+  checks the whole path against a real export. Skipped when unset.
 
 ### Testing
 
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-401 unit tests and 12 doctests pass either way. Every test lives in the library,
+421 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.

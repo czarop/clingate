@@ -75,16 +75,27 @@ pub struct OmiqDocumentHeader {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// One place in the gating tree where a gate is applied.
+///
+/// Omiq keys nodes separately from filter containers, which lets the same gate
+/// be used at several points in the tree - a linked gate. In one real file 38 of
+/// 146 containers were shared this way, one of them at nine different points.
+/// Each placement is its own node and has to be written back.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodePlacement {
+    pub node_id: Arc<str>,
+    /// Empty string at the root.
+    pub parent_node_id: Arc<str>,
+    pub ord: u64,
+    pub collapsed: bool,
+}
+
 /// What one gate needs in order to be written back.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OmiqRebuildData {
-    /// The tree node that pointed at this gate. Omiq keys nodes separately from
-    /// filter containers; the node carries the position in the tree.
-    pub node_id: Option<Arc<str>>,
-    /// Empty string at the root; `None` for a nodeless ghost.
-    pub parent_node_id: Option<Arc<str>>,
-    pub ord: u64,
-    pub collapsed: bool,
+    /// Every point in the tree this gate is applied at. Empty for a nodeless
+    /// ghost kept alive only by a boolean that references it.
+    pub nodes: Vec<NodePlacement>,
     /// `"DEFAULT"` on every atomic container seen so far. Kept verbatim.
     pub container_type: Arc<str>,
     /// e.g. `"IinB_QUAD3"` - the composite group and this gate's position in it.
@@ -99,6 +110,13 @@ pub struct OmiqRebuildData {
     /// override fans back out to the same set rather than one derived from the
     /// metadata - which could differ.
     pub per_file_ids: Vec<FileId>,
+}
+
+impl OmiqRebuildData {
+    /// The first place this gate appears, for callers that only need one.
+    pub fn primary_node(&self) -> Option<&NodePlacement> {
+        self.nodes.first()
+    }
 }
 
 /// Everything captured from one gating file.
@@ -131,16 +149,28 @@ impl OmiqRebuildStore {
     pub fn capture(experiment: &ExperimentJson, raw: &serde_json::Value) -> Self {
         let header = serde_json::from_value(raw.clone()).unwrap_or_default();
 
-        // A node names the container it draws; index the other way round.
-        let mut node_for_container: FxHashMap<Arc<str>, &crate::omiq::deserialise::GatingNode> =
-            FxHashMap::default();
+        // A node names the container it draws; index the other way round. A
+        // container may be named by several nodes - that is a linked gate.
+        let mut nodes_for_container: FxHashMap<Arc<str>, Vec<NodePlacement>> = FxHashMap::default();
         for node in experiment.tree.nodes.values() {
-            node_for_container.insert(node.filter_container_id.clone(), node);
+            nodes_for_container
+                .entry(node.filter_container_id.clone())
+                .or_default()
+                .push(NodePlacement {
+                    node_id: node.id.clone(),
+                    parent_node_id: node.parent_id.clone(),
+                    ord: node.ord,
+                    collapsed: node.collapsed,
+                });
+        }
+        // Hash order is not stable; sort so exports are reproducible.
+        for placements in nodes_for_container.values_mut() {
+            placements.sort_by(|a, b| a.ord.cmp(&b.ord).then_with(|| a.node_id.cmp(&b.node_id)));
         }
 
         let mut gates = FxHashMap::default();
         for (id, container) in &experiment.tree.filter_containers {
-            let node = node_for_container.get(id);
+            let placements = nodes_for_container.get(id).cloned().unwrap_or_default();
 
             let (container_type, group_id, md, source_type, per_file_ids) = match container {
                 FilterContainer::Atomic(atomic) => {
@@ -167,10 +197,7 @@ impl OmiqRebuildStore {
             gates.insert(
                 id.clone(),
                 OmiqRebuildData {
-                    node_id: node.map(|n| n.id.clone()),
-                    parent_node_id: node.map(|n| n.parent_id.clone()),
-                    ord: node.map(|n| n.ord).unwrap_or(0),
-                    collapsed: node.map(|n| n.collapsed).unwrap_or(false),
+                    nodes: placements,
                     container_type,
                     group_id,
                     md,

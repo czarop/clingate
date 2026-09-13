@@ -1257,10 +1257,11 @@ fn a_node_backed_gate_records_its_tree_position() {
         .get(&Arc::from("QCVn"))
         .expect("captured");
 
-    assert_eq!(entry.node_id.as_deref(), Some("3JDj"));
-    assert_eq!(entry.parent_node_id.as_deref(), Some("HWIv"));
-    assert_eq!(entry.ord, 1775297369203);
-    assert!(!entry.collapsed);
+    let node = entry.primary_node().expect("has a node");
+    assert_eq!(&*node.node_id, "3JDj");
+    assert_eq!(&*node.parent_node_id, "HWIv");
+    assert_eq!(node.ord, 1775297369203);
+    assert!(!node.collapsed);
     assert_eq!(&*entry.container_type, "DEFAULT");
 }
 
@@ -1269,7 +1270,7 @@ fn the_collapsed_flag_is_captured() {
     let state = import(BEFORE);
     // The Q4 corner's node is collapsed in the fixture.
     let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
-    assert!(entry.collapsed);
+    assert!(entry.primary_node().expect("has a node").collapsed);
 }
 
 /// A root node is marked by an empty parentId, and that has to come back as an
@@ -1279,7 +1280,7 @@ fn a_root_gate_records_an_empty_parent() {
     let state = import(BEFORE);
     let entry = state.omiq_rebuild().get(&Arc::from("uN8Y")).unwrap();
 
-    assert_eq!(entry.parent_node_id.as_deref(), Some(""));
+    assert_eq!(&*entry.primary_node().expect("has a node").parent_node_id, "");
 }
 
 /// The group id is what says "this is corner 3 of quadrant IinB". It must
@@ -1372,9 +1373,8 @@ fn a_ghost_records_no_node() {
     let state = import(AFTER);
     let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
 
-    assert!(entry.node_id.is_none());
-    assert!(entry.parent_node_id.is_none());
-    assert_eq!(entry.ord, 0);
+    assert!(entry.nodes.is_empty(), "a ghost has no placement in the tree");
+    assert!(entry.primary_node().is_none());
 }
 
 /// An unreachable container is inert for evaluation but is kept verbatim: one
@@ -1463,7 +1463,7 @@ fn rebuild_entries_are_keyed_by_id_not_by_gate() {
     let id: Arc<str> = Arc::from("uN8Y");
 
     let entry = state.omiq_rebuild().get(&id).expect("captured");
-    assert_eq!(entry.node_id.as_deref(), Some("fn1o"));
+    assert_eq!(&*entry.primary_node().expect("has a node").node_id, "fn1o");
     assert!(
         state.is_registered(&id),
         "the id in the rebuild store is the id in the registry"
@@ -1697,5 +1697,608 @@ fn a_boolean_gate_is_not_written_as_a_filter() {
     assert!(
         gate_to_serialized(&gate, &id, None, &fixture_axes()).is_err(),
         "a boolean is a compound container, not a filter"
+    );
+}
+
+// ─── Whole-document round trip ────────────────────────────────────────────────
+//
+// Import a real file, write a new one from scratch, and compare against what
+// Omiq actually wrote. This is the check that matters: everything else tests a
+// piece of the path.
+
+use crate::omiq::metadata::MetaDataFileMap;
+use crate::omiq::serialise::to_omiq_document;
+
+fn export(name: &str) -> serde_json::Value {
+    let state = import(name);
+    let metadata = im::HashMap::with_hasher(FxBuildHasher);
+    to_omiq_document(&state, &metadata, &fixture_axes())
+        .unwrap_or_else(|e| panic!("{name} should export, got: {e}"))
+}
+
+fn original(name: &str) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(fixture(name)).unwrap()).unwrap()
+}
+
+fn objects<'a>(doc: &'a serde_json::Value, path: &[&str]) -> &'a serde_json::Map<String, serde_json::Value> {
+    let mut cursor = doc;
+    for key in path {
+        cursor = cursor.get(key).unwrap_or_else(|| panic!("missing {key}"));
+    }
+    cursor.as_object().expect("an object")
+}
+
+#[test]
+fn the_document_header_is_written_back() {
+    for name in [BEFORE, AFTER] {
+        let written = export(name);
+        let source = original(name);
+
+        for key in ["date", "datasetId", "inverted", "taskId", "url", "workflowId"] {
+            assert_eq!(
+                written.get(key),
+                source.get(key),
+                "{name}: header field {key} changed"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_node_is_written_back_with_its_tree_position() {
+    for name in [BEFORE, AFTER] {
+        let written = export(name);
+        let source = original(name);
+        let written_nodes = objects(&written, &["tree", "nodes"]);
+        let source_nodes = objects(&source, &["tree", "nodes"]);
+
+        assert_eq!(
+            written_nodes.len(),
+            source_nodes.len(),
+            "{name}: node count changed"
+        );
+
+        for (id, node) in source_nodes {
+            let got = written_nodes
+                .get(id)
+                .unwrap_or_else(|| panic!("{name}: node {id} missing"));
+            for key in ["id", "parentId", "filterContainerId", "ord", "collapsed"] {
+                assert_eq!(got.get(key), node.get(key), "{name}: node {id} field {key}");
+            }
+        }
+    }
+}
+
+#[test]
+fn every_container_is_written_back() {
+    for name in [BEFORE, AFTER] {
+        let written = export(name);
+        let source = original(name);
+
+        let written_ids: std::collections::BTreeSet<&String> =
+            objects(&written, &["tree", "filterContainers"]).keys().collect();
+        let source_ids: std::collections::BTreeSet<&String> =
+            objects(&source, &["tree", "filterContainers"]).keys().collect();
+
+        assert_eq!(written_ids, source_ids, "{name}: container set changed");
+    }
+}
+
+#[test]
+fn a_container_keeps_its_identity_and_grouping() {
+    let written = export(BEFORE);
+    let source = original(BEFORE);
+    let w = objects(&written, &["tree", "filterContainers"]);
+    let s = objects(&source, &["tree", "filterContainers"]);
+
+    for (id, container) in s {
+        let got = &w[id];
+        for key in ["id", "name", "containerType", "groupId", "md"] {
+            assert_eq!(
+                got.get(key),
+                container.get(key),
+                "container {id} field {key}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_boolean_is_written_as_a_compound_container_with_its_operands() {
+    let written = export(BEFORE);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    let boolean = &containers["PvRn"];
+    assert_eq!(boolean["containerType"], "CompoundFilterContainer");
+    assert_eq!(boolean["type"], "AND");
+    assert_eq!(boolean["name"], "IL18a AND Q4 IL-22- / IL-17A-");
+
+    let operands: Vec<&str> = boolean["filterContainerIds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(operands, vec!["WE82", "4RZa"]);
+}
+
+#[test]
+fn a_not_gate_keeps_its_single_operand() {
+    let written = export(BEFORE);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    assert_eq!(containers["Z2Ti"]["type"], "NOT");
+    assert_eq!(
+        containers["Z2Ti"]["filterContainerIds"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn a_gate_geometry_is_written_back_to_the_same_values() {
+    let written = export(BEFORE);
+    let source = original(BEFORE);
+    let w = objects(&written, &["tree", "filterContainers"]);
+    let s = objects(&source, &["tree", "filterContainers"]);
+
+    for (id, container) in s {
+        let Some(expected) = container.get("defaultFilter") else { continue };
+        let got = w[id].get("defaultFilter").expect("a filter was written");
+
+        assert_eq!(
+            got["type"], expected["type"],
+            "container {id}: gate type changed"
+        );
+        assert_eq!(got["f1"], expected["f1"], "container {id}: x axis changed");
+        assert_eq!(got["f2"], expected["f2"], "container {id}: y axis changed");
+    }
+}
+
+/// The orphaned corner has no node, so it must appear among the containers but
+/// not in the tree - exactly as Omiq itself wrote it.
+#[test]
+fn a_nodeless_container_is_written_without_a_node() {
+    let written = export(AFTER);
+
+    assert!(
+        objects(&written, &["tree", "filterContainers"]).contains_key("4RZa"),
+        "the boolean's operand must be in the file"
+    );
+    assert!(
+        objects(&written, &["tree", "nodes"])
+            .values()
+            .all(|n| n["filterContainerId"] != "4RZa"),
+        "a nodeless container must not gain a node"
+    );
+}
+
+/// Per-file positions are what Omiq reads for a sample, so they have to come
+/// back for exactly the files the original listed.
+#[test]
+fn per_file_positions_are_written_for_the_same_files() {
+    let written = export(BEFORE);
+    let source = original(BEFORE);
+    let w = objects(&written, &["tree", "filterContainers"]);
+    let s = objects(&source, &["tree", "filterContainers"]);
+
+    let mut checked = 0;
+    for (id, container) in s {
+        let Some(expected) = container.get("perFileFilters").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        if expected.is_empty() {
+            continue;
+        }
+        let got = w[id]["perFileFilters"].as_object().expect("written");
+
+        let want: std::collections::BTreeSet<&String> = expected.keys().collect();
+        let have: std::collections::BTreeSet<&String> = got.keys().collect();
+        assert_eq!(have, want, "container {id}: per-file set changed");
+        checked += 1;
+    }
+    assert!(checked >= 3, "only checked {checked} containers");
+}
+
+/// The re-imported file has to describe the same gating as the original, which
+/// is the property that actually matters for Omiq accepting it.
+#[test]
+fn an_exported_document_can_be_imported_again() {
+    for name in [BEFORE, AFTER] {
+        let first = import(name);
+        let written = export(name);
+
+        let path = std::env::temp_dir().join(format!(
+            "clingate-roundtrip-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
+
+        let mut second = GateState::default();
+        let metadata = im::HashMap::with_hasher(FxBuildHasher);
+        second
+            .upload_gates_from_file(path.clone(), &metadata, fixture_axes())
+            .unwrap_or_else(|e| panic!("{name}: re-import failed: {e}"));
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            second.gate_count(),
+            first.gate_count(),
+            "{name}: gate count changed across a round trip"
+        );
+
+        for id in first.registered_ids() {
+            assert!(
+                second.is_registered(&id),
+                "{name}: gate {id} lost across a round trip"
+            );
+            assert_eq!(
+                second.hierarchy_parent(&id),
+                first.hierarchy_parent(&id),
+                "{name}: gate {id} moved in the tree"
+            );
+        }
+    }
+}
+
+// ─── Per-file and per-group positions ─────────────────────────────────────────
+//
+// Omiq writes one entry per file even when a metadata column is what drives the
+// position. Import folds those into one gate per group; export has to fan them
+// back out over exactly the files the original listed.
+
+/// sample1 and sample2 sit in different groups of both metadata columns the
+/// fixture uses, so a per-group position resolves differently for each.
+fn fixture_metadata() -> MetaDataFileMap {
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, group) in [("sample1", "one"), ("sample2", "two")] {
+        let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = rustc_hash::FxHashMap::default();
+        columns.insert(Arc::from("test"), Arc::from(group));
+        columns.insert(Arc::from("Type"), Arc::from(group));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    map
+}
+
+fn import_with_metadata(name: &str) -> GateState {
+    let mut state = GateState::default();
+    state
+        .upload_gates_from_file(fixture(name), &fixture_metadata(), fixture_axes())
+        .unwrap_or_else(|e| panic!("{name} should import, got: {e}"));
+    state
+}
+
+fn export_with_metadata(name: &str) -> serde_json::Value {
+    let state = import_with_metadata(name);
+    to_omiq_document(&state, &fixture_metadata(), &fixture_axes())
+        .unwrap_or_else(|e| panic!("{name} should export, got: {e}"))
+}
+
+/// A metadata-grouped gate holds one position per group, not per file. Both
+/// files must still get an entry on the way out.
+#[test]
+fn a_grouped_gate_fans_back_out_to_every_file() {
+    let written = export_with_metadata(BEFORE);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    let per_file = containers["QCVn"]["perFileFilters"]
+        .as_object()
+        .expect("per-file positions written");
+
+    let files: std::collections::BTreeSet<&String> = per_file.keys().collect();
+    assert_eq!(
+        files,
+        ["sample1".to_string(), "sample2".to_string()].iter().collect(),
+        "both files need an entry"
+    );
+}
+
+/// The real check: two samples in different groups have genuinely different
+/// positions in the fixture, and those have to survive the round trip rather
+/// than collapsing onto the default.
+#[test]
+fn per_group_positions_survive_the_round_trip() {
+    let written = export_with_metadata(BEFORE);
+    let source = original(BEFORE);
+
+    let written_pf = objects(&written, &["tree", "filterContainers"])["QCVn"]["perFileFilters"]
+        .as_object()
+        .unwrap()
+        .clone();
+    let source_pf = objects(&source, &["tree", "filterContainers"])["QCVn"]["perFileFilters"]
+        .as_object()
+        .unwrap()
+        .clone();
+
+    // f2Val is where the two samples genuinely differ in this fixture; f1Val
+    // happens to be identical, which would make the comparison vacuous.
+    for file in ["sample1", "sample2"] {
+        for (corner, axis) in [("min", "f2Val"), ("max", "f1Val"), ("max", "f2Val")] {
+            let got = written_pf[file][corner][axis].as_f64().unwrap();
+            let want = source_pf[file][corner][axis].as_f64().unwrap();
+            assert!(
+                (got - want).abs() < 1e-6,
+                "{file} {corner}.{axis}: wrote {got}, file had {want}"
+            );
+        }
+    }
+
+    // And the two really are different, so the test could fail.
+    assert_ne!(
+        source_pf["sample1"]["min"]["f2Val"].as_f64().unwrap(),
+        source_pf["sample2"]["min"]["f2Val"].as_f64().unwrap(),
+        "the fixture must have distinct per-group positions for this to prove anything"
+    );
+}
+
+/// A per-file position must not leak onto the gate's default.
+#[test]
+fn the_default_position_is_unaffected_by_the_per_file_ones() {
+    let written = export_with_metadata(BEFORE);
+    let source = original(BEFORE);
+
+    let got = objects(&written, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]
+        ["f1Val"]
+        .as_f64()
+        .unwrap();
+    let want = objects(&source, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]
+        ["f1Val"]
+        .as_f64()
+        .unwrap();
+
+    assert!((got - want).abs() < 1e-6, "wrote {got}, file had {want}");
+}
+
+#[test]
+fn a_grouped_gate_keeps_its_metadata_column() {
+    let written = export_with_metadata(BEFORE);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    assert_eq!(containers["QCVn"]["md"], "Type");
+    assert_eq!(containers["0lmI"]["md"], "test");
+}
+
+#[test]
+fn a_metadata_driven_file_still_round_trips_end_to_end() {
+    let first = import_with_metadata(BEFORE);
+    let written = export_with_metadata(BEFORE);
+
+    let path = std::env::temp_dir().join(format!("clingate-md-roundtrip-{}", std::process::id()));
+    std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
+
+    let mut second = GateState::default();
+    second
+        .upload_gates_from_file(path.clone(), &fixture_metadata(), fixture_axes())
+        .unwrap_or_else(|e| panic!("re-import failed: {e}"));
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(second.gate_count(), first.gate_count());
+    for id in first.registered_ids() {
+        assert!(second.is_registered(&id), "gate {id} lost");
+    }
+}
+
+// ─── Linked gates ─────────────────────────────────────────────────────────────
+//
+// Omiq keys nodes separately from filter containers, so one gate can be applied
+// at several points in the tree. In a real 250-node file, 38 of 146 containers
+// were shared this way and one appeared at nine points. Capturing only one node
+// per container silently dropped 104 of those placements.
+
+fn linked_gate_json() -> String {
+    format!(
+        r#"{{
+            "tree": {{
+                "nodes": {{
+                    "na": {{ "id": "na", "parentId": "",   "filterContainerId": "g1", "ord": 0, "collapsed": false }},
+                    "nb": {{ "id": "nb", "parentId": "",   "filterContainerId": "g2", "ord": 1, "collapsed": false }},
+                    "nc": {{ "id": "nc", "parentId": "na", "filterContainerId": "shared", "ord": 2, "collapsed": false }},
+                    "nd": {{ "id": "nd", "parentId": "nb", "filterContainerId": "shared", "ord": 3, "collapsed": true }}
+                }},
+                "filterContainers": {{
+                    "g1": {},
+                    "g2": {},
+                    "shared": {}
+                }}
+            }}
+        }}"#,
+        rectangle_json("g1", "Branch A"),
+        rectangle_json("g2", "Branch B"),
+        rectangle_json("shared", "Applied twice")
+    )
+}
+
+fn import_json(json: &str) -> GateState {
+    let path = std::env::temp_dir().join(format!(
+        "clingate-linked-{}-{:?}.omiqgt",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(&path, json).unwrap();
+    let mut state = GateState::default();
+    state
+        .upload_gates_from_file(path.clone(), &fixture_metadata(), fixture_axes())
+        .expect("imports");
+    let _ = std::fs::remove_file(path);
+    state
+}
+
+#[test]
+fn a_gate_used_at_two_points_records_both_placements() {
+    let state = import_json(&linked_gate_json());
+    let entry = state
+        .omiq_rebuild()
+        .get(&Arc::from("shared"))
+        .expect("captured");
+
+    assert_eq!(entry.nodes.len(), 2, "both placements must be recorded");
+    let ids: Vec<&str> = entry.nodes.iter().map(|n| &*n.node_id).collect();
+    assert!(ids.contains(&"nc") && ids.contains(&"nd"), "got {ids:?}");
+}
+
+#[test]
+fn each_placement_keeps_its_own_parent_and_flags() {
+    let state = import_json(&linked_gate_json());
+    let entry = state.omiq_rebuild().get(&Arc::from("shared")).unwrap();
+
+    let nc = entry.nodes.iter().find(|n| &*n.node_id == "nc").unwrap();
+    let nd = entry.nodes.iter().find(|n| &*n.node_id == "nd").unwrap();
+
+    assert_eq!(&*nc.parent_node_id, "na");
+    assert_eq!(&*nd.parent_node_id, "nb");
+    assert!(!nc.collapsed);
+    assert!(nd.collapsed, "the two placements differ in more than parent");
+}
+
+/// Regression: every placement has to come back, or branches of the tree
+/// silently lose their gates.
+#[test]
+fn every_placement_is_written_back() {
+    let state = import_json(&linked_gate_json());
+    let written = to_omiq_document(&state, &fixture_metadata(), &fixture_axes()).unwrap();
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    assert_eq!(nodes.len(), 4, "all four nodes must be written");
+
+    let for_shared: Vec<&String> = nodes
+        .iter()
+        .filter(|(_, n)| n["filterContainerId"] == "shared")
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(for_shared.len(), 2, "the shared gate appears twice");
+}
+
+#[test]
+fn placements_are_written_in_a_stable_order() {
+    let first = to_omiq_document(
+        &import_json(&linked_gate_json()),
+        &fixture_metadata(),
+        &fixture_axes(),
+    )
+    .unwrap();
+    let second = to_omiq_document(
+        &import_json(&linked_gate_json()),
+        &fixture_metadata(),
+        &fixture_axes(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&second).unwrap(),
+        "the same input must produce byte-identical output"
+    );
+}
+
+// ─── Whole-file check against a real export ───────────────────────────────────
+
+/// Point `OMIQ_GATING_FILE` at a real `.omiqgt` to check the whole path against
+/// it: import, write a new document, and confirm the structure survives.
+///
+/// Skipped when unset, so it costs nothing in a normal run. Real files are far
+/// larger than the fixtures - one had 250 nodes over 146 containers, with 153
+/// unreachable ones - and exercise shapes the fixtures do not.
+#[test]
+fn a_real_gating_file_survives_a_round_trip() {
+    let Ok(path) = std::env::var("OMIQ_GATING_FILE") else {
+        return;
+    };
+    let text = std::fs::read_to_string(&path).expect("readable");
+    let source: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+
+    // Axis settings for every channel the file mentions: scatter linear, the
+    // rest arcsinh, as the app configures them.
+    let mut channels = std::collections::BTreeSet::new();
+    fn walk(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for key in ["f1", "f2"] {
+                    if let Some(s) = m.get(key).and_then(|x| x.as_str()) {
+                        out.insert(s.to_string());
+                    }
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    walk(&source, &mut channels);
+
+    let mut axes = im::HashMap::with_hasher(FxBuildHasher);
+    for channel in &channels {
+        let linear =
+            channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
+        axes.insert(
+            Arc::from(channel.as_str()) as Arc<str>,
+            AxisInfo {
+                param: Param {
+                    marker: Arc::from(channel.as_str()),
+                    fluoro: Arc::from(channel.as_str()),
+                },
+                axis_lower: if linear { 0.0 } else { -1.0 },
+                axis_upper: if linear { 4_194_304.0 } else { 6.0 },
+                transform: if linear {
+                    TransformType::Linear
+                } else {
+                    TransformType::Arcsinh { cofactor: 6000.0 }
+                },
+            },
+        );
+    }
+
+    // Metadata for every file the gating file names, so grouped composites can
+    // resolve; the groups themselves do not matter here.
+    let mut files = std::collections::BTreeSet::new();
+    let mut columns = std::collections::BTreeSet::new();
+    for container in source["tree"]["filterContainers"].as_object().unwrap().values() {
+        if let Some(per_file) = container.get("perFileFilters").and_then(|v| v.as_object()) {
+            files.extend(per_file.keys().cloned());
+        }
+        if let Some(md) = container.get("md").and_then(|v| v.as_str()) {
+            columns.insert(md.to_string());
+        }
+    }
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for (i, file) in files.iter().enumerate() {
+        let mut cols: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = rustc_hash::FxHashMap::default();
+        for column in &columns {
+            cols.insert(
+                Arc::from(column.as_str()),
+                Arc::from(format!("group{}", i % 3).as_str()),
+            );
+        }
+        metadata.insert(Arc::from(file.as_str()) as Arc<str>, cols);
+    }
+
+    let mut state = GateState::default();
+    state
+        .upload_gates_from_file(std::path::PathBuf::from(&path), &metadata, axes.clone())
+        .expect("a real file should import");
+
+    let written = to_omiq_document(&state, &metadata, &axes).expect("a real file should export");
+
+    assert_eq!(
+        objects(&written, &["tree", "nodes"]).len(),
+        source["tree"]["nodes"].as_object().unwrap().len(),
+        "node count changed - every placement of a linked gate must be written"
+    );
+    assert_eq!(
+        objects(&written, &["tree", "filterContainers"]).len(),
+        source["tree"]["filterContainers"].as_object().unwrap().len(),
+        "container count changed - unreachable containers must be passed through"
+    );
+
+    let tmp = std::env::temp_dir().join(format!("clingate-real-{}.omiqgt", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string(&written).unwrap()).unwrap();
+    let mut again = GateState::default();
+    again
+        .upload_gates_from_file(tmp.clone(), &metadata, axes)
+        .expect("the written file should import again");
+    let _ = std::fs::remove_file(tmp);
+
+    assert_eq!(
+        again.gate_count(),
+        state.gate_count(),
+        "gate count changed across a round trip"
     );
 }
