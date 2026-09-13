@@ -19,7 +19,7 @@ use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
 use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::{
     DataPoints, SkewedQuadrantGate, get_infinite_bounds,
 };
-use crate::gate_editor::gates::gate_single::ellipse_gate::EllipseGate;
+use crate::gate_editor::gates::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
 use crate::gate_editor::gates::gate_single::line_gate::LineGate;
 use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
@@ -377,7 +377,7 @@ impl GateSerialized {
                 left,
                 top,
                 right,
-                bottom: _bottom,
+                bottom,
                 label_position,
             } => {
                 let parameters = (x_param.clone(), y_param.clone());
@@ -388,6 +388,16 @@ impl GateSerialized {
                     x_param,
                     y_param,
                 )?;
+                // Keep the control points exactly as Omiq wrote them. The
+                // canonical centre/radii/angle describes the same locus, but
+                // normalises which conjugate pair the handles sit on, so
+                // re-deriving them on export would move the handles.
+                let handles = EllipseHandles {
+                    left: (*left).into(),
+                    top: (*top).into(),
+                    right: (*right).into(),
+                    bottom: (*bottom).into(),
+                };
                 let label_position = label_position.map(|p| LabelPosition {
                     offset_x: p.x as f32,
                     offset_y: p.y as f32,
@@ -400,7 +410,9 @@ impl GateSerialized {
                     parameters,
                     label_position,
                 };
-                Ok(Arc::new(EllipseGate::try_new(gate, true)?))
+                Ok(Arc::new(EllipseGate::try_new_with_handles(
+                    gate, true, handles,
+                )?))
             }
             GateSerialized::Line {
                 x_param,
@@ -510,12 +522,18 @@ pub fn create_omiq_ellipse_geometry(
 
     // 5. Calculate the True Rotation Angle
     // The angle is derived from the eigenvector corresponding to lambda1
-    let angle = if f == 0.0 {
-        if e > g {
-            0.0
-        } else {
-            std::f64::consts::PI / 2.0
-        }
+    // A circle has lambda1 == lambda2 and no distinguishable axes, so the
+    // eigenvector - and any angle read off it - is arbitrary. Pin it to zero
+    // rather than letting float noise pick a rotation.
+    //
+    // `f` is compared against a tolerance scaled to the matrix, not against
+    // exact zero: a near-axis-aligned ellipse leaves f at around 1e-18, where
+    // atan2 of two near-zero arguments is numerically meaningless.
+    let scale = trace.abs().max(1.0);
+    let angle = if diff <= f64::EPSILON * scale {
+        0.0
+    } else if f.abs() <= f64::EPSILON * scale {
+        if e >= g { 0.0 } else { std::f64::consts::PI / 2.0 }
     } else {
         // Rust's atan2 takes (y, x)
         (lambda1 - e).atan2(f)

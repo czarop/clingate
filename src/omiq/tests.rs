@@ -812,3 +812,241 @@ fn a_missing_axis_setting_is_an_error() {
     assert!(extract_axis_range_from_axis_settings(&(&x, &missing), &s).is_err());
     assert!(extract_axis_range_from_axis_settings(&(&missing, &x), &s).is_err());
 }
+
+// ─── Ellipse handle preservation ──────────────────────────────────────────────
+//
+// The canonical centre/radii/angle form describes the same ellipse as Omiq's
+// four control points, but it cannot say which conjugate pair those points sat
+// on. An imported gate therefore carries its original handles so that a
+// round trip returns them unchanged rather than a canonicalised equivalent.
+
+use crate::gate_editor::gates::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
+use crate::gate_editor::gates::gate_drag::GateDragData;
+use crate::gate_editor::gates::gate_traits::DrawableGate;
+
+fn ellipse_json(left: (f64, f64), top: (f64, f64), right: (f64, f64), bottom: (f64, f64)) -> String {
+    format!(
+        r#"{{
+            "type": "EllipseGate",
+            "f1": "CD3",
+            "f2": "CD4",
+            "left":   {{ "f1Val": {}, "f2Val": {} }},
+            "top":    {{ "f1Val": {}, "f2Val": {} }},
+            "right":  {{ "f1Val": {}, "f2Val": {} }},
+            "bottom": {{ "f1Val": {}, "f2Val": {} }}
+        }}"#,
+        left.0, left.1, top.0, top.1, right.0, right.1, bottom.0, bottom.1
+    )
+}
+
+fn import_ellipse(json: &str) -> EllipseGate {
+    let spec: GateSerialized = serde_json::from_str(json).unwrap();
+    let drawable = spec
+        .to_drawable(
+            Arc::from("e1"),
+            Arc::from("an ellipse"),
+            flow_gates::GateMode::Global,
+            false,
+        )
+        .expect("ellipse imports");
+    drawable
+        .as_any()
+        .downcast_ref::<EllipseGate>()
+        .expect("an ellipse gate")
+        .clone()
+}
+
+#[test]
+fn an_imported_ellipse_keeps_the_handles_omiq_wrote() {
+    let gate = import_ellipse(&ellipse_json(
+        (-2.0, 0.0),
+        (0.0, 1.0),
+        (2.0, 0.0),
+        (0.0, -1.0),
+    ));
+
+    assert!(gate.has_source_handles());
+    let handles = gate.omiq_handles().unwrap();
+
+    assert_eq!(handles.left, (-2.0, 0.0));
+    assert_eq!(handles.top, (0.0, 1.0));
+    assert_eq!(handles.right, (2.0, 0.0));
+    assert_eq!(handles.bottom, (0.0, -1.0));
+}
+
+/// The whole point of storing them: an unedited gate exports exactly what came
+/// in, with no canonicalisation in between.
+#[test]
+fn an_unedited_ellipse_round_trips_its_handles_exactly() {
+    for (left, top, right, bottom) in [
+        ((-2.0, 0.0), (0.0, 1.0), (2.0, 0.0), (0.0, -1.0)),
+        ((1.0, 5.0), (5.0, 9.0), (9.0, 5.0), (5.0, 1.0)),
+        // A tall ellipse: the minor axis is the left/right pair, which the
+        // canonical form would swap onto the major axis.
+        ((-1.0, 0.0), (0.0, 4.0), (1.0, 0.0), (0.0, -4.0)),
+    ] {
+        let gate = import_ellipse(&ellipse_json(left, top, right, bottom));
+        let handles = gate.omiq_handles().unwrap();
+
+        assert_eq!(
+            (handles.left, handles.top, handles.right, handles.bottom),
+            (
+                (left.0 as f32, left.1 as f32),
+                (top.0 as f32, top.1 as f32),
+                (right.0 as f32, right.1 as f32),
+                (bottom.0 as f32, bottom.1 as f32)
+            ),
+            "handles were canonicalised"
+        );
+    }
+}
+
+/// A tall ellipse is the case the canonical form cannot represent faithfully:
+/// radius_x always takes the larger eigenvalue, so re-deriving would put
+/// left/right on the major axis. The stored handles must not do that.
+#[test]
+fn a_tall_ellipse_keeps_its_handles_on_the_minor_axis() {
+    let gate = import_ellipse(&ellipse_json(
+        (-1.0, 0.0),
+        (0.0, 4.0),
+        (1.0, 0.0),
+        (0.0, -4.0),
+    ));
+    let handles = gate.omiq_handles().unwrap();
+
+    let horizontal_span = (handles.right.0 - handles.left.0).abs();
+    let vertical_span = (handles.top.1 - handles.bottom.1).abs();
+
+    assert!(
+        horizontal_span < vertical_span,
+        "left/right should still be the short pair: {horizontal_span} vs {vertical_span}"
+    );
+}
+
+#[test]
+fn moving_an_ellipse_carries_its_handles_along() {
+    let gate = import_ellipse(&ellipse_json(
+        (-2.0, 0.0),
+        (0.0, 1.0),
+        (2.0, 0.0),
+        (0.0, -1.0),
+    ));
+
+    let drag = GateDragData::new(gate.get_id(), (0.0, 0.0), (10.0, 5.0));
+    let moved = gate.replace_points(drag).unwrap().expect("ellipse moves");
+    let moved = moved.as_any().downcast_ref::<EllipseGate>().unwrap();
+
+    assert!(moved.has_source_handles(), "a move must not discard them");
+    let handles = moved.omiq_handles().unwrap();
+
+    assert_eq!(handles.left, (8.0, 5.0));
+    assert_eq!(handles.right, (12.0, 5.0));
+    assert_eq!(handles.top, (10.0, 6.0));
+    assert_eq!(handles.bottom, (10.0, 4.0));
+}
+
+/// A rotation genuinely invalidates the imported pair, so the gate falls back to
+/// a derived principal-axis pair rather than reporting stale handles.
+#[test]
+fn rotating_an_ellipse_drops_the_imported_handles() {
+    let gate = import_ellipse(&ellipse_json(
+        (-2.0, 0.0),
+        (0.0, 1.0),
+        (2.0, 0.0),
+        (0.0, -1.0),
+    ));
+
+    let rotated = gate
+        .rotate_gate((5.0, 5.0))
+        .unwrap()
+        .expect("ellipse rotates");
+    let rotated = rotated.as_any().downcast_ref::<EllipseGate>().unwrap();
+
+    assert!(!rotated.has_source_handles());
+    // Derived handles are still well formed.
+    assert!(rotated.omiq_handles().is_ok());
+}
+
+// ─── Derived handles ──────────────────────────────────────────────────────────
+
+#[test]
+fn derived_handles_are_opposite_through_the_centre() {
+    let handles = EllipseHandles::from_canonical((5.0, 5.0), 3.0, 1.0, 0.7);
+
+    assert!((handles.centre().0 - 5.0).abs() < 1e-5);
+    assert!((handles.centre().1 - 5.0).abs() < 1e-5);
+    // bottom is top reflected through the centre, and likewise left/right.
+    assert!((handles.top.0 + handles.bottom.0 - 10.0).abs() < 1e-5);
+    assert!((handles.top.1 + handles.bottom.1 - 10.0).abs() < 1e-5);
+    assert!((handles.left.0 + handles.right.0 - 10.0).abs() < 1e-5);
+}
+
+#[test]
+fn derived_handles_sit_on_the_requested_radii() {
+    let handles = EllipseHandles::from_canonical((0.0, 0.0), 4.0, 2.0, 0.0);
+
+    assert_eq!(handles.right, (4.0, 0.0));
+    assert_eq!(handles.left, (-4.0, 0.0));
+    assert_eq!(handles.top, (0.0, 2.0));
+    assert_eq!(handles.bottom, (0.0, -2.0));
+}
+
+#[test]
+fn derived_handles_follow_the_rotation_angle() {
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let handles = EllipseHandles::from_canonical((0.0, 0.0), 4.0, 2.0, quarter);
+
+    // A quarter turn puts the major axis on y.
+    assert!((handles.right.0).abs() < 1e-5, "right x was {}", handles.right.0);
+    assert!((handles.right.1 - 4.0).abs() < 1e-5, "right y was {}", handles.right.1);
+}
+
+#[test]
+fn translating_handles_moves_all_four_together() {
+    let handles = EllipseHandles::from_canonical((0.0, 0.0), 2.0, 1.0, 0.0);
+    let moved = handles.translated(3.0, -4.0);
+
+    assert_eq!(moved.right, (5.0, -4.0));
+    assert_eq!(moved.left, (1.0, -4.0));
+    assert_eq!(moved.top, (3.0, -3.0));
+    assert_eq!(moved.bottom, (3.0, -5.0));
+}
+
+// ─── Degenerate reconstruction ────────────────────────────────────────────────
+
+/// A circle has equal eigenvalues, so its principal axes - and any angle read
+/// off them - are arbitrary. It is pinned to zero rather than left to float
+/// noise.
+#[test]
+fn a_circle_reconstructs_with_no_rotation() {
+    let geometry =
+        create_omiq_ellipse_geometry((-2.0, 0.0), (2.0, 0.0), (0.0, 2.0), "A", "B").unwrap();
+
+    match geometry {
+        flow_gates::GateGeometry::Ellipse { radius_x, radius_y, angle, .. } => {
+            assert!((radius_x - radius_y).abs() < 1e-4, "should be a circle");
+            assert_eq!(angle, 0.0, "a circle has no meaningful rotation");
+        }
+        _ => panic!("expected an ellipse"),
+    }
+}
+
+/// Regression: the angle branch tested `f == 0.0` exactly, so an ellipse that
+/// is axis-aligned to within float noise took the atan2 branch with two
+/// near-zero arguments.
+#[test]
+fn a_near_axis_aligned_ellipse_is_treated_as_aligned() {
+    let nudge = 1e-9;
+    let geometry =
+        create_omiq_ellipse_geometry((-4.0, 0.0), (4.0, nudge), (0.0, 2.0), "A", "B").unwrap();
+
+    match geometry {
+        flow_gates::GateGeometry::Ellipse { angle, .. } => {
+            assert!(
+                angle.abs() < 1e-3,
+                "a near-aligned ellipse reported {angle} radians"
+            );
+        }
+        _ => panic!("expected an ellipse"),
+    }
+}
