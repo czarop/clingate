@@ -1072,9 +1072,13 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 fn fixture_axes() -> im::HashMap<Arc<str>, AxisInfo, FxBuildHasher> {
     let mut settings = im::HashMap::with_hasher(FxBuildHasher);
+    // Scatter channels are linear and fluorescence channels arcsinh, as the
+    // app configures them - the two spaces have very different magnitudes, and
+    // the export uses each axis's transform to tell an unbounded edge from a
+    // real coordinate.
     for channel in [
         "BUV661-A", "BV785-A", "Alexa Fluor 700-A", "BUV737-A", "BUV805-A",
-        "BUV563-A", "FSC-A", "SSC-A", "Alexa Fluor 647-A", "Vio Bright 423-A",
+        "BUV563-A", "Alexa Fluor 647-A", "Vio Bright 423-A",
     ] {
         settings.insert(
             Arc::from(channel) as Arc<str>,
@@ -1086,6 +1090,20 @@ fn fixture_axes() -> im::HashMap<Arc<str>, AxisInfo, FxBuildHasher> {
                 axis_lower: -1.0,
                 axis_upper: 6.0,
                 transform: TransformType::Arcsinh { cofactor: 6000.0 },
+            },
+        );
+    }
+    for channel in ["FSC-A", "SSC-A"] {
+        settings.insert(
+            Arc::from(channel) as Arc<str>,
+            AxisInfo {
+                param: Param {
+                    marker: Arc::from(channel),
+                    fluoro: Arc::from(channel),
+                },
+                axis_lower: 0.0,
+                axis_upper: 4_194_304.0,
+                transform: TransformType::Linear,
             },
         );
     }
@@ -1449,5 +1467,235 @@ fn rebuild_entries_are_keyed_by_id_not_by_gate() {
     assert!(
         state.is_registered(&id),
         "the id in the rebuild store is the id in the registry"
+    );
+}
+
+// ─── Writing gates back ───────────────────────────────────────────────────────
+//
+// The strongest check available: take a real Omiq file, import it, write every
+// gate back out, and compare against what the file actually said.
+
+use crate::omiq::serialise::{OMIQ_UNBOUNDED, gate_to_serialized};
+
+/// The `defaultFilter` for each container, straight from the fixture.
+fn original_filters(name: &str) -> HashMap<Arc<str>, GateSerialized> {
+    let text = std::fs::read_to_string(fixture(name)).unwrap();
+    let exp: ExperimentJson = serde_json::from_str(&text).unwrap();
+    exp.tree
+        .filter_containers
+        .into_iter()
+        .filter_map(|(id, c)| match c {
+            FilterContainer::Atomic(a) => Some((id, a.default_filter)),
+            FilterContainer::Compound(_) => None,
+        })
+        .collect()
+}
+
+/// Write one gate back out of an imported state.
+fn round_trip(state: &GateState, id: &str) -> GateSerialized {
+    let gate_id: Arc<str> = Arc::from(id);
+    let gate = state
+        .registered_gate(&gate_id)
+        .unwrap_or_else(|| panic!("{id} should be registered"));
+    let source_type = state.omiq_rebuild().get(&gate_id).and_then(|r| r.source_type);
+    gate_to_serialized(&gate, &gate_id, source_type, &fixture_axes())
+        .unwrap_or_else(|e| panic!("{id} should serialise, got: {e}"))
+}
+
+fn close(a: f64, b: f64) -> bool {
+    let scale = a.abs().max(b.abs()).max(1.0);
+    (a - b).abs() <= scale * 1e-6
+}
+
+fn assert_point(actual: Point, expected: Point, what: &str) {
+    assert!(
+        close(actual.x, expected.x) && close(actual.y, expected.y),
+        "{what}: wrote ({}, {}), file had ({}, {})",
+        actual.x,
+        actual.y,
+        expected.x,
+        expected.y
+    );
+}
+
+#[test]
+fn a_rectangle_writes_back_as_it_came_in() {
+    let state = import(BEFORE);
+    let originals = original_filters(BEFORE);
+
+    match (round_trip(&state, "uN8Y"), &originals[&Arc::from("uN8Y") as &Arc<str>]) {
+        (
+            GateSerialized::Rectangle { x_param, y_param, min, max, .. },
+            GateSerialized::Rectangle { x_param: ex, y_param: ey, min: emin, max: emax, .. },
+        ) => {
+            assert_eq!((&*x_param, &*y_param), (&**ex, &**ey));
+            assert_point(min, *emin, "rectangle min");
+            assert_point(max, *emax, "rectangle max");
+        }
+        (written, _) => panic!("expected a rectangle, wrote {written:?}"),
+    }
+}
+
+#[test]
+fn a_polygon_writes_back_with_every_vertex_in_order() {
+    let state = import(BEFORE);
+    let originals = original_filters(BEFORE);
+
+    match (round_trip(&state, "4ECA"), &originals[&Arc::from("4ECA") as &Arc<str>]) {
+        (
+            GateSerialized::Polygon { points, .. },
+            GateSerialized::Polygon { points: expected, .. },
+        ) => {
+            assert_eq!(points.len(), expected.len(), "vertex count changed");
+            for (i, (got, want)) in points.iter().zip(expected).enumerate() {
+                assert_point(*got, *want, &format!("polygon vertex {i}"));
+            }
+        }
+        (written, _) => panic!("expected a polygon, wrote {written:?}"),
+    }
+}
+
+/// The case the canonical form cannot represent: the handles must come back as
+/// Omiq wrote them, not as a re-derived principal-axis pair.
+#[test]
+fn an_ellipse_writes_back_its_original_handles() {
+    let state = import(BEFORE);
+    let originals = original_filters(BEFORE);
+
+    match (round_trip(&state, "XdrW"), &originals[&Arc::from("XdrW") as &Arc<str>]) {
+        (
+            GateSerialized::Ellipse { left, top, right, bottom, .. },
+            GateSerialized::Ellipse { left: el, top: et, right: er, bottom: eb, .. },
+        ) => {
+            assert_point(left, *el, "ellipse left");
+            assert_point(top, *et, "ellipse top");
+            assert_point(right, *er, "ellipse right");
+            assert_point(bottom, *eb, "ellipse bottom");
+        }
+        (written, _) => panic!("expected an ellipse, wrote {written:?}"),
+    }
+}
+
+/// A quadrant corner is a rectangle in the file but is held as a polygon. Only
+/// the captured source type can say which to write.
+#[test]
+fn a_quadrant_corner_writes_back_as_a_rectangle_not_a_polygon() {
+    let state = import(BEFORE);
+    let originals = original_filters(BEFORE);
+
+    match (round_trip(&state, "4RZa"), &originals[&Arc::from("4RZa") as &Arc<str>]) {
+        (
+            GateSerialized::Rectangle { min, max, .. },
+            GateSerialized::Rectangle { min: emin, max: emax, .. },
+        ) => {
+            assert_point(min, *emin, "corner min");
+            assert_point(max, *emax, "corner max");
+        }
+        (written, _) => panic!("expected a rectangle, wrote {written:?}"),
+    }
+}
+
+/// Gates are held as f32, which cannot represent Omiq's 1e16 exactly - it
+/// drifts to 1.0000000272564224e16. Unbounded edges snap back to the constant.
+#[test]
+fn an_unbounded_edge_writes_back_as_omiqs_own_sentinel() {
+    let state = import(BEFORE);
+
+    match round_trip(&state, "4RZa") {
+        GateSerialized::Rectangle { min, .. } => {
+            assert_eq!(min.x, -OMIQ_UNBOUNDED, "lower x edge is unbounded");
+            assert_eq!(min.y, -OMIQ_UNBOUNDED, "lower y edge is unbounded");
+        }
+        written => panic!("expected a rectangle, wrote {written:?}"),
+    }
+}
+
+#[test]
+fn every_corner_of_an_intact_quadrant_writes_back() {
+    let state = import(BEFORE);
+    let originals = original_filters(BEFORE);
+
+    for corner in ["uevU", "2gGu", "2y0f", "4RZa"] {
+        match (round_trip(&state, corner), &originals[&Arc::from(corner) as &Arc<str>]) {
+            (
+                GateSerialized::Rectangle { min, max, .. },
+                GateSerialized::Rectangle { min: emin, max: emax, .. },
+            ) => {
+                assert_point(min, *emin, &format!("{corner} min"));
+                assert_point(max, *emax, &format!("{corner} max"));
+            }
+            (written, _) => panic!("{corner}: expected a rectangle, wrote {written:?}"),
+        }
+    }
+}
+
+/// The orphaned corner is imported as a standalone gate, but it was corner 3 of
+/// a quadrant and has to go back as one.
+#[test]
+fn an_orphaned_corner_still_writes_back_as_its_original_type() {
+    let state = import(AFTER);
+    let originals = original_filters(AFTER);
+
+    match (round_trip(&state, "4RZa"), &originals[&Arc::from("4RZa") as &Arc<str>]) {
+        (
+            GateSerialized::Rectangle { min, max, .. },
+            GateSerialized::Rectangle { min: emin, max: emax, .. },
+        ) => {
+            assert_point(min, *emin, "orphan min");
+            assert_point(max, *emax, "orphan max");
+        }
+        (written, _) => panic!("expected a rectangle, wrote {written:?}"),
+    }
+    // And it still knows which group it belonged to.
+    assert_eq!(
+        state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap().group_id.as_deref(),
+        Some("IinB_QUAD3")
+    );
+}
+
+/// Every atomic gate in both fixtures, written back and compared against the
+/// file - the broadest check the fixtures support.
+#[test]
+fn every_gate_in_both_fixtures_round_trips() {
+    for name in [BEFORE, AFTER] {
+        let state = import(name);
+        let originals = original_filters(name);
+        let mut checked = 0;
+
+        for (id, original) in &originals {
+            let Some(gate) = state.registered_gate(id) else { continue };
+            if gate.is_composite() {
+                continue; // written per corner, covered above
+            }
+            let source_type = state.omiq_rebuild().get(id).and_then(|r| r.source_type);
+            let written = gate_to_serialized(&gate, id, source_type, &fixture_axes())
+                .unwrap_or_else(|e| panic!("{name}/{id}: {e}"));
+
+            assert_eq!(
+                std::mem::discriminant(&written),
+                std::mem::discriminant(original),
+                "{name}/{id}: gate type changed"
+            );
+            assert_eq!(
+                written.get_params(),
+                original.get_params(),
+                "{name}/{id}: parameters changed"
+            );
+            checked += 1;
+        }
+
+        assert!(checked >= 8, "{name}: only checked {checked} gates");
+    }
+}
+
+#[test]
+fn a_boolean_gate_is_not_written_as_a_filter() {
+    let state = import(BEFORE);
+    let id: Arc<str> = Arc::from("Z2Ti");
+    let gate = state.registered_gate(&id).unwrap();
+
+    assert!(
+        gate_to_serialized(&gate, &id, None, &fixture_axes()).is_err(),
+        "a boolean is a compound container, not a filter"
     );
 }

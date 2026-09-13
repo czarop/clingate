@@ -286,6 +286,14 @@ impl GateState {
             .contains_key(gate_id)
     }
 
+    /// The gate registered under an id, if any.
+    pub fn registered_gate(&self, gate_id: &GateId) -> Option<Arc<dyn DrawableGate>> {
+        self.gate_store
+            .primary_and_subgate_registry
+            .get(gate_id)
+            .cloned()
+    }
+
     /// This gate's parent in the gating tree, or `None` if it has no node.
     pub fn hierarchy_parent(&self, gate_id: &GateId) -> Option<GateId> {
         self.hierarchy.get_parent(gate_id).cloned()

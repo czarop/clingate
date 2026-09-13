@@ -6,7 +6,7 @@ use flow_gates::{
 };
 use itertools::Itertools;
 use rustc_hash::{FxBuildHasher, FxHashMap};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::RangeInclusive;
@@ -27,21 +27,21 @@ use crate::gate_editor::gates::gate_store::{FileId, GateSource};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey, MetaDataParameter};
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentJson {
     pub tree: GatingTree,
 }
 
 // Gating Tree and Node will be made into the Gating Hierarchy
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct GatingTree {
     pub nodes: HashMap<Arc<str>, GatingNode>,
     pub filter_containers: HashMap<Arc<str>, FilterContainer>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct GatingNode {
     pub id: Arc<str>,
@@ -52,7 +52,7 @@ pub struct GatingNode {
 }
 
 //FilterContainer is the actual gate info
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "containerType")]
 pub enum FilterContainer {
     #[serde(rename = "AtomicFilterContainer")]
@@ -62,7 +62,7 @@ pub enum FilterContainer {
     Compound(CompoundContainer),
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CompoundContainer {
     pub id: GateId,
@@ -72,7 +72,7 @@ pub struct CompoundContainer {
     pub filter_container_ids: Vec<GateId>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum BooleanOpType {
     And,
@@ -80,7 +80,7 @@ pub enum BooleanOpType {
     Not,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AtomicContainer {
     pub id: GateId,
@@ -91,7 +91,7 @@ pub struct AtomicContainer {
     pub default_filter: GateSerialized,
 
     // for composite gates - this ties the individual gates together.
-    #[serde(rename = "groupId")]
+    #[serde(rename = "groupId", skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
 
     // The metadata parameter controlling the grouping (e.g., "$VOL")
@@ -99,6 +99,7 @@ pub struct AtomicContainer {
     // this will be SOME if there is a metadata param governing this
     // ie group-specific - each file still gets an entry in file-specific
     // even if its group-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub md: Option<MetaDataParameter>,
 
     // The "File-Specific" variants
@@ -207,7 +208,7 @@ impl AtomicContainer {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum GateSerialized {
     #[serde(rename = "RectangleGate")]
@@ -218,7 +219,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         min: Point,
         max: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "PolygonGate")]
@@ -229,7 +230,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         #[serde(rename = "vertices")]
         points: Vec<Point>,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "EllipseGate")]
@@ -242,7 +243,7 @@ pub enum GateSerialized {
         top: Point,
         right: Point,
         bottom: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "RangeGate")]
@@ -255,7 +256,7 @@ pub enum GateSerialized {
         f1min: f64,
         #[serde(rename = "f1Max")]
         f1max: f64,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "AngleGate")]
@@ -270,7 +271,7 @@ pub enum GateSerialized {
         v1: Point,
         #[serde(rename = "v2")]
         v2: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     // Future-proofing for other gate types
@@ -453,7 +454,7 @@ impl GateSerialized {
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
 pub struct Point {
     #[serde(rename = "f1Val", default)]
     pub x: f64,

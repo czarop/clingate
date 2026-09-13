@@ -8,3 +8,5 @@ mod tests;
 mod metadata_tests;
 
 pub mod rebuild;
+
+pub mod serialise;

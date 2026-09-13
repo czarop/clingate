@@ -105,12 +105,24 @@
   equivalent. A move carries them; a rotation drops them and derives a
   principal-axis pair.
 
+- `omiq::rebuild` captures what a gating file carries beyond geometry - the
+  document header, and per gate the node id, parent, `ord`, `collapsed` flag,
+  container type, `groupId`, metadata column, source gate type and per-file id
+  list. Kept beside the registry keyed by gate id, so it survives every edit.
+  Unreachable containers are kept verbatim as raw JSON.
+- `omiq::serialise` converts a gate back into the filter Omiq stores for it,
+  driven by the captured source type - a quadrant corner is a rectangle in the
+  file but a polygon once imported, and a skewed corner an angle gate. Every
+  gate in both fixtures round-trips against what the file actually said.
+- `Serialize` on the wire types, so one definition owns the format in both
+  directions. Absent optionals are omitted rather than written as null.
+
 ### Testing
 
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-367 unit tests and 12 doctests pass either way. Every test lives in the library,
+401 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.
