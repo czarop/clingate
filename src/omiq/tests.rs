@@ -1201,3 +1201,253 @@ fn root_level_gates_land_under_the_root() {
         Some(ROOTGATE.clone())
     );
 }
+
+// ─── Rebuild capture ──────────────────────────────────────────────────────────
+//
+// Everything the file carries that the editor does not itself need. It is kept
+// beside the registry, keyed by gate id, so it survives every edit: none of it
+// changes when a gate is dragged.
+
+use crate::omiq::rebuild::{OmiqGateType, OmiqRebuildStore};
+
+#[test]
+fn the_document_header_is_captured() {
+    let state = import(BEFORE);
+    let header = &state.omiq_rebuild().header;
+
+    assert_eq!(header.workflow_id, 1);
+    assert_eq!(header.dataset_id, 2);
+    assert_eq!(header.task_id, 1);
+    assert!(!header.inverted);
+    assert!(header.url.starts_with("https://example.invalid/"));
+    assert_eq!(header.date, "2020-01-01T00:00:00.000Z");
+}
+
+#[test]
+fn every_container_gets_a_rebuild_entry() {
+    let state = import(BEFORE);
+    // 14 containers in the fixture, node-backed or not.
+    assert_eq!(state.omiq_rebuild().gates.len(), 14);
+}
+
+#[test]
+fn a_node_backed_gate_records_its_tree_position() {
+    let state = import(BEFORE);
+    // "IL-2+" sat under the Q4 corner before the deletion.
+    let entry = state
+        .omiq_rebuild()
+        .get(&Arc::from("QCVn"))
+        .expect("captured");
+
+    assert_eq!(entry.node_id.as_deref(), Some("3JDj"));
+    assert_eq!(entry.parent_node_id.as_deref(), Some("HWIv"));
+    assert_eq!(entry.ord, 1775297369203);
+    assert!(!entry.collapsed);
+    assert_eq!(&*entry.container_type, "DEFAULT");
+}
+
+#[test]
+fn the_collapsed_flag_is_captured() {
+    let state = import(BEFORE);
+    // The Q4 corner's node is collapsed in the fixture.
+    let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
+    assert!(entry.collapsed);
+}
+
+/// A root node is marked by an empty parentId, and that has to come back as an
+/// empty string rather than a missing key.
+#[test]
+fn a_root_gate_records_an_empty_parent() {
+    let state = import(BEFORE);
+    let entry = state.omiq_rebuild().get(&Arc::from("uN8Y")).unwrap();
+
+    assert_eq!(entry.parent_node_id.as_deref(), Some(""));
+}
+
+/// The group id is what says "this is corner 3 of quadrant IinB". It must
+/// survive even when the group was broken up, or the gate cannot be written
+/// back as the corner it was.
+#[test]
+fn a_composite_member_records_its_group_id() {
+    for fixture in [BEFORE, AFTER] {
+        let state = import(fixture);
+        let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
+
+        assert_eq!(
+            entry.group_id.as_deref(),
+            Some("IinB_QUAD3"),
+            "group id lost in {fixture}"
+        );
+    }
+}
+
+#[test]
+fn the_metadata_column_is_captured() {
+    let state = import(BEFORE);
+
+    assert_eq!(
+        state.omiq_rebuild().get(&Arc::from("0lmI")).unwrap().md.as_deref(),
+        Some("test")
+    );
+    assert_eq!(
+        state.omiq_rebuild().get(&Arc::from("QCVn")).unwrap().md.as_deref(),
+        Some("Type")
+    );
+    assert!(
+        state.omiq_rebuild().get(&Arc::from("2PJQ")).unwrap().md.is_none(),
+        "a gate with no metadata grouping records none"
+    );
+}
+
+/// The shape alone cannot say what to write back - a quadrant corner is held as
+/// a polygon but was a rectangle in the file.
+#[test]
+fn the_source_gate_type_is_captured() {
+    let state = import(BEFORE);
+    let r = state.omiq_rebuild();
+
+    assert_eq!(r.get(&Arc::from("uN8Y")).unwrap().source_type, Some(OmiqGateType::Rectangle));
+    assert_eq!(r.get(&Arc::from("4ECA")).unwrap().source_type, Some(OmiqGateType::Polygon));
+    assert_eq!(r.get(&Arc::from("XdrW")).unwrap().source_type, Some(OmiqGateType::Ellipse));
+    assert_eq!(r.get(&Arc::from("4RZa")).unwrap().source_type, Some(OmiqGateType::Rectangle));
+    // A boolean has no geometry of its own.
+    assert_eq!(r.get(&Arc::from("Z2Ti")).unwrap().source_type, None);
+}
+
+#[test]
+fn a_boolean_records_its_operation_as_its_container_type() {
+    let state = import(BEFORE);
+
+    assert_eq!(
+        &*state.omiq_rebuild().get(&Arc::from("Z2Ti")).unwrap().container_type,
+        "NOT"
+    );
+    assert_eq!(
+        &*state.omiq_rebuild().get(&Arc::from("PvRn")).unwrap().container_type,
+        "AND"
+    );
+}
+
+/// A group override has to fan back out to exactly the files Omiq listed, not
+/// to a set derived from the metadata - which could differ.
+#[test]
+fn the_per_file_ids_are_captured_in_a_stable_order() {
+    let state = import(BEFORE);
+    let entry = state.omiq_rebuild().get(&Arc::from("0lmI")).unwrap();
+
+    assert_eq!(entry.per_file_ids.len(), 2);
+    let ids: Vec<&str> = entry.per_file_ids.iter().map(|f| &**f).collect();
+    assert_eq!(ids, vec!["sample1", "sample2"], "sorted for reproducible output");
+}
+
+#[test]
+fn a_gate_with_no_per_file_positions_records_none() {
+    let state = import(BEFORE);
+    assert!(
+        state.omiq_rebuild().get(&Arc::from("4ECA")).unwrap().per_file_ids.is_empty()
+    );
+}
+
+/// A nodeless container has no tree position to record.
+#[test]
+fn a_ghost_records_no_node() {
+    let state = import(AFTER);
+    let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
+
+    assert!(entry.node_id.is_none());
+    assert!(entry.parent_node_id.is_none());
+    assert_eq!(entry.ord, 0);
+}
+
+/// An unreachable container is inert for evaluation but is kept verbatim: one
+/// that a live boolean references looks exactly like it until the reachability
+/// walk says otherwise, and dropping it would break that boolean in Omiq.
+#[test]
+fn unreachable_containers_are_kept_verbatim() {
+    // Both fixtures are fully reachable, so build the case directly.
+    let mut store = OmiqRebuildStore::default();
+    let raw: serde_json::Value = serde_json::from_str(
+        r#"{"tree":{"nodes":{},"filterContainers":{
+            "live":{"containerType":"AtomicFilterContainer","id":"live","name":"a"},
+            "ghost":{"containerType":"AtomicFilterContainer","id":"ghost","name":"b","somethingWeDoNotModel":42}
+        }}}"#,
+    )
+    .unwrap();
+    let mut reachable = rustc_hash::FxHashSet::default();
+    reachable.insert(Arc::from("live") as Arc<str>);
+
+    store.capture_ghosts(&raw, &reachable);
+
+    assert_eq!(store.ghost_containers.len(), 1);
+    let ghost = store.ghost_containers.get(&Arc::from("ghost") as &Arc<str>).unwrap();
+    assert_eq!(
+        ghost.get("somethingWeDoNotModel").and_then(|v| v.as_i64()),
+        Some(42),
+        "fields we do not model must survive verbatim"
+    );
+}
+
+/// Fields a future Omiq version adds at the document level must not be dropped.
+#[test]
+fn unmodelled_header_fields_are_kept() {
+    let raw: serde_json::Value = serde_json::from_str(
+        r#"{"date":"d","datasetId":1,"inverted":true,"taskId":2,"url":"u","workflowId":3,
+            "someFutureField":{"nested":true}}"#,
+    )
+    .unwrap();
+    let header: crate::omiq::rebuild::OmiqDocumentHeader =
+        serde_json::from_value(raw).unwrap();
+
+    assert!(header.inverted);
+    assert!(
+        header.extra.contains_key("someFutureField"),
+        "unmodelled fields land in extra, got {:?}",
+        header.extra.keys().collect::<Vec<_>>()
+    );
+}
+
+/// A gate deleted in the editor must not be resurrected by the exporter.
+#[test]
+fn deleting_a_gate_drops_its_rebuild_entry() {
+    let mut state = import(BEFORE);
+    let id: Arc<str> = Arc::from("4ECA"); // the "Tmem" polygon
+
+    assert!(state.omiq_rebuild().get(&id).is_some());
+    state.remove_gate(id.clone()).unwrap();
+
+    assert!(
+        state.omiq_rebuild().get(&id).is_none(),
+        "a deleted gate would be written back into the file"
+    );
+}
+
+/// Deleting a gate takes its descendants' rebuild entries too.
+#[test]
+fn deleting_a_parent_drops_its_childrens_rebuild_entries() {
+    let mut state = import(BEFORE);
+    let parent: Arc<str> = Arc::from("hu4H");  // "teff_naive"
+    let child: Arc<str> = Arc::from("2PJQ");   // "IFny+", nested below it
+
+    assert!(state.omiq_rebuild().get(&child).is_some());
+    state.remove_gate(parent).unwrap();
+
+    assert!(
+        state.omiq_rebuild().get(&child).is_none(),
+        "a deleted descendant would be written back into the file"
+    );
+}
+
+/// The entries are keyed by gate id, not by the gate itself, so anything that
+/// replaces the gate under the same id leaves them alone.
+#[test]
+fn rebuild_entries_are_keyed_by_id_not_by_gate() {
+    let state = import(BEFORE);
+    let id: Arc<str> = Arc::from("uN8Y");
+
+    let entry = state.omiq_rebuild().get(&id).expect("captured");
+    assert_eq!(entry.node_id.as_deref(), Some("fn1o"));
+    assert!(
+        state.is_registered(&id),
+        "the id in the rebuild store is the id in the registry"
+    );
+}

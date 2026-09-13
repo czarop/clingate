@@ -261,9 +261,17 @@ pub struct GateState {
     // when deleting a gate, do you need to delete any boolean gates that depend on it?
     boolean_gate_links: FxHashMap<GateId, Vec<GateId>>,
     gate_store: GateSubStore,
+    // What the imported Omiq file carried that the editor does not itself need,
+    // kept so a new file can be written from scratch.
+    omiq_rebuild: crate::omiq::rebuild::OmiqRebuildStore,
 }
 
 impl GateState {
+    /// What the imported Omiq file carried, for writing a new one.
+    pub fn omiq_rebuild(&self) -> &crate::omiq::rebuild::OmiqRebuildStore {
+        &self.omiq_rebuild
+    }
+
     /// How many gates are registered, counting a composite once per key it
     /// occupies.
     pub fn gate_count(&self) -> usize {
@@ -394,6 +402,13 @@ impl GateState {
             .gate_store
             .group_position_overrides
             .retain(|(gid, _group_id), _| !gates_to_delete.contains(gid));
+
+        // A deleted gate must not be written back into an Omiq file, so its
+        // rebuild entry goes with it. Ghost containers are untouched: they are
+        // keyed separately and were never gates in this editor.
+        self.omiq_rebuild
+            .gates
+            .retain(|id, _| !gates_to_delete.contains(id));
 
         // Stop deleted boolean gates lingering as dependents of surviving gates.
         for dependents in self.boolean_gate_links.values_mut() {
@@ -630,16 +645,22 @@ impl GateState {
         axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
     ) -> anyhow::Result<()> {
         // 1. Open the file
-        let file = std::fs::File::open(&path)?;
-        let reader = std::io::BufReader::new(file);
+        let text = std::fs::read_to_string(&path)?;
 
-        // 2. Deserialize into your ExperimentJson struct
-        let experiment: crate::omiq::deserialise::ExperimentJson = serde_json::from_reader(reader)?;
+        // 2. Deserialize into your ExperimentJson struct, and keep an untyped
+        // view alongside it for the fields the typed one does not model.
+        let experiment: crate::omiq::deserialise::ExperimentJson = serde_json::from_str(&text)?;
+        let raw: serde_json::Value = serde_json::from_str(&text)?;
 
         let mut reachable: FxHashSet<Arc<str>> = FxHashSet::default();
         for node in experiment.tree.nodes.values() {
             collect_reachable(&node.filter_container_id, &experiment.tree.filter_containers, &mut reachable);
         }
+
+        // Capture what the file carries before any of it is turned into gates.
+        let mut rebuild = crate::omiq::rebuild::OmiqRebuildStore::capture(&experiment, &raw);
+        rebuild.capture_ghosts(&raw, &reachable);
+        self.omiq_rebuild = rebuild;
 
         let mut composite_gates: std::collections::HashMap<
             CompositeType,

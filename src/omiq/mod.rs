@@ -6,3 +6,5 @@ mod tests;
 
 #[cfg(test)]
 mod metadata_tests;
+
+pub mod rebuild;
