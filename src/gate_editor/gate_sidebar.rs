@@ -24,20 +24,23 @@ pub fn GateSidebar(
             h3 { class: "sidebar-title", "Gate Hierarchy" }
 
             div { class: "sidebar-tree",
+                // Wrapper sized to the widest row, so the tree can overflow
+                // horizontally inside the scroller instead of widening the pane.
+                div { class: "sidebar-tree-inner",
 
-                for root_id in roots {
-                    for child_id in hierarchy.read().get_children(&root_id) {
-                        GateNode {
-                            key: "{child_id}",
-                            gate_id: child_id.clone(),
-                            selected: selected_id,
-                            level: 0,
-                            x_axis_param,
-                            y_axis_param,
+                    for root_id in roots {
+                        for child_id in hierarchy.read().get_children(&root_id) {
+                            GateNode {
+                                key: "{child_id}",
+                                gate_id: child_id.clone(),
+                                selected: selected_id,
+                                level: 0,
+                                x_axis_param,
+                                y_axis_param,
+                            }
                         }
                     }
                 }
-            
             }
         }
     }
@@ -115,8 +118,8 @@ fn GateNode(
     // Check if this node is the active one
     let is_selected = selected.read().as_ref() == Some(&gate_id);
 
-    // Calculate dynamic padding based on the level (e.g., 16px per level)
-    let padding = format!("{}px", level * 16 + 8);
+    // Indent per level, halved to match the tree's font size.
+    let padding = format!("{}px", level * 8 + 6);
 
     let gate_id_clone = gate_id.clone();
     let gate_id_delete_clone = gate_id.clone();
