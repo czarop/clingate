@@ -264,6 +264,33 @@ pub struct GateState {
 }
 
 impl GateState {
+    /// How many gates are registered, counting a composite once per key it
+    /// occupies.
+    pub fn gate_count(&self) -> usize {
+        self.gate_store.primary_and_subgate_registry.len()
+    }
+
+    /// Whether a gate id resolves to anything - which is what a boolean gate's
+    /// operand lookup needs at filter time.
+    pub fn is_registered(&self, gate_id: &GateId) -> bool {
+        self.gate_store
+            .primary_and_subgate_registry
+            .contains_key(gate_id)
+    }
+
+    /// This gate's parent in the gating tree, or `None` if it has no node.
+    pub fn hierarchy_parent(&self, gate_id: &GateId) -> Option<GateId> {
+        self.hierarchy.get_parent(gate_id).cloned()
+    }
+
+    /// Whether the gate is listed on any plot. A nodeless container is
+    /// registered but drawn nowhere.
+    pub fn is_on_any_plot(&self, gate_id: &GateId) -> bool {
+        self.gate_ids_by_view
+            .values()
+            .any(|ids| ids.contains(gate_id))
+    }
+
     /// Delete a gate, its subtree, and anything that depended on it.
     pub fn remove_gate(&mut self, gate_id: GateId) -> anyhow::Result<()> {
         // build the collection of gates at the same level that need deleting
@@ -715,6 +742,33 @@ impl GateState {
             node_to_gate_id.insert(node.id.clone(), node.filter_container_id.clone());
         }
 
+        // A composite is all-or-nothing in Omiq, so a group that arrives
+        // incomplete is not a composite any more. Deleting one strips every node
+        // and every container in the group *except* any member a live boolean
+        // gate still references - that survivor stays behind as a nodeless
+        // container so the boolean can still be evaluated.
+        //
+        // Such a survivor is fully self-describing on its own (a quadrant corner
+        // is just a rectangle), so import it as a standalone gate rather than
+        // failing the entire import on the arity check below. Its original
+        // groupId is recovered from the raw container for export, not from here.
+        let mut orphaned_subgates = Vec::new();
+        composite_gates.retain(|composite_type, members| {
+            let expected = match composite_type {
+                CompositeType::Bisector(_) => 2,
+                CompositeType::Quadrant(_) | CompositeType::SkewedQuadrant(_) => 4,
+            };
+            if members.len() == expected {
+                return true;
+            }
+            orphaned_subgates.extend(members.drain(..).map(|(_, container)| container));
+            false
+        });
+        for mut container in orphaned_subgates {
+            container.group_id = None;
+            primary_gates.push(container);
+        }
+
         // 3. Iterate through the primary gates containers and process them
         for container in primary_gates {
             // Process the container using your logic
@@ -725,19 +779,22 @@ impl GateState {
                 match source {
                     GateSource::Global => {
                         let gate_id = gate.get_id();
-                        let parent =
-                            self.hierarchy.get_parent(&gate_id).cloned().ok_or_else(|| {
-                                anyhow::anyhow!("Could not locate parent of {} in hierarchy", gate_id)
-                            })?;
-                        let params = gate.get_params();
-                        let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
-                        self.gate_ids_by_view
-                            .entry(key)
-                            .or_default()
-                            .push(gate.get_id());
+                        // Every container that has a node is in the hierarchy, so
+                        // a missing parent means this one has no node: a ghost
+                        // kept alive only by a boolean gate that references it.
+                        // It belongs on no plot, but it must still be registered
+                        // or that boolean cannot resolve its operand.
+                        if let Some(parent) = self.hierarchy.get_parent(&gate_id).cloned() {
+                            let params = gate.get_params();
+                            let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
+                            self.gate_ids_by_view
+                                .entry(key)
+                                .or_default()
+                                .push(gate_id.clone());
+                        }
                         self.gate_store
                             .primary_and_subgate_registry
-                            .insert(gate.get_id(), gate);
+                            .insert(gate_id, gate);
                     }
                     GateSource::Group(key) => {
                         self.gate_store.group_position_overrides.insert(key, gate);

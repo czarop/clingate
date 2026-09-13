@@ -1050,3 +1050,154 @@ fn a_near_axis_aligned_ellipse_is_treated_as_aligned() {
         _ => panic!("expected an ellipse"),
     }
 }
+
+// ─── Real Omiq files: ghost containers ────────────────────────────────────────
+//
+// Deleting a composite in Omiq removes every node in the group and every
+// container *except* any member a live boolean gate still references. That
+// survivor stays as a nodeless container so the boolean can still be evaluated,
+// and Omiq reparents the deleted gate's children to their grandparent.
+//
+// The two fixtures are the same experiment before and after: a quadrant with a
+// boolean built off one corner, then the quadrant deleted.
+
+use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_store::ROOTGATE;
+
+fn fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
+fn fixture_axes() -> im::HashMap<Arc<str>, AxisInfo, FxBuildHasher> {
+    let mut settings = im::HashMap::with_hasher(FxBuildHasher);
+    for channel in [
+        "BUV661-A", "BV785-A", "Alexa Fluor 700-A", "BUV737-A", "BUV805-A",
+        "BUV563-A", "FSC-A", "SSC-A", "Alexa Fluor 647-A", "Vio Bright 423-A",
+    ] {
+        settings.insert(
+            Arc::from(channel) as Arc<str>,
+            AxisInfo {
+                param: Param {
+                    marker: Arc::from(channel),
+                    fluoro: Arc::from(channel),
+                },
+                axis_lower: -1.0,
+                axis_upper: 6.0,
+                transform: TransformType::Arcsinh { cofactor: 6000.0 },
+            },
+        );
+    }
+    settings
+}
+
+fn import(name: &str) -> GateState {
+    let mut state = GateState::default();
+    let metadata = im::HashMap::with_hasher(FxBuildHasher);
+    state
+        .upload_gates_from_file(fixture(name), &metadata, fixture_axes())
+        .unwrap_or_else(|e| panic!("{name} should import, got: {e}"));
+    state
+}
+
+const BEFORE: &str = "quadrant_with_boolean_child.omiqgt";
+const AFTER: &str = "quadrant_deleted_boolean_survives.omiqgt";
+
+#[test]
+fn a_file_with_an_intact_quadrant_imports() {
+    let state = import(BEFORE);
+    assert!(state.gate_count() > 0);
+}
+
+/// Regression: the surviving corner reached the importer through the boolean's
+/// operand list, then failed the "exactly 4 subgates" check and aborted the
+/// whole import. An incomplete group is no longer a composite.
+#[test]
+fn a_file_whose_quadrant_was_deleted_still_imports() {
+    let state = import(AFTER);
+    assert!(state.gate_count() > 0);
+}
+
+/// The orphaned corner has no node, so it belongs on no plot - but it must be
+/// registered, or the boolean that kept it alive cannot resolve its operand.
+#[test]
+fn the_orphaned_quadrant_corner_is_registered_but_not_on_a_plot() {
+    let state = import(AFTER);
+    let orphan: Arc<str> = Arc::from("4RZa");
+
+    assert!(
+        state.is_registered(&orphan),
+        "the boolean's operand must resolve"
+    );
+    assert!(
+        state.hierarchy_parent(&orphan).is_none(),
+        "a nodeless container is not in the gating tree"
+    );
+    assert!(
+        !state.is_on_any_plot(&orphan),
+        "a gate with no node must not be drawn"
+    );
+}
+
+#[test]
+fn the_boolean_that_kept_the_corner_alive_is_imported() {
+    let state = import(AFTER);
+    let boolean: Arc<str> = Arc::from("PvRn");
+
+    assert!(state.is_registered(&boolean));
+    assert!(
+        state.hierarchy_parent(&boolean).is_some(),
+        "the boolean has a node, so it is in the tree"
+    );
+}
+
+/// Omiq reparents a deleted gate's children to their grandparent rather than
+/// orphaning or deleting them - which is why a real file has no dangling
+/// parentId anywhere.
+#[test]
+fn the_deleted_quadrants_children_are_reparented_to_its_parent() {
+    let before = import(BEFORE);
+    let after = import(AFTER);
+
+    // "IL-2+" hung off the Q4 corner before the deletion, and off the
+    // quadrant's own parent (the polygon "teff_naive") afterwards.
+    let child: Arc<str> = Arc::from("QCVn");
+    let corner: Arc<str> = Arc::from("4RZa");
+    let grandparent: Arc<str> = Arc::from("hu4H");
+
+    assert_eq!(before.hierarchy_parent(&child), Some(corner));
+    assert_eq!(after.hierarchy_parent(&child), Some(grandparent));
+}
+
+#[test]
+fn the_intact_quadrants_four_corners_are_all_present_before_deletion() {
+    let before = import(BEFORE);
+    for corner in ["uevU", "2gGu", "2y0f", "4RZa"] {
+        assert!(
+            before.is_registered(&Arc::from(corner)),
+            "corner {corner} missing"
+        );
+    }
+}
+
+#[test]
+fn the_three_deleted_corners_are_gone_afterwards() {
+    let after = import(AFTER);
+    for corner in ["uevU", "2gGu", "2y0f"] {
+        assert!(
+            !after.is_registered(&Arc::from(corner)),
+            "corner {corner} should have been deleted with the quadrant"
+        );
+    }
+}
+
+#[test]
+fn root_level_gates_land_under_the_root() {
+    let state = import(BEFORE);
+    // "1" is the top rectangle, whose node has an empty parentId.
+    assert_eq!(
+        state.hierarchy_parent(&Arc::from("uN8Y")),
+        Some(ROOTGATE.clone())
+    );
+}
