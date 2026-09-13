@@ -284,6 +284,14 @@ impl GateHierarchy {
         descendants.contains(parent_id)
     }
 
+    /// This gate's sort order among its siblings.
+    ///
+    /// Imported gates carry Omiq's own `ord`; gates created here are given a
+    /// millisecond timestamp, which is the same shape Omiq uses.
+    pub fn get_order(&self, gate_id: &str) -> Option<u64> {
+        self.orders.get(gate_id).copied()
+    }
+
     /// Get the depth of a gate in the hierarchy (root = 0)
     pub fn get_depth(&self, gate_id: &str) -> usize {
         self.get_ancestors(gate_id).len()

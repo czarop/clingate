@@ -124,6 +124,19 @@
   containers, so one gate can be applied at several points in the tree - in a
   real file, 38 of 146 containers were shared this way and one appeared at nine
   points. `OmiqRebuildData` records every placement.
+- Gates created in the editor export as first-class Omiq gates. Previously only
+  gates that came in from a file carried the node placement, `groupId` and
+  source type the writer needs, so a gate drawn here was written as a filter
+  container that nothing in the tree pointed at - present in the file, invisible
+  in Omiq. The writer now mints a node id for every gate without a captured
+  placement, resolves `parentId` through a first pass over both new and imported
+  gates, takes `ord` from the hierarchy, and synthesises the `_QUAD0..3`,
+  `_SPLIT0..1` and `_SKEWEDQUAD0..3` group ids a new composite needs so its
+  corners stay tied together. 12 tests cover it, including re-importing a file
+  written from gates that were only ever created here.
+- `to_omiq_document` reports an error rather than writing a header of zeros when
+  the session never imported a gating file; `to_omiq_document_with_header` takes
+  one explicitly for that case.
 - `a_real_gating_file_survives_a_round_trip`, gated on `OMIQ_GATING_FILE`,
   checks the whole path against a real export. Skipped when unset.
 
@@ -132,7 +145,7 @@
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-421 unit tests and 12 doctests pass either way. Every test lives in the library,
+433 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.

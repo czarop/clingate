@@ -1231,7 +1231,7 @@ use crate::omiq::rebuild::{OmiqGateType, OmiqRebuildStore};
 #[test]
 fn the_document_header_is_captured() {
     let state = import(BEFORE);
-    let header = &state.omiq_rebuild().header;
+    let header = state.omiq_rebuild().header.as_ref().expect("captured from the file");
 
     assert_eq!(header.workflow_id, 1);
     assert_eq!(header.dataset_id, 2);
@@ -2300,5 +2300,332 @@ fn a_real_gating_file_survives_a_round_trip() {
         again.gate_count(),
         state.gate_count(),
         "gate count changed across a round trip"
+    );
+}
+
+// ─── Gates created in the editor ──────────────────────────────────────────────
+//
+// A gate created here has no captured provenance, so everything the export
+// normally takes from that record has to be synthesised: a node id, its place in
+// the tree, and - for a composite - the grouping that ties its corners together.
+
+use crate::gate_editor::gates::gate_store::GateId;
+use crate::gate_editor::gates::gate_types::PrimaryGateType;
+use crate::gate_editor::plots::axis_store::PlotMapper;
+use crate::omiq::rebuild::OmiqDocumentHeader;
+use crate::omiq::serialise::to_omiq_document_with_header;
+
+fn editor_mapper() -> PlotMapper {
+    PlotMapper::new(
+        600.0, 600.0,
+        0.0..=1000.0, 0.0..=1000.0, 0.0..=1000.0, 0.0..=1000.0,
+        TransformType::Linear, TransformType::Linear,
+    )
+}
+
+fn add(state: &mut GateState, kind: PrimaryGateType, name: &str, parent: Option<GateId>) -> GateId {
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("FSC-A"), Arc::from("SSC-A"),
+            None, parent, kind, Some(name.to_string()),
+        )
+        .unwrap();
+    state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.get_name() == name && !g.is_composite())
+        })
+        .unwrap_or_else(|| panic!("{name} should be registered"))
+}
+
+fn test_header() -> OmiqDocumentHeader {
+    OmiqDocumentHeader {
+        date: "2020-01-01T00:00:00.000Z".into(),
+        dataset_id: 2,
+        inverted: false,
+        task_id: 1,
+        url: "https://example.invalid/".into(),
+        workflow_id: 1,
+        extra: Default::default(),
+    }
+}
+
+fn export_new(state: &GateState) -> serde_json::Value {
+    to_omiq_document_with_header(
+        state,
+        &im::HashMap::with_hasher(FxBuildHasher),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports")
+}
+
+/// Regression: a gate created here landed in filterContainers but never in
+/// nodes, leaving it invisible in Omiq - the same state a deleted gate is left
+/// in.
+#[test]
+fn a_gate_created_here_gets_a_node() {
+    let mut state = GateState::default();
+    let id = add(&mut state, PrimaryGateType::Rectangle, "new rect", None);
+
+    let written = export_new(&state);
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    assert_eq!(nodes.len(), 1, "the new gate needs a node");
+    let node = nodes.values().next().unwrap();
+    assert_eq!(node["filterContainerId"], &*id);
+    assert_eq!(node["parentId"], "", "a root gate has an empty parentId");
+}
+
+#[test]
+fn a_new_gate_carries_its_sibling_order() {
+    let mut state = GateState::default();
+    let id = add(&mut state, PrimaryGateType::Rectangle, "ordered", None);
+
+    let written = export_new(&state);
+    let node = objects(&written, &["tree", "nodes"]).values().next().unwrap().clone();
+
+    assert_eq!(
+        node["ord"].as_u64(),
+        state.gate_order(&id),
+        "ord comes from the hierarchy, which already uses Omiq's millisecond shape"
+    );
+    assert!(node["ord"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn a_new_child_hangs_off_its_new_parent() {
+    let mut state = GateState::default();
+    let parent = add(&mut state, PrimaryGateType::Rectangle, "parent", None);
+    let child = add(&mut state, PrimaryGateType::Rectangle, "child", Some(parent.clone()));
+
+    let written = export_new(&state);
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    let parent_node = nodes.values().find(|n| n["filterContainerId"] == &*parent).unwrap();
+    let child_node = nodes.values().find(|n| n["filterContainerId"] == &*child).unwrap();
+
+    assert_eq!(
+        child_node["parentId"], parent_node["id"],
+        "the child must name its parent's node, not the parent's gate id"
+    );
+}
+
+/// A gate added under an imported one has to attach to that gate's existing
+/// node, not to a freshly minted id.
+#[test]
+fn a_new_child_of_an_imported_gate_attaches_to_its_existing_node() {
+    let mut state = import(BEFORE);
+    let imported_parent: Arc<str> = Arc::from("uN8Y");
+    let child = add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "added below an imported gate",
+        Some(imported_parent.clone()),
+    );
+
+    let written = export_new(&state);
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    let child_node = nodes.values().find(|n| n["filterContainerId"] == &*child).unwrap();
+    assert_eq!(
+        child_node["parentId"], "fn1o",
+        "the imported parent's own node id"
+    );
+}
+
+/// Regression: a new quadrant exported as four unrelated polygons, because the
+/// groupId that ties a composite together comes from the captured provenance.
+#[test]
+fn a_new_quadrant_keeps_its_corners_grouped() {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("FSC-A"), Arc::from("SSC-A"),
+            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+        )
+        .unwrap();
+
+    let written = export_new(&state);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    let groups: Vec<&str> = containers
+        .values()
+        .filter_map(|c| c.get("groupId").and_then(|v| v.as_str()))
+        .collect();
+
+    assert_eq!(groups.len(), 4, "all four corners need a groupId");
+
+    // One shared prefix, and all four indices present.
+    let prefixes: std::collections::BTreeSet<&str> =
+        groups.iter().map(|g| g.rsplit_once("_QUAD").unwrap().0).collect();
+    assert_eq!(prefixes.len(), 1, "the corners must share one group");
+
+    let indices: std::collections::BTreeSet<&str> =
+        groups.iter().map(|g| g.rsplit_once("_QUAD").unwrap().1).collect();
+    assert_eq!(
+        indices,
+        ["0", "1", "2", "3"].into_iter().collect(),
+        "got {groups:?}"
+    );
+}
+
+/// Omiq writes quadrant corners as rectangles; the editor holds them as
+/// polygons, so without a written type they would change shape on the way out.
+#[test]
+fn a_new_quadrants_corners_are_written_as_rectangles() {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("FSC-A"), Arc::from("SSC-A"),
+            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+        )
+        .unwrap();
+
+    let written = export_new(&state);
+    for container in objects(&written, &["tree", "filterContainers"]).values() {
+        assert_eq!(
+            container["defaultFilter"]["type"], "RectangleGate",
+            "a quadrant corner is a rectangle in the file"
+        );
+    }
+}
+
+#[test]
+fn a_new_bisector_keeps_its_halves_grouped() {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("FSC-A"), Arc::from("SSC-A"),
+            None, None, PrimaryGateType::Bisector, Some("new split".to_string()),
+        )
+        .unwrap();
+
+    let written = export_new(&state);
+    let groups: Vec<&str> = objects(&written, &["tree", "filterContainers"])
+        .values()
+        .filter_map(|c| c.get("groupId").and_then(|v| v.as_str()))
+        .collect();
+
+    assert_eq!(groups.len(), 2);
+    let indices: std::collections::BTreeSet<&str> =
+        groups.iter().map(|g| g.rsplit_once("_SPLIT").unwrap().1).collect();
+    assert_eq!(indices, ["0", "1"].into_iter().collect(), "got {groups:?}");
+}
+
+#[test]
+fn every_corner_of_a_new_composite_gets_its_own_node() {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("FSC-A"), Arc::from("SSC-A"),
+            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+        )
+        .unwrap();
+
+    let written = export_new(&state);
+    assert_eq!(
+        objects(&written, &["tree", "nodes"]).len(),
+        4,
+        "each corner is its own node in Omiq"
+    );
+}
+
+/// Writing zeros for the dataset and workflow would produce a plausible-looking
+/// file that Omiq cannot place.
+#[test]
+fn exporting_without_an_imported_header_is_an_error() {
+    let mut state = GateState::default();
+    add(&mut state, PrimaryGateType::Rectangle, "new rect", None);
+
+    let result = to_omiq_document(
+        &state,
+        &im::HashMap::with_hasher(FxBuildHasher),
+        &fixture_axes(),
+    );
+
+    assert!(result.is_err(), "a header-less export must not be written");
+    let message = result.unwrap_err().to_string();
+    assert!(
+        message.contains("never imported"),
+        "the error should say why: {message}"
+    );
+}
+
+#[test]
+fn an_imported_file_exports_without_a_supplied_header() {
+    let state = import(BEFORE);
+    assert!(
+        to_omiq_document(
+            &state,
+            &im::HashMap::with_hasher(FxBuildHasher),
+            &fixture_axes()
+        )
+        .is_ok(),
+        "an imported file carries its own header"
+    );
+}
+
+/// New gates and imported ones have to coexist: the imported tree is untouched
+/// and the new gate joins it.
+#[test]
+fn new_and_imported_gates_export_together() {
+    let mut state = import(BEFORE);
+    let before_nodes = objects(&export(BEFORE), &["tree", "nodes"]).len();
+
+    let child = add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "a new one",
+        Some(Arc::from("uN8Y")),
+    );
+
+    let written = export_new(&state);
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    assert_eq!(nodes.len(), before_nodes + 1, "exactly one node added");
+    assert!(
+        nodes.values().any(|n| n["filterContainerId"] == &*child),
+        "the new gate is in the tree"
+    );
+}
+
+#[test]
+fn a_file_with_new_gates_can_be_imported_again() {
+    let mut state = import(BEFORE);
+    let child = add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "a new one",
+        Some(Arc::from("uN8Y")),
+    );
+    let written = export_new(&state);
+
+    let path = std::env::temp_dir().join(format!("clingate-new-{}.omiqgt", std::process::id()));
+    std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
+
+    let mut again = GateState::default();
+    again
+        .upload_gates_from_file(
+            path.clone(),
+            &im::HashMap::with_hasher(FxBuildHasher),
+            fixture_axes(),
+        )
+        .expect("re-imports");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(again.is_registered(&child), "the new gate survived");
+    assert_eq!(
+        again.hierarchy_parent(&child),
+        Some(Arc::from("uN8Y")),
+        "and kept its place in the tree"
     );
 }

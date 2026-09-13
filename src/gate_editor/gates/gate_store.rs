@@ -333,6 +333,11 @@ impl GateState {
             .collect()
     }
 
+    /// This gate's sort order among its siblings, for writing Omiq's `ord`.
+    pub fn gate_order(&self, gate_id: &GateId) -> Option<u64> {
+        self.hierarchy.get_order(gate_id)
+    }
+
     /// The gate registered under an id, if any.
     pub fn registered_gate(&self, gate_id: &GateId) -> Option<Arc<dyn DrawableGate>> {
         self.gate_store

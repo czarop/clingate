@@ -122,7 +122,10 @@ impl OmiqRebuildData {
 /// Everything captured from one gating file.
 #[derive(Clone, Debug, Default)]
 pub struct OmiqRebuildStore {
-    pub header: OmiqDocumentHeader,
+    /// `None` until a gating file is imported. An export needs it: without the
+    /// dataset and workflow ids, Omiq has no way to tell what the file belongs
+    /// to, and writing zeros would produce a plausible-looking but useless file.
+    pub header: Option<OmiqDocumentHeader>,
     pub gates: FxHashMap<GateId, OmiqRebuildData>,
     /// Containers with no node that no live gate reaches. They are inert for
     /// evaluation but are kept verbatim and written back untouched: a composite
@@ -147,7 +150,7 @@ impl OmiqRebuildStore {
     /// the verbatim ghost containers. Taking both avoids re-parsing and keeps
     /// the typed and untyped views of the file in step.
     pub fn capture(experiment: &ExperimentJson, raw: &serde_json::Value) -> Self {
-        let header = serde_json::from_value(raw.clone()).unwrap_or_default();
+        let header = serde_json::from_value(raw.clone()).ok();
 
         // A node names the container it draws; index the other way round. A
         // container may be named by several nodes - that is a linked gate.
