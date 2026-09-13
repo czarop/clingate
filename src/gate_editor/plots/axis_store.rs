@@ -290,68 +290,98 @@ impl<Lens> Store<AxisStore, Lens> {
     }
 
     fn set_axes_from_file(&mut self, path: PathBuf, source: ScalingInfoSource) -> anyhow::Result<()> {
-        let df = match source{
-            ScalingInfoSource::Omiq => fetch_axes_from_omiq_csv(path)?,
-        };
+        let configs = read_axis_configs(path, source)?;
+        self.with_mut(|s| s.apply_axis_configs(configs));
+        Ok(())
+    }
+}
 
-        let primary_col = df.column("Feature Name (Primary)")?.str()?;
-        let secondary_col = df.column("Feature Name (Secondary)")?.str()?;
-        let scaling_col = df.column("Scaling Type")?.str()?;
-        let cofactor_col = df.column("Cofactor")?.i64()?;
-        let min_col = df.column("Min")?.i64()?;
-        let max_col = df.column("Max")?.i64()?;
-        // let min_z_col = df.column("Min Z")?.i64()?;
-        // let max_z_col = df.column("Max Z")?.i64()?;
+/// The plain-data half of the axis store, so the scaling import can be tested
+/// without a Dioxus runtime.
+impl AxisStore {
+    /// Register a batch of axis settings, replacing any existing entry for the
+    /// same channel and recording the display order.
+    pub fn apply_axis_configs(&mut self, configs: Vec<AxisInfo>) {
+        for ai in configs {
+            self.sorted_settings.insert(ai.param.clone());
+            self.settings.insert(ai.param.fluoro.clone(), ai);
+        }
+    }
+}
 
-        let configs: Vec<AxisInfo> = izip!(
+/// Parse a scaling export into axis settings.
+///
+/// A row whose scaling type this build does not model is skipped with a warning
+/// rather than aborting: one unrecognised entry should not cost the user every
+/// other axis in the file. This used to be `unreachable!()`.
+pub fn read_axis_configs(
+    path: PathBuf,
+    source: ScalingInfoSource,
+) -> anyhow::Result<Vec<AxisInfo>> {
+    let df = match source {
+        ScalingInfoSource::Omiq => fetch_axes_from_omiq_csv(path)?,
+    };
+
+    let primary_col = df.column("Feature Name (Primary)")?.str()?;
+    let secondary_col = df.column("Feature Name (Secondary)")?.str()?;
+    let scaling_col = df.column("Scaling Type")?.str()?;
+    let cofactor_col = df.column("Cofactor")?.i64()?;
+    let min_col = df.column("Min")?.i64()?;
+    let max_col = df.column("Max")?.i64()?;
+
+    let configs: Vec<AxisInfo> = izip!(
         primary_col,
         secondary_col,
         scaling_col,
         cofactor_col,
         min_col,
-        max_col,
-        // min_z_col,
-        // max_z_col
+        max_col
     )
     .filter_map(
         |(prim_opt, sec_opt, scale_opt, cof_opt, min_opt, max_opt)| {
-            let marker_name = if sec_opt? == "" {
-                prim_opt.clone()
-            } else {
-                sec_opt
+            // A blank secondary column reads back as null, not as "". Using `?`
+            // on it dropped the whole row, which silently lost every channel
+            // with no separate marker name - that is every scatter parameter
+            // (FSC, SSC, Time), leaving them on default axis settings rather
+            // than the ones Omiq exported.
+            let primary = prim_opt?;
+            let marker_name = match sec_opt {
+                Some(marker) if !marker.is_empty() => marker,
+                _ => primary,
             };
 
-            let param = Param{ 
-                marker: Arc::from(marker_name?), 
-                fluoro: Arc::from(prim_opt?) 
+            let param = Param {
+                marker: Arc::from(marker_name),
+                fluoro: Arc::from(primary),
             };
             let transform = match scale_opt? {
-                "Arcsinh" => TransformType::Arcsinh { cofactor: cof_opt? as f32 },
+                "Arcsinh" => TransformType::Arcsinh {
+                    cofactor: cof_opt? as f32,
+                },
                 "None (linear)" => TransformType::Linear,
-                _ => unreachable!("Unknown transform type")
+                other => {
+                    println!(
+                        "skipping axis {}: unsupported scaling type {other:?}",
+                        param.fluoro
+                    );
+                    return None;
+                }
             };
 
             let lower = transform.transform(&(min_opt? as f32));
             let upper = transform.transform(&(max_opt? as f32));
 
-            let ai = AxisInfo{ param, axis_lower: lower, axis_upper: upper, transform };
-            Some(ai)
+            Some(AxisInfo {
+                param,
+                axis_lower: lower,
+                axis_upper: upper,
+                transform,
+            })
+        },
+    )
+    .collect();
 
-        })
-        .collect();
-
-        self.with_mut(|s| {
-
-            for ai in configs {
-                s.sorted_settings.insert(ai.param.clone());
-                s.settings.insert(ai.param.fluoro.clone(), ai);
-            }
-
-            
-        });
-
-        Ok(())
-    }
+    Ok(configs)
 }
 
 pub enum ScalingInfoSource{

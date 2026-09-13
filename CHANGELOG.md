@@ -33,6 +33,28 @@
   the eagerly-evaluated `unwrap_or` fallback. `silverman_bandwidth` returned zero
   for a population whose middle 50% is identical. `quantile` underflowed on an
   empty slice. Sort comparators no longer `unwrap` a `partial_cmp`.
+- **Composite position overrides were never updated on edit.** The write loop
+  iterated all of a composite's ids but inserted under the resolved gate's own
+  key each time, so only the composite's entry moved. Import creates per-subgate
+  override entries and filtering resolves subgates by id, so a composite moved on
+  an overridden sample rendered in its new position while still gating the old
+  one. The same mistake was in `match_gates_to_plot`, where the inner binding
+  also shadowed the outer one.
+- **Gates added with no parent were unreachable.** `add_gate` keyed the view
+  index on a bare `None` while parenting the gate under `ROOTGATE`;
+  `remove_gate` and `get_gates_for_plot` both ask for `Some(ROOTGATE)`, so such
+  a gate could never be found again to redraw or delete.
+- **Every channel without a marker name was dropped from the scaling import.** A
+  blank "Feature Name (Secondary)" reads back as null, and `?` on it discarded
+  the whole row - losing FSC, SSC and Time, which then silently fell back to
+  default axis settings instead of the exported ones.
+- **An unsupported scaling type aborted the scaling import.** `unreachable!()`
+  on an unrecognised value meant one unsupported row cost every other axis in
+  the file; such rows are now skipped with a warning.
+- **Degenerate ellipse reconstruction.** A circle read its rotation off an
+  arbitrary eigenvector, and the axis-aligned test compared `f == 0.0` exactly,
+  so an ellipse aligned to within float noise took `atan2` with two near-zero
+  arguments.
 - **Broken doctests in `gate_hierarchy`.** All twelve imported `flow_gates::GateHierarchy`
   (the type lives in this crate) and called `add_child` without its `order`
   argument, so `cargo test` failed on the doc tests alone.
@@ -73,13 +95,22 @@
   percentages, quadrant partitioning, draft rendering at each click stage).
 - `Debug` derives on `GateRenderShape`, `ShapeType`, `DrawingStyle`, `Direction`
   and `GateText`, so render shapes can be inspected and compared in assertions.
+- The stores' plain-data logic moved off the Dioxus lenses onto `GateState`,
+  `GateSubStore`, `AxisStore` and free parsing functions, so it runs without a
+  runtime. The store methods remain thin wrappers at the same write
+  granularity, leaving reactivity unchanged. 44 tests follow: store writes and
+  override precedence, add/remove, and the metadata and scaling imports.
+- `EllipseGate` keeps the four control points Omiq wrote (`EllipseHandles`), so
+  an unedited ellipse exports byte-identically instead of a canonicalised
+  equivalent. A move carries them; a rotation drops them and derives a
+  principal-axis pair.
 
 ### Testing
 
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-312 unit tests and 12 doctests pass either way. Every test lives in the library,
+367 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.

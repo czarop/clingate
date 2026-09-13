@@ -40,6 +40,38 @@ impl<Lens> Store<MetaDataStore, Lens> {
         file_name_column: &str,
         metadata_origin: MetaDataOrigin,
     ) -> anyhow::Result<()> {
+        let parsed = parse_metadata_csv(path, file_id_column, file_name_column, metadata_origin)?;
+        self.with_mut(|s| {
+            s.metadata = parsed.metadata;
+            s.file_name_to_gating_id = parsed.file_name_to_gating_id;
+            s.gating_id_to_actual_id_override_map = parsed.gating_id_to_actual_id;
+        });
+
+        Ok(())
+    }
+}
+
+/// What a metadata export yields once parsed, before it reaches the store.
+pub struct ParsedMetaData {
+    pub metadata: MetaDataFileMap,
+    /// Maps the FCS `$FIL` name to the id the gating JSON uses.
+    pub file_name_to_gating_id: HashMap<Arc<str>, FileId, FxBuildHasher>,
+    /// Maps the gating id back to the id the metadata export used, restoring
+    /// Omiq's `F` prefix. The export path needs this to address files the way
+    /// Omiq expects.
+    pub gating_id_to_actual_id: HashMap<FileId, String, FxBuildHasher>,
+}
+
+/// Parse a metadata export.
+///
+/// Split out of the store method so it can be exercised without a Dioxus
+/// runtime: everything here is plain parsing over a CSV.
+pub fn parse_metadata_csv(
+    path: PathBuf,
+    file_id_column: &str,
+    file_name_column: &str,
+    metadata_origin: MetaDataOrigin,
+) -> anyhow::Result<ParsedMetaData> {
         let df = fetch_metadata_from_csv(path)?;
 
         let mut master_map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
@@ -118,14 +150,12 @@ impl<Lens> Store<MetaDataStore, Lens> {
             // Insert the complete metadata bundle for this file
             master_map.insert(actual_id.clone(), file_metadata);
         }
-        self.with_mut(|s| {
-            s.metadata = master_map;
-            s.file_name_to_gating_id = name_to_id;
-            s.gating_id_to_actual_id_override_map = file_id_overrides;
-        });
 
-        Ok(())
-    }
+        Ok(ParsedMetaData {
+            metadata: master_map,
+            file_name_to_gating_id: name_to_id,
+            gating_id_to_actual_id: file_id_overrides,
+        })
 }
 
 fn fetch_metadata_from_csv(path: PathBuf) -> anyhow::Result<DataFrame> {
