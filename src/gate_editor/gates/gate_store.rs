@@ -250,6 +250,57 @@ impl GateOverrideResolver {
 /// For each gate id, the actual gates can be retrieved from gate_registry.
 /// Check for file-specific positioning before drawing
 
+/// One appearance of a gate in the gating tree.
+///
+/// Omiq keys nodes separately from filter containers, so one gate can be
+/// applied at several points in the tree - 38 of 146 containers in a real
+/// export, one of them at nine points. `GateId` answers "which gate is this"
+/// (geometry, name, per-file positions); `NodeId` answers "where in the tree",
+/// and several nodes may name the same gate. Conflating the two is what
+/// collapsed 250 placements to 146 on import.
+///
+/// A newtype rather than an alias so the two cannot be passed for one another.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct NodeId(Arc<str>);
+
+impl NodeId {
+    pub fn as_arc(&self) -> &Arc<str> {
+        &self.0
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Arc<str>> for NodeId {
+    fn from(id: Arc<str>) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for NodeId {
+    fn from(id: &str) -> Self {
+        Self(Arc::from(id))
+    }
+}
+
+impl std::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// What one node in the tree holds: which gate it shows, and its own display
+/// state. The tree position itself (parent, sibling order) lives in the
+/// hierarchy, keyed by this node's id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GatePlacement {
+    /// The gate this node displays. Shared between linked nodes.
+    pub gate_id: GateId,
+    /// Omiq's per-node collapsed flag.
+    pub collapsed: bool,
+}
+
 #[derive(Default, Store)]
 pub struct GateState {
     // file_id: FileId,
@@ -264,12 +315,96 @@ pub struct GateState {
     // What the imported Omiq file carried that the editor does not itself need,
     // kept so a new file can be written from scratch.
     omiq_rebuild: crate::omiq::rebuild::OmiqRebuildStore,
+    // Which gate each node in the hierarchy shows. Every id the hierarchy holds
+    // is a NodeId and has an entry here.
+    //
+    // Stage 1 mints node ids equal to the gate id, so the mapping is one-to-one
+    // and nothing changes behaviourally; the table is what lets a later stage
+    // mint a node per Omiq GatingNode without touching anything that reads it.
+    placements: FxHashMap<NodeId, GatePlacement>,
+    // Reverse index of `placements`, so "where does this gate appear?" does not
+    // scan. Rebuilt through the same two methods that write `placements`, never
+    // separately, so the two cannot drift.
+    nodes_by_gate: FxHashMap<GateId, Vec<NodeId>>,
 }
 
 impl GateState {
     /// What the imported Omiq file carried, for writing a new one.
     pub fn omiq_rebuild(&self) -> &crate::omiq::rebuild::OmiqRebuildStore {
         &self.omiq_rebuild
+    }
+
+    /// Record that `node` shows `gate`. Call whenever an id is put into the
+    /// hierarchy, so the two never disagree about what is in the tree.
+    fn record_placement(&mut self, node: NodeId, gate_id: GateId, collapsed: bool) {
+        if let Some(previous) = self.placements.insert(
+            node.clone(),
+            GatePlacement {
+                gate_id: gate_id.clone(),
+                collapsed,
+            },
+        ) && previous.gate_id != gate_id
+        {
+            // Re-pointed at a different gate: drop it from the old gate's list.
+            Self::detach_node(&mut self.nodes_by_gate, &previous.gate_id, &node);
+        }
+        let nodes = self.nodes_by_gate.entry(gate_id).or_default();
+        if !nodes.contains(&node) {
+            nodes.push(node);
+        }
+    }
+
+    /// Forget a node. The gate itself is untouched: it survives while any other
+    /// node still shows it, which is what makes deleting one instance of a
+    /// linked gate different from deleting the gate.
+    fn forget_placement(&mut self, node: &NodeId) -> Option<GatePlacement> {
+        let placement = self.placements.remove(node)?;
+        Self::detach_node(&mut self.nodes_by_gate, &placement.gate_id, node);
+        Some(placement)
+    }
+
+    fn detach_node(
+        nodes_by_gate: &mut FxHashMap<GateId, Vec<NodeId>>,
+        gate_id: &GateId,
+        node: &NodeId,
+    ) {
+        if let Some(nodes) = nodes_by_gate.get_mut(gate_id) {
+            nodes.retain(|n| n != node);
+            if nodes.is_empty() {
+                nodes_by_gate.remove(gate_id);
+            }
+        }
+    }
+
+    /// The gate a node shows.
+    pub fn gate_for_node(&self, node: &NodeId) -> Option<&GateId> {
+        self.placements.get(node).map(|p| &p.gate_id)
+    }
+
+    /// Every point in the tree where this gate appears, in insertion order.
+    pub fn nodes_for_gate(&self, gate_id: &GateId) -> &[NodeId] {
+        self.nodes_by_gate
+            .get(gate_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// How many points in the tree show this gate.
+    pub fn placement_count(&self, gate_id: &GateId) -> usize {
+        self.nodes_for_gate(gate_id).len()
+    }
+
+    /// Whether this gate is applied at more than one point - Omiq calls this a
+    /// linked gate. Derived from the node table rather than stored, so it
+    /// cannot fall out of step with the tree.
+    pub fn is_linked(&self, gate_id: &GateId) -> bool {
+        self.placement_count(gate_id) > 1
+    }
+
+    /// A gate with no node. Registered and evaluable - a live boolean may still
+    /// reference it - but drawn nowhere. Omiq leaves these behind too.
+    pub fn is_ghost(&self, gate_id: &GateId) -> bool {
+        self.is_registered(gate_id) && self.placement_count(gate_id) == 0
     }
 
     /// How many gates are registered, counting a composite once per key it
@@ -429,7 +564,9 @@ impl GateState {
         }
 
         for brother in roots {
-            self.hierarchy.delete_subtree(&brother);
+            for removed in self.hierarchy.delete_subtree(&brother) {
+                self.forget_placement(&NodeId::from(removed));
+            }
         }
 
         for doomed_id in &gates_to_delete {
@@ -623,6 +760,7 @@ impl GateState {
                     sg.clone(),
                     None,
                 )?;
+                self.record_placement(NodeId::from(sg.clone()), sg.clone(), false);
                 self.gate_store
                     .primary_and_subgate_registry
                     .insert(sg, g.clone());
@@ -638,6 +776,7 @@ impl GateState {
                 g.get_id(),
                 None,
             )?;
+            self.record_placement(NodeId::from(g.get_id()), g.get_id(), false);
         }
 
         self.gate_store
@@ -818,8 +957,18 @@ impl GateState {
             } else {
                 ROOTGATE.clone()
             };
+            // Stage 1 still keys the tree on the container, so two nodes sharing
+            // one container collapse to a single position - this is the line
+            // that loses a linked gate's other placements. The node table below
+            // is recorded through the same call so that a later stage can key
+            // on `node.id` here and everything that reads placements follows.
             self.hierarchy
                 .add_gate_child(parent_id, node.filter_container_id.clone(), Some(node.ord))?;
+            self.record_placement(
+                NodeId::from(node.filter_container_id.clone()),
+                node.filter_container_id.clone(),
+                node.collapsed,
+            );
             node_to_gate_id.insert(node.id.clone(), node.filter_container_id.clone());
         }
 
@@ -2014,5 +2163,120 @@ mod gate_store_tests {
         let resolver = state.get_current_sample(file("s1"), &groups(&[]));
 
         assert!(resolver.active_gates.is_empty());
+    }
+
+    // ── The node table ────────────────────────────────────────────────────────
+    //
+    // Stage 1 of splitting placement from gate. Node ids are still equal to
+    // gate ids here, so these pin the table's own invariants - not linked gates,
+    // which the tree cannot yet hold.
+
+    #[test]
+    fn adding_a_gate_records_one_placement() {
+        let mut state = GateState::default();
+        let id = add_rect(&mut state, None);
+
+        assert_eq!(state.placement_count(&id), 1);
+        assert_eq!(state.nodes_for_gate(&id), &[NodeId::from(id.clone())]);
+        assert_eq!(state.gate_for_node(&NodeId::from(id.clone())), Some(&id));
+        assert!(!state.is_linked(&id), "one placement is not a link");
+        assert!(!state.is_ghost(&id), "it has a node");
+    }
+
+    #[test]
+    fn every_corner_of_a_composite_gets_its_own_placement() {
+        let mut state = GateState::default();
+        state
+            .add_gate(
+                &mapper(), 300.0, 300.0, Arc::from(X), Arc::from(Y),
+                None, None, PrimaryGateType::Quadrant, Some("q".to_string()),
+            )
+            .unwrap();
+
+        // Four corners in the tree; the composite's own key is registered but
+        // is not a tree position.
+        assert_eq!(state.placements.len(), 4);
+        for node in state.placements.keys() {
+            assert_eq!(state.placement_count(state.gate_for_node(node).unwrap()), 1);
+        }
+    }
+
+    #[test]
+    fn deleting_a_gate_forgets_its_placement() {
+        let mut state = GateState::default();
+        let id = add_rect(&mut state, None);
+        state.remove_gate(id.clone()).unwrap();
+
+        assert_eq!(state.placement_count(&id), 0);
+        assert!(state.gate_for_node(&NodeId::from(id.clone())).is_none());
+        assert!(state.nodes_by_gate.get(&id).is_none(), "no empty vec left behind");
+    }
+
+    #[test]
+    fn deleting_a_parent_forgets_its_descendants_placements() {
+        let mut state = GateState::default();
+        let parent = add_rect(&mut state, None);
+        let child = add_rect(&mut state, Some(parent.clone()));
+
+        state.remove_gate(parent.clone()).unwrap();
+
+        assert_eq!(state.placement_count(&child), 0, "the subtree went with it");
+        assert!(state.placements.is_empty());
+    }
+
+    /// The table has to survive an import, or the export path built on it would
+    /// see an empty tree.
+    #[test]
+    fn an_imported_tree_records_a_placement_per_node() {
+        let mut state = GateState::default();
+        let id = add_rect(&mut state, None);
+        let child = add_rect(&mut state, Some(id.clone()));
+
+        assert_eq!(state.placements.len(), 2);
+        assert_eq!(state.gate_for_node(&NodeId::from(child.clone())), Some(&child));
+    }
+
+    /// Re-pointing a node at another gate must leave the first gate's list
+    /// clean - this is what the link operation will do in a later stage.
+    #[test]
+    fn repointing_a_node_moves_it_between_gates() {
+        let mut state = GateState::default();
+        let a = add_rect(&mut state, None);
+        // add_rect finds a gate by name, and both are called "a gate", so take
+        // the second id as the one that is not the first.
+        add_rect(&mut state, None);
+        let b = state
+            .registered_ids()
+            .into_iter()
+            .find(|id| id != &a)
+            .expect("a second gate was added");
+        let node = NodeId::from(a.clone());
+
+        state.record_placement(node.clone(), b.clone(), false);
+
+        assert_eq!(state.placement_count(&a), 0, "no stale entry on the old gate");
+        assert_eq!(state.placement_count(&b), 2);
+        assert!(state.is_linked(&b));
+        assert_eq!(state.gate_for_node(&node), Some(&b));
+    }
+
+    #[test]
+    fn recording_the_same_placement_twice_is_idempotent() {
+        let mut state = GateState::default();
+        let id = add_rect(&mut state, None);
+
+        state.record_placement(NodeId::from(id.clone()), id.clone(), false);
+
+        assert_eq!(state.placement_count(&id), 1, "no duplicate node entry");
+    }
+
+    #[test]
+    fn a_registered_gate_with_no_node_is_a_ghost() {
+        let mut state = GateState::default();
+        let id = add_rect(&mut state, None);
+        state.forget_placement(&NodeId::from(id.clone()));
+
+        assert!(state.is_ghost(&id), "registered, but nowhere in the tree");
+        assert!(!state.is_ghost(&Arc::from("never-existed")));
     }
 }
