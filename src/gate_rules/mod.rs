@@ -15,7 +15,9 @@
 //! back - is mechanical by comparison, and keeping it out of here is what lets
 //! the decisions be tested exhaustively.
 
+pub mod confidence;
 pub mod threshold;
 
 #[cfg(test)]
+mod confidence_tests;
 mod threshold_tests;

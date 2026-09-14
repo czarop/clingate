@@ -67,7 +67,9 @@ fn too_few_events_for_the_band_is_flagged_not_fudged() {
     assert_eq!(t.events_admitted, 0);
     assert_eq!(
         t.status,
-        Status::OutOfBand { band: (0.002, 0.005) },
+        Status::OutOfBand {
+            band: (0.002, 0.005)
+        },
         "the low-count case has to reach the report, not pass silently"
     );
 }
@@ -100,7 +102,12 @@ fn a_band_between_two_whole_events_cannot_be_satisfied() {
     let t = tail_fraction(&ramp(1000), (0.0061, 0.0069)).unwrap();
 
     assert_eq!(t.events_admitted, 7, "the nearest achievable count");
-    assert_eq!(t.status, Status::OutOfBand { band: (0.0061, 0.0069) });
+    assert_eq!(
+        t.status,
+        Status::OutOfBand {
+            band: (0.0061, 0.0069)
+        }
+    );
 }
 
 #[test]
@@ -110,7 +117,12 @@ fn a_population_that_is_all_one_value_reports_what_it_really_admits() {
     let t = tail_fraction(&vec![7.0; 500], (0.002, 0.005)).unwrap();
 
     assert_eq!(t.events_admitted, 0, "nothing is strictly above the value");
-    assert_eq!(t.status, Status::OutOfBand { band: (0.002, 0.005) });
+    assert_eq!(
+        t.status,
+        Status::OutOfBand {
+            band: (0.002, 0.005)
+        }
+    );
 }
 
 #[test]
@@ -126,8 +138,16 @@ fn a_target_inside_a_run_of_ties_falls_back_to_the_nearest_count_that_works() {
     let t = tail_fraction(&values, (0.002, 0.005)).unwrap();
 
     assert_eq!(t.events_admitted, 0);
-    assert_eq!(t.x, 5.0, "on the tied value, which is not strictly above it");
-    assert_eq!(t.status, Status::OutOfBand { band: (0.002, 0.005) });
+    assert_eq!(
+        t.x, 5.0,
+        "on the tied value, which is not strictly above it"
+    );
+    assert_eq!(
+        t.status,
+        Status::OutOfBand {
+            band: (0.002, 0.005)
+        }
+    );
 }
 
 /// The same run of ties, but with a band that reaches far enough for all ten to
@@ -171,7 +191,10 @@ fn a_single_event_is_not_a_crash() {
 
 #[test]
 fn an_empty_population_is_an_error_not_a_guess() {
-    assert_eq!(tail_fraction(&[], (0.002, 0.005)), Err(SolveError::NoEvents));
+    assert_eq!(
+        tail_fraction(&[], (0.002, 0.005)),
+        Err(SolveError::NoEvents)
+    );
 }
 
 #[test]
@@ -189,7 +212,10 @@ fn non_finite_values_do_not_disturb_the_count() {
 
     let t = tail_fraction(&values, (0.002, 0.005)).unwrap();
 
-    assert_eq!(t.events_admitted, 4, "the NaN is dropped, not counted or sorted");
+    assert_eq!(
+        t.events_admitted, 4,
+        "the NaN is dropped, not counted or sorted"
+    );
     assert_eq!(t.x, 995.5);
 }
 
@@ -275,10 +301,7 @@ fn a_percentile_outside_its_range_is_refused() {
 
 #[test]
 fn a_percentile_rule_on_an_empty_population_is_an_error() {
-    assert_eq!(
-        percentile_offset(&[], 99.0, 1.0),
-        Err(SolveError::NoEvents)
-    );
+    assert_eq!(percentile_offset(&[], 99.0, 1.0), Err(SolveError::NoEvents));
 }
 
 // ─── the convention that ties the two together ────────────────────────────────

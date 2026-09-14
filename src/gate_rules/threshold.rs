@@ -29,6 +29,21 @@ pub struct Threshold {
     pub events_admitted: usize,
     /// Those events as a fraction of the parent population.
     pub fraction_admitted: f64,
+    /// How many finite events the rule was solved against.
+    pub parent_events: usize,
+    /// The width of the gap the edge sits in - the distance between the last
+    /// event admitted and the first one excluded.
+    ///
+    /// This is the most direct measure of how sure the placement is. A wide gap
+    /// means the edge is in empty space and a cell landing differently next
+    /// sample changes nothing; a gap near zero means it is buried in a dense
+    /// cloud and the gate's contents turn on noise. Zero for the degenerate
+    /// placements that admit everything or nothing, which have no gap.
+    pub separation: f64,
+    /// The interquartile width of the parent population, for reading
+    /// `separation` and any displacement against the scale of the data rather
+    /// than in absolute units.
+    pub parent_spread: f64,
     pub status: Status,
 }
 
@@ -155,8 +170,29 @@ pub fn tail_fraction(values: &[f64], band: (f64, f64)) -> Result<Threshold, Solv
         x,
         events_admitted,
         fraction_admitted,
+        parent_events: n,
+        separation: separation_at(&sorted, target),
+        parent_spread: interquartile_spread(&sorted),
         status,
     })
+}
+
+/// The width of the gap an edge admitting `count` events sits in.
+///
+/// Zero at both extremes: admitting everything or nothing puts the edge outside
+/// the data, where there is no gap to measure and nothing to be confident about.
+fn separation_at(sorted_desc: &[f64], count: usize) -> f64 {
+    if count == 0 || count >= sorted_desc.len() {
+        return 0.0;
+    }
+    sorted_desc[count - 1] - sorted_desc[count]
+}
+
+/// The interquartile width of the population, as a scale to read other
+/// distances against. Robust to the tail, which is exactly the part a rule is
+/// usually placing an edge in.
+pub fn interquartile_spread(sorted_desc: &[f64]) -> f64 {
+    percentile_of_descending(sorted_desc, 75.0) - percentile_of_descending(sorted_desc, 25.0)
 }
 
 /// Position a gate edge a fixed visual distance above a percentile of the
@@ -186,6 +222,9 @@ pub fn percentile_offset(
         x,
         events_admitted,
         fraction_admitted,
+        parent_events: sorted.len(),
+        separation: separation_at(&sorted, events_admitted),
+        parent_spread: interquartile_spread(&sorted),
         status: Status::NoBand,
     })
 }
