@@ -647,6 +647,13 @@ impl GateState {
             return Err(anyhow!("gate {shared} is not registered"));
         };
 
+        // A composite is one gate spread over its corners, so a copy needs an id
+        // for the group and one for every corner, and all of them re-pointed
+        // together.
+        if gate.is_composite() {
+            return self.unlink_composite(node, &gate);
+        }
+
         let new_id: GateId = Arc::from(Uuid::new_v4().to_string().as_str());
         let copy: Arc<dyn DrawableGate> = gate
             .with_new_id(new_id.clone())
@@ -662,6 +669,75 @@ impl GateState {
         self.record_placement(node.clone(), new_id.clone(), collapsed);
         self.unindex_view_at(&plot, &shared);
         self.reindex_view(node);
+        Ok(new_id)
+    }
+
+    /// Give this composite's position a group of its own, copying the geometry
+    /// it currently shares. The other positions keep the original.
+    ///
+    /// Returns the new composite's id.
+    fn unlink_composite(
+        &mut self,
+        node: &NodeId,
+        gate: &Arc<dyn DrawableGate>,
+    ) -> anyhow::Result<GateId> {
+        let plot = self.plot_of(node);
+        let old_corners = gate.get_inner_gate_ids();
+
+        // Resolve every corner at this plot before copying anything: an
+        // incomplete group must fail without leaving a half-built composite
+        // registered.
+        let mut corner_nodes = Vec::with_capacity(old_corners.len());
+        for corner in &old_corners {
+            let Some(corner_node) = self
+                .nodes_for_gate(corner)
+                .iter()
+                .find(|n| self.plot_of(n) == plot)
+                .cloned()
+            else {
+                return Err(anyhow!(
+                    "corner {corner} of this composite is not placed here, so the group cannot be unlinked as a whole"
+                ));
+            };
+            corner_nodes.push(corner_node);
+        }
+
+        let new_id: GateId = Arc::from(Uuid::new_v4().to_string().as_str());
+        let copy: Arc<dyn DrawableGate> = gate
+            .with_new_group_id(new_id.clone())
+            .ok_or_else(|| anyhow!("this kind of composite cannot be copied, so it cannot be unlinked"))?
+            .into();
+        let new_corners = copy.get_inner_gate_ids();
+        if new_corners.len() != old_corners.len() {
+            return Err(anyhow!("the copy has a different number of corners"));
+        }
+
+        // A composite is registered under its own id as well as each corner's,
+        // all aliased to one Arc, which is what lets a corner id resolve to the
+        // whole gate at filter time.
+        self.gate_store
+            .primary_and_subgate_registry
+            .insert(new_id.clone(), copy.clone());
+        for corner in &new_corners {
+            self.gate_store
+                .primary_and_subgate_registry
+                .insert(corner.clone(), copy.clone());
+        }
+
+        for ((corner_node, old_corner), new_corner) in corner_nodes
+            .iter()
+            .zip(old_corners.iter())
+            .zip(new_corners.iter())
+        {
+            let collapsed = self
+                .placements
+                .get(corner_node)
+                .is_some_and(|p| p.collapsed);
+            self.record_placement(corner_node.clone(), new_corner.clone(), collapsed);
+            self.unindex_view_at(&plot, old_corner);
+            self.reindex_view(corner_node);
+        }
+
         Ok(new_id)
     }
 

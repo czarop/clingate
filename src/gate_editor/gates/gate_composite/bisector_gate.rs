@@ -577,6 +577,27 @@ impl super::super::gate_traits::DrawableGate for BisectorGate {
         Box::new(self.clone())
     }
 
+    /// Corner ids are positional, not derived from the old ones: an imported
+    /// composite's corners carry Omiq's container ids, which say nothing about
+    /// which corner they are. The map is built in a fixed geometric order, so
+    /// index i is the corner these suffixes name.
+    fn with_new_group_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        const SUFFIXES: [&str; 2] = ["_L", "_R"];
+        if self.gates.len() != SUFFIXES.len() {
+            return None;
+        }
+        let mut gates = FxIndexMap::default();
+        for (corner, suffix) in self.gates.values().zip(SUFFIXES.iter()) {
+            let id: Arc<str> = Arc::from(format!("{new_id}{suffix}").as_str());
+            gates.insert(id.clone(), corner.with_id(id));
+        }
+        Some(Box::new(Self {
+            gates,
+            id: new_id,
+            ..self.clone()
+        }))
+    }
+
     fn get_gate_ref(&self, id: Option<&str>) -> Option<&Gate> {
         if let Some(id) = id {
             if let Some(g) = self.gates.get(id) {

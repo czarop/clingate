@@ -35,12 +35,12 @@ composites, and the safety of the link action itself.
       mismatched arity or a composite-to-single link. Deleting one instance of a
       composite takes the whole group with it, since a three-cornered quadrant
       is not a gate. Checked against the real export's linked skewed quadrant.
-- [ ] **Unlink composites.** The hard half, and the asymmetry a user will hit:
-      a composite can now be linked but not unlinked. A copy needs a new
-      composite id, a new id per corner, and a new `groupId` tying them
-      together, then all corners re-pointed. Wants a `with_new_group_id`
-      alongside `with_new_id`. Until then `unlink_node` refuses with "this kind
-      of gate cannot be copied", shown in the pane.
+- [x] **Unlink composites.** `with_new_group_id` on all three composite types
+      mints an id for the group and a positional one per corner (`_BL`, `_BR`,
+      `_TR`, `_TL`; `_L`, `_R`), and `unlink_composite` re-points every corner
+      at that plot to the copy. Positional because an imported composite's
+      corners carry Omiq's container ids, which say nothing about which corner
+      they are.
 - [ ] **`is_ghost` reports every composite.** A composite has no container of
       its own in the file - only its corners do - but clingate registers it
       under its own id with no node, so the predicate calls it a ghost. Not

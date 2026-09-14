@@ -129,6 +129,16 @@ pub trait DrawableGate: Send + Sync {
     fn with_new_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
         None
     }
+
+    /// A copy of a composite under a new id, with a fresh id for every corner.
+    ///
+    /// Separate from [`with_new_id`](Self::with_new_id) because a composite is
+    /// not one gate: unlinking it has to mint an id for the group *and* one per
+    /// corner, since the corners are what the tree and the file hold. `None`
+    /// for everything that is not a composite.
+    fn with_new_group_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        None
+    }
 }
 
 impl Clone for Box<dyn DrawableGate> {

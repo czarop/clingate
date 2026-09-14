@@ -159,6 +159,16 @@ impl LineGate {
     }
 }
 
+impl LineGate {
+    /// A copy under a different id, for rebuilding a composite whose corners
+    /// all need fresh ids.
+    pub fn with_id(&self, id: Arc<str>) -> Self {
+        let mut copy = self.clone();
+        copy.inner.id = id;
+        copy
+    }
+}
+
 impl DrawableGate for LineGate {
     fn get_gate_ref(&self, _id: Option<&str>) -> Option<&flow_gates::Gate> {
         Some(&self.inner)

@@ -3516,3 +3516,140 @@ fn deleting_the_only_instance_of_a_composite_takes_every_corner() {
         assert_eq!(state.placement_count(corner), 0, "{corner} is placed nowhere");
     }
 }
+
+
+// ─── Unlinking composites ─────────────────────────────────────────────────────
+
+/// Two quadrants with one linked to the other, so there is something to unlink.
+fn linked_quadrants() -> (GateState, Arc<dyn DrawableGate>, Arc<dyn DrawableGate>) {
+    let (mut state, source, target) = two_quadrants();
+    let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+    let target_node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+    state.link_node_to_gate(&node, &target_node).unwrap();
+    (state, source, target)
+}
+
+#[test]
+fn unlinking_a_composite_gives_every_corner_a_new_gate() {
+    let (mut state, _, target) = linked_quadrants();
+    let target_corners = target.get_inner_gate_ids();
+    let node = state.nodes_for_gate(&target_corners[0])[0].clone();
+    let plot = state.parent_node(&node).map(|p| p.to_string());
+
+    let new_id = state.unlink_node(&node).unwrap();
+
+    let copy = state.registered_gate(&new_id).expect("the copy is registered");
+    assert!(copy.is_composite());
+    let new_corners = copy.get_inner_gate_ids();
+    assert_eq!(new_corners.len(), target_corners.len());
+
+    // Every corner at that plot now shows a corner of the copy.
+    for corner in &new_corners {
+        assert_eq!(state.placement_count(corner), 1, "{corner} is placed once");
+        let n = &state.nodes_for_gate(corner)[0];
+        assert_eq!(state.parent_node(n).map(|p| p.to_string()), plot);
+    }
+    // And the original keeps its other position.
+    for corner in &target_corners {
+        assert_eq!(state.placement_count(corner), 1, "{corner} keeps one position");
+        assert!(!state.is_linked(corner));
+    }
+}
+
+#[test]
+fn an_unlinked_composite_copy_resolves_from_any_of_its_corners() {
+    let (mut state, _, target) = linked_quadrants();
+    let node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+    let new_id = state.unlink_node(&node).unwrap();
+    let copy = state.registered_gate(&new_id).unwrap();
+
+    // A composite is registered under its own id and each corner's, all aliased
+    // to one gate - that is what lets a corner id resolve at filter time.
+    for corner in copy.get_inner_gate_ids() {
+        let from_corner = state
+            .registered_gate(&corner)
+            .expect("each corner resolves");
+        assert_eq!(from_corner.get_id(), new_id);
+    }
+}
+
+#[test]
+fn an_unlinked_composite_keeps_its_shape() {
+    let (mut state, _, target) = linked_quadrants();
+    let before = state.registered_gate(&target.get_inner_gate_ids()[0]).unwrap();
+    let node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+
+    let new_id = state.unlink_node(&node).unwrap();
+    let after = state.registered_gate(&new_id).unwrap();
+
+    assert_eq!(after.get_params(), before.get_params());
+    assert_eq!(
+        after.get_inner_gate_ids().len(),
+        before.get_inner_gate_ids().len()
+    );
+    assert_ne!(after.get_id(), before.get_id(), "it is a different gate");
+}
+
+#[test]
+fn unlinking_an_unlinked_composite_is_an_error() {
+    let (mut state, source, _) = two_quadrants();
+    let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+    assert!(state.unlink_node(&node).is_err());
+}
+
+#[test]
+fn an_unlinked_composite_is_written_to_the_file() {
+    let (mut state, _, target) = linked_quadrants();
+    let node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+    let new_id = state.unlink_node(&node).unwrap();
+    let copy = state.registered_gate(&new_id).unwrap();
+
+    let written = export_new(&state);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    for corner in copy.get_inner_gate_ids() {
+        assert!(
+            containers.contains_key(&*corner),
+            "corner {corner} needs a container"
+        );
+    }
+    assert_nodes_match_tree(&state, &written);
+}
+
+/// The corners of a copy must stay tied together, or Omiq sees four unrelated
+/// polygons instead of a quadrant.
+#[test]
+fn an_unlinked_composites_corners_stay_grouped() {
+    let (mut state, _, target) = linked_quadrants();
+    let node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+    let new_id = state.unlink_node(&node).unwrap();
+    let copy = state.registered_gate(&new_id).unwrap();
+
+    let written = export_new(&state);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    let corners = copy.get_inner_gate_ids();
+    let groups: Vec<String> = corners
+        .iter()
+        .map(|corner| {
+            let container = containers
+                .get(&**corner)
+                .unwrap_or_else(|| panic!("no container written for corner {corner}"));
+            let group = container
+                .get("groupId")
+                .and_then(|g| g.as_str())
+                .unwrap_or_else(|| panic!("corner {corner} was written with no groupId"));
+            group
+                .rsplit_once('_')
+                .unwrap_or_else(|| panic!("corner {corner} has a malformed groupId {group}"))
+                .0
+                .to_string()
+        })
+        .collect();
+
+    // Every corner produced a group - filter_map here would have let a missing
+    // one pass silently - and they all name the same one.
+    assert_eq!(groups.len(), corners.len());
+    let distinct: std::collections::BTreeSet<&String> = groups.iter().collect();
+    assert_eq!(distinct.len(), 1, "all corners share one group: {groups:?}");
+}
