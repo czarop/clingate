@@ -6,6 +6,16 @@
 use super::confidence::*;
 use super::threshold::*;
 
+fn assess(t: &Threshold, reference: Option<f64>) -> Confidence {
+    CountAndSeparation::default().assess(t, reference)
+}
+
+fn part(c: &Confidence, name: &str) -> f64 {
+    c.get(name)
+        .unwrap_or_else(|| panic!("{name} should be scored"))
+        .score
+}
+
 /// A clean case: plenty of events, a clear gap, rule satisfied.
 fn clean() -> Vec<f64> {
     let mut values = vec![0.0; 9_000];
@@ -21,7 +31,7 @@ fn clean() -> Vec<f64> {
 #[test]
 fn a_clean_placement_scores_well() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
     assert_eq!(t.status, Status::InBand);
     assert!(c.score > 0.7, "score was {} ({:?})", c.score, c);
@@ -37,9 +47,13 @@ fn a_thin_parent_population_drags_the_score_down() {
     values.extend(std::iter::repeat_n(8.0, 10));
 
     let t = tail_fraction(&values, (0.09, 0.11)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
-    assert!(c.events < 0.5, "events component was {}", c.events);
+    assert!(
+        part(&c, EVENTS) < 0.5,
+        "events component was {}",
+        part(&c, EVENTS)
+    );
     assert!(c.score < 0.5);
 }
 
@@ -51,16 +65,16 @@ fn a_handful_of_events_in_the_gate_is_flagged_despite_a_large_parent() {
     values.extend([8.0, 8.1, 8.2, 8.3]);
 
     let t = tail_fraction(&values, (0.0002, 0.0005)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
-    assert_eq!(c.events, 1.0, "the parent population is ample");
+    assert_eq!(part(&c, EVENTS), 1.0, "the parent population is ample");
     assert!(
-        c.admitted < 0.6,
+        part(&c, ADMITTED) < 0.6,
         "but only {} events are in the gate, giving {}",
         t.events_admitted,
-        c.admitted
+        part(&c, ADMITTED)
     );
-    assert_eq!(c.limiting_factor(), "events in the gate");
+    assert_eq!(c.weakest().unwrap().name, ADMITTED);
 }
 
 #[test]
@@ -73,14 +87,20 @@ fn an_edge_buried_in_the_population_scores_worse_than_one_in_a_gap() {
     let in_cloud = tail_fraction(&buried, (0.09, 0.11)).unwrap();
 
     let limits = ConfidenceLimits::default();
-    let gap_score = Confidence::of(&in_gap, None, &limits);
-    let cloud_score = Confidence::of(&in_cloud, None, &limits);
+    let gap_score = CountAndSeparation {
+        limits: limits.clone(),
+    }
+    .assess(&in_gap, None);
+    let cloud_score = CountAndSeparation {
+        limits: limits.clone(),
+    }
+    .assess(&in_cloud, None);
 
     assert!(
-        cloud_score.separation < gap_score.separation,
+        part(&cloud_score, SEPARATION) < part(&gap_score, SEPARATION),
         "buried {} should score below separated {}",
-        cloud_score.separation,
-        gap_score.separation
+        part(&cloud_score, SEPARATION),
+        part(&gap_score, SEPARATION)
     );
 }
 
@@ -90,7 +110,7 @@ fn a_rule_that_could_not_be_satisfied_scores_below_one() {
     let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
 
     let t = tail_fraction(&values, (0.002, 0.005)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
     assert_eq!(
         t.status,
@@ -98,15 +118,19 @@ fn a_rule_that_could_not_be_satisfied_scores_below_one() {
             band: (0.002, 0.005)
         }
     );
-    assert!(c.band < 1.0, "band component was {}", c.band);
+    assert!(
+        part(&c, BAND) < 1.0,
+        "band component was {}",
+        part(&c, BAND)
+    );
 }
 
 #[test]
 fn a_satisfied_rule_is_not_penalised_for_its_band() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
-    assert_eq!(c.band, 1.0);
+    assert_eq!(part(&c, BAND), 1.0);
 }
 
 // ─── displacement ─────────────────────────────────────────────────────────────
@@ -116,9 +140,16 @@ fn a_gate_that_barely_moved_keeps_its_confidence() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
     let limits = ConfidenceLimits::default();
 
-    let c = Confidence::of(&t, Some(t.x), &limits);
+    let c = CountAndSeparation {
+        limits: limits.clone(),
+    }
+    .assess(&t, Some(t.x));
 
-    assert_eq!(c.displacement, Some(1.0), "no movement at all");
+    assert_eq!(
+        c.get(DISPLACEMENT).map(|d| d.score),
+        Some(1.0),
+        "no movement at all"
+    );
 }
 
 #[test]
@@ -128,11 +159,14 @@ fn a_gate_dragged_a_long_way_from_its_reference_is_flagged() {
 
     // Three interquartile widths away, past the limit of two.
     let far = t.x + 3.0 * t.parent_spread;
-    let c = Confidence::of(&t, Some(far), &limits);
+    let c = CountAndSeparation {
+        limits: limits.clone(),
+    }
+    .assess(&t, Some(far));
 
-    assert_eq!(c.displacement, Some(0.0));
+    assert_eq!(c.get(DISPLACEMENT).map(|d| d.score), Some(0.0));
     assert_eq!(c.score, 0.0);
-    assert_eq!(c.limiting_factor(), "distance moved from the reference");
+    assert_eq!(c.weakest().unwrap().name, DISPLACEMENT);
 }
 
 #[test]
@@ -142,9 +176,12 @@ fn displacement_is_read_against_the_spread_not_in_raw_units() {
 
     // One interquartile width is half the limit, so half the component.
     let moved = t.x + t.parent_spread;
-    let c = Confidence::of(&t, Some(moved), &limits);
+    let c = CountAndSeparation {
+        limits: limits.clone(),
+    }
+    .assess(&t, Some(moved));
 
-    let displacement = c.displacement.unwrap();
+    let displacement = part(&c, DISPLACEMENT);
     assert!(
         (displacement - 0.5).abs() < 1e-9,
         "expected half, got {displacement}"
@@ -154,9 +191,9 @@ fn displacement_is_read_against_the_spread_not_in_raw_units() {
 #[test]
 fn no_reference_means_no_displacement_component() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
-    assert_eq!(c.displacement, None);
+    assert_eq!(c.get(DISPLACEMENT), None);
 }
 
 // ─── the combination rule ─────────────────────────────────────────────────────
@@ -171,24 +208,23 @@ fn the_score_is_the_weakest_component_not_the_product() {
     values.extend(std::iter::repeat_n(8.0, 25));
 
     let t = tail_fraction(&values, (0.02, 0.03)).unwrap();
-    let c = Confidence::of(&t, Some(t.x), &ConfidenceLimits::default());
+    let c = assess(&t, Some(t.x));
 
-    let weakest = c
-        .events
-        .min(c.admitted)
-        .min(c.separation)
-        .min(c.band)
-        .min(c.displacement.unwrap());
+    let weakest = part(&c, EVENTS)
+        .min(part(&c, ADMITTED))
+        .min(part(&c, SEPARATION))
+        .min(part(&c, BAND))
+        .min(part(&c, DISPLACEMENT));
     assert_eq!(c.score, weakest);
 
-    let product = c.events * c.admitted * c.separation * c.band;
+    let product = part(&c, EVENTS) * part(&c, ADMITTED) * part(&c, SEPARATION) * part(&c, BAND);
     assert!(
         c.score > product,
         "weakest {} should beat the product {product} ({c:?})",
         c.score
     );
     assert!(
-        c.events < 1.0 && c.admitted < 1.0,
+        part(&c, EVENTS) < 1.0 && part(&c, ADMITTED) < 1.0,
         "the case has to have two middling components to be worth anything"
     );
 }
@@ -200,7 +236,7 @@ fn one_bad_component_is_not_rescued_by_the_others() {
 
     // Ample parent, clean gap, satisfiable band - but a single event in the gate.
     let t = tail_fraction(&values, (0.00005, 0.00015)).unwrap();
-    let c = Confidence::of(&t, None, &ConfidenceLimits::default());
+    let c = assess(&t, None);
 
     assert_eq!(t.events_admitted, 1);
     assert_eq!(c.score, 0.0, "one event cannot support a placement: {c:?}");

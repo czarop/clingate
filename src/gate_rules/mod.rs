@@ -16,8 +16,10 @@
 //! the decisions be tested exhaustively.
 
 pub mod confidence;
+pub mod rule;
 pub mod threshold;
 
 #[cfg(test)]
 mod confidence_tests;
+mod rule_tests;
 mod threshold_tests;
