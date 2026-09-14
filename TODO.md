@@ -29,19 +29,18 @@ composites, and the safety of the link action itself.
       geometry, and there is no undo. The discarded gate is kept as a ghost
       rather than deleted, so it is still in the document, but nothing in the UI
       can bring it back. Wants a confirmation step before the link is applied.
-- [ ] **Link composites as a group.** Omiq does link them: in a real export a
-      skewed quadrant has all four corners placed under the same three parents,
-      each corner keeping its own `ord`. So a composite link is one action over
-      four containers. Linking needs no copying - it only re-points nodes - so
-      the work is lifting the operation from the node to the group: resolve the
-      other corners through `get_inner_gate_ids()`, match corner to corner on
-      the `groupId` suffix (`_QUAD0` to `_QUAD0`), reject a mismatched arity
-      (a quadrant to a bisector), and apply all four or none. The right-click
-      menu acts on the group from a click on any one corner.
-- [ ] **Unlink composites.** The hard half: a copy needs a new composite id,
-      a new id per corner, and a new `groupId` tying them together, then all
-      corners re-pointed. Wants a `with_new_group_id` alongside
-      `with_new_id`.
+- [x] **Link composites as a group.** `link_composite` re-points every corner
+      to the matching corner of the target, matched by position in
+      `get_inner_gate_ids` (a fixed geometric order), all-or-nothing, refusing a
+      mismatched arity or a composite-to-single link. Deleting one instance of a
+      composite takes the whole group with it, since a three-cornered quadrant
+      is not a gate. Checked against the real export's linked skewed quadrant.
+- [ ] **Unlink composites.** The hard half, and the asymmetry a user will hit:
+      a composite can now be linked but not unlinked. A copy needs a new
+      composite id, a new id per corner, and a new `groupId` tying them
+      together, then all corners re-pointed. Wants a `with_new_group_id`
+      alongside `with_new_id`. Until then `unlink_node` refuses with "this kind
+      of gate cannot be copied", shown in the pane.
 - [ ] **`is_ghost` reports every composite.** A composite has no container of
       its own in the file - only its corners do - but clingate registers it
       under its own id with no node, so the predicate calls it a ghost. Not

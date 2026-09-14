@@ -3170,3 +3170,349 @@ fn deleting_a_position_takes_its_gate_off_that_plot() {
         "nothing shows it on that plot any more"
     );
 }
+
+
+// ─── Linking composites ───────────────────────────────────────────────────────
+//
+// Omiq links a composite by placing the whole group under each parent: in a
+// real export a skewed quadrant has all four corners under the same three
+// parents, each corner keeping its own ord. So a composite link is one action
+// over every corner, and half a linked quadrant is a corrupt document.
+
+/// Two quadrants under the root, so one can be linked to the other.
+fn two_quadrants() -> (GateState, Arc<dyn DrawableGate>, Arc<dyn DrawableGate>) {
+    let mut state = GateState::default();
+    for name in ["first", "second"] {
+        state
+            .add_gate(
+                &editor_mapper(), 300.0, 300.0, Arc::from("FSC-A"), Arc::from("SSC-A"),
+                None, None, PrimaryGateType::Quadrant, Some(name.to_string()),
+            )
+            .unwrap();
+    }
+    let composites: Vec<_> = state
+        .registered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let g = state.registered_gate(&id)?;
+            (g.is_composite() && g.get_id() == id).then_some(g)
+        })
+        .collect();
+    assert_eq!(composites.len(), 2, "two composites");
+    let (a, b) = (composites[0].clone(), composites[1].clone());
+    (state, a, b)
+}
+
+#[test]
+fn linking_a_composite_moves_every_corner() {
+    let (mut state, source, target) = two_quadrants();
+    let corner = source.get_inner_gate_ids()[0].clone();
+    let node = state.nodes_for_gate(&corner)[0].clone();
+    let target_node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+
+    state.link_node_to_gate(&node, &target_node).unwrap();
+
+    // Every corner of the source now shows the matching corner of the target.
+    for (from, to) in source
+        .get_inner_gate_ids()
+        .iter()
+        .zip(target.get_inner_gate_ids().iter())
+    {
+        assert_eq!(state.placement_count(from), 0, "{from} is applied nowhere now");
+        assert_eq!(state.placement_count(to), 2, "{to} is applied at both points");
+        assert!(state.is_linked(to));
+    }
+}
+
+#[test]
+fn corners_link_to_the_matching_corner_not_an_arbitrary_one() {
+    let (mut state, source, target) = two_quadrants();
+    let source_corners = source.get_inner_gate_ids();
+    let target_corners = target.get_inner_gate_ids();
+
+    let node = state.nodes_for_gate(&source_corners[0])[0].clone();
+    let target_node = state.nodes_for_gate(&target_corners[0])[0].clone();
+    // Remember which node held which corner before the link.
+    let nodes: Vec<NodeId> = source_corners
+        .iter()
+        .map(|c| state.nodes_for_gate(c)[0].clone())
+        .collect();
+
+    state.link_node_to_gate(&node, &target_node).unwrap();
+
+    for (i, n) in nodes.iter().enumerate() {
+        assert_eq!(
+            state.gate_for_node(n),
+            Some(&target_corners[i]),
+            "corner {i} must take the target's corner {i}"
+        );
+    }
+}
+
+#[test]
+fn a_composite_cannot_be_linked_to_a_single_gate() {
+    let (mut state, source, _) = two_quadrants();
+    let single = add(&mut state, PrimaryGateType::Rectangle, "plain", None);
+    let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+
+    let err = state
+        .link_node_to_gate(&node, &NodeId::from(single))
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("only be linked to another composite"), "{err}");
+}
+
+#[test]
+fn a_quadrant_cannot_be_linked_to_a_bisector() {
+    let mut state = GateState::default();
+    for (kind, name) in [
+        (PrimaryGateType::Quadrant, "quad"),
+        (PrimaryGateType::Bisector, "split"),
+    ] {
+        state
+            .add_gate(
+                &editor_mapper(), 300.0, 300.0, Arc::from("FSC-A"), Arc::from("SSC-A"),
+                None, None, kind, Some(name.to_string()),
+            )
+            .unwrap();
+    }
+    let composites: Vec<_> = state
+        .registered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let g = state.registered_gate(&id)?;
+            (g.is_composite() && g.get_id() == id).then_some(g)
+        })
+        .collect();
+    let (quad, split) = if composites[0].get_inner_gate_ids().len() == 4 {
+        (composites[0].clone(), composites[1].clone())
+    } else {
+        (composites[1].clone(), composites[0].clone())
+    };
+
+    let node = state.nodes_for_gate(&quad.get_inner_gate_ids()[0])[0].clone();
+    let target = state.nodes_for_gate(&split.get_inner_gate_ids()[0])[0].clone();
+
+    let err = state.link_node_to_gate(&node, &target).unwrap_err().to_string();
+    assert!(err.contains("different numbers of parts"), "{err}");
+}
+
+/// A refused link must leave the tree exactly as it was - not half applied.
+#[test]
+fn a_refused_composite_link_changes_nothing() {
+    let (mut state, source, _) = two_quadrants();
+    let single = add(&mut state, PrimaryGateType::Rectangle, "plain", None);
+    let corners = source.get_inner_gate_ids();
+    let before: Vec<_> = corners.iter().map(|c| state.placement_count(c)).collect();
+
+    let node = state.nodes_for_gate(&corners[0])[0].clone();
+    let _ = state.link_node_to_gate(&node, &NodeId::from(single));
+
+    let after: Vec<_> = corners.iter().map(|c| state.placement_count(c)).collect();
+    assert_eq!(before, after, "nothing may move when the link is refused");
+}
+
+#[test]
+fn a_linked_composite_is_written_to_the_file() {
+    let (mut state, source, target) = two_quadrants();
+    let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+    let target_node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+    state.link_node_to_gate(&node, &target_node).unwrap();
+
+    let written = export_new(&state);
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    for corner in target.get_inner_gate_ids() {
+        let count = nodes
+            .values()
+            .filter(|n| n.get("filterContainerId").and_then(|v| v.as_str()) == Some(&*corner))
+            .count();
+        assert_eq!(count, 2, "corner {corner} must be written at both points");
+    }
+    assert_nodes_match_tree(&state, &written);
+}
+
+
+/// A real export's linked composite, checked against the editor's model of it.
+/// Gated on `OMIQ_GATING_FILE`; skipped when unset.
+#[test]
+fn a_real_linked_composite_is_modelled_as_a_group() {
+    let Ok(path) = std::env::var("OMIQ_GATING_FILE") else {
+        return;
+    };
+    let source: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let (metadata, axes) = real_ctx(&source);
+    let mut state = GateState::default();
+    state
+        .upload_gates_from_file(std::path::PathBuf::from(&path), &metadata, axes)
+        .expect("imports");
+
+    // Every composite the file carries, found through its corners.
+    let composites: Vec<Arc<dyn DrawableGate>> = state
+        .registered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let g = state.registered_gate(&id)?;
+            (g.is_composite() && g.get_id() == id).then_some(g)
+        })
+        .collect();
+    assert!(!composites.is_empty(), "the file has composites");
+
+    let mut linked_groups = 0;
+    for composite in &composites {
+        let corners = composite.get_inner_gate_ids();
+        let counts: Vec<usize> = corners.iter().map(|c| state.placement_count(c)).collect();
+
+        // Omiq places the whole group together, so every corner of a composite
+        // is applied the same number of times.
+        assert!(
+            counts.windows(2).all(|w| w[0] == w[1]),
+            "corners of {} are placed unevenly: {counts:?}",
+            composite.get_id()
+        );
+
+        if counts[0] > 1 {
+            linked_groups += 1;
+            // And at each plot the group occupies, every corner is present -
+            // which is what makes a group link resolvable.
+            // Sorted: nodes_for_gate is in insertion order, which follows the
+            // file's node iteration and is not the same across corners. What
+            // matters is the set of plots, which is what a group link resolves
+            // against.
+            let plots_of = |gate: &GateId| {
+                let mut plots: Vec<String> = state
+                    .nodes_for_gate(gate)
+                    .iter()
+                    .map(|n| state.plot_of_for_probe(n))
+                    .collect();
+                plots.sort();
+                plots
+            };
+            let plots = plots_of(&corners[0]);
+            for corner in &corners {
+                assert_eq!(
+                    plots_of(corner),
+                    plots,
+                    "corner {corner} is not placed at the same points as its siblings"
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        linked_groups, 1,
+        "this export has exactly one linked composite group"
+    );
+}
+
+/// Axis settings and metadata for a real gating file: scatter linear, the rest
+/// arcsinh, as the app configures them, and a group per file so grouped
+/// composites resolve. Shared by the tests gated on `OMIQ_GATING_FILE`.
+fn real_ctx(
+    source: &serde_json::Value,
+) -> (MetaDataFileMap, im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>) {
+    let mut channels = std::collections::BTreeSet::new();
+    fn walk(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for key in ["f1", "f2"] {
+                    if let Some(x) = m.get(key).and_then(|x| x.as_str()) {
+                        out.insert(x.to_string());
+                    }
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    walk(source, &mut channels);
+
+    let mut axes = im::HashMap::with_hasher(FxBuildHasher);
+    for channel in &channels {
+        let linear =
+            channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
+        axes.insert(
+            Arc::from(channel.as_str()) as Arc<str>,
+            AxisInfo {
+                param: Param {
+                    marker: Arc::from(channel.as_str()),
+                    fluoro: Arc::from(channel.as_str()),
+                },
+                axis_lower: if linear { 0.0 } else { -1.0 },
+                axis_upper: if linear { 4_194_304.0 } else { 6.0 },
+                transform: if linear {
+                    TransformType::Linear
+                } else {
+                    TransformType::Arcsinh { cofactor: 6000.0 }
+                },
+            },
+        );
+    }
+
+    let mut files = std::collections::BTreeSet::new();
+    let mut columns = std::collections::BTreeSet::new();
+    for container in source["tree"]["filterContainers"].as_object().unwrap().values() {
+        if let Some(per_file) = container.get("perFileFilters").and_then(|v| v.as_object()) {
+            files.extend(per_file.keys().cloned());
+        }
+        if let Some(md) = container.get("md").and_then(|v| v.as_str()) {
+            columns.insert(md.to_string());
+        }
+    }
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for (i, file) in files.iter().enumerate() {
+        let mut cols: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = rustc_hash::FxHashMap::default();
+        for column in &columns {
+            cols.insert(
+                Arc::from(column.as_str()),
+                Arc::from(format!("group{}", i % 3).as_str()),
+            );
+        }
+        metadata.insert(Arc::from(file.as_str()) as Arc<str>, cols);
+    }
+
+    (metadata, axes)
+}
+
+
+#[test]
+fn deleting_one_instance_of_a_composite_takes_the_whole_group() {
+    let (mut state, source, target) = two_quadrants();
+    let corners = source.get_inner_gate_ids();
+    let node = state.nodes_for_gate(&corners[0])[0].clone();
+    let target_node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+
+    // Link so the target composite is applied at two points, then drop one.
+    state.link_node_to_gate(&node, &target_node).unwrap();
+    let target_corners = target.get_inner_gate_ids();
+    for corner in &target_corners {
+        assert_eq!(state.placement_count(corner), 2);
+    }
+
+    let one_corner_node = state.nodes_for_gate(&target_corners[0])[0].clone();
+    state.delete_placement(&one_corner_node).unwrap();
+
+    for corner in &target_corners {
+        assert_eq!(
+            state.placement_count(corner),
+            1,
+            "every corner loses the same position: a three-cornered quadrant is not a gate"
+        );
+    }
+}
+
+#[test]
+fn deleting_the_only_instance_of_a_composite_takes_every_corner() {
+    let (mut state, source, _) = two_quadrants();
+    let corners = source.get_inner_gate_ids();
+    let node = state.nodes_for_gate(&corners[0])[0].clone();
+
+    state.delete_placement(&node).unwrap();
+
+    for corner in &corners {
+        assert_eq!(state.placement_count(corner), 0, "{corner} is placed nowhere");
+    }
+}

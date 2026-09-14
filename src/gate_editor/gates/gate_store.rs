@@ -383,6 +383,11 @@ impl GateState {
     }
 
     #[cfg(test)]
+    pub fn plot_of_for_probe(&self, node: &NodeId) -> String {
+        self.plot_of(node).to_string()
+    }
+
+    #[cfg(test)]
     pub fn view_ids_for_probe(&self, parent: &str) -> Vec<String> {
         self.gate_ids_by_view
             .iter()
@@ -452,6 +457,46 @@ impl GateState {
             return Err(anyhow!("no such position in the tree: {node}"));
         }
 
+        // A composite is all-or-nothing in Omiq, so dropping one position of one
+        // corner would leave a three-cornered quadrant behind. Take the whole
+        // group at this plot instead.
+        let group = self.composite_group_at(node);
+        if group.len() > 1 {
+            for corner_node in group {
+                self.delete_one_placement(&corner_node);
+            }
+            return Ok(());
+        }
+
+        self.delete_one_placement(node);
+        Ok(())
+    }
+
+    /// Every corner node of the composite at this position's plot, or just this
+    /// node when it is not part of one.
+    fn composite_group_at(&self, node: &NodeId) -> Vec<NodeId> {
+        let Some(gate) = self
+            .gate_for_node(node)
+            .and_then(|id| self.registered_gate(id))
+        else {
+            return vec![node.clone()];
+        };
+        if !gate.is_composite() {
+            return vec![node.clone()];
+        }
+        let plot = self.plot_of(node);
+        gate.get_inner_gate_ids()
+            .iter()
+            .filter_map(|corner| {
+                self.nodes_for_gate(corner)
+                    .iter()
+                    .find(|n| self.plot_of(n) == plot)
+                    .cloned()
+            })
+            .collect()
+    }
+
+    fn delete_one_placement(&mut self, node: &NodeId) {
         // What each doomed position showed, and which plot it was on, before the
         // tree forgets where any of them were.
         let doomed: Vec<(Arc<str>, GateId)> = std::iter::once(node.as_arc().clone())
@@ -466,7 +511,6 @@ impl GateState {
         for (plot, gate_id) in doomed {
             self.unindex_view_at(&plot, &gate_id);
         }
-        Ok(())
     }
 
     /// Apply the gate `target` shows at the position `node`, so the two share
@@ -498,11 +542,20 @@ impl GateState {
         else {
             return Err(anyhow!("one of the gates is not registered"));
         };
+
+        // Omiq treats a composite as one gate spread over its corners, and
+        // links it by placing the whole group under each parent - in a real
+        // export, a skewed quadrant with all four corners under the same three
+        // parents. So a composite link is one action over every corner.
         if source_gate.is_composite() || target_gate.is_composite() {
-            return Err(anyhow!(
-                "composite gates cannot be linked: Omiq treats their corners as one gate"
-            ));
+            if !(source_gate.is_composite() && target_gate.is_composite()) {
+                return Err(anyhow!(
+                    "a composite gate can only be linked to another composite gate"
+                ));
+            }
+            return self.link_composite(node, &source_gate, &target_gate);
         }
+
         if source_gate.get_params() != target_gate.get_params() {
             let (tx, ty) = target_gate.get_params();
             let (sx, sy) = source_gate.get_params();
@@ -516,6 +569,68 @@ impl GateState {
         self.record_placement(node.clone(), to, collapsed);
         self.unindex_view_at(&plot, &from);
         self.reindex_view(node);
+        Ok(())
+    }
+
+    /// Link every corner of one composite to the matching corner of another.
+    ///
+    /// Corners correspond by position: `get_inner_gate_ids` is built in a fixed
+    /// geometric order - bottom-left, bottom-right, top-right, top-left - so
+    /// index `i` is the same corner of any composite of the same kind. That is
+    /// the same correspondence the import and export already rely on.
+    ///
+    /// All or nothing. Half a linked quadrant is a corrupt document, so every
+    /// corner is resolved and checked before a single one is re-pointed.
+    fn link_composite(
+        &mut self,
+        node: &NodeId,
+        source: &Arc<dyn DrawableGate>,
+        target: &Arc<dyn DrawableGate>,
+    ) -> anyhow::Result<()> {
+        let source_corners = source.get_inner_gate_ids();
+        let target_corners = target.get_inner_gate_ids();
+
+        if source_corners.len() != target_corners.len() {
+            return Err(anyhow!(
+                "these composites have different numbers of parts ({} and {}), so their corners do not correspond",
+                source_corners.len(),
+                target_corners.len()
+            ));
+        }
+        if source.get_params() != target.get_params() {
+            let ((sx, sy), (tx, ty)) = (source.get_params(), target.get_params());
+            return Err(anyhow!(
+                "cannot link a gate on {sx}/{sy} to one on {tx}/{ty}: they are drawn on different axes"
+            ));
+        }
+
+        // Every corner of the source composite at *this* plot. A composite
+        // applied at several points has a set of corner nodes under each.
+        let plot = self.plot_of(node);
+        let mut moves: Vec<(NodeId, GateId, GateId)> = Vec::new();
+        for (corner, replacement) in source_corners.iter().zip(target_corners.iter()) {
+            let at_this_plot = self
+                .nodes_for_gate(corner)
+                .iter()
+                .find(|n| self.plot_of(n) == plot)
+                .cloned();
+            let Some(corner_node) = at_this_plot else {
+                return Err(anyhow!(
+                    "corner {corner} of this composite is not placed here, so the group cannot be linked as a whole"
+                ));
+            };
+            moves.push((corner_node, corner.clone(), replacement.clone()));
+        }
+
+        for (corner_node, old_gate, new_gate) in moves {
+            let collapsed = self
+                .placements
+                .get(&corner_node)
+                .is_some_and(|p| p.collapsed);
+            self.record_placement(corner_node.clone(), new_gate, collapsed);
+            self.unindex_view_at(&plot, &old_gate);
+            self.reindex_view(&corner_node);
+        }
         Ok(())
     }
 
