@@ -35,7 +35,25 @@ the other placements vanish.
       geometry, and there is no undo. The discarded gate is kept as a ghost
       rather than deleted, so it is still in the document, but nothing in the UI
       can bring it back. Wants a confirmation step before the link is applied.
-- [ ] **Linking composites.** Refused for now: a composite is registered under
+- [ ] **Link composites as a group.** Omiq does link them: in a real export a
+      skewed quadrant has all four corners placed under the same three parents,
+      each corner keeping its own `ord`. So a composite link is one action over
+      four containers. Linking needs no copying - it only re-points nodes - so
+      the work is lifting the operation from the node to the group: resolve the
+      other corners through `get_inner_gate_ids()`, match corner to corner on
+      the `groupId` suffix (`_QUAD0` to `_QUAD0`), reject a mismatched arity
+      (a quadrant to a bisector), and apply all four or none. The right-click
+      menu acts on the group from a click on any one corner.
+- [ ] **Unlink composites.** The hard half: a copy needs a new composite id,
+      a new id per corner, and a new `groupId` tying them together, then all
+      corners re-pointed. Wants a `with_new_group_id` alongside
+      `with_new_id`.
+- [ ] **`is_ghost` reports every composite.** A composite has no container of
+      its own in the file - only its corners do - but clingate registers it
+      under its own id with no node, so the predicate calls it a ghost. Not
+      reachable today, but it would make the ghost-collection sweep try to
+      collect every composite.
+- [ ] **Linking composites (superseded by the two items above).** Refused for now: a composite is registered under
       its own id *and* each corner's, and Omiq treats the group as
       all-or-nothing, so a copy has to mint an id per corner and rewrite the
       `groupId` that ties them together. `DrawableGate::with_new_id` returns
@@ -77,6 +95,21 @@ The point of the project, and entirely unstarted.
       tested in isolation (41 tests) but nothing calls it from the editor.
 - [ ] **Define the ruleset format** - how a gate is told to follow a
       population between samples, and where that is stored.
+
+## Reactivity
+
+The store refactor moved plain-data logic off the Dioxus lenses. Where a Store
+wrapper then reads through `peek`, it subscribes to nothing, and any memo built
+on it silently stops updating. Two have bitten already: the axis selectors, and
+the gate resolver.
+
+- [ ] **Audit the remaining Store wrappers for the same shape.** A `peek` inside
+      a wrapper that a `use_memo` depends on is the pattern. There is no test
+      coverage for reactivity at all - the store logic is tested without a
+      runtime, which is exactly why these got through.
+- [ ] **Consider a Dioxus test runtime** for the handful of memos that matter
+      (resolver, axis index, gate list), so a lost subscription fails a test
+      rather than being found by hand.
 
 ## Housekeeping
 

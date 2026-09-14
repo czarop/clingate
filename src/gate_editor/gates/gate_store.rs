@@ -382,6 +382,21 @@ impl GateState {
         self.placements.iter()
     }
 
+    #[cfg(test)]
+    pub fn view_keys_for_probe(&self) -> Vec<(String, String, Option<String>, usize)> {
+        self.gate_ids_by_view
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.param_1.to_string(),
+                    k.param_2.to_string(),
+                    k.parental_gate_id.as_ref().map(|p| p.to_string()),
+                    v.len(),
+                )
+            })
+            .collect()
+    }
+
     /// The gate a node shows.
     pub fn gate_for_node(&self, node: &NodeId) -> Option<&GateId> {
         self.placements.get(node).map(|p| &p.gate_id)
@@ -1380,6 +1395,24 @@ impl<Lens> Store<GateState, Lens> {
         file_id: FileId,
         group_ids: &FxHashMap<MetaDataParameter, GroupId>,
     ) -> Result<GateOverrideResolver> {
+        // Subscribe to the three tiers the resolver is built from.
+        //
+        // The plain-data function below reads through `peek`, which does not
+        // subscribe. Without these reads the memo that builds the resolver has
+        // no dependency on the gate store at all: it runs once and never again,
+        // so every edit is written to the store and never seen. A dragged gate
+        // snaps back to the geometry the stale resolver still holds, and a newly
+        // created gate is filed on its plot but dropped by `get_gates_for_plot`,
+        // which resolves each id through the resolver before drawing it.
+        {
+            let registry = self.gate_store().primary_and_subgate_registry();
+            let by_sample = self.gate_store().sample_position_overrides();
+            let by_group = self.gate_store().group_position_overrides();
+            let _ = registry.read();
+            let _ = by_sample.read();
+            let _ = by_group.read();
+        }
+
         Ok(self.peek().get_current_sample(file_id, group_ids))
     }
 
