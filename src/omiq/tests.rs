@@ -2754,3 +2754,107 @@ fn every_placement_survives_the_round_trip() {
 
     assert_eq!(shared_nodes, 2, "both placements must be written");
 }
+
+
+// ─── The exported tree is the editor's tree ───────────────────────────────────
+//
+// Node emission used to come from two places: the placements captured when the
+// file was read, for an imported gate, and a node minted at export time for one
+// created in the session. The captured half was a snapshot, so the file
+// described the tree as it was at import, not as it stood.
+
+/// The invariant the fold establishes: one Omiq node per position in the tree,
+/// with the same id, parent and gate. Nothing else decides the shape.
+fn assert_nodes_match_tree(state: &GateState, written: &serde_json::Value) {
+    let nodes = objects(written, &["tree", "nodes"]);
+    let placements: Vec<_> = state.placements().collect();
+
+    assert_eq!(
+        nodes.len(),
+        placements.len(),
+        "one node per placement, no more and no fewer"
+    );
+
+    for (node_id, placement) in placements {
+        let node = nodes
+            .get(node_id.as_str())
+            .unwrap_or_else(|| panic!("no node written for placement {node_id}"));
+
+        assert_eq!(
+            node["filterContainerId"], &*placement.gate_id,
+            "node {node_id} names the wrong gate"
+        );
+
+        let expected_parent = state
+            .parent_node(node_id)
+            .map(|p| p.to_string())
+            .filter(|p| p.as_str() != &**ROOTGATE)
+            .unwrap_or_default();
+        assert_eq!(
+            node["parentId"], expected_parent,
+            "node {node_id} has the wrong parent"
+        );
+    }
+}
+
+#[test]
+fn an_imported_tree_exports_exactly_its_placements() {
+    let state = import_json(&linked_gate_json());
+    let written = to_omiq_document_with_header(
+        &state, &fixture_metadata(), &fixture_axes(), test_header(),
+    )
+    .expect("exports");
+
+    assert_nodes_match_tree(&state, &written);
+}
+
+#[test]
+fn a_tree_of_new_gates_exports_exactly_its_placements() {
+    let mut state = GateState::default();
+    let parent = add(&mut state, PrimaryGateType::Rectangle, "parent", None);
+    add(&mut state, PrimaryGateType::Rectangle, "child", Some(parent.clone()));
+
+    assert_nodes_match_tree(&state, &export_new(&state));
+}
+
+#[test]
+fn new_and_imported_gates_share_one_node_source() {
+    let mut state = import_json(&linked_gate_json());
+    add(&mut state, PrimaryGateType::Rectangle, "added later", Some(Arc::from("g1")));
+
+    let written = to_omiq_document_with_header(
+        &state, &fixture_metadata(), &fixture_axes(), test_header(),
+    )
+    .expect("exports");
+
+    assert_nodes_match_tree(&state, &written);
+}
+
+/// A ghost has no position, so it writes a container and no node - which is
+/// what keeps a boolean that references it working without putting a deleted
+/// gate back in the user's tree.
+#[test]
+fn a_ghost_writes_a_container_but_no_node() {
+    let state = import_json(&linked_gate_json());
+    let ghosts: Vec<_> = state
+        .registered_ids()
+        .into_iter()
+        .filter(|id| state.is_ghost(id))
+        .collect();
+
+    let written = to_omiq_document_with_header(
+        &state, &fixture_metadata(), &fixture_axes(), test_header(),
+    )
+    .expect("exports");
+    let nodes = objects(&written, &["tree", "nodes"]);
+
+    for ghost in ghosts {
+        assert!(
+            !nodes
+                .values()
+                .any(|n| n.get("filterContainerId").and_then(|v| v.as_str()) == Some(&*ghost)),
+            "ghost {ghost} must not appear in the tree"
+        );
+    }
+    assert_nodes_match_tree(&state, &written);
+}

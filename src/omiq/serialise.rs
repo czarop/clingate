@@ -265,14 +265,12 @@ use crate::omiq::deserialise::{
     AtomicContainer, BooleanOpType, CompoundContainer, FilterContainer, GatingNode,
 };
 use crate::omiq::metadata::MetaDataFileMap;
-use crate::omiq::rebuild::{OmiqDocumentHeader, OmiqRebuildData, OmiqRebuildStore};
+use crate::omiq::rebuild::{OmiqDocumentHeader, OmiqRebuildData};
 use crate::gate_editor::gates::gate_composite::bisector_gate::BisectorGate;
 use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
 use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::SkewedQuadrantGate;
 use crate::gate_editor::gates::gate_store::ROOTGATE;
-use rustc_hash::FxHashMap;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 /// The group id and written type for a corner of a composite created here.
 ///
@@ -314,18 +312,6 @@ fn synthesised_group(
 /// A linked gate has several placements and the editor's hierarchy records only
 /// one parent relationship, so a new gate created under one can only be attached
 /// to its first placement. That is a limitation of the editor not modelling
-/// linked gates, not something the export can resolve.
-fn node_id_for(
-    gate_id: &GateId,
-    rebuild: &OmiqRebuildStore,
-    synthesised: &FxHashMap<GateId, Arc<str>>,
-) -> Option<Arc<str>> {
-    match rebuild.get(gate_id) {
-        Some(entry) => entry.nodes.first().map(|p| p.node_id.clone()),
-        None => synthesised.get(gate_id).cloned(),
-    }
-}
-
 fn boolean_op(op: flow_gates::BooleanOperation) -> BooleanOpType {
     match op {
         flow_gates::BooleanOperation::And => BooleanOpType::And,
@@ -450,21 +436,41 @@ pub fn to_omiq_document_with_header(
     let rebuild = state.omiq_rebuild();
     let ids = container_ids(state);
 
-    // A gate created here has no node id. Mint one for each before writing any
-    // node, so a child can resolve its parent whether the parent was imported
-    // or created in the same session.
-    let mut synthesised: FxHashMap<GateId, Arc<str>> = FxHashMap::default();
-    for container_id in &ids {
-        if rebuild.get(container_id).is_none() {
-            synthesised.insert(
-                container_id.clone(),
-                Arc::from(Uuid::new_v4().to_string().as_str()),
-            );
-        }
-    }
-
-    let mut nodes: HashMap<Arc<str>, GatingNode> = HashMap::new();
     let mut containers: HashMap<Arc<str>, FilterContainer> = HashMap::new();
+
+    // One Omiq node per position in the editor's tree.
+    //
+    // The tree itself is the only source for this. It used to come from two
+    // places - the placements captured at import for an imported gate, and a
+    // node minted here for one created in the session - which meant the export
+    // wrote the tree as it was when the file was read, not as it stands. A gate
+    // moved to a different parent, or applied at a new point, never reached the
+    // file.
+    //
+    // A gate with no position writes no node: that is a ghost, a container kept
+    // alive by a boolean that references it, and Omiq leaves those out of the
+    // tree too.
+    let nodes: HashMap<Arc<str>, GatingNode> = state
+        .placements()
+        .map(|(node, placement)| {
+            let parent = state
+                .parent_node(node)
+                .map(|p| p.as_arc().clone())
+                // Omiq marks a root by an empty parentId, not a missing one.
+                .filter(|p| **p != **ROOTGATE)
+                .unwrap_or_else(|| Arc::from(""));
+            (
+                node.as_arc().clone(),
+                GatingNode {
+                    id: node.as_arc().clone(),
+                    parent_id: parent,
+                    filter_container_id: placement.gate_id.clone(),
+                    ord: state.node_order(node).unwrap_or(0),
+                    collapsed: placement.collapsed,
+                },
+            )
+        })
+        .collect();
 
     for container_id in ids {
         let Some(gate) = state.registered_gate(&container_id) else {
@@ -476,55 +482,6 @@ pub fn to_omiq_document_with_header(
             container_id.clone(),
             container_for(state, &gate, &container_id, entry, metadata, axes)?,
         );
-
-        match entry {
-            // One node per placement: the same gate can be applied at several
-            // points in the tree, and each of those is its own node. An entry
-            // with no placements is a ghost kept alive by a boolean that
-            // references it - it belongs in the file but not in the tree.
-            Some(entry) => {
-                for placement in &entry.nodes {
-                    nodes.insert(
-                        placement.node_id.clone(),
-                        GatingNode {
-                            id: placement.node_id.clone(),
-                            parent_id: placement.parent_node_id.clone(),
-                            filter_container_id: container_id.clone(),
-                            ord: placement.ord,
-                            collapsed: placement.collapsed,
-                        },
-                    );
-                }
-            }
-            // A gate created here. Without a node it would land in the file but
-            // not in the gating tree, which is the state Omiq leaves a deleted
-            // gate in - invisible to the user.
-            None => {
-                let Some(node_id) = synthesised.get(&container_id).cloned() else {
-                    continue;
-                };
-                let parent_id = match state.hierarchy_parent(&container_id) {
-                    Some(parent) if parent != *ROOTGATE => {
-                        node_id_for(&parent, rebuild, &synthesised).unwrap_or_else(|| Arc::from(""))
-                    }
-                    // Omiq marks a root by an empty parentId, not a missing one.
-                    _ => Arc::from(""),
-                };
-
-                nodes.insert(
-                    node_id.clone(),
-                    GatingNode {
-                        id: node_id,
-                        parent_id,
-                        filter_container_id: container_id.clone(),
-                        // The hierarchy already holds a millisecond timestamp
-                        // for a gate created here, which is the shape Omiq uses.
-                        ord: state.gate_order(&container_id).unwrap_or(0),
-                        collapsed: false,
-                    },
-                );
-            }
-        }
     }
 
     let mut tree = serde_json::json!({

@@ -376,6 +376,12 @@ impl GateState {
         }
     }
 
+    /// Every position in the tree, with the gate it shows. This is the tree:
+    /// the exporter writes one Omiq node per entry.
+    pub fn placements(&self) -> impl Iterator<Item = (&NodeId, &GatePlacement)> {
+        self.placements.iter()
+    }
+
     /// The gate a node shows.
     pub fn gate_for_node(&self, node: &NodeId) -> Option<&GateId> {
         self.placements.get(node).map(|p| &p.gate_id)
