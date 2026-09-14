@@ -644,6 +644,19 @@ pub fn is_point_on_ellipse_perimeter(
     }
 }
 
+/// The five handle points of an ellipse, with the minor-axis pair ordered
+/// screen-top first.
+///
+/// Note the minor-axis pair is the other way round from
+/// [`calculate_ellipse_nodes_y_up`], which orders it data-top first: index 2
+/// here is index 4 there. The two are mirror images in the minor axis, and
+/// since that pair is symmetric about the centre both describe the same
+/// ellipse - only the labels differ. Nothing depends on the order: the four
+/// handles are drawn at all four points either way, and
+/// `calculate_projected_radii` takes `abs()` of the projection, so a resize
+/// gives the same radius whichever of the pair is grabbed.
+///
+/// Used for the drawn points. The geometry is built from the `_y_up` form.
 pub fn calculate_ellipse_nodes(
     cx: f32,
     cy: f32,
@@ -656,9 +669,9 @@ pub fn calculate_ellipse_nodes(
     vec![
         (cx, cy),                           // 0. Center
         (cx + rx * cos_a, cy + rx * sin_a), // 1. Right (Local X+)
-        (cx + ry * sin_a, cy - ry * cos_a), // 2. Top (Local Y-)
+        (cx + ry * sin_a, cy - ry * cos_a), // 2. Local Y-, screen top
         (cx - rx * cos_a, cy - rx * sin_a), // 3. Left (Local X-)
-        (cx - ry * sin_a, cy + ry * cos_a), // 4. Bottom (Local Y+)
+        (cx - ry * sin_a, cy + ry * cos_a), // 4. Local Y+, screen bottom
     ]
 }
 
@@ -841,12 +854,16 @@ pub fn calculate_ellipse_nodes_y_up(
 
     let (sin_a, cos_a) = angle_rad.sin_cos();
 
+    // Minor-axis pair ordered data-top first, the opposite way round from
+    // `calculate_ellipse_nodes` - see the note there. `create_ellipse_geometry`
+    // reads index 1 for the angle and radius_x and index 2 for radius_y, so
+    // this is the order the canonical form round-trips through.
     vec![
-        (cx, cy),
-        (cx + rx * cos_a, cy + rx * sin_a),
-        (cx - ry * sin_a, cy + ry * cos_a),
-        (cx - rx * cos_a, cy - rx * sin_a),
-        (cx + ry * sin_a, cy - ry * cos_a),
+        (cx, cy),                           // 0. Center
+        (cx + rx * cos_a, cy + rx * sin_a), // 1. Local X+, sets the angle
+        (cx - ry * sin_a, cy + ry * cos_a), // 2. Local Y+, sets radius_y
+        (cx - rx * cos_a, cy - rx * sin_a), // 3. Local X-
+        (cx + ry * sin_a, cy - ry * cos_a), // 4. Local Y-
     ]
 }
 

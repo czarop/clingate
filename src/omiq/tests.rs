@@ -3698,3 +3698,158 @@ fn an_unlinked_composites_corners_stay_grouped() {
     let distinct: std::collections::BTreeSet<&String> = groups.iter().collect();
     assert_eq!(distinct.len(), 1, "all corners share one group: {groups:?}");
 }
+
+// ─── Ghost collection ─────────────────────────────────────────────────────────
+//
+// A ghost is a gate with no node that a live boolean still evaluates against.
+// Omiq leaves these behind and so do we, but once nothing reaches one it is
+// stranded: registered, drawn nowhere, and still written out on export. The
+// AFTER fixture is the real case - a quadrant deleted while a boolean built on
+// one of its corners survived.
+
+/// The id of the surviving boolean in the AFTER fixture, and of the corner it
+/// still references. Taken from the file rather than hard-coded blind: the
+/// boolean is the only registered gate whose operands include a ghost.
+fn the_boolean_and_its_ghost(state: &GateState) -> (GateId, GateId) {
+    for id in state.registered_ids() {
+        let Some(gate) = state.registered_gate(&id) else {
+            continue;
+        };
+        let Some(inner) = gate.get_gate_ref(None) else {
+            continue;
+        };
+        if let flow_gates::GateGeometry::Boolean { operands, .. } = &inner.geometry
+            && let Some(ghost) = operands.iter().find(|o| state.is_ghost(o))
+        {
+            return (id.clone(), ghost.clone());
+        }
+    }
+    panic!("the AFTER fixture should carry a boolean built on a ghost");
+}
+
+#[test]
+fn a_ghost_survives_while_a_boolean_still_references_it() {
+    let state = import(AFTER);
+    let (_boolean, ghost) = the_boolean_and_its_ghost(&state);
+
+    assert!(state.is_ghost(&ghost));
+    assert_eq!(state.placement_count(&ghost), 0, "it is on no plot");
+    assert!(
+        state.is_registered(&ghost),
+        "but it stays resolvable, or the boolean stops evaluating"
+    );
+}
+
+#[test]
+fn deleting_the_last_boolean_that_referenced_a_ghost_collects_it() {
+    let mut state = import(AFTER);
+    let (boolean, ghost) = the_boolean_and_its_ghost(&state);
+
+    state.remove_gate(boolean).unwrap();
+
+    assert!(
+        !state.is_registered(&ghost),
+        "nothing reaches the ghost now, so it must not linger in the registry \
+         or be written back on export"
+    );
+}
+
+#[test]
+fn a_gate_a_live_boolean_still_needs_is_not_collected() {
+    // The same sweep, run when the boolean is still there: deleting something
+    // unrelated must not take the ghost with it.
+    let mut state = import(AFTER);
+    let (_boolean, ghost) = the_boolean_and_its_ghost(&state);
+    let spare = add(&mut state, PrimaryGateType::Rectangle, "unrelated", None);
+
+    state.remove_gate(spare).unwrap();
+
+    assert!(
+        state.is_registered(&ghost),
+        "its boolean is still live, so the ghost stays"
+    );
+}
+
+#[test]
+fn collecting_leaves_omiqs_own_orphaned_containers_alone() {
+    // Containers that were already unreachable in the file Omiq wrote are kept
+    // verbatim so a round trip returns the document it was given. They were
+    // never gates in this editor, and the sweep is about what this session
+    // stranded, not about discarding what Omiq shipped.
+    let mut state = import(AFTER);
+    let before = state.omiq_rebuild().ghost_containers.len();
+    let (boolean, _ghost) = the_boolean_and_its_ghost(&state);
+
+    state.remove_gate(boolean).unwrap();
+
+    assert_eq!(
+        state.omiq_rebuild().ghost_containers.len(),
+        before,
+        "the sweep must not reach into the verbatim containers"
+    );
+}
+
+/// Add a composite and return every key it registered under. The `add` helper
+/// above deliberately skips composites, and a composite's corners are named
+/// after their ids rather than after the gate, so the keys are taken as the
+/// difference the call made to the registry.
+fn add_composite(state: &mut GateState, kind: PrimaryGateType, name: &str) -> Vec<GateId> {
+    let before: std::collections::HashSet<GateId> = state.registered_ids().into_iter().collect();
+    state
+        .add_gate(
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            kind,
+            Some(name.to_string()),
+        )
+        .unwrap();
+    let keys: Vec<GateId> = state
+        .registered_ids()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert!(!keys.is_empty(), "{name} should be registered");
+    keys
+}
+
+/// The `is_ghost` false positive that would have had the sweep collect every
+/// composite. A composite has no node of its own - only its corners do - so
+/// asking its own key for a placement count always answers zero.
+#[test]
+fn a_freshly_added_quadrant_is_not_a_ghost() {
+    let mut state = import(AFTER);
+    let keys = add_composite(&mut state, PrimaryGateType::Quadrant, "fresh quad");
+
+    assert!(
+        keys.len() > 1,
+        "a quadrant registers under its own id and each corner's, got {keys:?}"
+    );
+    for id in keys {
+        assert!(
+            !state.is_ghost(&id),
+            "a composite on the tree is not a ghost, under any of its keys - \
+             {id} reported as one"
+        );
+    }
+}
+
+#[test]
+fn a_quadrant_on_the_tree_survives_a_sweep() {
+    let mut state = import(AFTER);
+    add_composite(&mut state, PrimaryGateType::Quadrant, "fresh quad");
+    let before = state.registered_ids().len();
+    let spare = add(&mut state, PrimaryGateType::Rectangle, "unrelated", None);
+
+    state.remove_gate(spare).unwrap();
+
+    assert_eq!(
+        state.registered_ids().len(),
+        before,
+        "the sweep took only the gate that was deleted"
+    );
+}

@@ -438,8 +438,112 @@ impl GateState {
 
     /// A gate with no node. Registered and evaluable - a live boolean may still
     /// reference it - but drawn nowhere. Omiq leaves these behind too.
+    ///
+    /// A composite is never a ghost while any of its corners is on the tree. It
+    /// has no node of its own - only its corners do - so its own key always has
+    /// a placement count of zero, and it is registered under that key as well as
+    /// under each corner's. Asking the count alone therefore called every
+    /// composite a ghost, which would have had the sweep collect all of them.
     pub fn is_ghost(&self, gate_id: &GateId) -> bool {
-        self.is_registered(gate_id) && self.placement_count(gate_id) == 0
+        let Some(gate) = self.gate_store.primary_and_subgate_registry.get(gate_id) else {
+            return false;
+        };
+        if gate.is_composite() {
+            return gate
+                .get_inner_gate_ids()
+                .iter()
+                .all(|corner| self.placement_count(corner) == 0);
+        }
+        self.placement_count(gate_id) == 0
+    }
+
+    // ── Ghost collection ──────────────────────────────────────────────────────
+
+    /// Drop every registered gate that nothing live can reach any more.
+    ///
+    /// A ghost - a gate with no node - is kept deliberately, because a live
+    /// boolean may still evaluate against it. Deleting the last boolean that
+    /// referenced one leaves it stranded: registered, drawn nowhere, reachable
+    /// by nothing, and still written out on export. A real file imported with
+    /// six ghosts, so they accumulate for the life of a session.
+    ///
+    /// This is the same reachability idea the importer uses, run over the live
+    /// store instead of the file's containers: start from every gate that holds
+    /// a position in the tree and follow booleans to their operands. Anything
+    /// the walk does not reach is collected.
+    ///
+    /// Returns the ids it dropped, in no particular order - the registry is a
+    /// hash map - for the caller to log or assert on.
+    pub fn collect_stranded_ghosts(&mut self) -> Vec<GateId> {
+        let mut reachable: HashSet<GateId> = HashSet::default();
+        let mut frontier: Vec<GateId> = self
+            .placements
+            .values()
+            .map(|placement| placement.gate_id.clone())
+            .collect();
+
+        while let Some(id) = frontier.pop() {
+            if !reachable.insert(id.clone()) {
+                continue;
+            }
+            let Some(gate) = self.gate_store.primary_and_subgate_registry.get(&id) else {
+                continue;
+            };
+            // A composite is registered under its own id and under each corner's,
+            // all aliased to one Arc. Reaching any key keeps every key: the
+            // corner ids are how a filter resolves to the whole gate, and Omiq
+            // treats the group as all-or-nothing anyway.
+            if gate.is_composite() {
+                frontier.push(gate.get_id());
+                frontier.extend(gate.get_inner_gate_ids());
+            }
+            // A boolean keeps its operands alive, and an operand may itself be a
+            // boolean, so this has to run to a fixed point rather than one deep.
+            if let Some(inner) = gate.get_gate_ref(None)
+                && let flow_gates::GateGeometry::Boolean { operands, .. } = &inner.geometry
+            {
+                frontier.extend(operands.iter().cloned());
+            }
+        }
+
+        let stranded: Vec<GateId> = self
+            .gate_store
+            .primary_and_subgate_registry
+            .keys()
+            .filter(|id| !reachable.contains(*id))
+            .cloned()
+            .collect();
+
+        if stranded.is_empty() {
+            return stranded;
+        }
+
+        let dropped: HashSet<GateId> = stranded.iter().cloned().collect();
+        self.gate_store
+            .primary_and_subgate_registry
+            .retain(|id, _| !dropped.contains(id));
+        self.gate_store
+            .sample_position_overrides
+            .retain(|(id, _file), _| !dropped.contains(id));
+        self.gate_store
+            .group_position_overrides
+            .retain(|(id, _group), _| !dropped.contains(id));
+        self.omiq_rebuild
+            .gates
+            .retain(|id, _| !dropped.contains(id));
+        for dependents in self.boolean_gate_links.values_mut() {
+            dependents.retain(|id| !dropped.contains(id));
+        }
+        self.boolean_gate_links
+            .retain(|id, dependents| !dependents.is_empty() && !dropped.contains(id));
+
+        // `omiq_rebuild.ghost_containers` is deliberately left alone. Those are
+        // containers that were already unreachable in the file Omiq wrote, kept
+        // verbatim so a round trip returns the document it was given - they were
+        // never gates in this editor, and sweeping them on this rule would drop
+        // every one of them on the first delete. Collecting what *this* session
+        // stranded is a different thing from discarding what Omiq shipped.
+        stranded
     }
 
     // ── Linking ───────────────────────────────────────────────────────────────
@@ -469,6 +573,10 @@ impl GateState {
         }
 
         self.delete_one_placement(node);
+        // No sweep here, deliberately. Dropping the last position of a gate
+        // leaves it a ghost by contract - `remove_gate` is the operation that
+        // deletes a gate - and an unreferenced one is collected by the next
+        // sweep rather than by this call.
         Ok(())
     }
 
@@ -1110,6 +1218,10 @@ impl GateState {
         self
             .boolean_gate_links
             .retain(|id, dependents| !dependents.is_empty() && !gates_to_delete.contains(id));
+
+        // Deleting the last boolean that referenced a ghost strands it. Sweep
+        // once the delete has settled, so the walk sees the tree as it now is.
+        self.collect_stranded_ghosts();
         Ok(())
     }
 }

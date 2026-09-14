@@ -4,9 +4,9 @@ Open work, roughly in the order it needs doing. Items carry enough context to
 be picked up cold. Read `HANDOVER.md` first for the architecture and the format
 facts these depend on.
 
-**Suggested order:** the ellipse rotation bug (the rectangle one is fixed),
-then ghost collection, then autogating. The Omiq load test is the user's to do
-and gates everything in Export.
+**Suggested order:** autogating - the gate-editing bugs, the `is_ghost` false
+positive and ghost collection are all done. The Omiq load test is the user's to
+do and gates everything in Export.
 
 ## Linked gates
 
@@ -54,15 +54,12 @@ confirm you get an independent quadrant.
       at that plot to the copy. Positional because an imported composite's
       corners carry Omiq's container ids, which say nothing about which corner
       they are.
-- [ ] **`is_ghost` reports every composite.** A composite has no container of
+- [x] **`is_ghost` reported every composite.** A composite has no container of
       its own in the file - only its corners do - but clingate registers it
-      under its own id with no node, so `is_ghost` calls it a ghost. Harmless
-      today because nothing calls it in anger, but it would make the
-      ghost-collection sweep above try to collect every composite.
-
-      Fix by excluding a gate whose `get_id()` differs from the key it is
-      registered under, or whose corners have placements. Wants a test that a
-      freshly added quadrant is not a ghost.
+      under its own id with no node, so counting placements on that key always
+      answered zero. It now asks whether any corner is on the tree, which is
+      the question that was meant. Would have had the sweep below collect every
+      composite.
 
 Names are shared per gate, matching Omiq, which stores the name on the
 container and not on the node. Per-placement names are not representable in a
@@ -70,42 +67,13 @@ gating file.
 
 ## Gate editing
 
-Reported from testing, not yet investigated.
-
-- [ ] **Ellipse rotation only flips.** Reported from testing.
-
-      The maths is not at fault, and neither is this branch: `rotate_gate`,
-      `calculate_projected_radii`, `update_ellipse_geometry` and both node
-      helpers are byte-identical at `273645d`, and a probe of the pure layer
-      sweeps continuously - pointer at 100 degrees gives 10, at 120 gives 30, at
-      150 gives 60. Angles round-trip exactly, because
-      `create_ellipse_geometry` derives the angle as `atan2(right - centre)`,
-      which inverts `calculate_ellipse_nodes_y_up`. So the TODO's original guess
-      - that a rotation snaps to the principal axis - is wrong.
-
-      What disagrees is the handle. Its data position in `ellipse_gate.rs` is
-      `(cx, cy + ry)`, fixed and independent of `angle`, and `draw_gates` then
-      rotates the *rendered* handle by an SVG transform of `-angle`. With the y
-      axis inverted that lands it at data angle `90 - angle`, and mousedown
-      reads the rendered position back through `pixel_to_data` - so grabbing the
-      handle on an ellipse at angle t computes `-t` and mirrors it. At t = 0 it
-      is a no-op, which is why a fresh axis-aligned ellipse looks fine. During a
-      drag the transform then adds `rotation_deg()` on top of an `angle` that is
-      already being updated, rotating the handle twice per frame.
-
-      Smallest fix: make the handle's data position track the angle
-      (`(cx - ry*sin t, cy + ry*cos t)`) and drop the now-redundant SVG rotate.
-      That touches neither the geometry nor `source_handles`, so the
-      byte-identical export of an untouched import is unaffected - which matters
-      while the Omiq load test below is still outstanding.
-
-      Related but separate: the two node helpers disagree in y.
-      `calculate_ellipse_nodes` puts "top" at `(cx, cy - ry)` and
-      `calculate_ellipse_nodes_y_up` at `(cx, cy + ry)`. `try_new` uses the
-      first for the drawn points, `update_ellipse_geometry` the second for the
-      geometry. Resizing tolerates it because `calculate_projected_radii` takes
-      `abs()`, so it has been invisible. Worth reconciling, carefully, since it
-      moves the drawn handles for every ellipse.
+Both reported bugs are resolved. Ellipse rotation was investigated at length
+and works correctly in use - the probe of the pure layer sweeps continuously
+and the handle behaves - so the entry was removed rather than left as a
+standing doubt. The two ellipse node helpers do order their minor-axis pair
+opposite ways round; that is now documented in both, and it is harmless,
+because the pair is symmetric about the centre and the resize path takes
+`abs()`.
 
 - [x] **A rectangle or line gate's right point could not cross its left.**
       Not a clamp and not a regression from this branch - every function on the
@@ -128,20 +96,32 @@ A gate with no node but which a live boolean still references. Omiq leaves
 these behind and we keep them verbatim so the boolean stays evaluable.
 `GateState::is_ghost` is the predicate.
 
-- [ ] **Collect ghosts when nothing references them.** Deleting the last
-      boolean that references a ghost leaves it stranded: nothing sweeps it.
-      They accumulate for the life of a session and are all written back on
-      export.
+- [x] **Collect ghosts when nothing references them.**
+      `collect_stranded_ghosts` runs the importer's reachability idea over the
+      live store: start from every gate holding a position in the tree, follow
+      booleans to their operands to a fixed point, and drop whatever the walk
+      does not reach - from the registry, both override tiers, the rebuild
+      entries and the boolean link table. Called at the end of `remove_gate`,
+      which is where the triggering case lives: deleting the last boolean that
+      referenced a ghost.
 
-      The machinery already exists: `collect_reachable` in `gate_store.rs` is
-      the walk the importer uses to decide which containers a live node or
-      boolean can reach. Run the same walk after a delete and drop anything it
-      does not reach. Two cautions: fix the `is_ghost` composite false positive
-      below first, or the sweep will try to collect every composite; and
-      `omiq_rebuild.ghost_containers` holds raw JSON for containers that were
-      already nodeless at import, which must be swept on the same rule rather
-      than kept forever.
-      A real export had 6 ghosts on import, so this is not hypothetical.
+      Two deliberate limits, both worth revisiting if they bite.
+
+      `omiq_rebuild.ghost_containers` is left alone. Those containers were
+      already unreachable in the file Omiq wrote and are kept verbatim so a
+      round trip returns the document it was given; sweeping them on this rule
+      would drop every one on the first delete, and
+      `unreachable_containers_are_kept_verbatim` asserts otherwise. Collecting
+      what this session stranded is a different thing from discarding what Omiq
+      shipped.
+
+      `delete_placement` does not sweep. Dropping the last position of a gate
+      leaves it a ghost by contract - `remove_gate` is what deletes a gate -
+      and `deleting_the_last_instance_leaves_a_ghost_not_a_hole` pins that.
+      An unreferenced ghost made this way is collected by the next sweep rather
+      than immediately. Changing that is a one-line call plus a test rewrite,
+      but it changes a documented contract, so it is a decision rather than a
+      fix.
 
 ## Export
 
