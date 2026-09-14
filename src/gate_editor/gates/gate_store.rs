@@ -383,6 +383,15 @@ impl GateState {
     }
 
     #[cfg(test)]
+    pub fn view_ids_for_probe(&self, parent: &str) -> Vec<String> {
+        self.gate_ids_by_view
+            .iter()
+            .filter(|(k, _)| k.parental_gate_id.as_deref() == Some(parent))
+            .flat_map(|(_, v)| v.iter().map(|g| g.to_string()))
+            .collect()
+    }
+
+    #[cfg(test)]
     pub fn view_keys_for_probe(&self) -> Vec<(String, String, Option<String>, usize)> {
         self.gate_ids_by_view
             .iter()
@@ -442,11 +451,20 @@ impl GateState {
         if !self.placements.contains_key(node) {
             return Err(anyhow!("no such position in the tree: {node}"));
         }
+
+        // What each doomed position showed, and which plot it was on, before the
+        // tree forgets where any of them were.
+        let doomed: Vec<(Arc<str>, GateId)> = std::iter::once(node.as_arc().clone())
+            .chain(self.hierarchy.get_descendants(node.as_str()))
+            .map(NodeId::from)
+            .filter_map(|n| Some((self.plot_of(&n), self.gate_for_node(&n)?.clone())))
+            .collect();
+
         for removed in self.hierarchy.delete_subtree(node.as_str()) {
-            let removed = NodeId::from(removed);
-            if let Some(placement) = self.forget_placement(&removed) {
-                self.drop_from_views(&placement.gate_id);
-            }
+            self.forget_placement(&NodeId::from(removed));
+        }
+        for (plot, gate_id) in doomed {
+            self.unindex_view_at(&plot, &gate_id);
         }
         Ok(())
     }
@@ -494,8 +512,9 @@ impl GateState {
         }
 
         let collapsed = self.placements.get(node).is_some_and(|p| p.collapsed);
+        let plot = self.plot_of(node);
         self.record_placement(node.clone(), to, collapsed);
-        self.drop_from_views(&from);
+        self.unindex_view_at(&plot, &from);
         self.reindex_view(node);
         Ok(())
     }
@@ -524,21 +543,44 @@ impl GateState {
             .insert(new_id.clone(), copy);
 
         let collapsed = self.placements.get(node).is_some_and(|p| p.collapsed);
+        let plot = self.plot_of(node);
         self.record_placement(node.clone(), new_id.clone(), collapsed);
+        self.unindex_view_at(&plot, &shared);
         self.reindex_view(node);
         Ok(new_id)
     }
 
-    /// Forget a gate id everywhere the renderer lists it.
-    fn drop_from_views(&mut self, gate_id: &GateId) {
-        if self.placement_count(gate_id) > 0 {
-            // Still applied somewhere, so it still belongs on that plot.
+    /// Stop drawing a gate on one plot.
+    ///
+    /// Scoped to the plot, not to the gate: the renderer lists gates per plot,
+    /// and a plot is a parent position. A gate that is no longer shown at any
+    /// position under `parent` comes off that plot even when it is still applied
+    /// elsewhere - and one that another sibling position still shows has to
+    /// stay, however many positions it has lost.
+    fn unindex_view_at(&mut self, parent: &Arc<str>, gate_id: &GateId) {
+        let still_shown_here = self.nodes_for_gate(gate_id).iter().any(|node| {
+            self.parent_node(node)
+                .map(|p| p.as_arc().clone())
+                .unwrap_or_else(|| ROOTGATE.clone())
+                == *parent
+        });
+        if still_shown_here {
             return;
         }
-        for ids in self.gate_ids_by_view.values_mut() {
-            ids.retain(|id| id != gate_id);
+
+        for (key, ids) in self.gate_ids_by_view.iter_mut() {
+            if key.parental_gate_id.as_ref() == Some(parent) {
+                ids.retain(|id| id != gate_id);
+            }
         }
         self.gate_ids_by_view.retain(|_, ids| !ids.is_empty());
+    }
+
+    /// The plot a position sits on.
+    fn plot_of(&self, node: &NodeId) -> Arc<str> {
+        self.parent_node(node)
+            .map(|p| p.as_arc().clone())
+            .unwrap_or_else(|| ROOTGATE.clone())
     }
 
     /// File the gate at this position under the plot its parent defines.
@@ -549,10 +591,7 @@ impl GateState {
         let Some(gate) = self.registered_gate(&gate_id) else {
             return;
         };
-        let parent = self
-            .parent_node(node)
-            .map(|p| p.as_arc().clone())
-            .unwrap_or_else(|| ROOTGATE.clone());
+        let parent = self.plot_of(node);
         let (x, y) = gate.get_params();
         let key = GatesOnPlotKey::new(x, y, Some(parent));
         let ids = self.gate_ids_by_view.entry(key).or_default();
@@ -1259,26 +1298,22 @@ impl GateState {
                 match source {
                     GateSource::Global => {
                         let gate_id = gate.get_id();
-                        // Every container that has a node is in the hierarchy, so
-                        // a missing parent means this one has no node: a ghost
-                        // kept alive only by a boolean gate that references it.
-                        // It belongs on no plot, but it must still be registered
-                        // or that boolean cannot resolve its operand.
-                        if let Some(parent) = self
-                            .primary_node_for_gate(&gate_id)
-                            .and_then(|n| self.parent_node(&n))
-                        {
-                            let params = gate.get_params();
-                            let key =
-                                GatesOnPlotKey::new(params.0, params.1, Some(parent.as_arc().clone()));
-                            self.gate_ids_by_view
-                                .entry(key)
-                                .or_default()
-                                .push(gate_id.clone());
-                        }
                         self.gate_store
                             .primary_and_subgate_registry
-                            .insert(gate_id, gate);
+                            .insert(gate_id.clone(), gate);
+
+                        // Drawn on the plot of every position it occupies, not
+                        // just the first: a gate Omiq applies at several points
+                        // belongs on each of those plots.
+                        //
+                        // A gate with no position is a ghost - kept alive only
+                        // by a boolean that references it - and belongs on no
+                        // plot, which falls out of this loop being empty. It is
+                        // registered above regardless, or that boolean cannot
+                        // resolve its operand.
+                        for node in self.nodes_for_gate(&gate_id).to_vec() {
+                            self.reindex_view(&node);
+                        }
                     }
                     GateSource::Group(key) => {
                         self.gate_store.group_position_overrides.insert(key, gate);

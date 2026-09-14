@@ -3069,3 +3069,104 @@ fn an_unlink_made_here_is_written_to_the_file() {
     assert!(containers.contains_key(&*new_id), "the copy needs a container");
     assert_nodes_match_tree(&state, &written);
 }
+
+
+// ─── What is drawn on a plot after linking and unlinking ──────────────────────
+//
+// Regression: unlinking added the new gate to the plot but never removed the
+// one the position had stopped showing, so both rendered - the old one still
+// moving with the gate it was linked to. Linking had the same defect: it only
+// dropped a gate from the plot when the gate had no positions left anywhere,
+// so a gate applied elsewhere stayed drawn where it no longer was.
+
+#[test]
+fn unlinking_leaves_one_gate_on_the_plot_not_two() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let node = state.nodes_for_gate(&shared)[0].clone();
+    let plot = state.parent_node(&node).unwrap().to_string();
+
+    let before = state.view_ids_for_probe(&plot).len();
+    let new_id = state.unlink_node(&node).unwrap();
+    let drawn = state.view_ids_for_probe(&plot);
+
+    assert_eq!(drawn.len(), before, "unlinking must not add a gate to the plot");
+    assert!(drawn.contains(&new_id.to_string()), "the copy is drawn: {drawn:?}");
+    assert!(
+        !drawn.contains(&shared.to_string()),
+        "the gate this position stopped showing must come off the plot: {drawn:?}"
+    );
+}
+
+#[test]
+fn unlinking_leaves_the_other_position_drawing_the_original() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let nodes = state.nodes_for_gate(&shared).to_vec();
+    let other_plot = state.parent_node(&nodes[1]).unwrap().to_string();
+
+    state.unlink_node(&nodes[0]).unwrap();
+
+    assert!(
+        state.view_ids_for_probe(&other_plot).contains(&shared.to_string()),
+        "the sibling position still shows the original"
+    );
+}
+
+#[test]
+fn linking_takes_the_old_gate_off_the_plot() {
+    let mut state = import_json(&linked_gate_json());
+    let g1: GateId = Arc::from("g1");
+    let g2: GateId = Arc::from("g2");
+    let node = state.nodes_for_gate(&g1)[0].clone();
+    let plot = state.parent_node(&node).unwrap().to_string();
+
+    state
+        .link_node_to_gate(&node, &state.nodes_for_gate(&g2)[0].clone())
+        .unwrap();
+
+    let drawn = state.view_ids_for_probe(&plot);
+    assert!(!drawn.contains(&g1.to_string()), "g1 is no longer applied here: {drawn:?}");
+    assert!(drawn.contains(&g2.to_string()), "g2 is: {drawn:?}");
+}
+
+/// A gate applied at two positions under the *same* parent must survive losing
+/// one of them - the plot still shows it.
+#[test]
+fn a_gate_shown_twice_on_one_plot_stays_when_one_position_goes() {
+    let mut state = GateState::default();
+    let a = add(&mut state, PrimaryGateType::Rectangle, "a", None);
+    add(&mut state, PrimaryGateType::Rectangle, "b", None);
+    let b = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| id != &a)
+        .expect("a second gate");
+
+    // Point b's position at a, so both root positions show a.
+    state
+        .link_node_to_gate(&NodeId::from(b.clone()), &NodeId::from(a.clone()))
+        .unwrap();
+    assert_eq!(state.placement_count(&a), 2);
+
+    // Dropping one of them leaves the other, so a stays on the plot.
+    state.delete_placement(&NodeId::from(b)).unwrap();
+
+    let drawn = state.view_ids_for_probe(&ROOTGATE);
+    assert!(drawn.contains(&a.to_string()), "still shown at its other position: {drawn:?}");
+}
+
+#[test]
+fn deleting_a_position_takes_its_gate_off_that_plot() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let node = state.nodes_for_gate(&shared)[0].clone();
+    let plot = state.parent_node(&node).unwrap().to_string();
+
+    state.delete_placement(&node).unwrap();
+
+    assert!(
+        !state.view_ids_for_probe(&plot).contains(&shared.to_string()),
+        "nothing shows it on that plot any more"
+    );
+}
