@@ -9,24 +9,18 @@ Omiq keys nodes separately from filter containers, so one gate can be applied
 at several points in the tree. A real export had 250 node placements over 146
 containers: 38 linked, one of them at nine points.
 
-Export already preserves all 250 (`OmiqRebuildData.nodes` is a `Vec`). The
-editor does not model them: `GateHierarchy` is single-parent, and `add_child`
-unlinks the previous parent before adding, so the last node processed wins and
-the other placements vanish.
+Import, the editor and export now all agree on this. What is left is
+composites, and the safety of the link action itself.
 
 - [x] **Stage 1 - split placement from gate.** `NodeId` newtype, `GatePlacement`,
       and the `placements` / `nodes_by_gate` tables in `GateState`. Node ids
       equal gate ids for now, so no behaviour change.
-- [ ] **Stage 2 - a node per Omiq `GatingNode` on import.** In
-      `gate_store.rs`, `upload_gates_from_file` keys the tree on
-      `node.filter_container_id`; key it on `node.id` instead, and take the
-      parent straight from `node.parent_id` rather than through the
-      `node_to_gate_id` indirection, which then goes away. The sidebar already
-      recurses through `get_children`, so placements render with no change
-      there beyond keying `GateNode` on the node and looking the gate up.
-      `get_chain_to_root` becomes node-scoped, which also fixes a real bug: a
-      linked gate's statistics are currently computed against one arbitrary
-      parent chain.
+- [x] **Stage 2 - a node per Omiq `GatingNode` on import.** The tree is keyed
+      on `node.id`; 250 placements rather than 146 on a real file. Chains are
+      node-scoped, which fixed a linked gate's statistics being computed
+      against one arbitrary parent chain.
+- [x] **Fold the exporter onto the node table.** One Omiq node per position in
+      the tree, so an edit made here reaches the file.
 - [x] **Stage 3 - link / unlink / delete-one-instance.** `link_node_to_gate`,
       `unlink_node` and `delete_placement` on `GateState`, wired to the
       hierarchy pane's right-click menu, with a pick mode for choosing a link
@@ -53,11 +47,6 @@ the other placements vanish.
       under its own id with no node, so the predicate calls it a ghost. Not
       reachable today, but it would make the ghost-collection sweep try to
       collect every composite.
-- [ ] **Linking composites (superseded by the two items above).** Refused for now: a composite is registered under
-      its own id *and* each corner's, and Omiq treats the group as
-      all-or-nothing, so a copy has to mint an id per corner and rewrite the
-      `groupId` that ties them together. `DrawableGate::with_new_id` returns
-      `None` for them, which is what the refusal keys off.
 
 Names are shared per gate, matching Omiq, which stores the name on the
 container and not on the node. Per-placement names are not representable in a
@@ -83,9 +72,10 @@ these behind and we keep them verbatim so the boolean stays evaluable.
       that Omiq agrees with them.
 - [ ] **Name new composite corners `Q1..Q4`.** They currently default to the
       raw subgate id (`{uuid}_BL`). Editor-side naming, not a writer bug.
-- [ ] **Choose a placement when adding a child under a linked parent.** Today
-      it attaches to the first placement silently. Stage 2 makes this
-      well-defined; until then it is a guess.
+- [x] **Choose a placement when adding a child under a linked parent.** The
+      sidebar passes the node, so a child attaches to the position the user was
+      looking at. `as_parent_node` still resolves a bare gate id to its first
+      position, for callers that have not been converted.
 
 ## Autogating
 
