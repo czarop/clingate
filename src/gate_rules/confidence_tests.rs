@@ -80,7 +80,7 @@ fn a_handful_of_events_in_the_gate_is_flagged_despite_a_large_parent() {
 #[test]
 fn an_edge_buried_in_the_population_scores_worse_than_one_in_a_gap() {
     // No positive population at all: the rule has to put the edge inside the
-    // negative, where it separates nothing.
+    // negative, where a small nudge changes what the gate holds.
     let buried: Vec<f64> = (0..10_000).map(|i| (i % 1000) as f64 / 1000.0).collect();
 
     let in_gap = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
@@ -97,10 +97,54 @@ fn an_edge_buried_in_the_population_scores_worse_than_one_in_a_gap() {
     .assess(&in_cloud, None);
 
     assert!(
-        part(&cloud_score, SEPARATION) < part(&gap_score, SEPARATION),
+        part(&cloud_score, STABILITY) < part(&gap_score, STABILITY),
         "buried {} should score below separated {}",
-        part(&cloud_score, SEPARATION),
-        part(&gap_score, SEPARATION)
+        part(&cloud_score, STABILITY),
+        part(&gap_score, STABILITY)
+    );
+}
+
+/// The measure this replaced. In a continuum the gap between the two events an
+/// edge separates is about the spread over the event count, so it can never
+/// approach 1 - on 50,000 real events it came out at 0.0003 to 0.006 of the
+/// interquartile width on every fluorescence channel, ranking nothing.
+#[test]
+fn stability_survives_the_event_counts_a_real_gate_sees() {
+    let dense: Vec<f64> = (0..10_000).map(|i| i as f64 / 10_000.0).collect();
+    let t = tail_fraction(&dense, (0.002, 0.005)).unwrap();
+
+    let gap = 1.0 / 10_000.0;
+    assert!(
+        gap / t.parent_spread < 0.001,
+        "the gap measure would have scored ~{:.5}",
+        gap / t.parent_spread
+    );
+    let stability = part(&assess(&t, None), STABILITY);
+    assert!(
+        (0.01..0.99).contains(&stability),
+        "stability has to land somewhere rankable, got {stability}"
+    );
+}
+
+/// Half an interquartile width is the largest hand adjustment in a real
+/// workflow, so a move of that size must read as a warning, and a typical move -
+/// around 0.07 of the spread - must not.
+#[test]
+fn displacement_is_calibrated_to_real_hand_adjustments() {
+    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
+
+    let typical = assess(&t, Some(t.x - 0.07 * t.parent_spread));
+    let largest = assess(&t, Some(t.x - 0.5 * t.parent_spread));
+
+    assert!(
+        part(&typical, DISPLACEMENT) > 0.8,
+        "a routine adjustment must not be flagged, got {}",
+        part(&typical, DISPLACEMENT)
+    );
+    assert_eq!(
+        part(&largest, DISPLACEMENT),
+        0.0,
+        "the largest move seen in a real file is the limit"
     );
 }
 
@@ -157,7 +201,7 @@ fn a_gate_dragged_a_long_way_from_its_reference_is_flagged() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
     let limits = ConfidenceLimits::default();
 
-    // Three interquartile widths away, past the limit of two.
+    // Three interquartile widths away, far past the limit.
     let far = t.x + 3.0 * t.parent_spread;
     let c = CountAndSeparation {
         limits: limits.clone(),
@@ -174,8 +218,9 @@ fn displacement_is_read_against_the_spread_not_in_raw_units() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
     let limits = ConfidenceLimits::default();
 
-    // One interquartile width is half the limit, so half the component.
-    let moved = t.x + t.parent_spread;
+    // A quarter of an interquartile width is half the limit of 0.5, so the
+    // component comes out at a half.
+    let moved = t.x + 0.25 * t.parent_spread;
     let c = CountAndSeparation {
         limits: limits.clone(),
     }
@@ -212,12 +257,12 @@ fn the_score_is_the_weakest_component_not_the_product() {
 
     let weakest = part(&c, EVENTS)
         .min(part(&c, ADMITTED))
-        .min(part(&c, SEPARATION))
+        .min(part(&c, STABILITY))
         .min(part(&c, BAND))
         .min(part(&c, DISPLACEMENT));
     assert_eq!(c.score, weakest);
 
-    let product = part(&c, EVENTS) * part(&c, ADMITTED) * part(&c, SEPARATION) * part(&c, BAND);
+    let product = part(&c, EVENTS) * part(&c, ADMITTED) * part(&c, STABILITY) * part(&c, BAND);
     assert!(
         c.score > product,
         "weakest {} should beat the product {product} ({c:?})",

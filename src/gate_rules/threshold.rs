@@ -31,15 +31,23 @@ pub struct Threshold {
     pub fraction_admitted: f64,
     /// How many finite events the rule was solved against.
     pub parent_events: usize,
-    /// The width of the gap the edge sits in - the distance between the last
-    /// event admitted and the first one excluded.
+    /// How much the gate's contents move when the edge does: the change in
+    /// admitted count over a window of [`STABILITY_WINDOW`] either side,
+    /// relative to the count itself.
     ///
-    /// This is the most direct measure of how sure the placement is. A wide gap
-    /// means the edge is in empty space and a cell landing differently next
-    /// sample changes nothing; a gap near zero means it is buried in a dense
-    /// cloud and the gate's contents turn on noise. Zero for the degenerate
-    /// placements that admit everything or nothing, which have no gap.
-    pub separation: f64,
+    /// Zero means the edge sits in empty space and nudging it changes nothing.
+    /// A swing of 1 means a small move changes the contents by as much as the
+    /// gate holds.
+    ///
+    /// This replaced the width of the gap between the two events the edge
+    /// separates, which looked like the obvious measure and is useless in
+    /// practice: in a continuum the gap between adjacent order statistics is
+    /// about the spread divided by the event count, so on 50,000 real events it
+    /// came out between 0.0003 and 0.006 of the interquartile width on every
+    /// fluorescence channel - never approaching 1, and ranking nothing. A window
+    /// wide enough to contain many events asks the question that actually
+    /// matters: move this gate slightly, and does the answer change?
+    pub count_swing: f64,
     /// The interquartile width of the parent population, for reading
     /// `separation` and any displacement against the scale of the data rather
     /// than in absolute units.
@@ -159,6 +167,7 @@ pub fn tail_fraction(values: &[f64], band: (f64, f64)) -> Result<Threshold, Solv
         (sorted[target - 1] + sorted[target]) / 2.0
     };
 
+    let spread = interquartile_spread(&sorted);
     let (events_admitted, fraction_admitted) = admitted(&sorted, x);
     let status = if (lower..=upper).contains(&fraction_admitted) {
         Status::InBand
@@ -171,21 +180,39 @@ pub fn tail_fraction(values: &[f64], band: (f64, f64)) -> Result<Threshold, Solv
         events_admitted,
         fraction_admitted,
         parent_events: n,
-        separation: separation_at(&sorted, target),
-        parent_spread: interquartile_spread(&sorted),
+        count_swing: count_swing_at(&sorted, x, spread),
+        parent_spread: spread,
         status,
     })
 }
 
-/// The width of the gap an edge admitting `count` events sits in.
+/// How far the edge is nudged when measuring [`Threshold::count_swing`], as a
+/// fraction of the population's interquartile width.
 ///
-/// Zero at both extremes: admitting everything or nothing puts the edge outside
-/// the data, where there is no gap to measure and nothing to be confident about.
-fn separation_at(sorted_desc: &[f64], count: usize) -> f64 {
-    if count == 0 || count >= sorted_desc.len() {
+/// It lives here rather than in the confidence model because measuring it needs
+/// the values, which the model never sees. A tenth of the spread is small
+/// enough to be a plausible hand adjustment and wide enough to contain many
+/// events in a dense region.
+pub const STABILITY_WINDOW: f64 = 0.1;
+
+/// The relative change in admitted count when the edge moves either way by
+/// [`STABILITY_WINDOW`] of the interquartile spread.
+///
+/// Returns 0 when there is no spread to measure against or nothing admitted,
+/// both of which the confidence model treats as no information rather than as
+/// a clean placement.
+fn count_swing_at(sorted_desc: &[f64], x: f64, spread: f64) -> f64 {
+    if spread <= 0.0 {
         return 0.0;
     }
-    sorted_desc[count - 1] - sorted_desc[count]
+    let w = STABILITY_WINDOW * spread;
+    let below = sorted_desc.partition_point(|v| *v > x - w);
+    let above = sorted_desc.partition_point(|v| *v > x + w);
+    let admitted = sorted_desc.partition_point(|v| *v > x);
+    if admitted == 0 {
+        return 0.0;
+    }
+    (below - above) as f64 / admitted as f64
 }
 
 /// The interquartile width of the population, as a scale to read other
@@ -216,6 +243,7 @@ pub fn percentile_offset(
     }
     let sorted = descending(values)?;
     let x = percentile_of_descending(&sorted, percentile) + offset;
+    let spread = interquartile_spread(&sorted);
     let (events_admitted, fraction_admitted) = admitted(&sorted, x);
 
     Ok(Threshold {
@@ -223,8 +251,8 @@ pub fn percentile_offset(
         events_admitted,
         fraction_admitted,
         parent_events: sorted.len(),
-        separation: separation_at(&sorted, events_admitted),
-        parent_spread: interquartile_spread(&sorted),
+        count_swing: count_swing_at(&sorted, x, spread),
+        parent_spread: spread,
         status: Status::NoBand,
     })
 }

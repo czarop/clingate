@@ -85,7 +85,7 @@ pub trait ConfidenceModel {
 /// Component names, so a report can look one up without matching on prose.
 pub const EVENTS: &str = "parent event count";
 pub const ADMITTED: &str = "events in the gate";
-pub const SEPARATION: &str = "separation from the population";
+pub const STABILITY: &str = "stability of the gate's contents";
 pub const BAND: &str = "rule satisfied";
 pub const DISPLACEMENT: &str = "distance moved from the reference";
 
@@ -102,11 +102,18 @@ pub struct ConfidenceLimits {
     pub events_full: f64,
     /// Parent events below which a placement is not worth anything.
     pub events_floor: f64,
-    /// Separation, as a multiple of the parent's interquartile width, at which
-    /// the edge is unambiguously in empty space.
-    pub separation_full: f64,
+    /// The count swing at which stability is judged to have halved. A swing of
+    /// 1 means nudging the edge changes the gate's contents by as much as it
+    /// holds.
+    pub swing_half: f64,
     /// Displacement from the reference gate, as a multiple of the parent's
     /// interquartile width, at which the move is too large to trust.
+    ///
+    /// Calibrated against a real workflow: across 41 gates that carried
+    /// per-file positions over 117 files, the whole range a gate was moved by
+    /// hand had a median of 0.18 arcsinh units against interquartile widths
+    /// around 2 to 3 - about 0.07 of the spread - and the largest single move
+    /// in the document was near 0.5. A limit of 2 would never have fired.
     pub displacement_limit: f64,
 }
 
@@ -116,12 +123,10 @@ impl Default for ConfidenceLimits {
             // Parental gates normally hold thousands to tens of thousands.
             events_full: 10_000.0,
             events_floor: 100.0,
-            // A gap as wide as the middle half of the population is a clean
-            // separation by any eye.
-            separation_full: 1.0,
-            // Two interquartile widths is a long way for a gate to travel
-            // between samples.
-            displacement_limit: 2.0,
+            swing_half: 1.0,
+            // Half an interquartile width is the largest hand adjustment seen
+            // in a real workflow; see the field.
+            displacement_limit: 0.5,
         }
     }
 }
@@ -152,9 +157,9 @@ impl ConfidenceModel for CountAndSeparation {
                 ),
             ),
             Component::new(
-                SEPARATION,
-                separation_score(t, &self.limits),
-                separation_detail(t),
+                STABILITY,
+                stability_score(t, &self.limits),
+                stability_detail(t),
             ),
             Component::new(BAND, band_score(t), band_detail(t)),
         ];
@@ -196,28 +201,33 @@ fn admitted_count_score(k: usize) -> f64 {
     (1.0 - 1.0 / (k as f64).sqrt()).clamp(0.0, 1.0)
 }
 
-/// The gap the edge sits in, read against the spread of the population.
+/// Move the edge slightly and see whether the answer survives.
 ///
-/// Absolute width means nothing on its own - a gap of 0.1 is enormous on a
-/// tight negative and negligible on a smeared one - so it is normalised by the
-/// interquartile width.
-fn separation_score(t: &Threshold, limits: &ConfidenceLimits) -> f64 {
-    if t.parent_spread <= 0.0 {
-        // Half the population sits on a single value. Nothing can be said about
-        // separation, so claim nothing.
+/// `1 / (1 + swing)` falls from 1 at no swing through a half at `swing_half`,
+/// and never reaches zero - a fragile placement is still a placement. On real
+/// data this spread from 0.08 for a channel where a nudge changed the contents
+/// twelve times over to 0.89 for a cleanly separated one, which is the range a
+/// ranking needs.
+fn stability_score(t: &Threshold, limits: &ConfidenceLimits) -> f64 {
+    if t.parent_spread <= 0.0 || t.events_admitted == 0 {
+        // Nothing was measured against anything, so claim nothing.
         return 0.0;
     }
-    ((t.separation / t.parent_spread) / limits.separation_full).clamp(0.0, 1.0)
+    let scale = if limits.swing_half > 0.0 {
+        limits.swing_half
+    } else {
+        1.0
+    };
+    (1.0 / (1.0 + t.count_swing / scale)).clamp(0.0, 1.0)
 }
 
-fn separation_detail(t: &Threshold) -> String {
+fn stability_detail(t: &Threshold) -> String {
     if t.parent_spread <= 0.0 {
         return "the population has no interquartile spread to measure against".into();
     }
     format!(
-        "a gap of {:.4}, {:.2} times the interquartile spread",
-        t.separation,
-        t.separation / t.parent_spread
+        "nudging the edge by a tenth of the spread changes the contents by {:.0}%",
+        t.count_swing * 100.0
     )
 }
 
