@@ -2924,16 +2924,46 @@ fn deleting_one_instance_leaves_the_gate_at_its_other_points() {
     assert!(!state.is_linked(&shared));
 }
 
+/// Dropping the last position of a gate a boolean is built on leaves a ghost,
+/// not a hole: the boolean has to go on evaluating.
+///
+/// This used to be asserted against `linked_gate_json`, which has no boolean in
+/// it at all - so it was pinning the mechanism (a ghost is always kept) rather
+/// than the reason for it. The AFTER fixture has a real boolean, so the test
+/// can now turn on whether anything actually reaches the gate.
 #[test]
-fn deleting_the_last_instance_leaves_a_ghost_not_a_hole() {
+fn deleting_the_last_instance_leaves_a_ghost_when_a_boolean_needs_it() {
+    let mut state = import(AFTER);
+    let operand = the_live_operand(&state);
+
+    for node in state.nodes_for_gate(&operand).to_vec() {
+        state.delete_placement(&node).unwrap();
+    }
+
+    assert_eq!(state.placement_count(&operand), 0, "it is on no plot now");
+    assert!(
+        state.is_ghost(&operand),
+        "but its boolean still reaches it, so it stays resolvable"
+    );
+}
+
+/// And the other half: a gate nothing reaches is not worth keeping. It is drawn
+/// nowhere, no boolean evaluates against it, and nothing in the UI brings it
+/// back - it would only accumulate and be written out on export.
+#[test]
+fn deleting_the_last_instance_of_an_unreferenced_gate_collects_it() {
     let mut state = import_json(&linked_gate_json());
     let shared = shared_gate();
+
     for node in state.nodes_for_gate(&shared).to_vec() {
         state.delete_placement(&node).unwrap();
     }
 
     assert_eq!(state.placement_count(&shared), 0);
-    assert!(state.is_ghost(&shared), "still resolvable for a boolean");
+    assert!(
+        !state.is_registered(&shared),
+        "no boolean references it, so there is nothing to keep it for"
+    );
 }
 
 #[test]
@@ -3725,6 +3755,27 @@ fn the_boolean_and_its_ghost(state: &GateState) -> (GateId, GateId) {
         }
     }
     panic!("the AFTER fixture should carry a boolean built on a ghost");
+}
+
+/// The operand of the AFTER fixture's boolean that is still on the tree, as
+/// opposed to the corner that was already deleted.
+fn the_live_operand(state: &GateState) -> GateId {
+    for id in state.registered_ids() {
+        let Some(gate) = state.registered_gate(&id) else {
+            continue;
+        };
+        let Some(inner) = gate.get_gate_ref(None) else {
+            continue;
+        };
+        if let flow_gates::GateGeometry::Boolean { operands, .. } = &inner.geometry
+            && let Some(live) = operands
+                .iter()
+                .find(|o| state.placement_count(o) > 0 && !state.is_ghost(o))
+        {
+            return live.clone();
+        }
+    }
+    panic!("the AFTER fixture should carry a boolean with a live operand");
 }
 
 #[test]

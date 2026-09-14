@@ -553,9 +553,13 @@ impl GateState {
     ///
     /// The subtree under this position goes with it: those children belong to
     /// this placement, not to the gate, so the sibling placement keeps its own.
-    /// When the last position goes the gate stays registered as a ghost, which
-    /// is what keeps a boolean that references it evaluable; use `remove_gate`
-    /// to delete the gate itself.
+    ///
+    /// When the last position goes the gate becomes a ghost, and whether it is
+    /// then kept comes down to the one question that matters: does anything
+    /// still reach it? A boolean built on it keeps it registered and evaluable.
+    /// Nothing reaching it means it is invisible, unreferenced and written out
+    /// on export for no reason, so `collect_stranded_ghosts` takes it. Use
+    /// `remove_gate` to delete a gate and everything built on it outright.
     pub fn delete_placement(&mut self, node: &NodeId) -> anyhow::Result<()> {
         if !self.placements.contains_key(node) {
             return Err(anyhow!("no such position in the tree: {node}"));
@@ -569,14 +573,15 @@ impl GateState {
             for corner_node in group {
                 self.delete_one_placement(&corner_node);
             }
+            // After the whole group, not inside the loop: a composite is still
+            // reachable while any corner holds a position, so a sweep run
+            // between corners would see a half-deleted group and do nothing.
+            self.collect_stranded_ghosts();
             return Ok(());
         }
 
         self.delete_one_placement(node);
-        // No sweep here, deliberately. Dropping the last position of a gate
-        // leaves it a ghost by contract - `remove_gate` is the operation that
-        // deletes a gate - and an unreferenced one is collected by the next
-        // sweep rather than by this call.
+        self.collect_stranded_ghosts();
         Ok(())
     }
 

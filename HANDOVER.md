@@ -82,6 +82,13 @@ These were derived by reading actual exports; they are not in any spec we have.
   off a quadrant and then deleting the quadrant leaves the boolean alive and its
   operand container present but nodeless. We keep them verbatim and write them
   back untouched.
+
+  Two different things share the name. Containers that were *already* nodeless
+  in the file Omiq wrote live in `omiq_rebuild.ghost_containers` as raw JSON and
+  are never touched - we cannot assume Omiq does not need them, so a round trip
+  returns the document it was given. A gate that *this session* leaves nodeless
+  is a registered gate, and it is kept only while something reaches it:
+  `collect_stranded_ghosts` runs after every delete and drops the rest.
 - `1e16` is the sentinel for an unbounded edge. This is unambiguous within the
   files seen - 1e16 on an arcsinh axis whose real coordinates span about +/-4
   cannot be a measurement - but one dataset cannot prove Omiq always uses it.

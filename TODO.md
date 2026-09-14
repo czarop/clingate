@@ -105,9 +105,7 @@ these behind and we keep them verbatim so the boolean stays evaluable.
       which is where the triggering case lives: deleting the last boolean that
       referenced a ghost.
 
-      Two deliberate limits, both worth revisiting if they bite.
-
-      `omiq_rebuild.ghost_containers` is left alone. Those containers were
+      One deliberate limit. `omiq_rebuild.ghost_containers` is left alone. Those containers were
       already unreachable in the file Omiq wrote and are kept verbatim so a
       round trip returns the document it was given; sweeping them on this rule
       would drop every one on the first delete, and
@@ -115,13 +113,16 @@ these behind and we keep them verbatim so the boolean stays evaluable.
       what this session stranded is a different thing from discarding what Omiq
       shipped.
 
-      `delete_placement` does not sweep. Dropping the last position of a gate
-      leaves it a ghost by contract - `remove_gate` is what deletes a gate -
-      and `deleting_the_last_instance_leaves_a_ghost_not_a_hole` pins that.
-      An unreferenced ghost made this way is collected by the next sweep rather
-      than immediately. Changing that is a one-line call plus a test rewrite,
-      but it changes a documented contract, so it is a decision rather than a
-      fix.
+      `delete_placement` sweeps too, after the whole composite group rather
+      than inside the loop - a composite is still reachable while any corner
+      holds a position, so a sweep between corners would see a half-deleted
+      group and do nothing.
+
+      The test that used to say a ghost is always kept was asserting the
+      mechanism rather than the reason for it: it ran against a fixture with no
+      boolean in it. It now turns on whether anything actually reaches the gate,
+      which is the only question that matters - one test for a ghost a boolean
+      still needs, one for a gate nothing reaches.
 
 ## Export
 
