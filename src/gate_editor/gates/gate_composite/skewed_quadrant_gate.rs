@@ -747,6 +747,7 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn super::super::gate_traits::DrawableGate>> {
         let (xmin, xmax) = {

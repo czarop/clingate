@@ -533,6 +533,7 @@ impl super::super::gate_traits::DrawableGate for BisectorGate {
         &self,
         new_point: (f32, f32),
         _point_index: usize,
+        _anchor: Option<(f32, f32)>,
         _mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn super::super::gate_traits::DrawableGate>> {
         let mut new_gate_map = FxIndexMap::default();

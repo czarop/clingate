@@ -212,7 +212,7 @@ fn moving_a_composite_keeps_its_subgate_count_and_ids() {
     let before = q.get_inner_gate_ids();
 
     let moved = q
-        .replace_point((500.0, 500.0), 0, &mapper())
+        .replace_point((500.0, 500.0), 0, None, &mapper())
         .expect("centre moves");
 
     assert_eq!(
@@ -229,7 +229,7 @@ fn a_bisector_keeps_its_two_subgates_through_a_move() {
     let before = b.get_inner_gate_ids();
 
     let moved = b
-        .replace_point((450.0, 300.0), 0, &mapper())
+        .replace_point((450.0, 300.0), 0, None, &mapper())
         .expect("centre moves");
 
     assert_eq!(moved.get_inner_gate_ids(), before);

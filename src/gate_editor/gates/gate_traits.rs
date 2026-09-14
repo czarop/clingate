@@ -104,10 +104,31 @@ pub trait DrawableGate: Send + Sync {
         mouse_position: (f32, f32),
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>>;
 
+    /// The point a point-drag must hold still, read off this gate when the drag
+    /// starts. See [`PointDragData::anchor`].
+    ///
+    /// `None` by default, which is right for every geometry whose point indices
+    /// survive a rebuild: a polygon vertex keeps its place in the ring, an
+    /// ellipse handle is derived from the centre, and a composite is positioned
+    /// by its centre rather than by a corner. Only the geometries stored as a
+    /// normalised `min`/`max` rectangle need one.
+    fn drag_anchor(&self, _point_index: usize) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// Move one point of this gate to `new_point`.
+    ///
+    /// `anchor` is the point that must not move, where this gate supplied one
+    /// from [`drag_anchor`](Self::drag_anchor). When it is `Some`, build the new
+    /// geometry from it rather than from `point_index`'s neighbours - that is
+    /// what lets a drag carry a corner through its opposite. `None` means either
+    /// a geometry that does not need one or a single call outside a drag, and
+    /// the index-based path is used.
     fn replace_point(
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         plot_map: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>>;
 

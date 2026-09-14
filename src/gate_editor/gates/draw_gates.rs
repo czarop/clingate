@@ -351,14 +351,14 @@ pub fn GateLayer(
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
                         let current_resolver_move = current_resolver_move.clone();
                         let data_coords = map.pixel_to_data(px as f32, py as f32, None, None);
-                        let new_data = data.clone_with_point(data_coords);
+                        let mut new_data = data.clone_with_point(data_coords);
                         if let Some(selected_gate_id) = selected_gate_op {
-                            match &new_data {
+                            match &mut new_data {
                                 GateDragType::Point(point_drag_data) => {
                                     gate_store
                                         .move_gate_point(
                                             selected_gate_id.clone(),
-                                            point_drag_data.point_index(),
+                                            point_drag_data,
                                             data_coords,
                                             &map,
                                             &current_resolver_move,
@@ -404,12 +404,12 @@ pub fn GateLayer(
                         }
                         let selected_gate_id = selected_gate_op.unwrap();
                         match new_data {
-                            GateDragType::Point(point_drag_data) => {
+                            GateDragType::Point(mut point_drag_data) => {
                                 if let Some(mapper) = mapper {
                                     gate_store
                                         .move_gate_point(
                                             selected_gate_id.clone(),
-                                            point_drag_data.point_index(),
+                                            &mut point_drag_data,
                                             data_coords,
                                             mapper,
                                             &current_resolver_up,

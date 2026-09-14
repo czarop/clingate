@@ -108,16 +108,28 @@ impl RectangleGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         _mapper: &PlotMapper,
     ) -> anyhow::Result<Self> {
         let p = &self.points;
-        let new_geometry = update_rectangle_geometry(
-            p.to_vec(),
-            new_point,
-            point_index,
-            &self.inner.parameters.0,
-            &self.inner.parameters.1,
-        )?;
+        // With an anchor the rectangle is fully determined by two opposite
+        // corners, and `create_rectangle_geometry` takes the min and max of
+        // whatever it is given - so the pointer may cross the anchor freely and
+        // the gate simply inverts about it.
+        let new_geometry = match anchor {
+            Some(anchor) => create_rectangle_geometry(
+                vec![anchor, new_point],
+                &self.inner.parameters.0,
+                &self.inner.parameters.1,
+            )?,
+            None => update_rectangle_geometry(
+                p.to_vec(),
+                new_point,
+                point_index,
+                &self.inner.parameters.0,
+                &self.inner.parameters.1,
+            )?,
+        };
         let new_gate = flow_gates::Gate {
             id: self.inner.id.clone(),
             parameters: self.inner.parameters.clone(),
@@ -179,15 +191,26 @@ impl DrawableGate for RectangleGate {
         }
     }
 
+    /// The corner diagonally opposite the one being dragged. The constructor
+    /// winds the corners `[(min_x, min_y), (max_x, min_y), (max_x, max_y),
+    /// (min_x, max_y)]`, so the opposite of any corner is two steps round.
+    fn drag_anchor(&self, point_index: usize) -> Option<(f32, f32)> {
+        self.points
+            .get((point_index + 2) % self.points.len())
+            .copied()
+    }
+
     fn replace_point(
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(Box::new(self.clone_rectangle_for_new_point(
             new_point,
             point_index,
+            anchor,
             mapper,
         )?))
     }

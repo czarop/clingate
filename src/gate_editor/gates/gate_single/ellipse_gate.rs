@@ -281,6 +281,7 @@ impl DrawableGate for EllipseGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         let new_geometry;

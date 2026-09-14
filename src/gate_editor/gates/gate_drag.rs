@@ -40,20 +40,26 @@ impl GateDragData {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct PointDragData {
     point_index: usize,
     loc: (f32, f32),
+    anchor: Option<(f32, f32)>,
 }
 
 impl PointDragData {
     pub fn new(point_index: usize, loc: (f32, f32)) -> Self {
-        Self { point_index, loc }
+        Self {
+            point_index,
+            loc,
+            anchor: None,
+        }
     }
     pub fn clone_from_data(new_loc: (f32, f32), old_data: Self) -> Self {
         Self {
             point_index: old_data.point_index,
             loc: new_loc,
+            anchor: old_data.anchor,
         }
     }
 
@@ -62,6 +68,26 @@ impl PointDragData {
     }
     pub fn loc(&self) -> (f32, f32) {
         self.loc
+    }
+
+    /// The point this drag must hold still, captured once when the drag starts
+    /// and carried unchanged until it ends.
+    ///
+    /// A rectangle's geometry is stored as `min`/`max`, so rebuilding it
+    /// renormalises the corners. The moment a drag carries one corner past its
+    /// opposite, that renormalisation reassigns the indices and `point_index`
+    /// stops naming the corner under the pointer - from there the drag resizes
+    /// the wrong corner and the gate collapses into a sliver trailing the
+    /// pointer. Rebuilding from a fixed anchor instead of from the neighbouring
+    /// corners makes the operation independent of the indices altogether.
+    pub fn anchor(&self) -> Option<(f32, f32)> {
+        self.anchor
+    }
+
+    /// Record the anchor the first time the drag resolves a gate. Later calls
+    /// are ignored: the whole point is that it does not move.
+    pub fn set_anchor_once(&mut self, anchor: (f32, f32)) {
+        self.anchor.get_or_insert(anchor);
     }
 }
 

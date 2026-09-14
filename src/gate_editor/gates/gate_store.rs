@@ -18,7 +18,7 @@ use crate::gate_editor::{
             bisector_gate::BisectorGate, quadrant_gate::QuadrantGate,
             skewed_quadrant_gate::SkewedQuadrantGate,
         },
-        gate_drag::GateDragData,
+        gate_drag::{GateDragData, PointDragData},
         gate_single::{
             ellipse_gate::{EllipseGate, create_default_ellipse},
             line_gate::{LineGate, create_default_line},
@@ -1719,17 +1719,27 @@ impl<Lens> Store<GateState, Lens> {
         self.write().remove_gate(gate_id)
     }
 
+    /// Move one point of a gate, for a drag in progress.
+    ///
+    /// `drag` is taken by reference so the anchor can be filled in here, on the
+    /// first move of the drag, from the gate as it stands before anything has
+    /// been written. Every later move of the same drag reuses it, which is what
+    /// keeps the gate pinned once the pointer crosses it - see
+    /// [`PointDragData::anchor`].
     fn move_gate_point(
         &mut self,
         gate_id: GateId,
-        point_idx: usize,
+        drag: &mut PointDragData,
         new_point: (f32, f32),
         plot_map: &PlotMapper,
         resolver: &GateOverrideResolver,
     ) -> anyhow::Result<()> {
-        let new_gate = resolver
-            .resolve_drawable(&gate_id)?
-            .replace_point(new_point, point_idx, plot_map)?;
+        let current = resolver.resolve_drawable(&gate_id)?;
+        let point_idx = drag.point_index();
+        if let Some(anchor) = current.drag_anchor(point_idx) {
+            drag.set_anchor_once(anchor);
+        }
+        let new_gate = current.replace_point(new_point, point_idx, drag.anchor(), plot_map)?;
         let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
         let gate_origin = resolver
             .gate_origins

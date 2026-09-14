@@ -201,7 +201,7 @@ fn dragging_a_rectangle_nowhere_leaves_it_alone() {
 fn moving_a_rectangle_corner_resizes_it() {
     let g = square("r");
     // Corner 2 is (max_x, max_y) in the constructor's winding order.
-    let resized = g.replace_point((400.0, 400.0), 2, &mapper()).unwrap();
+    let resized = g.replace_point((400.0, 400.0), 2, None, &mapper()).unwrap();
     let resized = resized.as_any().downcast_ref::<RectangleGate>().unwrap();
     let (min, max) = corners(resized);
 
@@ -244,7 +244,7 @@ fn dragging_a_polygon_translates_every_vertex_equally() {
 #[test]
 fn moving_one_polygon_vertex_leaves_the_others_in_place() {
     let g = triangle("p");
-    let edited = g.replace_point((250.0, 400.0), 2, &mapper()).unwrap();
+    let edited = g.replace_point((250.0, 400.0), 2, None, &mapper()).unwrap();
     let points = polygon_points(edited.as_ref());
 
     assert_eq!(points[0], (100.0, 100.0));
@@ -255,7 +255,7 @@ fn moving_one_polygon_vertex_leaves_the_others_in_place() {
 #[test]
 fn a_polygon_keeps_its_vertex_count_through_an_edit() {
     let g = triangle("p");
-    let edited = g.replace_point((0.0, 0.0), 1, &mapper()).unwrap();
+    let edited = g.replace_point((0.0, 0.0), 1, None, &mapper()).unwrap();
 
     assert_eq!(polygon_points(edited.as_ref()).len(), 3);
 }
@@ -461,4 +461,146 @@ fn selecting_a_gate_adds_its_handles() {
         selected > unselected,
         "selected drew {selected} shapes, unselected {unselected}"
     );
+}
+
+// ─── Dragging a point through the gate ───────────────────────────────────────
+//
+// `create_rectangle_geometry` normalises to min/max, so a rebuild reassigns the
+// corner indices. A drag therefore cannot carry `point_index` all the way
+// through: once the pointer passes the opposite corner, that index names a
+// different corner and the gate follows the pointer instead of inverting about
+// the corner that should be pinned. The drag carries an anchor instead.
+
+/// A line gate with two distinct edges, so a drag has something to cross. The
+/// `line` helper above is zero-width, which cannot show the bug.
+fn vertical_line(id: &str) -> LineGate {
+    let geometry = create_rectangle_geometry(vec![(100.0, 0.0), (300.0, 1000.0)], X, Y).unwrap();
+    LineGate::try_new(gate(id, geometry), 200.0, true).unwrap()
+}
+
+/// The line gate's bounding corners, read back out of the geometry.
+fn line_corners(g: &LineGate) -> ((f32, f32), (f32, f32)) {
+    let inner = g.get_gate_ref(None).unwrap();
+    match &inner.geometry {
+        GateGeometry::Rectangle { min, max } => (
+            (
+                min.get_coordinate(X).unwrap(),
+                min.get_coordinate(Y).unwrap(),
+            ),
+            (
+                max.get_coordinate(X).unwrap(),
+                max.get_coordinate(Y).unwrap(),
+            ),
+        ),
+        _ => panic!("expected a rectangle"),
+    }
+}
+
+/// Replay a point drag the way `draw_gates` and the store do between them: the
+/// index is captured on mousedown and held, the anchor is read once from the
+/// gate as it stood at the start, and every step re-resolves the gate the
+/// previous step wrote.
+fn drag_point<G: DrawableGate + Clone + 'static>(
+    mut g: G,
+    point_index: usize,
+    path: &[(f32, f32)],
+) -> G {
+    let mut anchor = None;
+    for p in path {
+        if let Some(a) = g.drag_anchor(point_index) {
+            anchor.get_or_insert(a);
+        }
+        let next = g.replace_point(*p, point_index, anchor, &mapper()).unwrap();
+        g = next.as_any().downcast_ref::<G>().unwrap().clone();
+    }
+    g
+}
+
+#[test]
+fn a_rectangle_corner_drag_pins_the_opposite_corner() {
+    // Corner 2 is (max_x, max_y); corner 0 at (100, 100) must not move.
+    let dragged = drag_point(square("r"), 2, &[(350.0, 350.0), (400.0, 420.0)]);
+
+    assert_eq!(
+        corners(&dragged),
+        ((100.0, 100.0), (400.0, 420.0)),
+        "an ordinary resize still pins the opposite corner"
+    );
+}
+
+#[test]
+fn a_rectangle_corner_dragged_past_its_opposite_keeps_that_opposite_pinned() {
+    // The same corner 2, carried through corner 0 at (100, 100) and well beyond.
+    let dragged = drag_point(
+        square("r"),
+        2,
+        &[(250.0, 250.0), (50.0, 50.0), (20.0, 20.0)],
+    );
+
+    assert_eq!(
+        corners(&dragged),
+        ((20.0, 20.0), (100.0, 100.0)),
+        "dragging a corner through its opposite must invert the rectangle about \
+         the pinned corner, not drag the whole gate along"
+    );
+}
+
+#[test]
+fn a_rectangle_corner_dragged_back_again_returns_to_where_it_started() {
+    // Out through the anchor and back: the anchor is captured once, so the
+    // round trip has to land on the original geometry.
+    let dragged = drag_point(
+        square("r"),
+        2,
+        &[(50.0, 50.0), (20.0, 20.0), (180.0, 180.0), (300.0, 300.0)],
+    );
+
+    assert_eq!(corners(&dragged), corners(&square("r")));
+}
+
+#[test]
+fn a_rectangle_corner_drag_anchors_on_the_diagonal() {
+    let g = square("r");
+    assert_eq!(g.drag_anchor(0), Some((300.0, 300.0)));
+    assert_eq!(g.drag_anchor(1), Some((100.0, 300.0)));
+    assert_eq!(g.drag_anchor(2), Some((100.0, 100.0)));
+    assert_eq!(g.drag_anchor(3), Some((300.0, 100.0)));
+}
+
+#[test]
+fn a_line_gate_edge_dragged_past_the_other_keeps_that_other_pinned() {
+    let g = vertical_line("l");
+    let (min, max) = line_corners(&g);
+    assert_eq!((min.0, max.0), (100.0, 300.0), "starts spanning x 100..300");
+
+    // Point 1 is the max_x edge; drag it left through the min_x edge at 100.
+    let dragged = drag_point(g, 1, &[(200.0, 500.0), (50.0, 500.0), (20.0, 500.0)]);
+    let (min, max) = line_corners(&dragged);
+
+    assert_eq!(
+        (min.0, max.0),
+        (20.0, 100.0),
+        "the un-dragged edge stays at 100 and the line inverts about it"
+    );
+    assert_eq!(
+        (min.1, max.1),
+        (0.0, 1000.0),
+        "a line gate's span across the other axis is not touched by the drag"
+    );
+}
+
+#[test]
+fn a_line_gate_anchors_on_its_other_edge() {
+    let g = vertical_line("l");
+    assert_eq!(g.drag_anchor(0).map(|a| a.0), Some(300.0));
+    assert_eq!(g.drag_anchor(1).map(|a| a.0), Some(100.0));
+    assert_eq!(g.drag_anchor(2), None, "a line gate has only two edges");
+}
+
+#[test]
+fn a_geometry_that_cannot_drift_offers_no_anchor() {
+    // A polygon vertex keeps its place in the ring and an ellipse handle is
+    // derived from the centre, so neither needs pinning.
+    assert_eq!(triangle("t").drag_anchor(0), None);
+    assert_eq!(ellipse("e").drag_anchor(0), None);
 }

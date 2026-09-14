@@ -129,6 +129,7 @@ impl DrawableGate for BooleanGate {
         &self,
         _new_point: (f32, f32),
         _point_index: usize,
+        _anchor: Option<(f32, f32)>,
         _plot_map: &crate::gate_editor::plots::axis_store::PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(self.clone_box())

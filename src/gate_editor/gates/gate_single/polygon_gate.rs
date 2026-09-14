@@ -204,6 +204,7 @@ impl DrawableGate for PolygonGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(Box::new(self.clone_polygon_for_new_point(

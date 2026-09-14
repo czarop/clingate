@@ -418,6 +418,7 @@ impl DrawableGate for QuadrantGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> Result<Box<dyn DrawableGate>> {
         if point_index != 0 {
