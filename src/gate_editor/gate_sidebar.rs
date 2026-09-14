@@ -1,6 +1,6 @@
 use crate::components::context_menu::*;
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateStateImplExt, GateStateStoreExt, ROOTGATE};
+use crate::gate_editor::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
@@ -32,7 +32,7 @@ pub fn GateSidebar(
                         for child_id in hierarchy.read().get_children(&root_id) {
                             GateNode {
                                 key: "{child_id}",
-                                gate_id: child_id.clone(),
+                                node_id: child_id.clone(),
                                 selected: selected_id,
                                 level: 0,
                                 x_axis_param,
@@ -65,7 +65,9 @@ fn ChevronIcon() -> Element {
 
 #[component]
 fn GateNode(
-    gate_id: Arc<str>,
+    // A position in the tree, not a gate: one gate can be applied at several
+    // points, and each gets its own node. The gate is looked up from it below.
+    node_id: Arc<str>,
     selected: Signal<Option<Arc<str>>>,
     level: usize,
     x_axis_param: Signal<Param>,
@@ -75,22 +77,36 @@ fn GateNode(
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
     let mut is_expanded = use_signal(|| true);
 
+    // Which gate this position shows. Several nodes may name the same gate -
+    // that is what a linked gate is - so everything about the gate comes from
+    // here, and everything about the tree from `node_id`.
+    let Some(gate_id) = gate_store
+        .read()
+        .gate_for_node(&NodeId::from(node_id.clone()))
+        .cloned()
+    else {
+        return rsx! {};
+    };
+    let is_linked = gate_store.read().is_linked(&gate_id);
+
     // Fetch children
     let hierarchy = gate_store.hierarchy();
     let children = hierarchy
         .read()
-        .get_children(&gate_id)
+        .get_children(&node_id)
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
     let has_children = !children.is_empty();
-    let is_root = hierarchy.read().is_root(&gate_id);
+    let is_root = hierarchy.read().is_root(&node_id);
 
+    // The plot this node's children are drawn on is keyed by the parent node,
+    // so a linked gate's two placements open two different plots.
     let parent = {
         if is_root {
-            gate_id.clone()
+            node_id.clone()
         } else {
-            hierarchy.read().get_parent(&gate_id).unwrap().clone()
+            hierarchy.read().get_parent(&node_id).unwrap().clone()
         }
     };
 
@@ -115,8 +131,9 @@ fn GateNode(
         }
     };
 
-    // Check if this node is the active one
-    let is_selected = selected.read().as_ref() == Some(&gate_id);
+    // Check if this node is the active one. Compared on the node: two
+    // placements of a linked gate are different rows and only one is selected.
+    let is_selected = selected.read().as_ref() == Some(&node_id);
 
     // Indent per level, halved to match the tree's font size.
     let padding = format!("{}px", level * 8 + 6);
@@ -186,6 +203,13 @@ fn GateNode(
 
                         // 3. The Label
                         span { class: "gate-name", "{gate_name}" }
+                        if is_linked {
+                            span {
+                                class: "linked-badge",
+                                title: "This gate is applied at more than one point in the tree",
+                                "\u{1f517}"
+                            }
+                        }
                         button {
                             class: "activate-btn",
                             title: "Activate gate",
@@ -212,7 +236,10 @@ fn GateNode(
                                 if let (Some(new_x), Some(new_y)) = (new_x, new_y) {
                                     x_axis_param.set(new_x);
                                     y_axis_param.set(new_y);
-                                    selected.set(Some(gate_id.clone()));
+                                    // This placement, not the gate: the plot
+                                    // below shows the population *this* node
+                                    // sees.
+                                    selected.set(Some(node_id.clone()));
                                 }
 
                             },
@@ -227,7 +254,7 @@ fn GateNode(
                             for child_id in children {
                                 GateNode {
                                     key: "{child_id}",
-                                    gate_id: child_id,
+                                    node_id: child_id,
                                     selected,
                                     level: level + 1,
                                     x_axis_param,

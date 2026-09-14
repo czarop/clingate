@@ -407,6 +407,82 @@ impl GateState {
         self.is_registered(gate_id) && self.placement_count(gate_id) == 0
     }
 
+    /// Put a newly created gate into the tree at its own node.
+    ///
+    /// A gate created here uses its own id as its node id - unique, and one
+    /// placement. Every path that creates a gate goes through this, so none can
+    /// add to the hierarchy without recording the placement that goes with it.
+    pub fn place_new_gate(
+        &mut self,
+        parent: Option<GateId>,
+        gate_id: GateId,
+    ) -> anyhow::Result<NodeId> {
+        let parent_node = self.as_parent_node(&parent.unwrap_or_else(|| ROOTGATE.clone()));
+        self.hierarchy
+            .add_gate_child(parent_node.as_arc().clone(), gate_id.clone(), None)?;
+        let node = NodeId::from(gate_id.clone());
+        self.record_placement(node.clone(), gate_id, false);
+        Ok(node)
+    }
+
+    /// Interpret an id coming from the UI as a tree position.
+    ///
+    /// The sidebar now hands out node ids, and a gate created here uses its own
+    /// id as its node id, so both are already nodes. An id that is only a gate -
+    /// an imported gate named by a caller that has not been converted yet -
+    /// resolves to its first placement. Ambiguous for a linked gate, which is
+    /// why the UI passes nodes.
+    pub fn as_parent_node(&self, id: &Arc<str>) -> NodeId {
+        let node = NodeId::from(id.clone());
+        if **id == **ROOTGATE || self.placements.contains_key(&node) {
+            return node;
+        }
+        self.primary_node_for_gate(id)
+            .unwrap_or_else(|| NodeId::from(ROOTGATE.clone()))
+    }
+
+    /// The first place this gate appears, for callers that hold a gate and need
+    /// *a* tree position. Ambiguous for a linked gate by construction: prefer a
+    /// caller that already knows which node it means.
+    pub fn primary_node_for_gate(&self, gate_id: &GateId) -> Option<NodeId> {
+        self.nodes_for_gate(gate_id).first().cloned()
+    }
+
+    /// The node above this one in the tree.
+    pub fn parent_node(&self, node: &NodeId) -> Option<NodeId> {
+        self.hierarchy.get_parent(node.as_str()).cloned().map(NodeId::from)
+    }
+
+    /// Child nodes of a node, in sibling order.
+    pub fn child_nodes(&self, node: &NodeId) -> Vec<NodeId> {
+        self.hierarchy
+            .get_children(node.as_str())
+            .into_iter()
+            .cloned()
+            .map(NodeId::from)
+            .collect()
+    }
+
+    /// Root nodes of the tree.
+    pub fn root_nodes(&self) -> Vec<NodeId> {
+        self.hierarchy.get_roots().into_iter().map(NodeId::from).collect()
+    }
+
+    /// The gates to apply, root first, to reach the population this node sees -
+    /// the node itself included.
+    ///
+    /// Node-scoped rather than gate-scoped: a linked gate's ancestors depend on
+    /// which placement is being viewed, so a chain taken from the gate alone was
+    /// whichever placement won the import.
+    pub fn gate_chain_for_node(&self, node: &NodeId) -> Vec<GateId> {
+        self.hierarchy
+            .get_chain_to_root(node.as_str())
+            .into_iter()
+            .filter(|id| **id != **ROOTGATE)
+            .filter_map(|id| self.gate_for_node(&NodeId::from(id)).cloned())
+            .collect()
+    }
+
     /// How many gates are registered, counting a composite once per key it
     /// occupies.
     pub fn gate_count(&self) -> usize {
@@ -469,8 +545,14 @@ impl GateState {
     }
 
     /// This gate's sort order among its siblings, for writing Omiq's `ord`.
+    /// Taken from its first placement; see `node_order` for a specific one.
     pub fn gate_order(&self, gate_id: &GateId) -> Option<u64> {
-        self.hierarchy.get_order(gate_id)
+        self.node_order(&self.primary_node_for_gate(gate_id)?)
+    }
+
+    /// A node's sort order among its siblings.
+    pub fn node_order(&self, node: &NodeId) -> Option<u64> {
+        self.hierarchy.get_order(node.as_str())
     }
 
     /// The gate registered under an id, if any.
@@ -481,9 +563,17 @@ impl GateState {
             .cloned()
     }
 
-    /// This gate's parent in the gating tree, or `None` if it has no node.
+    /// The gate above this one in the tree, or `None` if it has no node.
+    ///
+    /// Resolved through this gate's first placement, so it is ambiguous for a
+    /// linked gate - `parent_node` is the unambiguous form. The root has no
+    /// gate, so a top-level gate reports `ROOTGATE`.
     pub fn hierarchy_parent(&self, gate_id: &GateId) -> Option<GateId> {
-        self.hierarchy.get_parent(gate_id).cloned()
+        let parent = self.parent_node(&self.primary_node_for_gate(gate_id)?)?;
+        if *parent.as_str() == **ROOTGATE {
+            return Some(ROOTGATE.clone());
+        }
+        self.gate_for_node(&parent).cloned()
     }
 
     /// Whether the gate is listed on any plot. A nodeless container is
@@ -522,25 +612,47 @@ impl GateState {
         }
 
         // Record each doomed gate's parent *before* touching the hierarchy.
-        // delete_subtree unlinks every node it removes, so afterwards get_parent
-        // returns None and the view key below would be built against the root -
-        // leaving the deleted gate's id in gate_ids_by_view, still rendering.
+        // delete_subtree unlinks every node it removes, so afterwards the parent
+        // lookup returns None and the view key below would be built against the
+        // root - leaving the deleted gate's id in gate_ids_by_view, still
+        // rendering.
+        //
+        // The tree is keyed by node, so this walks every placement of every
+        // doomed gate. Deleting the gate deletes it everywhere it appears;
+        // removing a single instance of a linked gate is a different operation
+        // on one node.
         let mut gates_to_delete: HashSet<Arc<str>> = HashSet::default();
         let mut parents: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        let mut doomed_roots: Vec<NodeId> = Vec::new();
 
         for brother in &roots {
-            let subtree = std::iter::once(brother.clone())
-                .chain(self.hierarchy.get_descendants(brother))
-                .collect::<Vec<_>>();
+            let nodes = self.nodes_for_gate(brother).to_vec();
+            // A gate with no node - a ghost, or a composite, which is registered
+            // under its own id but puts only its corners in the tree - still has
+            // to leave the registry.
+            if nodes.is_empty() {
+                gates_to_delete.insert(brother.clone());
+                parents.entry(brother.clone()).or_insert_with(|| ROOTGATE.clone());
+                continue;
+            }
 
-            for doomed in subtree {
-                let parent = self
-                    .hierarchy
-                    .get_parent(&doomed)
-                    .cloned()
-                    .unwrap_or_else(|| ROOTGATE.clone());
-                parents.insert(doomed.clone(), parent);
-                gates_to_delete.insert(doomed);
+            for node in nodes {
+                let subtree = std::iter::once(node.as_arc().clone())
+                    .chain(self.hierarchy.get_descendants(node.as_str()))
+                    .collect::<Vec<_>>();
+
+                for doomed in subtree {
+                    let doomed = NodeId::from(doomed);
+                    let parent = self
+                        .parent_node(&doomed)
+                        .map(|p| p.as_arc().clone())
+                        .unwrap_or_else(|| ROOTGATE.clone());
+                    if let Some(gate) = self.gate_for_node(&doomed).cloned() {
+                        parents.insert(gate.clone(), parent);
+                        gates_to_delete.insert(gate);
+                    }
+                }
+                doomed_roots.push(node);
             }
         }
 
@@ -563,8 +675,8 @@ impl GateState {
             gates_to_delete.insert(owner);
         }
 
-        for brother in roots {
-            for removed in self.hierarchy.delete_subtree(&brother) {
+        for node in doomed_roots {
+            for removed in self.hierarchy.delete_subtree(node.as_str()) {
                 self.forget_placement(&NodeId::from(removed));
             }
         }
@@ -638,8 +750,15 @@ impl GateState {
         // a key that remove_gate and get_gates_for_plot - which both ask for
         // Some(ROOTGATE) - would never look under, so it could never be found
         // again to redraw or delete.
-        let parental_gate_id = Some(parental_gate_id.unwrap_or_else(|| ROOTGATE.clone()));
-        let key = GatesOnPlotKey::new(x_param.clone(), y_param.clone(), parental_gate_id.clone());
+        // The tree is keyed by node, and so is the view index: a linked gate at
+        // two points in the tree sits on two different populations, so it is the
+        // placement, not the gate, that says which plot this belongs to.
+        let parent_node = self.as_parent_node(&parental_gate_id.unwrap_or_else(|| ROOTGATE.clone()));
+        let key = GatesOnPlotKey::new(
+            x_param.clone(),
+            y_param.clone(),
+            Some(parent_node.as_arc().clone()),
+        );
         let parameters = (x_param.clone(), y_param.clone());
 
         let id = Uuid::new_v4().to_string();
@@ -750,13 +869,9 @@ impl GateState {
         if g.is_composite() {
             let gates = g.get_inner_gate_ids();
             for sg in gates {
-                println!(
-                    "Adding composite subgate gate {} with parent {}",
-                    sg,
-                    parental_gate_id.as_ref().unwrap_or(&ROOTGATE)
-                );
+                println!("Adding composite subgate gate {sg} with parent {parent_node}");
                 self.hierarchy.add_gate_child(
-                    parental_gate_id.clone().unwrap_or(ROOTGATE.clone()),
+                    parent_node.as_arc().clone(),
                     sg.clone(),
                     None,
                 )?;
@@ -766,13 +881,9 @@ impl GateState {
                     .insert(sg, g.clone());
             }
         } else {
-            println!(
-                "Adding gate {} with parent {}",
-                g.get_id(),
-                parental_gate_id.as_ref().unwrap_or(&ROOTGATE)
-            );
+            println!("Adding gate {} with parent {parent_node}", g.get_id());
             self.hierarchy.add_gate_child(
-                parental_gate_id.unwrap_or(ROOTGATE.clone()),
+                parent_node.as_arc().clone(),
                 g.get_id(),
                 None,
             )?;
@@ -915,12 +1026,6 @@ impl GateState {
                 .push((group_position, container.clone()));
         }
 
-        // the parent id's are node id's rather than gate id's so need to initially map these
-        let mut node_to_gate_id: FxHashMap<Arc<str>, GateId> = FxHashMap::default();
-
-        for (node_id, node) in experiment.tree.nodes.iter() {
-            node_to_gate_id.insert(node_id.clone(), node.filter_container_id.clone());
-        }
 
 
         let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
@@ -944,32 +1049,23 @@ impl GateState {
             depth
         });
 
-        // build the hierarchy first.
+        // Build the tree. The hierarchy is keyed by node, so Omiq's own node ids
+        // go in directly and a parent is just `node.parent_id` - no mapping from
+        // node to container, and no collapsing of a gate that appears at several
+        // points into whichever node happened to be processed last.
         for node in sorted_nodes.into_iter() {
-            // deal with composites - you need to add the sub-gates not the gates
             let parent_id = if *"" != *node.parent_id {
-                node_to_gate_id
-                    .get(&node.parent_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Could not find parent gate id for node {}", node.parent_id)
-                    })?
-                    .clone()
+                node.parent_id.clone()
             } else {
                 ROOTGATE.clone()
             };
-            // Stage 1 still keys the tree on the container, so two nodes sharing
-            // one container collapse to a single position - this is the line
-            // that loses a linked gate's other placements. The node table below
-            // is recorded through the same call so that a later stage can key
-            // on `node.id` here and everything that reads placements follows.
             self.hierarchy
-                .add_gate_child(parent_id, node.filter_container_id.clone(), Some(node.ord))?;
+                .add_gate_child(parent_id, node.id.clone(), Some(node.ord))?;
             self.record_placement(
-                NodeId::from(node.filter_container_id.clone()),
+                NodeId::from(node.id.clone()),
                 node.filter_container_id.clone(),
                 node.collapsed,
             );
-            node_to_gate_id.insert(node.id.clone(), node.filter_container_id.clone());
         }
 
         // A composite is all-or-nothing in Omiq, so a group that arrives
@@ -1014,9 +1110,13 @@ impl GateState {
                         // kept alive only by a boolean gate that references it.
                         // It belongs on no plot, but it must still be registered
                         // or that boolean cannot resolve its operand.
-                        if let Some(parent) = self.hierarchy.get_parent(&gate_id).cloned() {
+                        if let Some(parent) = self
+                            .primary_node_for_gate(&gate_id)
+                            .and_then(|n| self.parent_node(&n))
+                        {
                             let params = gate.get_params();
-                            let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
+                            let key =
+                                GatesOnPlotKey::new(params.0, params.1, Some(parent.as_arc().clone()));
                             self.gate_ids_by_view
                                 .entry(key)
                                 .or_default()
@@ -1051,13 +1151,13 @@ impl GateState {
                         let any_subgate = subgate_ids
                             .first()
                             .ok_or_else(|| anyhow::anyhow!("Composite gate has no subgates"))?;
-                        let parent =
-                            self.hierarchy
-                                .get_parent(any_subgate)
-                                .cloned()
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!("Could not locate parent of subgate {} in hierarchy", any_subgate)
-                                })?;
+                        let parent = self
+                            .primary_node_for_gate(any_subgate)
+                            .and_then(|n| self.parent_node(&n))
+                            .map(|n| n.as_arc().clone())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Could not locate parent of subgate {} in hierarchy", any_subgate)
+                            })?;
                         let params = gate.get_params();
                         let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
 
@@ -1207,11 +1307,7 @@ impl<Lens> Store<GateState, Lens> {
             y_param,
         )?);
 
-        self.hierarchy().write().add_gate_child(
-            parental_gate_id.unwrap_or(ROOTGATE.clone()),
-            gate_id.clone(),
-            None,
-        )?;
+        self.write().place_new_gate(parental_gate_id, gate_id.clone())?;
 
         self.gate_store()
             .primary_and_subgate_registry()

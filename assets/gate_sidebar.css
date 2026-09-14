@@ -161,3 +161,12 @@
 .activate-btn:hover {
     background-color: #cbd5e1;
 }
+
+/* Marks a gate applied at more than one point in the tree. */
+.linked-badge {
+    flex: 0 0 auto;
+    font-size: var(--tree-font-size);
+    line-height: 1;
+    opacity: 0.65;
+    padding-right: 4px;
+}

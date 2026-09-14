@@ -1063,6 +1063,7 @@ fn a_near_axis_aligned_ellipse_is_treated_as_aligned() {
 
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::ROOTGATE;
+use crate::gate_editor::gates::gate_store::NodeId;
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2628,4 +2629,128 @@ fn a_file_with_new_gates_can_be_imported_again() {
         Some(Arc::from("uN8Y")),
         "and kept its place in the tree"
     );
+}
+
+
+// ─── Linked gates in the tree ─────────────────────────────────────────────────
+//
+// Stage 2: the hierarchy is keyed by node, so a gate applied at several points
+// occupies several positions instead of whichever node the import saw last.
+
+#[test]
+fn a_linked_gate_occupies_every_point_it_is_applied_at() {
+    let state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+
+    assert_eq!(state.placement_count(&shared), 2);
+    assert!(state.is_linked(&shared));
+}
+
+#[test]
+fn each_placement_keeps_its_own_parent() {
+    let state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+
+    let mut parents: Vec<String> = state
+        .nodes_for_gate(&shared)
+        .iter()
+        .filter_map(|n| state.parent_node(n))
+        .map(|p| p.to_string())
+        .collect();
+    parents.sort();
+
+    assert_eq!(parents, vec!["na".to_string(), "nb".to_string()]);
+}
+
+/// The point of the exercise. Statistics for a linked gate were computed
+/// against one arbitrary parent chain, because the chain was taken from the
+/// gate and a gate had only one position.
+#[test]
+fn each_placement_gates_on_its_own_ancestors() {
+    let state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+
+    let mut chains: Vec<Vec<String>> = state
+        .nodes_for_gate(&shared)
+        .iter()
+        .map(|n| {
+            state
+                .gate_chain_for_node(n)
+                .iter()
+                .map(|g| g.to_string())
+                .collect()
+        })
+        .collect();
+    chains.sort();
+
+    assert_eq!(
+        chains,
+        vec![
+            vec!["g1".to_string(), "shared".to_string()],
+            vec!["g2".to_string(), "shared".to_string()],
+        ],
+        "the two placements must narrow to different populations"
+    );
+}
+
+#[test]
+fn an_unlinked_gate_has_exactly_one_placement() {
+    let state = import_json(&linked_gate_json());
+    for id in [Arc::from("g1") as GateId, Arc::from("g2")] {
+        assert_eq!(state.placement_count(&id), 1);
+        assert!(!state.is_linked(&id));
+    }
+}
+
+/// A node id is Omiq's, and is not the container id once a file is imported.
+/// Anything that conflates the two silently reads the wrong row.
+#[test]
+fn node_ids_are_omiqs_not_the_containers() {
+    let state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+
+    let nodes: Vec<String> = state
+        .nodes_for_gate(&shared)
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+
+    assert!(!nodes.contains(&"shared".to_string()), "{nodes:?}");
+    assert!(state.gate_for_node(&NodeId::from("nc")).is_some());
+    assert_eq!(state.gate_for_node(&NodeId::from("nc")), Some(&shared));
+}
+
+#[test]
+fn deleting_a_linked_gate_removes_every_placement() {
+    let mut state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+    state.remove_gate(shared.clone()).unwrap();
+
+    assert_eq!(state.placement_count(&shared), 0);
+    assert!(!state.is_registered(&shared));
+    // The gates it was applied under are untouched.
+    assert!(state.is_registered(&Arc::from("g1")));
+    assert!(state.is_registered(&Arc::from("g2")));
+}
+
+/// Every placement still has to reach the file, which is what the node table
+/// now drives rather than a separate list.
+#[test]
+fn every_placement_survives_the_round_trip() {
+    let state = import_json(&linked_gate_json());
+    let doc = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
+
+    let nodes = doc["tree"]["nodes"].as_object().unwrap();
+    let shared_nodes = nodes
+        .values()
+        .filter(|n| n.get("filterContainerId").and_then(|v| v.as_str()) == Some("shared"))
+        .count();
+
+    assert_eq!(shared_nodes, 2, "both placements must be written");
 }
