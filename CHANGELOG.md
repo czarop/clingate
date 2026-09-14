@@ -150,6 +150,18 @@
 - `to_omiq_document` reports an error rather than writing a header of zeros when
   the session never imported a gating file; `to_omiq_document_with_header` takes
   one explicitly for that case.
+- Linked gates are modelled, not just preserved. The gating tree is keyed by
+  node rather than by gate, so a gate Omiq applies at several points occupies
+  several positions instead of collapsing to whichever node the import saw
+  last - 250 placements rather than 146 in a real export. Each position carries
+  its own gating chain, which also fixes a linked gate's statistics: they were
+  computed against whichever parent chain survived the import.
+- Link, unlink and delete-one-instance, on the hierarchy pane's right-click
+  menu. Linking re-points a position at another gate, discarding the gate it
+  showed - which is kept as a ghost, since a boolean may reference it. It is
+  refused across different parameter pairs, and for composites, which Omiq
+  treats as all-or-nothing across their corners. Unlinking copies the shared
+  gate under a fresh id for that position alone.
 - `a_real_gating_file_survives_a_round_trip`, gated on `OMIQ_GATING_FILE`,
   checks the whole path against a real export. Skipped when unset.
 
@@ -158,7 +170,7 @@
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-439 unit tests and 12 doctests pass either way. Every test lives in the library,
+472 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.

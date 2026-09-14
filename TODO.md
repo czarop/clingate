@@ -27,19 +27,19 @@ the other placements vanish.
       `get_chain_to_root` becomes node-scoped, which also fixes a real bug: a
       linked gate's statistics are currently computed against one arbitrary
       parent chain.
-- [ ] **Stage 3 - link / unlink / delete-one-instance UI.** Right-click a gate
-      in the hierarchy pane:
-      - *Link to...* enters pick mode; left-click a target gate. The
-        right-clicked gate's node is re-pointed at the target's gate, so it
-        **discards its own geometry** (agreed; wants a confirmation prompt).
-        Refuse when the two gates are on different parameter pairs.
-      - *Unlink* deep-copies the gate under a fresh `GateId` and re-points just
-        this node, leaving the other placements on the original.
-      - *Delete this instance* drops that node and its subtree's nodes; the
-        gate survives while any other node shows it.
-      `record_placement` already handles re-pointing, and `is_linked` /
-      `placement_count` are derived from the node table, so none of this needs
-      new stored state.
+- [x] **Stage 3 - link / unlink / delete-one-instance.** `link_node_to_gate`,
+      `unlink_node` and `delete_placement` on `GateState`, wired to the
+      hierarchy pane's right-click menu, with a pick mode for choosing a link
+      target.
+- [ ] **Confirm before linking.** Linking discards the right-clicked gate's own
+      geometry, and there is no undo. The discarded gate is kept as a ghost
+      rather than deleted, so it is still in the document, but nothing in the UI
+      can bring it back. Wants a confirmation step before the link is applied.
+- [ ] **Linking composites.** Refused for now: a composite is registered under
+      its own id *and* each corner's, and Omiq treats the group as
+      all-or-nothing, so a copy has to mint an id per corner and rewrite the
+      `groupId` that ties them together. `DrawableGate::with_new_id` returns
+      `None` for them, which is what the refusal keys off.
 
 Names are shared per gate, matching Omiq, which stores the name on the
 container and not on the node. Per-placement names are not representable in a

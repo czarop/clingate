@@ -117,6 +117,18 @@ pub trait DrawableGate: Send + Sync {
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>>;
 
     fn clone_box(&self) -> Box<dyn DrawableGate>;
+
+    /// A copy of this gate under a new id, for unlinking one placement of a
+    /// linked gate: the node needs a gate of its own with the same geometry.
+    ///
+    /// `None` by default, which composites keep. A composite is registered under
+    /// its own id *and* each corner's, and Omiq treats it as all-or-nothing, so
+    /// a copy would have to mint a fresh id for every corner and rewrite the
+    /// group id that ties them together. Linking is refused for composites
+    /// rather than half-supported.
+    fn with_new_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        None
+    }
 }
 
 impl Clone for Box<dyn DrawableGate> {

@@ -7,6 +7,14 @@ use dioxus::stores::SyncStore;
 use std::sync::Arc;
 static SIDEBAR_STYLE: Asset = asset!("assets/gate_sidebar.css");
 
+/// The position waiting for a link target, while the user picks one.
+///
+/// Set by "Link to..." on one row; the next row clicked becomes the target
+/// instead of being selected. Shared through context because the tree renders
+/// recursively.
+#[derive(Clone, Copy)]
+struct LinkPick(Signal<Option<Arc<str>>>);
+
 #[component]
 pub fn GateSidebar(
     selected_id: Signal<Option<Arc<str>>>,
@@ -17,11 +25,24 @@ pub fn GateSidebar(
     let gate_store = use_context::<SyncStore<GateState>>();
     let hierarchy = gate_store.hierarchy();
     let roots = hierarchy.read().get_roots();
+    let link_pick = use_context_provider(|| LinkPick(Signal::new(None)));
+    let mut picking = link_pick.0;
 
     rsx! {
         document::Stylesheet { href: SIDEBAR_STYLE }
         div { class: "custom-sidebar",
             h3 { class: "sidebar-title", "Gate Hierarchy" }
+
+            if picking.read().is_some() {
+                div { class: "link-prompt",
+                    "Click a gate to link to"
+                    button {
+                        class: "link-cancel",
+                        onclick: move |_| picking.set(None),
+                        "Cancel"
+                    }
+                }
+            }
 
             div { class: "sidebar-tree",
                 // Wrapper sized to the widest row, so the tree can overflow
@@ -74,6 +95,7 @@ fn GateNode(
     y_axis_param: Signal<Param>,
 ) -> Element {
     let mut gate_store = use_context::<SyncStore<GateState>>();
+    let mut picking = use_context::<LinkPick>().0;
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
     let mut is_expanded = use_signal(|| true);
 
@@ -139,9 +161,14 @@ fn GateNode(
     let padding = format!("{}px", level * 8 + 6);
 
     let gate_id_clone = gate_id.clone();
+    let node_id_for_click = node_id.clone();
+    let node_id_for_link = node_id.clone();
+    let node_id_for_unlink = node_id.clone();
+    let node_id_for_instance = node_id.clone();
     let gate_id_delete_clone = gate_id.clone();
     // let gate_id_rename_clone = gate_id.clone();
     let parent_for_delete = parent.clone();
+    let parent_for_instance = parent.clone();
     let gate_id_for_not_gate = gate_id.clone();
     let parent_for_not_gate = parent.clone();
     let gate_id_for_and_gate = gate_id.clone();
@@ -160,6 +187,23 @@ fn GateNode(
                         onclick: move |e: Event<MouseData>| {
 
                             e.stop_propagation();
+
+                            // A link is in progress: this row is the target, not
+                            // a new selection.
+                            let in_progress = picking.peek().clone();
+                            if let Some(source) = in_progress {
+                                picking.set(None);
+                                let result = gate_store
+                                    .write()
+                                    .link_node_to_gate(
+                                        &NodeId::from(source),
+                                        &NodeId::from(node_id_for_click.clone()),
+                                    );
+                                if let Err(err) = result {
+                                    println!("link failed: {err}");
+                                }
+                                return;
+                            }
 
                             let Some((x, y)) = gate_store
                                 .gate_store()
@@ -291,6 +335,43 @@ fn GateNode(
                     index: 1usize,
                     on_select: move |_| {},
                     "Rename"
+                }
+                if is_linked {
+                    ContextMenuItem {
+                        value: "delete-instance".to_string(),
+                        index: 6usize,
+                        on_select: move |_| {
+                            let result = gate_store
+                                .write()
+                                .delete_placement(&NodeId::from(node_id_for_instance.clone()));
+                            match result {
+                                Ok(()) => selected.set(Some(parent_for_instance.clone())),
+                                Err(err) => println!("could not delete this instance: {err}"),
+                            }
+                        },
+                        "Delete this instance"
+                    }
+                    ContextMenuItem {
+                        value: "unlink".to_string(),
+                        index: 7usize,
+                        on_select: move |_| {
+                            if let Err(err) = gate_store
+                                .write()
+                                .unlink_node(&NodeId::from(node_id_for_unlink.clone()))
+                            {
+                                println!("could not unlink: {err}");
+                            }
+                        },
+                        "Unlink"
+                    }
+                }
+                ContextMenuItem {
+                    value: "link".to_string(),
+                    index: 8usize,
+                    on_select: move |_| {
+                        picking.set(Some(node_id_for_link.clone()));
+                    },
+                    "Link to..."
                 }
                 ContextMenuItem {
                     value: "not".to_string(),

@@ -413,6 +413,139 @@ impl GateState {
         self.is_registered(gate_id) && self.placement_count(gate_id) == 0
     }
 
+    // ── Linking ───────────────────────────────────────────────────────────────
+
+    /// Drop one position of a gate, leaving the gate itself alone if it is
+    /// applied elsewhere.
+    ///
+    /// The subtree under this position goes with it: those children belong to
+    /// this placement, not to the gate, so the sibling placement keeps its own.
+    /// When the last position goes the gate stays registered as a ghost, which
+    /// is what keeps a boolean that references it evaluable; use `remove_gate`
+    /// to delete the gate itself.
+    pub fn delete_placement(&mut self, node: &NodeId) -> anyhow::Result<()> {
+        if !self.placements.contains_key(node) {
+            return Err(anyhow!("no such position in the tree: {node}"));
+        }
+        for removed in self.hierarchy.delete_subtree(node.as_str()) {
+            let removed = NodeId::from(removed);
+            if let Some(placement) = self.forget_placement(&removed) {
+                self.drop_from_views(&placement.gate_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply the gate `target` shows at the position `node`, so the two share
+    /// one gate - Omiq's linked gate.
+    ///
+    /// The gate `node` used to show is discarded at this position. If that was
+    /// its only position it stays registered as a ghost rather than being
+    /// dropped, since a boolean may still reference it.
+    ///
+    /// Refused when the two are on different parameters - the result would be a
+    /// gate drawn on axes it was not measured against - and for composites,
+    /// which Omiq treats as all-or-nothing across their corners.
+    pub fn link_node_to_gate(&mut self, node: &NodeId, target: &NodeId) -> anyhow::Result<()> {
+        let Some(from) = self.gate_for_node(node).cloned() else {
+            return Err(anyhow!("no such position in the tree: {node}"));
+        };
+        let Some(to) = self.gate_for_node(target).cloned() else {
+            return Err(anyhow!("no such position in the tree: {target}"));
+        };
+        if node == target {
+            return Err(anyhow!("a gate cannot be linked to itself"));
+        }
+        if from == to {
+            return Err(anyhow!("these positions already share a gate"));
+        }
+
+        let (Some(source_gate), Some(target_gate)) =
+            (self.registered_gate(&from), self.registered_gate(&to))
+        else {
+            return Err(anyhow!("one of the gates is not registered"));
+        };
+        if source_gate.is_composite() || target_gate.is_composite() {
+            return Err(anyhow!(
+                "composite gates cannot be linked: Omiq treats their corners as one gate"
+            ));
+        }
+        if source_gate.get_params() != target_gate.get_params() {
+            let (tx, ty) = target_gate.get_params();
+            let (sx, sy) = source_gate.get_params();
+            return Err(anyhow!(
+                "cannot link a gate on {sx}/{sy} to one on {tx}/{ty}: they are drawn on different axes"
+            ));
+        }
+
+        let collapsed = self.placements.get(node).is_some_and(|p| p.collapsed);
+        self.record_placement(node.clone(), to, collapsed);
+        self.drop_from_views(&from);
+        self.reindex_view(node);
+        Ok(())
+    }
+
+    /// Give this position a gate of its own again, copying the geometry it
+    /// currently shares. The other positions keep the original.
+    pub fn unlink_node(&mut self, node: &NodeId) -> anyhow::Result<GateId> {
+        let Some(shared) = self.gate_for_node(node).cloned() else {
+            return Err(anyhow!("no such position in the tree: {node}"));
+        };
+        if !self.is_linked(&shared) {
+            return Err(anyhow!("this gate is only applied at one point"));
+        }
+        let Some(gate) = self.registered_gate(&shared) else {
+            return Err(anyhow!("gate {shared} is not registered"));
+        };
+
+        let new_id: GateId = Arc::from(Uuid::new_v4().to_string().as_str());
+        let copy: Arc<dyn DrawableGate> = gate
+            .with_new_id(new_id.clone())
+            .ok_or_else(|| anyhow!("this kind of gate cannot be copied, so it cannot be unlinked"))?
+            .into();
+
+        self.gate_store
+            .primary_and_subgate_registry
+            .insert(new_id.clone(), copy);
+
+        let collapsed = self.placements.get(node).is_some_and(|p| p.collapsed);
+        self.record_placement(node.clone(), new_id.clone(), collapsed);
+        self.reindex_view(node);
+        Ok(new_id)
+    }
+
+    /// Forget a gate id everywhere the renderer lists it.
+    fn drop_from_views(&mut self, gate_id: &GateId) {
+        if self.placement_count(gate_id) > 0 {
+            // Still applied somewhere, so it still belongs on that plot.
+            return;
+        }
+        for ids in self.gate_ids_by_view.values_mut() {
+            ids.retain(|id| id != gate_id);
+        }
+        self.gate_ids_by_view.retain(|_, ids| !ids.is_empty());
+    }
+
+    /// File the gate at this position under the plot its parent defines.
+    fn reindex_view(&mut self, node: &NodeId) {
+        let Some(gate_id) = self.gate_for_node(node).cloned() else {
+            return;
+        };
+        let Some(gate) = self.registered_gate(&gate_id) else {
+            return;
+        };
+        let parent = self
+            .parent_node(node)
+            .map(|p| p.as_arc().clone())
+            .unwrap_or_else(|| ROOTGATE.clone());
+        let (x, y) = gate.get_params();
+        let key = GatesOnPlotKey::new(x, y, Some(parent));
+        let ids = self.gate_ids_by_view.entry(key).or_default();
+        if !ids.contains(&gate_id) {
+            ids.push(gate_id);
+        }
+    }
+
     /// Put a newly created gate into the tree at its own node.
     ///
     /// A gate created here uses its own id as its node id - unique, and one

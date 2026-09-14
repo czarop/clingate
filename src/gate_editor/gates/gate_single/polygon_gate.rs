@@ -152,6 +152,12 @@ impl DrawableGate for PolygonGate {
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
     }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
+    }
     fn get_id(&self) -> Arc<str> {
         self.inner.id.clone()
     }

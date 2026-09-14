@@ -2858,3 +2858,214 @@ fn a_ghost_writes_a_container_but_no_node() {
     }
     assert_nodes_match_tree(&state, &written);
 }
+
+
+// ─── Linking, unlinking, and deleting one instance ────────────────────────────
+
+fn shared_gate() -> GateId {
+    Arc::from("shared")
+}
+
+#[test]
+fn deleting_one_instance_leaves_the_gate_at_its_other_points() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let node = state.nodes_for_gate(&shared)[0].clone();
+
+    state.delete_placement(&node).unwrap();
+
+    assert_eq!(state.placement_count(&shared), 1, "one position went");
+    assert!(state.is_registered(&shared), "the gate itself survives");
+    assert!(!state.is_linked(&shared));
+}
+
+#[test]
+fn deleting_the_last_instance_leaves_a_ghost_not_a_hole() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    for node in state.nodes_for_gate(&shared).to_vec() {
+        state.delete_placement(&node).unwrap();
+    }
+
+    assert_eq!(state.placement_count(&shared), 0);
+    assert!(state.is_ghost(&shared), "still resolvable for a boolean");
+}
+
+#[test]
+fn deleting_an_instance_takes_that_placements_children_only() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let nodes = state.nodes_for_gate(&shared).to_vec();
+    let child = add(&mut state, PrimaryGateType::Rectangle, "under one", Some(nodes[0].as_arc().clone()));
+
+    state.delete_placement(&nodes[0]).unwrap();
+
+    assert_eq!(state.placement_count(&child), 0, "its child went with it");
+    assert_eq!(state.placement_count(&shared), 1, "the other position is untouched");
+}
+
+#[test]
+fn deleting_a_position_that_does_not_exist_is_an_error() {
+    let mut state = import_json(&linked_gate_json());
+    assert!(state.delete_placement(&NodeId::from("nowhere")).is_err());
+}
+
+#[test]
+fn linking_makes_two_positions_share_one_gate() {
+    let mut state = import_json(&linked_gate_json());
+    let g1: GateId = Arc::from("g1");
+    let g2: GateId = Arc::from("g2");
+    let (node, target) = (
+        state.nodes_for_gate(&g1)[0].clone(),
+        state.nodes_for_gate(&g2)[0].clone(),
+    );
+
+    state.link_node_to_gate(&node, &target).unwrap();
+
+    assert_eq!(state.gate_for_node(&node), Some(&g2), "it shows g2 now");
+    assert_eq!(state.placement_count(&g2), 2);
+    assert!(state.is_linked(&g2));
+    assert_eq!(state.placement_count(&g1), 0, "g1 is applied nowhere");
+    assert!(state.is_ghost(&g1), "but is still resolvable");
+}
+
+#[test]
+fn linking_keeps_each_position_where_it_was() {
+    let mut state = import_json(&linked_gate_json());
+    let g1: GateId = Arc::from("g1");
+    let g2: GateId = Arc::from("g2");
+    let node = state.nodes_for_gate(&g1)[0].clone();
+    let before = state.parent_node(&node);
+
+    state
+        .link_node_to_gate(&node, &state.nodes_for_gate(&g2)[0].clone())
+        .unwrap();
+
+    assert_eq!(state.parent_node(&node), before, "the tree did not move");
+}
+
+#[test]
+fn a_position_cannot_be_linked_to_itself() {
+    let mut state = import_json(&linked_gate_json());
+    let node = state.nodes_for_gate(&Arc::from("g1"))[0].clone();
+    assert!(state.link_node_to_gate(&node, &node).is_err());
+}
+
+#[test]
+fn linking_two_positions_that_already_share_a_gate_is_an_error() {
+    let mut state = import_json(&linked_gate_json());
+    let nodes = state.nodes_for_gate(&shared_gate()).to_vec();
+    assert!(state.link_node_to_gate(&nodes[0], &nodes[1]).is_err());
+}
+
+#[test]
+fn gates_on_different_axes_cannot_be_linked() {
+    let mut state = GateState::default();
+    let a = add(&mut state, PrimaryGateType::Rectangle, "on fsc ssc", None);
+
+    // A second gate on a different parameter pair.
+    state
+        .add_gate(
+            &editor_mapper(), 300.0, 300.0,
+            Arc::from("CD3"), Arc::from("CD4"),
+            None, None, PrimaryGateType::Rectangle, Some("on cd3 cd4".to_string()),
+        )
+        .unwrap();
+    let b = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| id != &a)
+        .expect("a second gate");
+
+    let err = state
+        .link_node_to_gate(&NodeId::from(a.clone()), &NodeId::from(b))
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("different axes"), "{err}");
+}
+
+#[test]
+fn unlinking_gives_a_position_a_gate_of_its_own() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let node = state.nodes_for_gate(&shared)[0].clone();
+
+    let new_id = state.unlink_node(&node).unwrap();
+
+    assert_ne!(new_id, shared);
+    assert_eq!(state.gate_for_node(&node), Some(&new_id));
+    assert_eq!(state.placement_count(&shared), 1, "the other keeps the original");
+    assert_eq!(state.placement_count(&new_id), 1);
+    assert!(!state.is_linked(&shared));
+    assert!(!state.is_linked(&new_id));
+}
+
+#[test]
+fn an_unlinked_copy_keeps_the_geometry_it_had() {
+    let mut state = import_json(&linked_gate_json());
+    let shared = shared_gate();
+    let node = state.nodes_for_gate(&shared)[0].clone();
+    let before = state.registered_gate(&shared).unwrap();
+
+    let new_id = state.unlink_node(&node).unwrap();
+    let after = state.registered_gate(&new_id).unwrap();
+
+    assert_eq!(after.get_params(), before.get_params());
+    assert_eq!(
+        after.get_gate_ref(None).map(|g| g.geometry.clone()).is_some(),
+        true
+    );
+    assert_eq!(after.get_id(), new_id, "the copy answers to its own id");
+}
+
+#[test]
+fn unlinking_a_gate_applied_once_is_an_error() {
+    let mut state = import_json(&linked_gate_json());
+    let node = state.nodes_for_gate(&Arc::from("g1"))[0].clone();
+    assert!(state.unlink_node(&node).is_err());
+}
+
+/// The whole point: a link made here has to reach the file.
+#[test]
+fn a_link_made_here_is_written_to_the_file() {
+    let mut state = import_json(&linked_gate_json());
+    let g1: GateId = Arc::from("g1");
+    let g2: GateId = Arc::from("g2");
+    state
+        .link_node_to_gate(
+            &state.nodes_for_gate(&g1)[0].clone(),
+            &state.nodes_for_gate(&g2)[0].clone(),
+        )
+        .unwrap();
+
+    let written = to_omiq_document_with_header(
+        &state, &fixture_metadata(), &fixture_axes(), test_header(),
+    )
+    .expect("exports");
+
+    let nodes = objects(&written, &["tree", "nodes"]);
+    let g2_nodes = nodes
+        .values()
+        .filter(|n| n.get("filterContainerId").and_then(|v| v.as_str()) == Some("g2"))
+        .count();
+
+    assert_eq!(g2_nodes, 2, "both positions must name g2");
+    assert_nodes_match_tree(&state, &written);
+}
+
+#[test]
+fn an_unlink_made_here_is_written_to_the_file() {
+    let mut state = import_json(&linked_gate_json());
+    let node = state.nodes_for_gate(&shared_gate())[0].clone();
+    let new_id = state.unlink_node(&node).unwrap();
+
+    let written = to_omiq_document_with_header(
+        &state, &fixture_metadata(), &fixture_axes(), test_header(),
+    )
+    .expect("exports");
+
+    let containers = objects(&written, &["tree", "filterContainers"]);
+    assert!(containers.contains_key(&*new_id), "the copy needs a container");
+    assert_nodes_match_tree(&state, &written);
+}

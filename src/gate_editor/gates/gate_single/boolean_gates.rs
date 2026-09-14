@@ -145,6 +145,12 @@ impl DrawableGate for BooleanGate {
         Box::new(self.clone())
     }
 
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
+    }
+
     fn is_primary(&self) -> bool {
         true
     }
