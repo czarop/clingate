@@ -4,9 +4,9 @@ Open work, roughly in the order it needs doing. Items carry enough context to
 be picked up cold. Read `HANDOVER.md` first for the architecture and the format
 facts these depend on.
 
-**Suggested order:** the two gate-editing bugs (they block normal use), then
-ghost collection, then autogating. The Omiq load test is the user's to do and
-gates everything in Export.
+**Suggested order:** the ellipse rotation bug (the rectangle one is fixed),
+then ghost collection, then autogating. The Omiq load test is the user's to do
+and gates everything in Export.
 
 ## Linked gates
 
@@ -72,32 +72,55 @@ gating file.
 
 Reported from testing, not yet investigated.
 
-- [ ] **Ellipse rotation only flips.** Reported from testing. Rotating an
-      ellipse no longer follows the pointer through intermediate angles - it
-      jumps straight to a complete flip.
+- [ ] **Ellipse rotation only flips.** Reported from testing.
 
-      Start at `EllipseGate::rotate_gate` in
-      `src/gate_editor/gates/gate_single/ellipse_gate.rs`, and at its
-      interaction with `source_handles`. This session added `EllipseHandles` so
-      an unedited imported ellipse exports byte-identically to what Omiq wrote;
-      a rotation drops those handles and re-derives a principal-axis pair. The
-      degenerate-case handling was also hardened then (a circle reads 0 rather
-      than an arbitrary eigenvector; the axis-aligned test uses a scaled
-      tolerance instead of `f == 0.0`). Check whether the re-derivation is
-      snapping the angle to the principal axis rather than taking the
-      pointer's. `gate_single_tests.rs` and `gate_drag_tests.rs` cover rotation
-      about a pivot - extend those rather than starting fresh.
-- [ ] **A rectangle or line gate's right point cannot cross its left.**
-      Reported from testing. Dragging the right-hand point past the left-hand
-      one is refused, so a gate cannot be dragged through itself.
+      The maths is not at fault, and neither is this branch: `rotate_gate`,
+      `calculate_projected_radii`, `update_ellipse_geometry` and both node
+      helpers are byte-identical at `273645d`, and a probe of the pure layer
+      sweeps continuously - pointer at 100 degrees gives 10, at 120 gives 30, at
+      150 gives 60. Angles round-trip exactly, because
+      `create_ellipse_geometry` derives the angle as `atan2(right - centre)`,
+      which inverts `calculate_ellipse_nodes_y_up`. So the TODO's original guess
+      - that a rotation snaps to the principal axis - is wrong.
 
-      Expect a min/max assumption in `replace_point` on `RectangleGate` /
-      `LineGate` that clamps where it should swap: once the points cross, the
-      "right" point is the smaller one and the geometry needs rebuilding with
-      them exchanged, not pinned. Check `create_rectangle_geometry` too - the
-      `Rectangle { min, max }` geometry is order-dependent and
-      `filter_events_to_mask` compares `gt(minx) & lt(maxx)`, so an inverted
-      rectangle would admit nothing.
+      What disagrees is the handle. Its data position in `ellipse_gate.rs` is
+      `(cx, cy + ry)`, fixed and independent of `angle`, and `draw_gates` then
+      rotates the *rendered* handle by an SVG transform of `-angle`. With the y
+      axis inverted that lands it at data angle `90 - angle`, and mousedown
+      reads the rendered position back through `pixel_to_data` - so grabbing the
+      handle on an ellipse at angle t computes `-t` and mirrors it. At t = 0 it
+      is a no-op, which is why a fresh axis-aligned ellipse looks fine. During a
+      drag the transform then adds `rotation_deg()` on top of an `angle` that is
+      already being updated, rotating the handle twice per frame.
+
+      Smallest fix: make the handle's data position track the angle
+      (`(cx - ry*sin t, cy + ry*cos t)`) and drop the now-redundant SVG rotate.
+      That touches neither the geometry nor `source_handles`, so the
+      byte-identical export of an untouched import is unaffected - which matters
+      while the Omiq load test below is still outstanding.
+
+      Related but separate: the two node helpers disagree in y.
+      `calculate_ellipse_nodes` puts "top" at `(cx, cy - ry)` and
+      `calculate_ellipse_nodes_y_up` at `(cx, cy + ry)`. `try_new` uses the
+      first for the drawn points, `update_ellipse_geometry` the second for the
+      geometry. Resizing tolerates it because `calculate_projected_radii` takes
+      `abs()`, so it has been invisible. Worth reconciling, carefully, since it
+      moves the drawn handles for every ellipse.
+
+- [x] **A rectangle or line gate's right point could not cross its left.**
+      Not a clamp and not a regression from this branch - every function on the
+      drag path was byte-identical at `273645d`. `create_rectangle_geometry`
+      normalises to min/max, so each rebuild rewinds the corners into a fixed
+      order while the drag held the `point_index` it captured on mousedown. Once
+      the pointer crossed, that index named a different corner and the gate
+      collapsed into a sliver trailing it.
+
+      The drag now carries an anchor - the corner or edge that must not move -
+      read once before the first write and held for the rest of the drag.
+      `drag_anchor` is `None` on the trait by default; only the two geometries
+      stored as a normalised min/max rectangle override it. The rectangle's drag
+      preview had the same stale-index assumption and now uses the drag's
+      anchor too.
 
 ## Ghost containers
 
@@ -169,8 +192,15 @@ far - import, the node model, export - is the substrate it needs.
 
 The store refactor moved plain-data logic off the Dioxus lenses. Where a Store
 wrapper then reads through `peek`, it subscribes to nothing, and any memo built
-on it silently stops updating. Two have bitten already: the axis selectors, and
-the gate resolver.
+on it silently stops updating. Three bit that way: the axis selectors, the gate
+resolver, and the filtered frame.
+
+The fourth was the opposite mistake. Fixing the filtered frame by tracking the
+whole resolver - which is rebuilt on every gate write - made every gate edit
+anywhere re-filter the dataframe and rebuild the event index for every open
+plot. A plot's data depends on its own gating chain and nothing below it, so it
+now tracks a memo over just that chain. Too wide a dependency is as much a bug
+as too narrow a one, and only the second kind is visible as a stale screen.
 
 - [x] **Audit the reactive closures for the same shape.** Went through all 38
       `use_memo` / `use_effect` / `use_resource` closures. Found one more real
@@ -180,9 +210,25 @@ the gate resolver.
       tracked too. The two deliberate peeks (`upload_succeded`,
       `axes_initialised`) are latches, and `match_gates_to_plot` peeks on
       purpose; all three are commented as such.
-- [ ] **Consider a Dioxus test runtime** for the handful of memos that matter
-      (resolver, axis index, gate list), so a lost subscription fails a test
-      rather than being found by hand.
+- [x] **A Dioxus test runtime.** It is not hard: `dioxus-signals` tests its own
+      reactivity with a headless `VirtualDom`, a run counter and
+      `render_immediate(&mut NoOpMutations)`, and so do we now - no renderer, no
+      GTK, running in the ordinary `--no-default-features` suite.
+      `reactivity_tests.rs` pins all three shapes: a peeked dependency that
+      never arrives, a wide one that puts every write on the expensive path, and
+      a narrow memo that shields the expensive work.
+
+      Two mechanics to know, both of which produce a vacuously passing test if
+      missed: a memo is lazy, so its closure only re-runs when the value is
+      *read* after invalidation; and a chain of memos needs one extra render
+      pass per level to propagate.
+
+- [ ] **Extend it to `PlotWindow` itself.** The tests above cover the pattern,
+      not the component. Standing up the real thing means providing its four
+      contexts - gate, metadata, axis and plot stores - which is fixture work
+      rather than anything novel. The assertion worth having: editing a gate off
+      a plot's chain does not re-run its filtered-frame resource. That is this
+      session's bug, stated directly.
 
 ## Housekeeping
 
