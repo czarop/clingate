@@ -9,7 +9,7 @@
 
 #![cfg(test)]
 
-use crate::gate_editor::plots::axis_store::{AxisStore, ScalingInfoSource, read_axis_configs};
+use crate::gate_editor::plots::axis_store::{AxisStore, Param, ScalingInfoSource, read_axis_configs};
 use crate::omiq::metadata::{MetaDataOrigin, parse_metadata_csv};
 use flow_fcs::TransformType;
 use std::io::Write;
@@ -277,4 +277,98 @@ fn a_later_config_wins_for_the_same_channel() {
     let cd3 = store.settings.get(&Arc::from("BV421-A") as &Arc<str>).unwrap();
     assert_eq!(cd3.get_cofactor(), Some(250.0), "the newer cofactor applies");
     assert!(matches!(cd3.transform, TransformType::Arcsinh { .. }));
+}
+
+// ─── Opening axes ─────────────────────────────────────────────────────────────
+//
+// Regression: the selectors showed "Time" on both axes after loading a file.
+// Two causes, both covered here. The index memo in main_window read the store
+// with `peek`, which does not subscribe, so it kept the value computed before
+// the scaling export had loaded - 0 - and displayed whichever channel came
+// first. And it matched on the whole `Param`, which carries the marker name
+// from the export, so the hardcoded FSC-A default could not match by equality.
+
+/// Time first, and a marker name on the scatter channel, so a lookup that
+/// matches whole `Param`s or falls back to index 0 lands on Time.
+const SCALING_TIME_FIRST: &str = "\
+Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z
+Time,,None (linear),1,0,4194304,0,0
+BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0
+FSC-A,Forward Scatter,None (linear),1,0,4194304,0,0
+SSC-A,Side Scatter,None (linear),1,0,4194304,0,0
+";
+
+fn store_with(contents: &str, name: &str) -> AxisStore {
+    let mut store = AxisStore::default();
+    store.apply_axis_configs(parse_scaling(contents, name));
+    store
+}
+
+#[test]
+fn a_channel_is_found_by_name_whatever_its_marker() {
+    let store = store_with(SCALING_TIME_FIRST, "idx-marker");
+
+    // The hardcoded default knows the channel but not the marker name, so an
+    // equality match on Param fails where this succeeds.
+    assert_eq!(store.index_of_fluoro("FSC-A"), Some(2));
+    assert_eq!(store.index_of_fluoro("SSC-A"), Some(3));
+    assert_eq!(
+        store.sorted_settings.get_index_of(&Param {
+            marker: Arc::from("FSC-A"),
+            fluoro: Arc::from("FSC-A"),
+        }),
+        None,
+        "matching the whole Param is what used to fail"
+    );
+}
+
+#[test]
+fn a_missing_channel_is_reported_rather_than_guessed() {
+    let store = store_with(SCALING_TIME_FIRST, "idx-missing");
+    assert_eq!(store.index_of_fluoro("CD4-A"), None);
+}
+
+#[test]
+fn a_loaded_file_opens_on_the_scatter_pair() {
+    let store = store_with(SCALING_TIME_FIRST, "open-scatter");
+    let (x, y) = store.default_axis_params().expect("settings are loaded");
+
+    assert_eq!(&*x.fluoro, "FSC-A", "not Time, whatever the file order");
+    assert_eq!(&*y.fluoro, "SSC-A");
+    // The marker name comes from the export, not from the hardcoded default.
+    assert_eq!(&*x.marker, "Forward Scatter");
+    assert_eq!(&*y.marker, "Side Scatter");
+}
+
+#[test]
+fn a_file_without_scatter_opens_on_its_first_two_channels() {
+    let store = store_with(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0\n\
+         BV510-A,CD4,Arcsinh,6000,-1000,4194304,0,0\n",
+        "open-no-scatter",
+    );
+    let (x, y) = store.default_axis_params().expect("settings are loaded");
+
+    assert_eq!(&*x.fluoro, "BV421-A");
+    assert_eq!(&*y.fluoro, "BV510-A");
+}
+
+#[test]
+fn an_empty_store_has_no_opening_axes() {
+    // Distinguishes "no scaling export yet" from "loaded"; the caller must not
+    // commit to an axis before the export lands, which is the bug above.
+    assert!(AxisStore::default().default_axis_params().is_none());
+}
+
+#[test]
+fn a_single_channel_file_opens_on_that_channel_for_both_axes() {
+    let store = store_with(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0\n",
+        "open-single",
+    );
+    let (x, y) = store.default_axis_params().expect("settings are loaded");
+    assert_eq!(&*x.fluoro, "BV421-A");
+    assert_eq!(&*y.fluoro, "BV421-A", "falls back rather than failing");
 }

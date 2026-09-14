@@ -55,6 +55,14 @@
   arbitrary eigenvector, and the axis-aligned test compared `f == 0.0` exactly,
   so an ellipse aligned to within float noise took `atan2` with two near-zero
   arguments.
+- **Both axis selectors opened on the wrong channel.** The memo backing each
+  selector's index read the axis store with `peek`, which does not subscribe,
+  so it kept the value computed before the scaling export had loaded - 0 - and
+  never recomputed. Both selectors therefore displayed whichever channel the
+  export listed first, regardless of the axes actually in use. It also matched
+  on the whole `Param`, which carries the marker name from the export, so the
+  hardcoded FSC-A/SSC-A defaults could never match by equality. Now matched on
+  the channel, against a subscribed read.
 - **Broken doctests in `gate_hierarchy`.** All twelve imported `flow_gates::GateHierarchy`
   (the type lives in this crate) and called `add_child` without its `order`
   argument, so `cargo test` failed on the doc tests alone.
@@ -100,6 +108,11 @@
   runtime. The store methods remain thin wrappers at the same write
   granularity, leaving reactivity unchanged. 44 tests follow: store writes and
   override precedence, add/remove, and the metadata and scaling imports.
+- Opening axes are chosen once, when the scaling export lands: the scatter
+  pair if the file has it, otherwise the first two channels in display order,
+  taking the marker names from the export rather than assuming them. A latch
+  keeps it to once, so switching sample files leaves the axes and the selected
+  gate where the user put them. 6 tests.
 - `EllipseGate` keeps the four control points Omiq wrote (`EllipseHandles`), so
   an unedited ellipse exports byte-identically instead of a canonicalised
   equivalent. A move carries them; a rotation drops them and derives a
@@ -145,7 +158,7 @@
     cargo test                        # needs the GTK system packages below
     cargo test --no-default-features  # no system packages needed
 
-433 unit tests and 12 doctests pass either way. Every test lives in the library,
+439 unit tests and 12 doctests pass either way. Every test lives in the library,
 so `--no-default-features` is enough to run them: it drops dioxus's `desktop`
 feature, which pulls in `gdk-sys` and probes pkg-config for `gdk-3.0`. Without
 those packages a plain `cargo test` fails at that probe before running anything.

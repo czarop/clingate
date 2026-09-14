@@ -307,6 +307,61 @@ impl AxisStore {
             self.settings.insert(ai.param.fluoro.clone(), ai);
         }
     }
+
+    /// Position of a channel in the display order, matched on the channel alone.
+    ///
+    /// `Param` compares on both fields, so a caller that only knows the channel
+    /// - the hardcoded FSC-A/SSC-A defaults, say - cannot build a key that
+    /// matches: the marker name comes from the scaling export and is not
+    /// guessable. Matching on `fluoro` is what those callers actually mean.
+    pub fn index_of_fluoro(&self, fluoro: &str) -> Option<usize> {
+        index_of_fluoro(&self.sorted_settings, fluoro)
+    }
+
+    /// The full `Param` for a channel, including the marker name the scaling
+    /// export gave it.
+    pub fn param_for_fluoro(&self, fluoro: &str) -> Option<&Param> {
+        self.sorted_settings.iter().find(|p| &*p.fluoro == fluoro)
+    }
+
+    /// The two channels a freshly loaded file should open on. See
+    /// [`default_axis_params`].
+    pub fn default_axis_params(&self) -> Option<(Param, Param)> {
+        default_axis_params(&self.sorted_settings)
+    }
+
+}
+
+/// Display order of a channel, matched on the channel alone.
+///
+/// Free-standing so a caller holding only the channel list can subscribe to
+/// that rather than to the whole store, which also changes on every cofactor
+/// or axis-limit edit.
+pub fn index_of_fluoro(
+    sorted: &indexmap::IndexSet<Param, FxBuildHasher>,
+    fluoro: &str,
+) -> Option<usize> {
+    sorted.iter().position(|p| &*p.fluoro == fluoro)
+}
+
+/// The two channels a freshly loaded file should open on: the scatter pair if
+/// the file has it, otherwise the first two channels in display order.
+///
+/// `None` while no scaling export has been read, so a caller can tell "not
+/// loaded yet" from "loaded, and these are the axes" instead of committing to
+/// index 0 and showing whichever channel happens to be listed first.
+pub fn default_axis_params(
+    sorted: &indexmap::IndexSet<Param, FxBuildHasher>,
+) -> Option<(Param, Param)> {
+    let pick = |preferred: &str, fallback: usize| -> Option<Param> {
+        sorted
+            .iter()
+            .find(|p| &*p.fluoro == preferred)
+            .or_else(|| sorted.get_index(fallback))
+            .or_else(|| sorted.get_index(0))
+            .cloned()
+    };
+    Some((pick("FSC-A", 0)?, pick("SSC-A", 1)?))
 }
 
 /// Parse a scaling export into axis settings.
