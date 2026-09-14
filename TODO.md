@@ -52,6 +52,22 @@ Names are shared per gate, matching Omiq, which stores the name on the
 container and not on the node. Per-placement names are not representable in a
 gating file.
 
+## Gate editing
+
+Reported from testing, not yet investigated.
+
+- [ ] **Ellipse rotation only flips.** Rotating an ellipse no longer follows the
+      pointer through intermediate angles - it jumps straight to a complete
+      flip. Suspect `rotate_gate` in `ellipse_gate.rs`, and the interaction with
+      `source_handles`: rotation drops the imported handles and re-derives a
+      principal-axis pair, which was changed when Omiq's four control points
+      were preserved. Check whether the re-derivation is snapping the angle
+      rather than taking the pointer's.
+- [ ] **A rectangle or line gate's right edge cannot cross its left.** Dragging
+      the right-hand point past the left-hand one is refused, so a gate cannot
+      be inverted or dragged through itself. Expect a min/max assumption in
+      `replace_point` that needs the two swapped rather than clamped.
+
 ## Ghost containers
 
 A gate with no node but which a live boolean still references. Omiq leaves
