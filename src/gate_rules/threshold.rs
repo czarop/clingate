@@ -1,0 +1,245 @@
+//! Solving for the position of a one-dimensional threshold.
+//!
+//! Every rule here reduces to the same shape: given the values of the parent
+//! population on one axis, return the coordinate at which to put the gate edge.
+//! The caller decides which axis and which edge, so the same solvers serve a
+//! rectangle whose left edge moves, a bisector arm, or a quadrant centre line.
+//!
+//! Two conventions, both chosen to match what the rest of the editor already
+//! does rather than to be tidy in isolation:
+//!
+//! - A gate admits an event when its value is **strictly greater** than the
+//!   lower edge, because that is what `filter_events_to_mask` does
+//!   (`gt(min) & lt(max)`). Counting any other way would report a fraction the
+//!   gate does not actually capture.
+//! - Values arrive in the axis's **display space** - arcsinh for a fluorescence
+//!   channel, linear for scatter. Quantiles do not care, since a monotone
+//!   transform preserves order, but an offset in data units very much does: it
+//!   is a visual shift, and the space the analyst sees is the arcsinh one.
+
+/// Where a threshold ended up, and what the gate would actually capture there.
+///
+/// `events_admitted` is counted at the chosen coordinate rather than assumed
+/// from the target, so ties in the data cannot make it lie.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Threshold {
+    /// The coordinate for the gate edge, in the axis's display space.
+    pub x: f64,
+    /// How many events the gate admits there.
+    pub events_admitted: usize,
+    /// Those events as a fraction of the parent population.
+    pub fraction_admitted: f64,
+    pub status: Status,
+}
+
+/// Whether the rule was satisfiable, for the report.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Status {
+    /// The fraction the gate captures lies inside the band the rule asked for.
+    InBand,
+    /// It does not, and no position would have: a band is a range of fractions,
+    /// but a gate can only admit a whole number of events, so a band narrower
+    /// than one event's worth may contain no achievable fraction at all. This
+    /// is the low-count case - the threshold is the closest achievable, and the
+    /// caller should flag it rather than trust it.
+    OutOfBand { band: (f64, f64) },
+    /// The rule named a position directly, so there was no band to satisfy.
+    NoBand,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SolveError {
+    /// The parent population is empty, so there is nothing to position against.
+    NoEvents,
+    /// Every value was NaN or infinite.
+    NoFiniteValues,
+    /// A fraction outside 0..=1, or a band whose lower bound exceeds its upper.
+    BadBand { band: (f64, f64) },
+    /// A percentile outside 0..=100.
+    BadPercentile(f64),
+}
+
+impl std::fmt::Display for SolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolveError::NoEvents => write!(f, "the parent population is empty"),
+            SolveError::NoFiniteValues => write!(f, "no finite values in the parent population"),
+            SolveError::BadBand { band } => {
+                write!(
+                    f,
+                    "a band of {} to {} is not a fraction range",
+                    band.0, band.1
+                )
+            }
+            SolveError::BadPercentile(p) => write!(f, "{p} is not a percentile"),
+        }
+    }
+}
+
+impl std::error::Error for SolveError {}
+
+/// The finite values, sorted large to small.
+fn descending(values: &[f64]) -> Result<Vec<f64>, SolveError> {
+    if values.is_empty() {
+        return Err(SolveError::NoEvents);
+    }
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return Err(SolveError::NoFiniteValues);
+    }
+    // Every value is finite, so the comparison is total.
+    sorted.sort_by(|a, b| b.partial_cmp(a).expect("finite values compare"));
+    Ok(sorted)
+}
+
+/// What a gate at `x` admits, counted the way the filter counts it.
+fn admitted(sorted_desc: &[f64], x: f64) -> (usize, f64) {
+    let n = sorted_desc.partition_point(|v| *v > x);
+    (n, n as f64 / sorted_desc.len() as f64)
+}
+
+/// Position a gate edge so it admits a fraction of the parent population inside
+/// `band`, aiming for the middle of the band.
+///
+/// The band is a range of acceptable fractions, not a target, so the first job
+/// is to turn it into a whole number of events: the midpoint fraction gives a
+/// count, and that count is pulled inside the band's own integer range whenever
+/// one exists, so a satisfiable rule is satisfied.
+///
+/// The coordinate then goes **midway between the two events that bracket that
+/// count**. Any coordinate in that gap admits the same events, so the midpoint
+/// is simply the choice furthest from either neighbour - the one least likely
+/// to change what the gate captures when the next sample's cells land a little
+/// differently. It is also where a person puts the line by eye.
+pub fn tail_fraction(values: &[f64], band: (f64, f64)) -> Result<Threshold, SolveError> {
+    let (lower, upper) = band;
+    if !(0.0..=1.0).contains(&lower) || !(0.0..=1.0).contains(&upper) || lower > upper {
+        return Err(SolveError::BadBand { band });
+    }
+    let sorted = descending(values)?;
+    let n = sorted.len();
+    let n_f = n as f64;
+
+    // The midpoint of the band, as a count.
+    let mut target = ((lower + upper) / 2.0 * n_f).round() as usize;
+    // The counts the band itself allows. When the band spans less than one
+    // event this range is empty and nothing can satisfy it.
+    let band_lo = (lower * n_f).ceil() as usize;
+    let band_hi = (upper * n_f).floor() as usize;
+    if band_lo <= band_hi {
+        target = target.clamp(band_lo, band_hi);
+    }
+    let target = nearest_achievable(&sorted, target.min(n));
+
+    let x = if target == 0 {
+        // Admit nothing: sit on the largest event, which is strictly outside.
+        sorted[0]
+    } else if target == n {
+        // Admit everything: sit below the smallest.
+        let span = sorted[0] - sorted[n - 1];
+        sorted[n - 1] - if span > 0.0 { span / n_f } else { 1.0 }
+    } else {
+        // `target` events lie above sorted[target]; put the edge between the
+        // last one admitted and the first one excluded.
+        (sorted[target - 1] + sorted[target]) / 2.0
+    };
+
+    let (events_admitted, fraction_admitted) = admitted(&sorted, x);
+    let status = if (lower..=upper).contains(&fraction_admitted) {
+        Status::InBand
+    } else {
+        Status::OutOfBand { band }
+    };
+
+    Ok(Threshold {
+        x,
+        events_admitted,
+        fraction_admitted,
+        status,
+    })
+}
+
+/// Position a gate edge a fixed visual distance above a percentile of the
+/// parent population.
+///
+/// For the case where no obvious positive population exists and the negative
+/// runs into a shoulder: take the top of the negative and step off it. On an
+/// FMO the parent population *is* the negative, which is what makes this a
+/// single-sample rule.
+///
+/// `offset` is in the axis's display units, because it stands for a visual
+/// shift - the same offset means something quite different either side of an
+/// arcsinh transform.
+pub fn percentile_offset(
+    values: &[f64],
+    percentile: f64,
+    offset: f64,
+) -> Result<Threshold, SolveError> {
+    if !(0.0..=100.0).contains(&percentile) {
+        return Err(SolveError::BadPercentile(percentile));
+    }
+    let sorted = descending(values)?;
+    let x = percentile_of_descending(&sorted, percentile) + offset;
+    let (events_admitted, fraction_admitted) = admitted(&sorted, x);
+
+    Ok(Threshold {
+        x,
+        events_admitted,
+        fraction_admitted,
+        status: Status::NoBand,
+    })
+}
+
+/// The achievable count nearest `target`.
+///
+/// A count is only achievable if an edge can separate it from the rest, which
+/// needs the two events either side of it to differ. Where they do not - a run
+/// of identical values, or a target that lands inside a dense cloud - no
+/// coordinate admits exactly that many, and placing the edge there anyway puts
+/// it in a zero-width gap: hard against the data, and one stray cell away from
+/// admitting something quite different.
+///
+/// Searching outward for the nearest count that *can* be separated is what puts
+/// the edge in the empty space instead. It is not a compromise on aiming for the
+/// middle of the band - the midpoint still chooses which gap - it is what makes
+/// that aim reachable. Zero is always achievable, so this terminates.
+fn nearest_achievable(sorted_desc: &[f64], target: usize) -> usize {
+    let n = sorted_desc.len();
+    let separable = |k: usize| k == 0 || k == n || sorted_desc[k - 1] > sorted_desc[k];
+
+    if separable(target) {
+        return target;
+    }
+    for step in 1..=n {
+        if let Some(below) = target.checked_sub(step)
+            && separable(below)
+        {
+            return below;
+        }
+        let above = target + step;
+        if above <= n && separable(above) {
+            return above;
+        }
+    }
+    0
+}
+
+/// A percentile by linear interpolation between order statistics, reading a
+/// descending slice. Kept separate so the interpolation can be tested on its
+/// own - an off-by-one here moves every gate built on it.
+pub fn percentile_of_descending(sorted_desc: &[f64], percentile: f64) -> f64 {
+    let n = sorted_desc.len();
+    if n == 1 {
+        return sorted_desc[0];
+    }
+    // Rank from the bottom, so the 99th percentile is near the top.
+    let rank = (percentile / 100.0) * (n - 1) as f64;
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    let ascending = |i: usize| sorted_desc[n - 1 - i];
+    if lo == hi {
+        return ascending(lo);
+    }
+    let weight = rank - lo as f64;
+    ascending(lo) * (1.0 - weight) + ascending(hi) * weight
+}

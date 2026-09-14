@@ -1,6 +1,7 @@
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
 pub mod gate_move;
+pub mod gate_rules;
 pub mod components;
 pub mod file_load;
 pub mod gate_editor;
