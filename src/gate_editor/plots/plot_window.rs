@@ -169,8 +169,17 @@ pub fn PlotWindow(
             let y_fluoro = y_axis_marker.read().fluoro.clone();
             let parental = parental_gate();
             plot_store.current_file_id()();
+            // Track the resolver rather than peeking it. This plot shows the
+            // events its gating chain admits, so moving a gate anywhere in that
+            // chain changes the population - a parent gate dragged on its own
+            // plot has to re-filter every plot below it. Peeking subscribed to
+            // nothing, so the outline moved and the data underneath did not.
+            //
+            // Read here, in the synchronous half of the closure: a read inside
+            // the async block registers no dependency.
+            let current_resolver = resolver.read().clone();
             async move {
-                let Ok(resolver) = resolver.peek().clone() else {
+                let Ok(resolver) = current_resolver else {
                     return Err(anyhow::anyhow!("No resolver"));
                 };
 
@@ -207,8 +216,11 @@ pub fn PlotWindow(
             Some(Ok(df)) => Some(df.clone()),
             _ => None,
         };
-        let x_name = x_axis_marker.peek().fluoro.clone();
-        let y_name = y_axis_marker.peek().fluoro.clone();
+        // Tracked, not peeked. This happens to re-run anyway - the filtered
+        // frame above depends on both markers - but relying on that is one
+        // refactor away from a stale index built against the wrong columns.
+        let x_name = x_axis_marker.read().fluoro.clone();
+        let y_name = y_axis_marker.read().fluoro.clone();
         async move {
             let df = match df_arc {
                 Some(d) => d,

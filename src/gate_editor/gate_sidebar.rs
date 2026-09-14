@@ -7,13 +7,27 @@ use dioxus::stores::SyncStore;
 use std::sync::Arc;
 static SIDEBAR_STYLE: Asset = asset!("assets/gate_sidebar.css");
 
-/// The position waiting for a link target, while the user picks one.
+/// Where a link is up to, while one is being made.
 ///
-/// Set by "Link to..." on one row; the next row clicked becomes the target
-/// instead of being selected. Shared through context because the tree renders
-/// recursively.
+/// Linking discards the source position's own gate, and nothing in the UI can
+/// bring it back, so it is a two-step action: pick a target, then confirm.
+#[derive(Clone, PartialEq)]
+enum LinkStep {
+    /// "Link to..." was chosen on this position; the next row clicked is the
+    /// target rather than a new selection.
+    Picking(Arc<str>),
+    /// A target was chosen. Nothing has been written yet.
+    Confirming { source: Arc<str>, target: Arc<str> },
+}
+
+/// Shared through context because the tree renders recursively.
 #[derive(Clone, Copy)]
-struct LinkPick(Signal<Option<Arc<str>>>);
+struct LinkPick(Signal<Option<LinkStep>>);
+
+/// Whatever the store said when a link was refused, for showing to the user
+/// rather than only printing it.
+#[derive(Clone, Copy)]
+struct LinkError(Signal<Option<String>>);
 
 #[component]
 pub fn GateSidebar(
@@ -26,20 +40,82 @@ pub fn GateSidebar(
     let hierarchy = gate_store.hierarchy();
     let roots = hierarchy.read().get_roots();
     let link_pick = use_context_provider(|| LinkPick(Signal::new(None)));
+    let link_error = use_context_provider(|| LinkError(Signal::new(None)));
     let mut picking = link_pick.0;
+    let mut error = link_error.0;
+    let mut store_for_link = gate_store;
+
+    // Names, so the confirmation says what it is about to do rather than
+    // quoting ids.
+    let name_of = move |node: &Arc<str>| -> String {
+        store_for_link
+            .read()
+            .gate_for_node(&NodeId::from(node.clone()))
+            .and_then(|g| store_for_link.read().registered_gate(g))
+            .map(|g| g.get_name().to_string())
+            .unwrap_or_else(|| node.to_string())
+    };
 
     rsx! {
         document::Stylesheet { href: SIDEBAR_STYLE }
         div { class: "custom-sidebar",
             h3 { class: "sidebar-title", "Gate Hierarchy" }
 
-            if picking.read().is_some() {
-                div { class: "link-prompt",
-                    "Click a gate to link to"
+            if let Some(step) = picking.read().clone() {
+                match step {
+                    LinkStep::Picking(_) => rsx! {
+                        div { class: "link-prompt",
+                            span { "Click a gate to link to" }
+                            button {
+                                class: "link-cancel",
+                                onclick: move |_| picking.set(None),
+                                "Cancel"
+                            }
+                        }
+                    },
+                    LinkStep::Confirming { source, target } => {
+                        let (from, to) = (name_of(&source), name_of(&target));
+                        let (s2, t2) = (source.clone(), target.clone());
+                        rsx! {
+                            div { class: "link-prompt link-confirm",
+                                span {
+                                    "Apply {to} at {from}? {from}'s own gate is discarded."
+                                }
+                                span { class: "link-actions",
+                                    button {
+                                        class: "link-go",
+                                        onclick: move |_| {
+                                            let result = store_for_link.write().link_node_to_gate(
+                                                &NodeId::from(s2.clone()),
+                                                &NodeId::from(t2.clone()),
+                                            );
+                                            match result {
+                                                Ok(()) => error.set(None),
+                                                Err(e) => error.set(Some(e.to_string())),
+                                            }
+                                            picking.set(None);
+                                        },
+                                        "Link"
+                                    }
+                                    button {
+                                        class: "link-cancel",
+                                        onclick: move |_| picking.set(None),
+                                        "Cancel"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(message) = error.read().clone() {
+                div { class: "link-error",
+                    span { "{message}" }
                     button {
                         class: "link-cancel",
-                        onclick: move |_| picking.set(None),
-                        "Cancel"
+                        onclick: move |_| error.set(None),
+                        "Dismiss"
                     }
                 }
             }
@@ -96,6 +172,7 @@ fn GateNode(
 ) -> Element {
     let mut gate_store = use_context::<SyncStore<GateState>>();
     let mut picking = use_context::<LinkPick>().0;
+    let mut link_error = use_context::<LinkError>().0;
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
     let mut is_expanded = use_signal(|| true);
 
@@ -190,18 +267,15 @@ fn GateNode(
 
                             // A link is in progress: this row is the target, not
                             // a new selection.
+                            // A link is in progress: this row is the target, not
+                            // a new selection. Nothing is written until the
+                            // confirmation below is accepted.
                             let in_progress = picking.peek().clone();
-                            if let Some(source) = in_progress {
-                                picking.set(None);
-                                let result = gate_store
-                                    .write()
-                                    .link_node_to_gate(
-                                        &NodeId::from(source),
-                                        &NodeId::from(node_id_for_click.clone()),
-                                    );
-                                if let Err(err) = result {
-                                    println!("link failed: {err}");
-                                }
+                            if let Some(LinkStep::Picking(source)) = in_progress {
+                                picking.set(Some(LinkStep::Confirming {
+                                    source,
+                                    target: node_id_for_click.clone(),
+                                }));
                                 return;
                             }
 
@@ -346,7 +420,7 @@ fn GateNode(
                                 .delete_placement(&NodeId::from(node_id_for_instance.clone()));
                             match result {
                                 Ok(()) => selected.set(Some(parent_for_instance.clone())),
-                                Err(err) => println!("could not delete this instance: {err}"),
+                                Err(err) => link_error.set(Some(err.to_string())),
                             }
                         },
                         "Delete this instance"
@@ -359,7 +433,7 @@ fn GateNode(
                                 .write()
                                 .unlink_node(&NodeId::from(node_id_for_unlink.clone()))
                             {
-                                println!("could not unlink: {err}");
+                                link_error.set(Some(err.to_string()));
                             }
                         },
                         "Unlink"
@@ -369,7 +443,7 @@ fn GateNode(
                     value: "link".to_string(),
                     index: 8usize,
                     on_select: move |_| {
-                        picking.set(Some(node_id_for_link.clone()));
+                        picking.set(Some(LinkStep::Picking(node_id_for_link.clone())));
                     },
                     "Link to..."
                 }

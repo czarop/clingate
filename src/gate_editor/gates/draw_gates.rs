@@ -75,6 +75,11 @@ pub fn GateLayer(
     use_effect(move || {
         println!("matching gates to plot");
         let (x, y, parent) = (x_channel(), y_channel(), parental_gate_id());
+        // Peeked deliberately. This re-matches gates to the plot's axes, which
+        // depends on their parameters, not their positions - so a gate moving
+        // is not a reason to run it again, and tracking the resolver here would
+        // re-run it on every drag. Contrast the filtered frame in plot_window,
+        // which does have to track the resolver.
         let Some(resolver) = resolver.peek().clone() else {
             return;
         };

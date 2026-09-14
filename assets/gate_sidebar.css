@@ -199,3 +199,45 @@
 .link-cancel:hover {
     background-color: #bfdbfe;
 }
+
+/* Confirmation before a link is applied - it discards a gate, with no undo. */
+.link-confirm {
+    flex-wrap: wrap;
+    background-color: #fef3c7;
+    border-bottom-color: #fde68a;
+    color: #78350f;
+}
+
+.link-actions {
+    display: flex;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.link-go {
+    flex: 0 0 auto;
+    background-color: #b45309;
+    border: 1px solid #92400e;
+    border-radius: 3px;
+    color: #fff;
+    cursor: pointer;
+    font-size: var(--tree-font-size);
+    padding: 1px 5px;
+}
+
+.link-go:hover {
+    background-color: #92400e;
+}
+
+.link-error {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    justify-content: space-between;
+    padding: 4px 6px;
+    font-size: var(--tree-font-size);
+    background-color: #fee2e2;
+    border-bottom: 1px solid #fecaca;
+    color: #7f1d1d;
+}

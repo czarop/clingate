@@ -93,10 +93,14 @@ wrapper then reads through `peek`, it subscribes to nothing, and any memo built
 on it silently stops updating. Two have bitten already: the axis selectors, and
 the gate resolver.
 
-- [ ] **Audit the remaining Store wrappers for the same shape.** A `peek` inside
-      a wrapper that a `use_memo` depends on is the pattern. There is no test
-      coverage for reactivity at all - the store logic is tested without a
-      runtime, which is exactly why these got through.
+- [x] **Audit the reactive closures for the same shape.** Went through all 38
+      `use_memo` / `use_effect` / `use_resource` closures. Found one more real
+      bug - the filtered dataframe peeked the resolver, so dragging a parent
+      gate moved its outline but left every plot below it showing the old
+      population - and one fragile-but-correct case, the event index, now
+      tracked too. The two deliberate peeks (`upload_succeded`,
+      `axes_initialised`) are latches, and `match_gates_to_plot` peeks on
+      purpose; all three are commented as such.
 - [ ] **Consider a Dioxus test runtime** for the handful of memos that matter
       (resolver, axis index, gate list), so a lost subscription fails a test
       rather than being found by hand.
