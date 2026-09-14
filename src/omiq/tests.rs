@@ -2662,6 +2662,51 @@ fn each_placement_keeps_its_own_parent() {
     assert_eq!(parents, vec!["na".to_string(), "nb".to_string()]);
 }
 
+/// A plot's data depends on its gating chain and on nothing below it.
+///
+/// This is what lets `plot_window` re-filter only when a gate in the chain
+/// moves. The expensive half of drawing a plot - filtering the frame and
+/// rebuilding the event index - used to run on every gate edit anywhere,
+/// because the resource depended on the whole resolver rather than on the
+/// chain. A gate drawn *on* a plot is a child of that plot's parent node, so it
+/// must not appear in the chain, or editing it would reload the plot it is
+/// drawn on.
+#[test]
+fn a_nodes_chain_holds_its_ancestors_and_never_its_children() {
+    let state = import_json(&linked_gate_json());
+
+    // `na` is a root node showing gate `g1`; `nc` hangs below it showing
+    // `shared`. A plot parented on `na` draws `shared` on top of it.
+    let parent = NodeId::from(Arc::<str>::from("na"));
+    let child = NodeId::from(Arc::<str>::from("nc"));
+
+    let parent_chain: Vec<String> = state
+        .gate_chain_for_node(&parent)
+        .iter()
+        .map(|g| g.to_string())
+        .collect();
+    let child_chain: Vec<String> = state
+        .gate_chain_for_node(&child)
+        .iter()
+        .map(|g| g.to_string())
+        .collect();
+
+    assert_eq!(
+        parent_chain,
+        vec!["g1".to_string()],
+        "a plot's chain is its own gate and its ancestors"
+    );
+    assert!(
+        !parent_chain.contains(&"shared".to_string()),
+        "a gate drawn on the plot must not filter the plot it is drawn on"
+    );
+    assert_eq!(
+        child_chain,
+        vec!["g1".to_string(), "shared".to_string()],
+        "the child's own plot does narrow by both"
+    );
+}
+
 /// The point of the exercise. Statistics for a linked gate were computed
 /// against one arbitrary parent chain, because the chain was taken from the
 /// gate and a gate had only one position.

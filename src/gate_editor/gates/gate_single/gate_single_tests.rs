@@ -8,12 +8,13 @@
 
 #![cfg(test)]
 
-use crate::gate_editor::gates::gate_drag::GateDragData;
+use crate::gate_editor::gates::gate_drag::{GateDragData, PointDragData};
 use crate::gate_editor::gates::gate_single::ellipse_gate::EllipseGate;
 use crate::gate_editor::gates::gate_single::line_gate::LineGate;
 use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
+use crate::gate_editor::gates::gate_types::GateRenderShape;
 use crate::gate_editor::plots::axis_store::PlotMapper;
 use flow_fcs::TransformType;
 use flow_gates::{GateGeometry, create_polygon_geometry, create_rectangle_geometry};
@@ -603,4 +604,36 @@ fn a_geometry_that_cannot_drift_offers_no_anchor() {
     // derived from the centre, so neither needs pinning.
     assert_eq!(triangle("t").drag_anchor(0), None);
     assert_eq!(ellipse("e").drag_anchor(0), None);
+}
+
+#[test]
+fn the_drag_preview_agrees_with_the_geometry_after_crossing() {
+    use crate::gate_editor::gates::gate_single::rectangle_gate::draw_ghost_point_for_rectangle;
+
+    // Corner 2 dragged through corner 0 at (100, 100), as in the test above.
+    let pointer = (20.0, 20.0);
+    let dragged = drag_point(square("r"), 2, &[(50.0, 50.0), pointer]);
+    let (min, max) = corners(&dragged);
+
+    let mut drag = PointDragData::new(2, pointer);
+    drag.set_anchor_once(square("r").drag_anchor(2).expect("a rectangle anchors"));
+
+    // The constructor's winding, rebuilt from the geometry.
+    let pts = vec![(min.0, min.1), (max.0, min.1), (max.0, max.1), (min.0, max.1)];
+    let ghost =
+        draw_ghost_point_for_rectangle(&drag, &pts).expect("a drag draws a preview");
+    let GateRenderShape::Rectangle {
+        x, y, width, height, ..
+    } = ghost[0]
+    else {
+        panic!("expected a rectangle preview");
+    };
+
+    // The preview is given as its top-left corner in data space, with the
+    // height running down from it.
+    assert_eq!(
+        ((x, y - height), (x + width, y)),
+        (min, max),
+        "the preview must outline the gate the drag is actually building"
+    );
 }

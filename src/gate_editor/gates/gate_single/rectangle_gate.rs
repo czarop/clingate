@@ -460,48 +460,24 @@ pub fn draw_ghost_point_for_rectangle(
     main_points: &[(f32, f32)],
 ) -> Option<Vec<GateRenderShape>> {
     // [bottom-left, bottom-right, top-right, top-left]
-    let idx = drag_data.point_index();
     let current = drag_data.loc();
 
-    let (x, y, width, height) = match idx {
-        0 => {
-            // Bottom-Left dragged -> Anchor is Top-Right (Index 2)
-            let anchor = main_points[2];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1); // In data space, Top is Max Y
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        1 => {
-            // Bottom-Right dragged -> Anchor is Top-Left (Index 3)
-            let anchor = main_points[3];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        2 => {
-            // Top-Right dragged -> Anchor is Bottom-Left (Index 0)
-            let anchor = main_points[0];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        3 => {
-            // Top-Left dragged -> Anchor is Bottom-Right (Index 1)
-            let anchor = main_points[1];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        _ => unreachable!(),
+    // The preview must be built from the same anchor the geometry is, or the
+    // two disagree the moment a drag crosses it: the gate inverts about the
+    // anchor while the ghost, recomputing the anchor from the index it captured
+    // on mousedown, would follow whichever corner that index now names.
+    //
+    // Falling back to the diagonal keeps a preview for a drag that never
+    // registered an anchor.
+    let anchor = match drag_data.anchor() {
+        Some(anchor) => anchor,
+        None => *main_points.get((drag_data.point_index() + 2) % main_points.len())?,
     };
+
+    let x = current.0.min(anchor.0);
+    let y = current.1.max(anchor.1); // In data space, Top is Max Y
+    let width = (current.0 - anchor.0).abs();
+    let height = (current.1 - anchor.1).abs();
 
     let new_rect = GateRenderShape::Rectangle {
         x,
