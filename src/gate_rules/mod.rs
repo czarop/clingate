@@ -21,5 +21,6 @@ pub mod threshold;
 
 #[cfg(test)]
 mod confidence_tests;
+mod harness_tests;
 mod rule_tests;
 mod threshold_tests;
