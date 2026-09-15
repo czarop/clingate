@@ -17,10 +17,12 @@
 
 pub mod confidence;
 pub mod rule;
+pub mod rule_store;
 pub mod threshold;
 
 #[cfg(test)]
 mod confidence_tests;
 mod harness_tests;
+mod rule_store_tests;
 mod rule_tests;
 mod threshold_tests;
