@@ -142,12 +142,66 @@ these behind and we keep them verbatim so the boolean stays evaluable.
       looking at. `as_parent_node` still resolves a bare gate id to its first
       position, for callers that have not been converted.
 
+## Gate rules
+
+The rules approach to autogating: a written rule says where a gate belongs, it
+is evaluated on one sample, and the position is applied to that sample's
+partners. `src/gate_rules/` holds it. The population-drift approach in
+`gate_move` is separate and still unwired - see Autogating below.
+
+**A rule belongs to a parameter, never to an axis.** Which axis a marker is
+drawn on is a property of the plot and has to be read off the gate every time.
+CD279 is usually on y and CD134 on x, and in one real file CD279 appears on
+both - so a rule that records "x lower" is wrong the moment the same marker is
+plotted the other way round. The harness learned this the hard way: reading the
+x edge unconditionally made it read the wrong marker entirely, and gates came
+out capturing their whole parent population. Nothing in `rule.rs` names an
+axis, and nothing should.
+
+- [x] **Solve for a threshold.** `tail_fraction` for "the FMO gate should hold
+      0.2% to 0.5%", `percentile_offset` for a visual step above a percentile.
+      Pure functions over a slice of f64.
+- [x] **A rule is a type,** with a confidence model of its own.
+- [x] **Score against a hand-gated workflow.** `harness_tests.rs`, gated on four
+      environment variables. Over 50 placements of the four gates that really
+      use the FMO band rule, the confident ones agree with hand placement to a
+      median of 0.054 arcsinh units against a typical hand adjustment of 0.18,
+      and 97% fall within one such adjustment. The 15 it held back were mostly
+      flagged on event count, with parent populations of 38 to 368.
+
+- [ ] **A third rule: the edge of the negative peak.** GranzymeB and Ki67 in
+      this panel are gated by finding where the negative population ends and
+      sitting just above it - no FMO involved, and no fraction to aim at. It is
+      why both came out 0.46 arcsinh units from hand placement under a tail
+      fraction rule, which is the right answer to the wrong question.
+
+      Distinct from `percentile_offset`, which steps a *fixed* distance above a
+      percentile: this has to find the edge, so it needs the density rather than
+      an order statistic. The KDE in `gate_move` is the obvious starting point.
+
+- [ ] **A rule store.** Attach a `Rule` to a gate - its band, its parameter,
+      which sample role it is measured on - and persist it to a sidecar, since
+      Omiq has no representation for rules. The harness currently hardcodes one
+      band for every gate, which measures the band rather than the solver. This
+      is the bookkeeping that stands between the solvers and real use.
+
+- [ ] **The Gate Rules tab.** Choose a rule type per gate and set its
+      parameters. Wants the rule store first.
+
+- [ ] **Apply a solved threshold to a gate.** Rebuild the geometry and write it
+      through `insert_for_source` with `GateSource::Sample`. Real files
+      *translate* the rectangle rather than resize it: across 41 gates over 117
+      files the width stayed constant to seven figures while the bounding edge
+      moved.
+
 ## Autogating
 
 The point of the project, and entirely unstarted.
 
-This is the point of the project and has had no attention. Everything built so
-far - import, the node model, export - is the substrate it needs.
+The second of the two approaches: measure how far a population moved from a QC
+sample and carry the gate with it. Unwired. The rules approach above is the
+direct replacement for how gating is done by hand today and is where the work
+has gone so far.
 
 - [ ] **Wire `gate_move` to the gate store.** `src/gate_move/` holds KDE, peak
       finding, bandwidth selection, population-shift recovery, smear scoring,

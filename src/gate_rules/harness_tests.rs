@@ -48,31 +48,28 @@ fn path_from(var: &str) -> Option<PathBuf> {
     })
 }
 
-/// Which edge of a rectangle actually discriminates on x.
+/// Which side of the threshold the gate keeps.
 ///
-/// A "positive" gate bounds x from below and runs off the top of the plot; a
-/// "negative" one bounds it from above. The unused edge is dragged off-scale,
-/// so it is not a threshold at all - reading it as one reports that the gate
-/// captures the whole parent population, which is how this was found.
+/// Deliberately says nothing about an axis. A rule belongs to a *parameter* -
+/// the marker it positions against - and which axis that parameter is drawn on
+/// is a property of the plot, to be read off the gate every time. CD279 is
+/// usually on y and CD134 on x, and the same marker can be either; assuming
+/// otherwise is how the harness came to read the wrong parameter entirely and
+/// report gates as capturing their whole parent population.
 #[derive(PartialEq, Clone, Copy, Debug)]
-enum Edge {
-    XLower,
-    XUpper,
-    YLower,
-    YUpper,
+enum Bound {
+    /// The gate keeps events above the threshold - a "positive" gate.
+    Above,
+    /// It keeps those below - a "negative" one.
+    Below,
 }
 
-impl Edge {
+impl Bound {
     fn label(self) -> &'static str {
         match self {
-            Edge::XLower => "x lower",
-            Edge::XUpper => "x upper",
-            Edge::YLower => "y lower",
-            Edge::YUpper => "y upper",
+            Bound::Above => "above",
+            Bound::Below => "below",
         }
-    }
-    fn is_upper(self) -> bool {
-        matches!(self, Edge::XUpper | Edge::YUpper)
     }
 }
 
@@ -82,7 +79,11 @@ struct Row {
     gate: String,
     channel: String,
     parent_events: usize,
-    edge: Edge,
+    bound: Bound,
+    /// Which axis the plot happened to draw the parameter on. Reported so a
+    /// person reading the table can find the gate, never used to decide
+    /// anything.
+    axis: &'static str,
     manual_x: f64,
     manual_fraction: f64,
     values: Vec<f64>,
@@ -192,11 +193,33 @@ fn rows_for_file(
             continue;
         };
         let (x_param, y_param) = gate.get_params();
-        let bounds: [(Edge, Arc<str>, Option<f32>); 4] = [
-            (Edge::XLower, x_param.clone(), min.get_coordinate(&x_param)),
-            (Edge::XUpper, x_param.clone(), max.get_coordinate(&x_param)),
-            (Edge::YLower, y_param.clone(), min.get_coordinate(&y_param)),
-            (Edge::YUpper, y_param.clone(), max.get_coordinate(&y_param)),
+        // Every edge of the rectangle, each carrying the parameter it bounds -
+        // taken from the gate, never assumed from the axis.
+        let bounds: [(Bound, &'static str, Arc<str>, Option<f32>); 4] = [
+            (
+                Bound::Above,
+                "x",
+                x_param.clone(),
+                min.get_coordinate(&x_param),
+            ),
+            (
+                Bound::Below,
+                "x",
+                x_param.clone(),
+                max.get_coordinate(&x_param),
+            ),
+            (
+                Bound::Above,
+                "y",
+                y_param.clone(),
+                min.get_coordinate(&y_param),
+            ),
+            (
+                Bound::Below,
+                "y",
+                y_param.clone(),
+                max.get_coordinate(&y_param),
+            ),
         ];
 
         let Some(parent) = state.parent_node(node) else {
@@ -209,9 +232,9 @@ fn rows_for_file(
         // leave those sides open. Reading the x edge unconditionally was wrong -
         // the marker of interest is often on y, and then the x edge bounds
         // nothing and the gate appears to capture its whole parent.
-        let mut candidates: Vec<(Edge, Arc<str>, f64, Vec<f64>)> = Vec::new();
+        let mut candidates: Vec<(Bound, &'static str, Arc<str>, f64, Vec<f64>)> = Vec::new();
         let mut cache: std::collections::HashMap<Arc<str>, Vec<f64>> = Default::default();
-        for (edge, param, value) in bounds {
+        for (bound, axis, param, value) in bounds {
             let Some(value) = value else { continue };
             let value = value as f64;
             if !value.is_finite() || value.abs() > 1e9 {
@@ -233,13 +256,12 @@ fn rows_for_file(
             }
             let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
             let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let inside = if edge.is_upper() {
-                value < hi
-            } else {
-                value > lo
+            let inside = match bound {
+                Bound::Above => value > lo,
+                Bound::Below => value < hi,
             };
             if inside {
-                candidates.push((edge, param, value, values));
+                candidates.push((bound, axis, param, value, values));
             }
         }
 
@@ -250,12 +272,11 @@ fn rows_for_file(
         if candidates.len() != 1 {
             continue;
         }
-        let (edge, param, manual_x, values) = candidates.pop().expect("one candidate");
+        let (bound, axis, param, manual_x, values) = candidates.pop().expect("one candidate");
 
-        let admitted = if edge.is_upper() {
-            values.iter().filter(|v| **v < manual_x).count()
-        } else {
-            values.iter().filter(|v| **v > manual_x).count()
+        let admitted = match bound {
+            Bound::Above => values.iter().filter(|v| **v > manual_x).count(),
+            Bound::Below => values.iter().filter(|v| **v < manual_x).count(),
         };
         let mut sorted = values.clone();
         sorted.sort_by(|a, b| b.total_cmp(a));
@@ -265,7 +286,8 @@ fn rows_for_file(
             gate: gate.get_name().to_string(),
             channel: param.to_string(),
             parent_events: values.len(),
-            edge,
+            bound,
+            axis,
             manual_x,
             manual_fraction: admitted as f64 / values.len() as f64,
             values,
@@ -310,7 +332,7 @@ fn report(rows: &[Row]) {
             truncate(&r.gate, 22),
             truncate(&r.channel, 17),
             r.parent_events,
-            r.edge.label(),
+            format!("{} {}", r.axis, r.bound.label()),
             r.manual_x,
             r.manual_fraction * 100.0
         );
@@ -378,7 +400,7 @@ fn score_against_manual(rows: &[Row], band: (f64, f64)) {
 
     let mut diffs: Vec<f64> = Vec::new();
     for r in rows {
-        if r.edge.is_upper() || !r.sample.contains("FMX") {
+        if r.bound == Bound::Below || !r.sample.contains("FMX") {
             continue;
         }
         let Ok(solved) = rule.solve(&r.values) else {
@@ -431,7 +453,7 @@ fn score_with_each_gates_own_band(rows: &[Row]) {
     );
     let mut by_gate: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
     for r in rows {
-        if r.edge.is_upper() || !r.sample.contains("FMX") {
+        if r.bound == Bound::Below || !r.sample.contains("FMX") {
             continue;
         }
         // A band of plus or minus a fifth around what the gate captured, which
