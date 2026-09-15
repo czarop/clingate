@@ -54,25 +54,25 @@ fn path_from(var: &str) -> Option<PathBuf> {
 /// "negative" one bounds it from above. The unused edge is dragged off-scale,
 /// so it is not a threshold at all - reading it as one reports that the gate
 /// captures the whole parent population, which is how this was found.
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 enum Edge {
-    Lower,
-    Upper,
-    /// Both edges are inside the data - a window rather than a threshold.
-    Window,
-    /// Neither is: the gate does not discriminate on x at all, and whatever it
-    /// selects, it selects on the other axis.
-    Neither,
+    XLower,
+    XUpper,
+    YLower,
+    YUpper,
 }
 
 impl Edge {
     fn label(self) -> &'static str {
         match self {
-            Edge::Lower => "lower",
-            Edge::Upper => "upper",
-            Edge::Window => "window",
-            Edge::Neither => "-",
+            Edge::XLower => "x lower",
+            Edge::XUpper => "x upper",
+            Edge::YLower => "y lower",
+            Edge::YUpper => "y upper",
         }
+    }
+    fn is_upper(self) -> bool {
+        matches!(self, Edge::XUpper | Edge::YUpper)
     }
 }
 
@@ -83,11 +83,10 @@ struct Row {
     channel: String,
     parent_events: usize,
     edge: Edge,
-    values: Vec<f64>,
     manual_x: f64,
     manual_fraction: f64,
+    values: Vec<f64>,
     spread: f64,
-    y_full_span: bool,
 }
 
 #[test]
@@ -193,64 +192,84 @@ fn rows_for_file(
             continue;
         };
         let (x_param, y_param) = gate.get_params();
-        let (Some(min_x), Some(max_x), Some(min_y), Some(max_y)): (
-            Option<f32>,
-            Option<f32>,
-            Option<f32>,
-            Option<f32>,
-        ) = (
-            min.get_coordinate(&x_param),
-            max.get_coordinate(&x_param),
-            min.get_coordinate(&y_param),
-            max.get_coordinate(&y_param),
-        ) else {
-            continue;
-        };
-        if df.column(x_param.as_ref()).is_err() {
-            continue;
-        }
+        let bounds: [(Edge, Arc<str>, Option<f32>); 4] = [
+            (Edge::XLower, x_param.clone(), min.get_coordinate(&x_param)),
+            (Edge::XUpper, x_param.clone(), max.get_coordinate(&x_param)),
+            (Edge::YLower, y_param.clone(), min.get_coordinate(&y_param)),
+            (Edge::YUpper, y_param.clone(), max.get_coordinate(&y_param)),
+        ];
 
         let Some(parent) = state.parent_node(node) else {
             continue;
         };
         let chain = state.gate_chain_for_node(&parent);
-        let values = parent_values(&df, &chain, &resolver, &x_param)?;
-        if values.len() < 2 {
-            continue;
+
+        // Which edge, on either axis, actually lies inside the data? A rule
+        // positions one line; the other three edges are dragged off the plot to
+        // leave those sides open. Reading the x edge unconditionally was wrong -
+        // the marker of interest is often on y, and then the x edge bounds
+        // nothing and the gate appears to capture its whole parent.
+        let mut candidates: Vec<(Edge, Arc<str>, f64, Vec<f64>)> = Vec::new();
+        let mut cache: std::collections::HashMap<Arc<str>, Vec<f64>> = Default::default();
+        for (edge, param, value) in bounds {
+            let Some(value) = value else { continue };
+            let value = value as f64;
+            if !value.is_finite() || value.abs() > 1e9 {
+                continue;
+            }
+            if df.column(param.as_ref()).is_err() {
+                continue;
+            }
+            let values = match cache.get(&param) {
+                Some(v) => v.clone(),
+                None => {
+                    let v = parent_values(&df, &chain, &resolver, &param)?;
+                    cache.insert(param.clone(), v.clone());
+                    v
+                }
+            };
+            if values.len() < 2 {
+                continue;
+            }
+            let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let inside = if edge.is_upper() {
+                value < hi
+            } else {
+                value > lo
+            };
+            if inside {
+                candidates.push((edge, param, value, values));
+            }
         }
 
+        // Exactly one bounding edge is the one-dimensional case the rules are
+        // written for. None means the gate does not threshold at all; more than
+        // one means a window or a true two-dimensional gate, and neither is a
+        // single line to solve for.
+        if candidates.len() != 1 {
+            continue;
+        }
+        let (edge, param, manual_x, values) = candidates.pop().expect("one candidate");
+
+        let admitted = if edge.is_upper() {
+            values.iter().filter(|v| **v < manual_x).count()
+        } else {
+            values.iter().filter(|v| **v > manual_x).count()
+        };
         let mut sorted = values.clone();
         sorted.sort_by(|a, b| b.total_cmp(a));
-        let lo = *sorted.last().expect("checked non-empty");
-        let hi = sorted[0];
-
-        // An edge outside the data it is drawn over is not a threshold: it was
-        // dragged off the plot to leave that side open.
-        let lower_bounds = (min_x as f64) > lo;
-        let upper_bounds = (max_x as f64) < hi && (max_x as f64).abs() < 1e9;
-        let (edge, manual_x) = match (lower_bounds, upper_bounds) {
-            (true, false) => (Edge::Lower, min_x as f64),
-            (false, true) => (Edge::Upper, max_x as f64),
-            (true, true) => (Edge::Window, min_x as f64),
-            (false, false) => (Edge::Neither, min_x as f64),
-        };
-        let admitted = match edge {
-            Edge::Upper => values.iter().filter(|v| **v < manual_x).count(),
-            _ => values.iter().filter(|v| **v > manual_x).count(),
-        };
 
         out.push(Row {
             sample: sample.clone(),
             gate: gate.get_name().to_string(),
-            channel: x_param.to_string(),
+            channel: param.to_string(),
             parent_events: values.len(),
             edge,
-            values: values.clone(),
             manual_x,
             manual_fraction: admitted as f64 / values.len() as f64,
+            values,
             spread: interquartile_spread(&sorted),
-            // A gate whose y edges span the plot is the one-dimensional case.
-            y_full_span: (max_y - min_y).abs() > 1e6,
         });
     }
     Ok(out)
@@ -281,36 +300,23 @@ fn report(rows: &[Row]) {
     println!("What the hand-placed gates actually capture");
     println!("{}", "=".repeat(108));
     println!(
-        "{:<22} {:<22} {:<17} {:>7} {:>7} {:>9} {:>9} {:>4}",
-        "sample", "gate", "channel", "parent", "edge", "manual x", "% parent", "1D"
+        "{:<22} {:<22} {:<17} {:>7} {:>8} {:>9} {:>9}",
+        "sample", "gate", "channel", "parent", "edge", "manual", "% parent"
     );
     for r in rows {
-        if !r.y_full_span || r.edge == Edge::Neither {
-            continue;
-        }
         println!(
-            "{:<22} {:<22} {:<17} {:>7} {:>7} {:>9.3} {:>8.3}% {:>4}",
+            "{:<22} {:<22} {:<17} {:>7} {:>8} {:>9.3} {:>8.3}%",
             truncate(&r.sample, 22),
             truncate(&r.gate, 22),
             truncate(&r.channel, 17),
             r.parent_events,
             r.edge.label(),
             r.manual_x,
-            r.manual_fraction * 100.0,
-            if r.y_full_span { "y" } else { "n" }
+            r.manual_fraction * 100.0
         );
     }
 
-    let skipped = rows.iter().filter(|r| r.edge == Edge::Neither).count();
-    println!(
-        "\n{skipped} of {} rows bound x on neither side - those gates select on the other axis",
-        rows.len()
-    );
-
-    let one_d: Vec<&Row> = rows
-        .iter()
-        .filter(|r| r.y_full_span && r.edge != Edge::Neither)
-        .collect();
+    let one_d: Vec<&Row> = rows.iter().collect();
     println!(
         "\n{} rows, {} of them one-dimensional",
         rows.len(),
@@ -372,7 +378,7 @@ fn score_against_manual(rows: &[Row], band: (f64, f64)) {
 
     let mut diffs: Vec<f64> = Vec::new();
     for r in rows {
-        if !r.y_full_span || r.edge != Edge::Lower || !r.sample.contains("FMX") {
+        if r.edge.is_upper() || !r.sample.contains("FMX") {
             continue;
         }
         let Ok(solved) = rule.solve(&r.values) else {
@@ -425,7 +431,7 @@ fn score_with_each_gates_own_band(rows: &[Row]) {
     );
     let mut by_gate: std::collections::BTreeMap<String, Vec<f64>> = Default::default();
     for r in rows {
-        if !r.y_full_span || r.edge != Edge::Lower || !r.sample.contains("FMX") {
+        if r.edge.is_upper() || !r.sample.contains("FMX") {
             continue;
         }
         // A band of plus or minus a fifth around what the gate captured, which
