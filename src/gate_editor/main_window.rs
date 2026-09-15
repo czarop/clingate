@@ -3,6 +3,7 @@ use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::axis_store::ScalingInfoSource;
+use crate::gate_editor::plots::axis_store::{default_axis_params, index_of_fluoro};
 use crate::gate_editor::plots::plot_window::PlotWindow;
 use crate::omiq::metadata::MetaDataImplExt;
 use crate::omiq::metadata::MetaDataOrigin;
@@ -153,21 +154,40 @@ pub fn MainWindow() -> Element {
         }
     });
 
+    // The scaling export arrives asynchronously, so on the first render the
+    // store is still empty. These memos must therefore *subscribe* to it:
+    // `peek` does not, so the index stayed pinned at its first value - 0 - and
+    // both selectors displayed whichever channel happened to be listed first,
+    // whatever the axes were actually set to.
+    //
+    // Matched on the channel, not the whole `Param`: `Param` compares on marker
+    // and channel both, and the marker name comes from the scaling export, so a
+    // key built from the channel alone can never match by equality.
     let x_axis_selected_index = use_memo(move || {
-        let curr = &*x_axis_marker.read();
-        axis_store
-            .sorted_settings()
-            .peek()
-            .get_index_of(curr)
-            .unwrap_or(0)
+        let curr = x_axis_marker.read().fluoro.clone();
+        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
     });
     let y_axis_selected_index = use_memo(move || {
-        let curr = &*y_axis_marker.read();
-        axis_store
-            .sorted_settings()
-            .peek()
-            .get_index_of(curr)
-            .unwrap_or(0)
+        let curr = y_axis_marker.read().fluoro.clone();
+        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
+    });
+
+    // Pick the opening axes once, when the scaling export lands. Only while the
+    // user has not chosen any: switching files must keep the axes and the
+    // selected gate where they are, so this deliberately never runs again.
+    let mut axes_initialised = use_signal(|| false);
+    use_effect(move || {
+        // `peek` on the latch deliberately: this must not re-fire on its own
+        // write, only when the channel list changes.
+        if *axes_initialised.peek() {
+            return;
+        }
+        let Some((x, y)) = default_axis_params(&axis_store.sorted_settings().read()) else {
+            return;
+        };
+        x_axis_marker.set(x);
+        y_axis_marker.set(y);
+        axes_initialised.set(true);
     });
 
     let mut upload_succeded = use_signal(|| false);

@@ -485,7 +485,7 @@ pub fn compute_smear_score(values: &[f64], density: &[f64], axis_range: f64) -> 
     // at k=10 the score reaches ~0.5 when IQR is 10% of the axis range.
 
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let n = sorted.len();
 
     let q10 = sorted[(0.10 * (n - 1) as f64) as usize];
@@ -540,8 +540,13 @@ fn sigmoid(x: f64, midpoint: f64, k: f64) -> f64 {
 }
 
 fn quantile(values: &mut [f64], q: f64) -> f64 {
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let idx = (q * (values.len() - 1) as f64) as usize;
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    // total_cmp rather than partial_cmp().unwrap(): a single NaN event would
+    // otherwise panic the sort comparator.
+    values.sort_by(|a, b| a.total_cmp(b));
+    let idx = ((q.clamp(0.0, 1.0) * (values.len() - 1) as f64) as usize).min(values.len() - 1);
     values[idx]
 }
 

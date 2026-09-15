@@ -108,16 +108,28 @@ impl RectangleGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         _mapper: &PlotMapper,
     ) -> anyhow::Result<Self> {
         let p = &self.points;
-        let new_geometry = update_rectangle_geometry(
-            p.to_vec(),
-            new_point,
-            point_index,
-            &self.inner.parameters.0,
-            &self.inner.parameters.1,
-        )?;
+        // With an anchor the rectangle is fully determined by two opposite
+        // corners, and `create_rectangle_geometry` takes the min and max of
+        // whatever it is given - so the pointer may cross the anchor freely and
+        // the gate simply inverts about it.
+        let new_geometry = match anchor {
+            Some(anchor) => create_rectangle_geometry(
+                vec![anchor, new_point],
+                &self.inner.parameters.0,
+                &self.inner.parameters.1,
+            )?,
+            None => update_rectangle_geometry(
+                p.to_vec(),
+                new_point,
+                point_index,
+                &self.inner.parameters.0,
+                &self.inner.parameters.1,
+            )?,
+        };
         let new_gate = flow_gates::Gate {
             id: self.inner.id.clone(),
             parameters: self.inner.parameters.clone(),
@@ -142,6 +154,12 @@ impl DrawableGate for RectangleGate {
     }
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
+    }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
     }
     fn get_id(&self) -> Arc<str> {
         self.inner.id.clone()
@@ -173,15 +191,26 @@ impl DrawableGate for RectangleGate {
         }
     }
 
+    /// The corner diagonally opposite the one being dragged. The constructor
+    /// winds the corners `[(min_x, min_y), (max_x, min_y), (max_x, max_y),
+    /// (min_x, max_y)]`, so the opposite of any corner is two steps round.
+    fn drag_anchor(&self, point_index: usize) -> Option<(f32, f32)> {
+        self.points
+            .get((point_index + 2) % self.points.len())
+            .copied()
+    }
+
     fn replace_point(
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(Box::new(self.clone_rectangle_for_new_point(
             new_point,
             point_index,
+            anchor,
             mapper,
         )?))
     }
@@ -431,48 +460,24 @@ pub fn draw_ghost_point_for_rectangle(
     main_points: &[(f32, f32)],
 ) -> Option<Vec<GateRenderShape>> {
     // [bottom-left, bottom-right, top-right, top-left]
-    let idx = drag_data.point_index();
     let current = drag_data.loc();
 
-    let (x, y, width, height) = match idx {
-        0 => {
-            // Bottom-Left dragged -> Anchor is Top-Right (Index 2)
-            let anchor = main_points[2];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1); // In data space, Top is Max Y
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        1 => {
-            // Bottom-Right dragged -> Anchor is Top-Left (Index 3)
-            let anchor = main_points[3];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        2 => {
-            // Top-Right dragged -> Anchor is Bottom-Left (Index 0)
-            let anchor = main_points[0];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        3 => {
-            // Top-Left dragged -> Anchor is Bottom-Right (Index 1)
-            let anchor = main_points[1];
-            let x = current.0.min(anchor.0);
-            let y = current.1.max(anchor.1);
-            let w = (current.0 - anchor.0).abs();
-            let h = (current.1 - anchor.1).abs();
-            (x, y, w, h)
-        }
-        _ => unreachable!(),
+    // The preview must be built from the same anchor the geometry is, or the
+    // two disagree the moment a drag crosses it: the gate inverts about the
+    // anchor while the ghost, recomputing the anchor from the index it captured
+    // on mousedown, would follow whichever corner that index now names.
+    //
+    // Falling back to the diagonal keeps a preview for a drag that never
+    // registered an anchor.
+    let anchor = match drag_data.anchor() {
+        Some(anchor) => anchor,
+        None => *main_points.get((drag_data.point_index() + 2) % main_points.len())?,
     };
+
+    let x = current.0.min(anchor.0);
+    let y = current.1.max(anchor.1); // In data space, Top is Max Y
+    let width = (current.0 - anchor.0).abs();
+    let height = (current.1 - anchor.1).abs();
 
     let new_rect = GateRenderShape::Rectangle {
         x,

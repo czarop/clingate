@@ -95,3 +95,6 @@ pub fn rescale_helper_single(
 
     Ok(val)
 }
+
+#[cfg(test)]
+mod gate_single_tests;

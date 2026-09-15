@@ -119,15 +119,39 @@ impl LineGate {
         new_point: (f32, f32),
         point_index: usize,
     ) -> anyhow::Result<Self> {
+        self.clone_line_for_new_anchored_point(new_point, point_index, None)
+    }
+
+    pub fn clone_line_for_new_anchored_point(
+        &self,
+        new_point: (f32, f32),
+        point_index: usize,
+        anchor: Option<(f32, f32)>,
+    ) -> anyhow::Result<Self> {
         let p = self.get_points();
-        let new_geometry = update_line_geometry(
-            p,
-            new_point,
-            point_index,
-            &self.inner.parameters.0,
-            &self.inner.parameters.1,
-            self.axis_matched,
-        )?;
+        // Anchored, the line is two edges on the dragged axis - the anchor and
+        // the pointer - and the span across the other axis is untouched by the
+        // drag, so it is read straight off the current geometry. Feeding both to
+        // `create_rectangle_geometry` lets the dragged edge pass the anchor and
+        // come out the other side.
+        let new_geometry = match (anchor, p.first(), p.get(2)) {
+            (Some(anchor), Some(&(min_x, min_y)), Some(&(max_x, max_y))) => {
+                let pts = if self.axis_matched {
+                    vec![(anchor.0, min_y), (new_point.0, max_y)]
+                } else {
+                    vec![(min_x, anchor.1), (max_x, new_point.1)]
+                };
+                create_rectangle_geometry(pts, &self.inner.parameters.0, &self.inner.parameters.1)?
+            }
+            _ => update_line_geometry(
+                p,
+                new_point,
+                point_index,
+                &self.inner.parameters.0,
+                &self.inner.parameters.1,
+                self.axis_matched,
+            )?,
+        };
         let new_gate = flow_gates::Gate {
             id: self.inner.id.clone(),
             parameters: self.get_params(),
@@ -159,6 +183,16 @@ impl LineGate {
     }
 }
 
+impl LineGate {
+    /// A copy under a different id, for rebuilding a composite whose corners
+    /// all need fresh ids.
+    pub fn with_id(&self, id: Arc<str>) -> Self {
+        let mut copy = self.clone();
+        copy.inner.id = id;
+        copy
+    }
+}
+
 impl DrawableGate for LineGate {
     fn get_gate_ref(&self, _id: Option<&str>) -> Option<&flow_gates::Gate> {
         Some(&self.inner)
@@ -168,6 +202,12 @@ impl DrawableGate for LineGate {
     }
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
+    }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
     }
 
     fn get_id(&self) -> Arc<str> {
@@ -203,13 +243,26 @@ impl DrawableGate for LineGate {
         }
     }
 
+    /// The edge the drag must hold still. A line gate's point 0 is its `min`
+    /// edge on the dragged axis and point 1 its `max`, so the anchor is the
+    /// far corner in each case.
+    fn drag_anchor(&self, point_index: usize) -> Option<(f32, f32)> {
+        let points = self.get_points();
+        match point_index {
+            0 => points.get(2).copied(),
+            1 => points.first().copied(),
+            _ => None,
+        }
+    }
+
     fn replace_point(
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         _mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
-        let line = self.clone_line_for_new_point(new_point, point_index)?;
+        let line = self.clone_line_for_new_anchored_point(new_point, point_index, anchor)?;
         Ok(Box::new(line))
     }
 

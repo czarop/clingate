@@ -6,7 +6,7 @@ use flow_gates::{
 };
 use itertools::Itertools;
 use rustc_hash::{FxBuildHasher, FxHashMap};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::RangeInclusive;
@@ -19,7 +19,7 @@ use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
 use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::{
     DataPoints, SkewedQuadrantGate, get_infinite_bounds,
 };
-use crate::gate_editor::gates::gate_single::ellipse_gate::EllipseGate;
+use crate::gate_editor::gates::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
 use crate::gate_editor::gates::gate_single::line_gate::LineGate;
 use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
@@ -27,21 +27,21 @@ use crate::gate_editor::gates::gate_store::{FileId, GateSource};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey, MetaDataParameter};
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentJson {
     pub tree: GatingTree,
 }
 
 // Gating Tree and Node will be made into the Gating Hierarchy
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct GatingTree {
     pub nodes: HashMap<Arc<str>, GatingNode>,
     pub filter_containers: HashMap<Arc<str>, FilterContainer>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct GatingNode {
     pub id: Arc<str>,
@@ -52,7 +52,7 @@ pub struct GatingNode {
 }
 
 //FilterContainer is the actual gate info
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "containerType")]
 pub enum FilterContainer {
     #[serde(rename = "AtomicFilterContainer")]
@@ -62,7 +62,7 @@ pub enum FilterContainer {
     Compound(CompoundContainer),
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CompoundContainer {
     pub id: GateId,
@@ -72,7 +72,7 @@ pub struct CompoundContainer {
     pub filter_container_ids: Vec<GateId>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum BooleanOpType {
     And,
@@ -80,7 +80,7 @@ pub enum BooleanOpType {
     Not,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AtomicContainer {
     pub id: GateId,
@@ -91,7 +91,7 @@ pub struct AtomicContainer {
     pub default_filter: GateSerialized,
 
     // for composite gates - this ties the individual gates together.
-    #[serde(rename = "groupId")]
+    #[serde(rename = "groupId", skip_serializing_if = "Option::is_none")]
     pub group_id: Option<String>,
 
     // The metadata parameter controlling the grouping (e.g., "$VOL")
@@ -99,6 +99,7 @@ pub struct AtomicContainer {
     // this will be SOME if there is a metadata param governing this
     // ie group-specific - each file still gets an entry in file-specific
     // even if its group-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub md: Option<MetaDataParameter>,
 
     // The "File-Specific" variants
@@ -207,7 +208,7 @@ impl AtomicContainer {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum GateSerialized {
     #[serde(rename = "RectangleGate")]
@@ -218,7 +219,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         min: Point,
         max: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "PolygonGate")]
@@ -229,7 +230,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         #[serde(rename = "vertices")]
         points: Vec<Point>,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "EllipseGate")]
@@ -242,7 +243,7 @@ pub enum GateSerialized {
         top: Point,
         right: Point,
         bottom: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "RangeGate")]
@@ -255,7 +256,7 @@ pub enum GateSerialized {
         f1min: f64,
         #[serde(rename = "f1Max")]
         f1max: f64,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     #[serde(rename = "AngleGate")]
@@ -270,7 +271,7 @@ pub enum GateSerialized {
         v1: Point,
         #[serde(rename = "v2")]
         v2: Point,
-        #[serde(rename = "labelLoc")]
+        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
         label_position: Option<Point>,
     },
     // Future-proofing for other gate types
@@ -279,24 +280,27 @@ pub enum GateSerialized {
 }
 
 impl GateSerialized {
-    pub fn get_params(&self) -> (Arc<str>, Arc<str>) {
+    /// `None` for an Omiq gate type this build doesn't model (the `Unknown`
+    /// catch-all), so an unrecognised gate is skipped rather than taking the
+    /// whole import down.
+    pub fn get_params(&self) -> Option<(Arc<str>, Arc<str>)> {
         match self {
             GateSerialized::Rectangle {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Polygon {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Ellipse {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Line {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
+            } => Some((x_param.clone(), y_param.clone())),
             GateSerialized::Angle {
                 x_param, y_param, ..
-            } => (x_param.clone(), y_param.clone()),
-            GateSerialized::Unknown => panic!("unsupported gate type"),
+            } => Some((x_param.clone(), y_param.clone())),
+            GateSerialized::Unknown => None,
         }
     }
     pub fn to_drawable(
@@ -374,7 +378,7 @@ impl GateSerialized {
                 left,
                 top,
                 right,
-                bottom: _bottom,
+                bottom,
                 label_position,
             } => {
                 let parameters = (x_param.clone(), y_param.clone());
@@ -385,6 +389,16 @@ impl GateSerialized {
                     x_param,
                     y_param,
                 )?;
+                // Keep the control points exactly as Omiq wrote them. The
+                // canonical centre/radii/angle describes the same locus, but
+                // normalises which conjugate pair the handles sit on, so
+                // re-deriving them on export would move the handles.
+                let handles = EllipseHandles {
+                    left: (*left).into(),
+                    top: (*top).into(),
+                    right: (*right).into(),
+                    bottom: (*bottom).into(),
+                };
                 let label_position = label_position.map(|p| LabelPosition {
                     offset_x: p.x as f32,
                     offset_y: p.y as f32,
@@ -397,7 +411,9 @@ impl GateSerialized {
                     parameters,
                     label_position,
                 };
-                Ok(Arc::new(EllipseGate::try_new(gate, true)?))
+                Ok(Arc::new(EllipseGate::try_new_with_handles(
+                    gate, true, handles,
+                )?))
             }
             GateSerialized::Line {
                 x_param,
@@ -426,17 +442,19 @@ impl GateSerialized {
                 };
                 Ok(Arc::new(LineGate::try_new(gate, 0f32, true)?))
             }
-            GateSerialized::Angle { .. } => {
-                panic!(
-                    "Angle gates are only part of composites and should not be directly deserialized into DrawableGates. They are handled separately in the composite gate logic."
-                );
-            }
-            GateSerialized::Unknown => todo!(),
+            GateSerialized::Angle { .. } => Err(anyhow::anyhow!(
+                "Angle gates are only part of composites and should not be directly deserialized into DrawableGates. They are handled separately in the composite gate logic."
+            )),
+            GateSerialized::Unknown => Err(anyhow::anyhow!(
+                "Unsupported Omiq gate type for gate '{}' ({})",
+                name,
+                id
+            )),
         }
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, PartialOrd)]
 pub struct Point {
     #[serde(rename = "f1Val", default)]
     pub x: f64,
@@ -505,12 +523,18 @@ pub fn create_omiq_ellipse_geometry(
 
     // 5. Calculate the True Rotation Angle
     // The angle is derived from the eigenvector corresponding to lambda1
-    let angle = if f == 0.0 {
-        if e > g {
-            0.0
-        } else {
-            std::f64::consts::PI / 2.0
-        }
+    // A circle has lambda1 == lambda2 and no distinguishable axes, so the
+    // eigenvector - and any angle read off it - is arbitrary. Pin it to zero
+    // rather than letting float noise pick a rotation.
+    //
+    // `f` is compared against a tolerance scaled to the matrix, not against
+    // exact zero: a near-axis-aligned ellipse leaves f at around 1e-18, where
+    // atan2 of two near-zero arguments is numerically meaningless.
+    let scale = trace.abs().max(1.0);
+    let angle = if diff <= f64::EPSILON * scale {
+        0.0
+    } else if f.abs() <= f64::EPSILON * scale {
+        if e >= g { 0.0 } else { std::f64::consts::PI / 2.0 }
     } else {
         // Rust's atan2 takes (y, x)
         (lambda1 - e).atan2(f)
@@ -535,10 +559,7 @@ pub fn find_atomic_params(
     all_containers: &std::collections::HashMap<GateId, FilterContainer>,
 ) -> Option<(Arc<str>, Arc<str>)> {
     match all_containers.get(current_id)? {
-        FilterContainer::Atomic(atomic) => {
-            let (x, y) = atomic.default_filter.get_params();
-            Some((x.clone(), y.clone()))
-        }
+        FilterContainer::Atomic(atomic) => atomic.default_filter.get_params(),
         FilterContainer::Compound(compound) => {
             let first_child_id = compound.filter_container_ids.first()?;
             find_atomic_params(first_child_id, all_containers)
@@ -969,7 +990,7 @@ pub fn extract_axis_range_from_axis_settings(
     let y_axis_range = y_axis.axis_lower..=y_axis.axis_upper;
 
     let x_trans = x_axis.transform.clone();
-    let y_trans = x_axis.transform.clone();
+    let y_trans = y_axis.transform.clone();
 
     Ok((x_axis_range, y_axis_range, x_trans, y_trans))
 }

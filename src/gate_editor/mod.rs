@@ -1,3 +1,4 @@
+mod reactivity_tests;
 pub mod axis_info;
 pub mod gates;
 pub mod macros;
