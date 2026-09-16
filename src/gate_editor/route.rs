@@ -1,11 +1,17 @@
+use crate::gate_editor::gate_rules_window::GateRulesWindow;
+use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
+use crate::gate_rules::rule_store::RuleStore;
 use dioxus::prelude::*;
+use dioxus::stores::use_store_sync;
 
 #[derive(Routable, Clone, PartialEq)]
 pub enum Route {
     #[layout(NavBar)]
     #[route("/")]
     MainWindow,
+    #[route("/rules")]
+    GateRulesWindow,
     // #[route("/scale")]
     // ScaleWindow,
 
@@ -21,7 +27,13 @@ pub enum Route {
 
 #[component]
 pub fn NavBar() -> Element {
-    // let mut nav_burger_menu_open = use_signal(|| "".to_string());
+    // The document lives on the layout rather than on one screen, so the gate
+    // rules tab and the editor see the same gates and the same rules.
+    let gate_store = use_store_sync(GateState::default);
+    use_context_provider(|| gate_store);
+
+    let rules = use_signal(RuleStore::default);
+    use_context_provider(|| rules);
 
     rsx! {
         div { class: "route-outlet", Outlet::<Route> {} }
@@ -32,6 +44,16 @@ pub fn NavBar() -> Element {
                     div {
                         Link { to: Route::MainWindow,
                             div { class: "nav_bar-item", "🏠" }
+                        }
+                    }
+
+                    div {
+                        div { class: "nav_bar-item", "|" }
+                    }
+
+                    div {
+                        Link { to: Route::GateRulesWindow,
+                            div { class: "nav_bar-item", title: "Gate rules", "📐" }
                         }
                     }
 

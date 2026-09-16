@@ -62,9 +62,9 @@ pub fn MainWindow() -> Element {
 
     
 
-    let mut gate_store: Store<GateState, CopyValue<GateState, SyncStorage>> =
-        use_store_sync(GateState::default);
-    use_context_provider(|| gate_store);
+    // Created by the NavBar layout and shared with every route under it: the
+    // gates are the document, not a property of one screen.
+    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
 
     let mut current_gate_type = use_signal(|| PrimaryGateType::Polygon);
     use_context_provider(|| current_gate_type);

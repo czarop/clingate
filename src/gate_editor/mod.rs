@@ -4,6 +4,7 @@ pub mod gates;
 pub mod macros;
 pub mod route;
 pub use axis_info::AxisInfo;
+pub mod gate_rules_window;
 pub mod gate_sidebar;
 pub mod main_window;
 pub mod plots;
