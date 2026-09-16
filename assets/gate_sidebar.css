@@ -111,14 +111,21 @@
     left: 0;
     z-index: 1;
     flex: 0 0 auto;
+    /* A column per mark, fixed: activate, linked, tier. A row missing one
+       leaves a gap rather than sliding the others along, so the same mark is
+       always in the same place down the whole tree. */
+    display: grid;
+    grid-template-columns: 18px 13px 15px;
+    align-items: center;
+    justify-items: center;
+    background-color: inherit;
+}
+
+.row-slot {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
-    gap: 2px;
-    /* Fixed, so every name starts at the same place however many badges the
-       row happens to carry. */
-    width: 46px;
-    background-color: inherit;
+    justify-content: center;
+    width: 100%;
 }
 
 /* The tree proper, indented by depth. */

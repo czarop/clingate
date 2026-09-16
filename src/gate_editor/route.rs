@@ -1,8 +1,8 @@
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
-use crate::gate_rules::rule_store::RuleStore;
 use crate::gate_editor::plots::axis_store::AxisStore;
+use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataStore;
 use dioxus::prelude::*;
 use dioxus::stores::use_store_sync;
@@ -55,9 +55,7 @@ pub fn NavBar() -> Element {
                         }
                     }
 
-                    div {
-                        div { class: "nav_bar-item", "|" }
-                    }
+                    div { class: "nav_bar-spacer", "|" }
 
                     div {
                         Link { to: Route::GateRulesWindow,
@@ -65,9 +63,7 @@ pub fn NavBar() -> Element {
                         }
                     }
 
-                    div {
-                        div { class: "nav_bar-item", "|" }
-                    }
+                    div { class: "nav_bar-spacer", "|" }
 
                 // div {
                 //     if geolocation::check_geolocation_permission() == PermissionResult::GRANTED {

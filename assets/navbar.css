@@ -1,16 +1,39 @@
+/* A tab is about three emoji wide - enough to be an easy target and to hold a
+   label later, without one tab claiming half the window. */
 .nav_bar-item {
     font-size: 2rem;
+    line-height: 1;
     text-align: center;
+    width: 6rem;
+    padding: 0.25rem 0;
+    border-radius: 6px;
     color: hsla(101, 79%, 44%, 0.905);
     background-color: var(--color-background-body);
 }
+
+.nav_bar-item:hover {
+    background-color: rgba(127, 127, 127, 0.15);
+}
+
+/* Between tabs, not spread across the bar. */
+.nav_bar-spacer {
+    font-size: 1.5rem;
+    opacity: 0.35;
+    align-self: center;
+    user-select: none;
+}
+
 .nav_bar-items {
     background-color: var(--color-background-body);
     display: flex;
     flex-direction: row;
-    justify-content: space-between;
-    padding-left: 2rem;
-    padding-right: 2rem;
+    /* Tabs sized and grouped at the left, rather than stretched apart - with
+       two of them, space-between put one at each end of the window. */
+    justify-content: flex-start;
+    align-items: center;
+    gap: 0.5rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
 }
     
 /* .route-outlet {

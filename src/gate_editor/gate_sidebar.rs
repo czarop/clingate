@@ -362,25 +362,38 @@ fn GateNode(
                                 },
                                 "🎯"
                             }
-                            if is_linked {
-                                span {
-                                    class: "row-badge linked-badge",
-                                    title: "This gate is applied at more than one point in the tree",
-                                    "\u{1f517}"
+                            // Each badge keeps its own column whether or not it
+                            // is showing, so the same mark is always in the
+                            // same place down the tree and a missing one reads
+                            // as an absence rather than shifting its
+                            // neighbours along.
+                            span { class: "row-slot",
+                                if is_linked {
+                                    span {
+                                        class: "row-badge linked-badge",
+                                        title: "This gate is applied at more than one point in the tree",
+                                        "\u{1f517}"
+                                    }
                                 }
                             }
-                            if overrides.read().0.contains(&gate_id_for_badges) {
-                                span {
-                                    class: "row-badge tier-badge",
-                                    title: "Positioned per group - this gate moves with the specimen",
-                                    "G"
-                                }
-                            }
-                            if overrides.read().1.contains(&gate_id_for_badges) {
-                                span {
-                                    class: "row-badge tier-badge",
-                                    title: "Positioned per sample - this gate moves with the file",
-                                    "S"
+                            span { class: "row-slot",
+                                // One tier, never two. A gate can hold both an
+                                // override kinds at once, but only the narrower
+                                // one is ever used - `gate_for_file` takes the
+                                // sample override before it looks at the group -
+                                // so that is the one worth showing.
+                                if overrides.read().1.contains(&gate_id_for_badges) {
+                                    span {
+                                        class: "row-badge tier-badge",
+                                        title: "Positioned per sample - this gate moves with the file",
+                                        "S"
+                                    }
+                                } else if overrides.read().0.contains(&gate_id_for_badges) {
+                                    span {
+                                        class: "row-badge tier-badge",
+                                        title: "Positioned per group - this gate moves with the specimen",
+                                        "G"
+                                    }
                                 }
                             }
                         }
