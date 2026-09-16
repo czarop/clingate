@@ -63,6 +63,30 @@ pub struct ReferenceOverride {
     pub reference: FileId,
 }
 
+/// One marker to look for in a column, and what finding it means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleTypeMarker {
+    /// Matched as a substring, case-sensitively.
+    pub contains: Arc<str>,
+    pub sample_type: Arc<str>,
+}
+
+/// Reading a file's sample type out of some other column when it has no column
+/// of its own.
+///
+/// An export that predates a `SampleType` column still carries the distinction
+/// somewhere - usually in the file name, which is itself a metadata column. The
+/// markers are configuration rather than a built-in guess about `_FMX_`,
+/// because naming conventions are exactly what differs between datasets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DerivedSampleType {
+    /// The column to read.
+    pub column: Arc<str>,
+    /// Tried in order; the first whose `contains` appears in the column wins.
+    /// Order matters when one marker is a substring of another.
+    pub markers: Vec<SampleTypeMarker>,
+}
+
 /// The metadata columns that say which files belong together.
 ///
 /// Configuration rather than a filename heuristic, so pointing this at another
@@ -73,6 +97,9 @@ pub struct SamplePairing {
     pub sample_id_column: Arc<str>,
     /// Says what each file is - full stain, FMO, unstained.
     pub sample_type_column: Arc<str>,
+    /// Consulted only when `sample_type_column` holds nothing for a file.
+    #[serde(default)]
+    pub derive_type: Option<DerivedSampleType>,
 }
 
 impl Default for SamplePairing {
@@ -80,7 +107,25 @@ impl Default for SamplePairing {
         Self {
             sample_id_column: Arc::from("Sample ID"),
             sample_type_column: Arc::from("SampleType"),
+            derive_type: None,
         }
+    }
+}
+
+impl SamplePairing {
+    /// A file's sample type: its own column where there is one, otherwise
+    /// derived from whichever column carries the distinction.
+    pub fn sample_type_of(&self, columns: &FxHashMap<Arc<str>, Arc<str>>) -> Option<Arc<str>> {
+        if let Some(explicit) = columns.get(&self.sample_type_column) {
+            return Some(explicit.clone());
+        }
+        let derive = self.derive_type.as_ref()?;
+        let text = columns.get(&derive.column)?;
+        derive
+            .markers
+            .iter()
+            .find(|m| text.contains(&*m.contains))
+            .map(|m| m.sample_type.clone())
     }
 }
 
@@ -233,9 +278,10 @@ impl RuleStore {
             .iter()
             .find(|(_, columns)| {
                 columns.get(&self.pairing.sample_id_column) == Some(specimen)
-                    && columns
-                        .get(&self.pairing.sample_type_column)
-                        .is_some_and(|t| t == wanted)
+                    && self
+                        .pairing
+                        .sample_type_of(columns)
+                        .is_some_and(|t| t == *wanted)
             })
             .map(|(id, _)| id.clone())
     }

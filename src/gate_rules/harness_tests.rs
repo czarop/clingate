@@ -25,12 +25,13 @@
 use crate::gate_editor::AxisInfo;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
-use crate::gate_editor::gates::gate_store::{GateId, NodeId};
+use crate::gate_editor::gates::gate_store::{FileId, GateId};
 use crate::gate_editor::plots::axis_store::{ScalingInfoSource, read_axis_configs};
 use crate::gate_rules::confidence::{ConfidenceModel, CountAndSeparation};
 use crate::gate_rules::rule::{PositioningRule, TailFractionRule};
+use crate::gate_rules::rule_store::{MeasuredOn, RuleStore};
 use crate::gate_rules::threshold::interquartile_spread;
-use crate::omiq::metadata::{MetaDataOrigin, parse_metadata_csv};
+use crate::omiq::metadata::{MetaDataFileMap, MetaDataOrigin, parse_metadata_csv};
 use flow_fcs::Fcs;
 use flow_gates::GateGeometry;
 use polars::prelude::*;
@@ -76,7 +77,9 @@ impl Bound {
 /// What one gate looks like on one sample.
 struct Row {
     sample: String,
+    file_id: FileId,
     gate: String,
+    gate_id: GateId,
     channel: String,
     parent_events: usize,
     bound: Bound,
@@ -142,6 +145,16 @@ fn a_real_workflow_shows_what_the_manual_gates_capture() {
     report(&rows);
     score_against_manual(&rows, (0.002, 0.005));
     score_with_each_gates_own_band(&rows);
+
+    match path_from("OMIQ_RULES_FILE") {
+        Some(p) => match RuleStore::load(&p) {
+            Ok(store) => score_from_rules(&store, &rows, &parsed.metadata),
+            Err(e) => println!("\nOMIQ_RULES_FILE could not be read: {e}"),
+        },
+        None => {
+            println!("\nno OMIQ_RULES_FILE given - set one to score each gate under its own rule")
+        }
+    }
 }
 
 fn rows_for_file(
@@ -154,17 +167,20 @@ fn rows_for_file(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("unreadable file name"))?;
 
-    // The harness is handed bare file names; the metadata keys on Omiq's
-    // decorated ones, so match on the stem.
+    // Exactly the name the metadata carries. Matching on a stem instead looked
+    // convenient and was wrong: "WK1_FS" is a substring of two different
+    // donors' file names, so a run silently scored one donor's gates against
+    // another's population.
     let file_id = parsed
         .file_name_to_gating_id
-        .iter()
-        .find(|(k, _)| {
-            let stem = name.trim_end_matches(".fcs");
-            k.contains(stem) || stem.contains(k.trim_end_matches(".fcs"))
-        })
-        .map(|(_, v)| v.clone())
-        .ok_or_else(|| anyhow::anyhow!("no metadata row matches {name}"))?;
+        .get(name)
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no metadata row named {name} - the file must keep the name the \
+                 metadata export gave it"
+            )
+        })?;
 
     let groups = parsed
         .metadata
@@ -283,7 +299,9 @@ fn rows_for_file(
 
         out.push(Row {
             sample: sample.clone(),
+            file_id: file_id.clone(),
             gate: gate.get_name().to_string(),
+            gate_id: gate_id.clone(),
             channel: param.to_string(),
             parent_events: values.len(),
             bound,
@@ -328,7 +346,7 @@ fn report(rows: &[Row]) {
     for r in rows {
         println!(
             "{:<22} {:<22} {:<17} {:>7} {:>8} {:>9.3} {:>8.3}%",
-            truncate(&r.sample, 22),
+            truncate(&short_name(&r.sample), 22),
             truncate(&r.gate, 22),
             truncate(&r.channel, 17),
             r.parent_events,
@@ -411,7 +429,7 @@ fn score_against_manual(rows: &[Row], band: (f64, f64)) {
         diffs.push(diff.abs());
         println!(
             "{:<22} {:<20} {:>7} {:>9.3} {:>9.3} {:>8.3} {:>6.3}% {:>6.2}  {}",
-            truncate(&r.sample, 22),
+            truncate(&short_name(&r.sample), 22),
             truncate(&r.gate, 20),
             r.parent_events,
             r.manual_x,
@@ -467,7 +485,7 @@ fn score_with_each_gates_own_band(rows: &[Row]) {
         by_gate.entry(r.gate.clone()).or_default().push(diff.abs());
         println!(
             "{:<22} {:<20} {:>7} {:>7.3}% {:>9.3} {:>9.3} {:>8.3}",
-            truncate(&r.sample, 22),
+            truncate(&short_name(&r.sample), 22),
             truncate(&r.gate, 20),
             r.parent_events,
             f * 100.0,
@@ -486,6 +504,115 @@ fn score_with_each_gates_own_band(rows: &[Row]) {
             ds[ds.len() / 2],
             ds[ds.len() - 1]
         );
+    }
+}
+
+/// The real thing: every gate carries its own rule, the rule names the sample it
+/// is measured on, and the position that comes out is compared with the one a
+/// person put on the sample being gated.
+///
+/// Rows are indexed by gate and file, so the population a rule reads is looked
+/// up on the reference sample while the manual position it is scored against
+/// comes from the sample being gated - which is the whole point of measuring on
+/// an FMO and applying the answer to the full stain.
+fn score_from_rules(store: &RuleStore, rows: &[Row], metadata: &MetaDataFileMap) {
+    println!("\n{}", "=".repeat(112));
+    println!("Solved from {} rules in the sidecar", store.len());
+    println!("{}", "=".repeat(112));
+    println!(
+        "{:<22} {:<20} {:<20} {:>7} {:>9} {:>9} {:>8} {:>6}  {}",
+        "sample", "gate", "measured on", "parent", "manual x", "solved x", "diff", "conf", "note"
+    );
+
+    let mut diffs: Vec<f64> = Vec::new();
+    let mut unresolved = 0;
+    for row in rows {
+        let Some(rule) = store.get(&row.gate_id) else {
+            continue;
+        };
+        // A rule names the parameter it positions. If the gate the row came
+        // from bounds a different one, this row is not what the rule is about.
+        if *rule.parameter != *row.channel {
+            continue;
+        }
+        let Some(reference_id) = store.reference_file(&row.file_id, &rule.measured_on, metadata)
+        else {
+            unresolved += 1;
+            println!(
+                "{:<22} {:<20} {:<20} {:>7} {:>9} {:>9} {:>8} {:>6}  {}",
+                truncate(&short_name(&row.sample), 22),
+                truncate(&row.gate, 20),
+                "-",
+                row.parent_events,
+                format!("{:.3}", row.manual_x),
+                "-",
+                "-",
+                "-",
+                "no reference sample for this file"
+            );
+            continue;
+        };
+
+        // The population the rule reads lives on the reference sample, at the
+        // same gate. `Itself` resolves to this row; a partner is another row.
+        let Some(reference) = rows
+            .iter()
+            .find(|r| r.file_id == reference_id && r.gate_id == row.gate_id)
+        else {
+            unresolved += 1;
+            continue;
+        };
+
+        let Ok(solved) = rule.solve(&reference.values, Some(row.manual_x)) else {
+            continue;
+        };
+        let diff = solved.threshold.x - row.manual_x;
+        diffs.push(diff.abs());
+        println!(
+            "{:<22} {:<20} {:<20} {:>7} {:>9.3} {:>9.3} {:>8.3} {:>6.2}  {}",
+            truncate(&short_name(&row.sample), 22),
+            truncate(&row.gate, 20),
+            truncate(&short_name(&reference.sample), 20),
+            reference.parent_events,
+            row.manual_x,
+            solved.threshold.x,
+            diff,
+            solved.confidence.score,
+            solved.confidence.weakest().map(|c| c.name).unwrap_or("-")
+        );
+    }
+
+    if unresolved > 0 {
+        println!("\n{unresolved} placements had no reference sample to measure");
+    }
+    if diffs.is_empty() {
+        println!("no gate in the sidecar matched a placement in these files");
+        return;
+    }
+    diffs.sort_by(f64::total_cmp);
+    let within = diffs.iter().filter(|d| **d <= 0.18).count();
+    println!(
+        "\n|solved - manual| over {} placements: median {:.3}  p90 {:.3}  max {:.3}",
+        diffs.len(),
+        diffs[diffs.len() / 2],
+        diffs[(diffs.len() * 9 / 10).min(diffs.len() - 1)],
+        diffs[diffs.len() - 1]
+    );
+    println!(
+        "{within} of {} within a typical hand adjustment of 0.18",
+        diffs.len()
+    );
+}
+
+/// Omiq decorates a file name with its plate and well. The tail is what tells
+/// one sample from another, so that is what a table shows.
+fn short_name(s: &str) -> String {
+    let tail = s.rsplit("] ").next().unwrap_or(s);
+    let tail = tail.trim_end_matches(".fcs");
+    // Drop the leading well, "B6 ".
+    match tail.split_once(' ') {
+        Some((well, rest)) if well.len() <= 4 => rest.to_string(),
+        _ => tail.to_string(),
     }
 }
 

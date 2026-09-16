@@ -202,6 +202,7 @@ fn the_pairing_columns_are_configurable() {
     let store = RuleStore::with_pairing(SamplePairing {
         sample_id_column: Arc::from("Specimen"),
         sample_type_column: Arc::from("Panel role"),
+        ..SamplePairing::default()
     });
 
     let found = store.reference_file(
@@ -247,6 +248,7 @@ fn a_sidecar_keeps_the_pairing_it_was_written_with() {
     let store = RuleStore::with_pairing(SamplePairing {
         sample_id_column: Arc::from("Specimen"),
         sample_type_column: Arc::from("Panel role"),
+        ..SamplePairing::default()
     });
 
     let json = serde_json::to_string(&store).unwrap();
@@ -429,4 +431,131 @@ fn hand_set_references_survive_the_sidecar() {
 fn a_sidecar_without_overrides_still_loads() {
     let back: RuleStore = serde_json::from_str(r#"{"rules":{}}"#).unwrap();
     assert!(back.references().is_empty());
+}
+
+// ─── deriving the sample type when there is no column for it ──────────────────
+
+/// Metadata with no `SampleType` column at all - the shape of an export made
+/// before one was added, where the distinction lives in the file name.
+fn metadata_without_type(rows: &[(&str, &str, &str)]) -> MetaDataFileMap {
+    let mut map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, specimen, filename) in rows {
+        let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
+        columns.insert(Arc::from("Sample ID"), Arc::from(*specimen));
+        columns.insert(Arc::from("$FIL"), Arc::from(*filename));
+        map.insert(Arc::from(*file) as FileId, columns);
+    }
+    map
+}
+
+fn from_file_name() -> SamplePairing {
+    SamplePairing {
+        derive_type: Some(DerivedSampleType {
+            column: Arc::from("$FIL"),
+            markers: vec![
+                SampleTypeMarker {
+                    contains: Arc::from("_FMX_"),
+                    sample_type: Arc::from("FMX"),
+                },
+                SampleTypeMarker {
+                    contains: Arc::from("_FS_"),
+                    sample_type: Arc::from("FS"),
+                },
+            ],
+        }),
+        ..SamplePairing::default()
+    }
+}
+
+#[test]
+fn a_sample_type_is_derived_when_there_is_no_column_for_it() {
+    let meta = metadata_without_type(&[
+        ("fs_a", "donor1", "C6 donor1_FS_Plate_10.fcs"),
+        ("fmx_a", "donor1", "B6 donor1_FMX_Plate_10.fcs"),
+        ("fmx_b", "donor2", "B7 donor2_FMX_Plate_10.fcs"),
+    ]);
+    let store = RuleStore::with_pairing(from_file_name());
+
+    let found = store.reference_file(
+        &Arc::from("fs_a"),
+        &MeasuredOn::Partner(Arc::from("FMX")),
+        &meta,
+    );
+
+    assert_eq!(found.as_deref(), Some("fmx_a"), "not the other donor's");
+}
+
+#[test]
+fn an_explicit_column_wins_over_a_derived_one() {
+    // The name says FMX, the column says FS. The column is the authority.
+    let mut meta = metadata_without_type(&[
+        ("misnamed", "donor1", "B6 donor1_FMX_Plate_10.fcs"),
+        ("real_fmx", "donor1", "B7 donor1_FMX_Plate_10.fcs"),
+    ]);
+    let columns = meta.get_mut(&(Arc::from("misnamed") as FileId)).unwrap();
+    columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+
+    let store = RuleStore::with_pairing(from_file_name());
+    let found = store.reference_file(
+        &Arc::from("misnamed"),
+        &MeasuredOn::Partner(Arc::from("FMX")),
+        &meta,
+    );
+
+    assert_eq!(
+        found.as_deref(),
+        Some("real_fmx"),
+        "the file whose column says FS must not match a request for FMX"
+    );
+}
+
+#[test]
+fn markers_are_tried_in_order() {
+    let pairing = SamplePairing {
+        derive_type: Some(DerivedSampleType {
+            column: Arc::from("$FIL"),
+            markers: vec![
+                SampleTypeMarker {
+                    contains: Arc::from("_FMX_"),
+                    sample_type: Arc::from("FMX"),
+                },
+                // A substring of the one above: without ordering it would
+                // swallow every FMX file too.
+                SampleTypeMarker {
+                    contains: Arc::from("_F"),
+                    sample_type: Arc::from("something else"),
+                },
+            ],
+        }),
+        ..SamplePairing::default()
+    };
+    let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
+    columns.insert(Arc::from("$FIL"), Arc::from("a_FMX_b.fcs"));
+
+    assert_eq!(pairing.sample_type_of(&columns).as_deref(), Some("FMX"));
+}
+
+#[test]
+fn a_name_matching_no_marker_has_no_type() {
+    let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
+    columns.insert(Arc::from("$FIL"), Arc::from("something_unexpected.fcs"));
+
+    assert_eq!(from_file_name().sample_type_of(&columns), None);
+}
+
+#[test]
+fn without_a_derivation_a_missing_column_is_simply_missing() {
+    let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
+    columns.insert(Arc::from("$FIL"), Arc::from("a_FMX_b.fcs"));
+
+    assert_eq!(SamplePairing::default().sample_type_of(&columns), None);
+}
+
+#[test]
+fn a_derivation_survives_the_sidecar() {
+    let store = RuleStore::with_pairing(from_file_name());
+
+    let back: RuleStore = serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+
+    assert_eq!(back.pairing, store.pairing);
 }
