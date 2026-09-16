@@ -75,8 +75,15 @@ button:hover {
     align-items: center;
     font-size: 0.8rem;
 }
-.pairing-columns label { justify-self: end; opacity: 0.75; }
-.pairing-columns select { min-width: 9rem; padding: 1px 3px; }
+.pairing-columns label { justify-self: start; opacity: 0.75; }
+/* Left, not centred: these are names to read, and a centred one is hard to
+   compare against the column list it came from. */
+.pairing-columns select {
+    min-width: 9rem;
+    padding: 1px 3px;
+    text-align: left;
+    text-align-last: left;
+}
 .pairing-columns_note {
     grid-column: 1 / -1;
     opacity: 0.7;

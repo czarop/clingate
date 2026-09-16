@@ -37,7 +37,10 @@ static CSS_STYLE: Asset = asset!("assets/main_window.css");
 
 #[component]
 pub fn MainWindow() -> Element {
-    let mut filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
+    // Created by the NavBar layout: which files are open describes the
+    // document, and the gate rules tab counts them to say whether the pairing
+    // column actually reaches them.
+    let mut filehandler = use_context::<Signal<Option<FcsFiles>>>();
     let mut message = use_signal(|| None::<String>);
 
     // Also created by the NavBar layout: the loaded metadata describes the

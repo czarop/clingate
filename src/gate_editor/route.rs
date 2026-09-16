@@ -1,3 +1,4 @@
+use crate::file_load::FcsFiles;
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
@@ -42,6 +43,9 @@ pub fn NavBar() -> Element {
 
     let rules = use_signal(RuleStore::default);
     use_context_provider(|| rules);
+
+    let filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
+    use_context_provider(|| filehandler);
 
     rsx! {
         div { class: "route-outlet", Outlet::<Route> {} }
