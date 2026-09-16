@@ -2,6 +2,7 @@ use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
 use crate::gate_rules::rule_store::RuleStore;
+use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::omiq::metadata::MetaDataStore;
 use dioxus::prelude::*;
 use dioxus::stores::use_store_sync;
@@ -35,6 +36,9 @@ pub fn NavBar() -> Element {
 
     let metadata_store = use_store_sync(MetaDataStore::default);
     use_context_provider(|| metadata_store);
+
+    let axis_store = use_store_sync(AxisStore::default);
+    use_context_provider(|| axis_store);
 
     let rules = use_signal(RuleStore::default);
     use_context_provider(|| rules);

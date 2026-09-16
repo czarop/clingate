@@ -71,8 +71,10 @@ pub fn MainWindow() -> Element {
     let mut current_gate_type = use_signal(|| PrimaryGateType::Polygon);
     use_context_provider(|| current_gate_type);
 
-    let mut axis_store: Store<AxisStore, CopyValue<AxisStore, SyncStorage>> = use_store_sync(AxisStore::default);
-    use_context_provider(|| axis_store);
+    // On the NavBar layout with the others: the scaling belongs to the loaded
+    // document, and the gate rules tab has to read events the same way the
+    // plots do or the coordinates would not agree.
+    let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
     let axis_result = use_resource(move || async move {
         let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {

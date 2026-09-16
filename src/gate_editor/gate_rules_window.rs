@@ -5,6 +5,8 @@
 //! occupied twenty-five containers; four rules covered the whole panel.
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
+use crate::gate_rules::autogate::{Report, measure_file, position_all};
 use crate::gate_rules::rule::{PercentileOffsetRule, Rule, TailFractionRule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
@@ -89,6 +91,11 @@ fn choices(state: &GateState) -> GateChoices {
 
 const ANY_PARENT: &str = "__any__";
 
+/// Below this, a placement is worth opening by hand. Measured against the
+/// hand-gated export: everything at or above it landed within 0.18 arcsinh
+/// units of where a person had put it, which is a typical manual nudge.
+const REVIEW_FLOOR: f64 = 0.30;
+
 /// A file id as the name a person knows it by, falling back to the id itself
 /// when the metadata has not been loaded.
 fn name_of(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
@@ -115,9 +122,10 @@ fn loaded_files(map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>) -> Vec<(Arc<st
 
 #[component]
 pub fn GateRulesWindow() -> Element {
-    let gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
+    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
     let mut rules = use_context::<Signal<RuleStore>>();
 
     let choices = use_memo(move || choices(&gate_store.read()));
@@ -137,6 +145,9 @@ pub fn GateRulesWindow() -> Element {
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
+    let mut fcs_dir = use_signal(default_fcs_dir);
+    let mut running = use_signal(|| false);
+    let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
     let mut message = use_signal(|| None::<String>);
 
@@ -476,6 +487,146 @@ pub fn GateRulesWindow() -> Element {
                 }
             }
 
+            // ── running the rules ─────────────────────────────────────────
+            fieldset { class: "gate_rules-form",
+                legend { "Autogate" }
+                p { class: "gate_rules-hint gate_rules-span",
+                    "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored."
+                }
+
+                label { "FCS folder" }
+                input {
+                    value: "{fcs_dir}",
+                    oninput: move |e| fcs_dir.set(e.value()),
+                }
+
+                button {
+                    class: "gate_rules-add",
+                    disabled: running(),
+                    onclick: move |_| async move {
+                        if running() {
+                            return;
+                        }
+                        running.set(true);
+                        report.set(None);
+                        message.set(Some("Reading FCS files...".into()));
+
+                        let dir = fcs_dir();
+                        let names = metadata_store.file_name_to_gating_id().read().clone();
+                        let mut arcsinh: Vec<(Arc<str>, f32)> = Vec::new();
+                        for (param, info) in axis_store.settings().read().iter() {
+                            if info.is_arcsinh()
+                                && let Some(cofactor) = info.get_cofactor()
+                            {
+                                arcsinh.push((param.clone(), cofactor));
+                            }
+                        }
+
+                        // The reading is the slow part and wants no store, so
+                        // it goes to a blocking thread; the measuring and
+                        // placing want the store and are quick, so they stay
+                        // here.
+                        let loaded = tokio::task::spawn_blocking(move || {
+                            load_scaled(&dir, &names, &arcsinh)
+                        })
+                        .await;
+
+                        let (frames, mut problems) = match loaded {
+                            Ok(v) => v,
+                            Err(e) => {
+                                running.set(false);
+                                message.set(Some(format!("Could not read the files: {e}")));
+                                return;
+                            }
+                        };
+                        if frames.is_empty() {
+                            running.set(false);
+                            message.set(Some(if problems.is_empty() {
+                                format!("No .fcs files in {}", fcs_dir())
+                            } else {
+                                problems.join("; ")
+                            }));
+                            return;
+                        }
+
+                        message.set(Some(format!("Solving over {} files...", frames.len())));
+                        let metadata = metadata_store.metadata().read().clone();
+                        let rules_now = rules.read().clone();
+
+                        let mut state = gate_store.write();
+                        let mut measured = Vec::new();
+                        for (id, df) in &frames {
+                            match measure_file(&state, id, df, &metadata) {
+                                Ok(mut m) => measured.append(&mut m),
+                                Err(e) => problems.push(format!("{id}: {e}")),
+                            }
+                        }
+                        let mut run = position_all(&mut state, &rules_now, &measured, &metadata);
+                        drop(state);
+
+                        for problem in problems {
+                            run.skipped.push(crate::gate_rules::autogate::Skipped {
+                                file: Arc::from(""),
+                                gate: Arc::from(""),
+                                reason: problem,
+                            });
+                        }
+                        message.set(Some(format!(
+                            "Positioned {} gates; {} need review",
+                            run.positioned.len(),
+                            run.needs_review(REVIEW_FLOOR).count()
+                        )));
+                        report.set(Some(run));
+                        running.set(false);
+                    },
+                    if running() { "Working..." } else { "Solve and apply" }
+                }
+            }
+
+            // ── what it did ───────────────────────────────────────────────
+            if let Some(run) = report.read().as_ref() {
+                div { class: "gate_rules-report",
+                    if !run.positioned.is_empty() {
+                        h3 { "Positioned" }
+                        table { class: "gate_rules-table",
+                            thead {
+                                tr {
+                                    th { "Specimen" }
+                                    th { "Gate" }
+                                    th { "Measured on" }
+                                    th { "From" }
+                                    th { "To" }
+                                    th { "Confidence" }
+                                    th { "Weakest" }
+                                }
+                            }
+                            tbody {
+                                for placed in run.positioned.iter() {
+                                    tr {
+                                        class: if placed.confidence < REVIEW_FLOOR { "gate_rules-weak" } else { "" },
+                                        td { "{placed.specimen}" }
+                                        td { "{placed.gate}" }
+                                        td { "{name_of(&files.read(), &placed.measured_on)}" }
+                                        td { "{placed.from:.3}" }
+                                        td { "{placed.to:.3}" }
+                                        td { "{placed.confidence:.2}" }
+                                        td { "{placed.weakest.unwrap_or(\"-\")}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !run.skipped.is_empty() {
+                        h3 { "Not positioned" }
+                        ul { class: "gate_rules-skipped",
+                            for missed in run.skipped.iter() {
+                                li { "{missed.gate} {missed.file}: {missed.reason}" }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── the sidecar ───────────────────────────────────────────────
             fieldset { class: "gate_rules-form",
                 legend { "Sidecar" }
@@ -517,4 +668,69 @@ pub fn GateRulesWindow() -> Element {
             }
         }
     }
+}
+
+/// Where the app was last told to find its FCS files.
+///
+/// The same `file_paths.txt` the main window reads, so the tab opens pointing
+/// at the files already loaded rather than at nothing.
+fn default_fcs_dir() -> String {
+    std::fs::read_to_string("file_paths.txt")
+        .ok()
+        .and_then(|c| {
+            c.lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Read every FCS in `dir` and scale it exactly as the plots do.
+///
+/// The gates live in scaled coordinates, so measuring raw events would put
+/// every threshold in a different space from the gate it is meant to move.
+/// Returns the files it could read, paired with the id the gating document
+/// knows them by, and a line per file it could not.
+fn load_scaled(
+    dir: &str,
+    names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    arcsinh: &[(Arc<str>, f32)],
+) -> (Vec<(Arc<str>, polars::prelude::DataFrame)>, Vec<String>) {
+    use polars::prelude::*;
+
+    let mut loaded = Vec::new();
+    let mut problems = Vec::new();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => return (loaded, vec![format!("{dir}: {e}")]),
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcs")))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // The metadata export's name, exactly. Matching on a stem instead is
+        // how one donor's gates came to be scored against another's population.
+        let Some(id) = names.get(name) else {
+            problems.push(format!("{name}: no metadata row with this name"));
+            continue;
+        };
+        let frame = (|| -> anyhow::Result<DataFrame> {
+            let fcs = flow_fcs::Fcs::open(path.to_str().unwrap_or_default())?;
+            let params: Vec<(&str, f32)> = arcsinh.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
+            let scaled = (*fcs.apply_arcsinh_transforms(&params)?).clone();
+            Ok(scaled.with_row_index("original_index".into(), None)?)
+        })();
+        match frame {
+            Ok(df) => loaded.push((id.clone(), df)),
+            Err(e) => problems.push(format!("{name}: {e}")),
+        }
+    }
+    (loaded, problems)
 }

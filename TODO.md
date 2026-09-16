@@ -193,11 +193,18 @@ axis, and nothing should.
       reference files are set here too. The gate and metadata stores moved up
       to the `NavBar` layout so the tab and the editor see the same document.
 
-- [ ] **Apply a solved threshold to a gate.** Rebuild the geometry and write it
-      through `insert_for_source` with `GateSource::Sample`. Real files
-      *translate* the rectangle rather than resize it: across 41 gates over 117
-      files the width stayed constant to seven figures while the bounding edge
-      moved.
+- [x] **Apply a solved threshold to a gate.** `autogate.rs`. The gate
+      *translates* - both edges on the rule's parameter shift by the same
+      delta, so the shape survives and an unbounded side stays unbounded.
+      Written to `GateSource::Group` keyed on the sample id column rather than
+      per file: the rule measures the FMO and gates the full stain, and both
+      want the same line. `GateState::place_gate` names the tier instead of
+      inheriting the one a gate resolved from.
+
+- [x] **Run the rules from the tab.** A folder and one button. Reads and scales
+      every FCS the way the plots do, measures what each gate currently cuts,
+      solves, places, and reports what moved and what did not - with the
+      low-confidence placements flagged for review.
 
 ## Autogating
 

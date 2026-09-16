@@ -32,3 +32,8 @@
 .gate_rules-message { margin-top: 0.75rem; opacity: 0.85; }
 .gate_rules-span { grid-column: 1 / -1; margin: 0 0 0.25rem; }
 .gate_rules-span .gate_rules-table { margin-bottom: 0.5rem; }
+.gate_rules-report { margin-top: 1.25rem; }
+.gate_rules-report h3 { font-size: 0.95rem; margin: 0.75rem 0 0.35rem; opacity: 0.8; }
+.gate_rules-weak { color: hsl(35, 90%, 62%); }
+.gate_rules-skipped { margin: 0; padding-left: 1.1rem; opacity: 0.75; }
+.gate_rules-skipped li { margin-bottom: 0.15rem; }
