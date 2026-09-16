@@ -169,6 +169,39 @@ axis, and nothing should.
       and 97% fall within one such adjustment. The 15 it held back were mostly
       flagged on event count, with parent populations of 38 to 368.
 
+- [ ] **State is lost when a tab changes.** The router unmounts a route, so
+      leaving the editor discards everything `MainWindow` owns: the selected
+      sample, the axis markers, the selected parent gate, and - worse -
+      `upload_succeded`, the flag that stops the gating file being re-imported.
+      Coming back re-imports it, which rebuilds `GateState` and throws away any
+      positioning the autogater did.
+
+      Two shapes to fix it. Lift what a screen owns onto the `NavBar` layout as
+      context, the way the gate, metadata, axis and file stores already are -
+      small, and makes the split explicit: a store on the layout is the
+      document, a signal in a component is that component's own business. Or
+      keep every tab mounted and hide the inactive one, which preserves
+      in-flight resources too but pays to keep a second plot window loading
+      and rendering FCS files nobody is looking at.
+
+      The first is the better trade here: what is expensive is not the widget
+      state but re-reading a 150MB file, and that is keyed off the selections.
+      Lift those and returning is cheap; a frame cache would then make it
+      instant.
+
+- [ ] **Decide what a large move means for this panel.** A placement's
+      confidence scores displacement as `|moved| / interquartile spread`
+      against a limit of 0.5, calibrated from hand adjustments in a workflow
+      whose populations had spreads of 2 to 3. On a tightly clustered marker
+      the same absolute move is several times the spread, so every placement
+      is flagged even when it lands cleanly inside the band.
+
+      Whether that is right is a question about the panel rather than the code:
+      on an older panel with difficult unmixing, run-to-run variation can be
+      large and legitimate in one run and a warning sign in another. The limit
+      is per-rule in the sidecar already, so it can differ by marker - it wants
+      calibrating against runs known to be good and bad, not guessing.
+
 - [ ] **A third rule: the edge of the negative peak.** GranzymeB and Ki67 in
       this panel are gated by finding where the negative population ends and
       sitting just above it - no FMO involved, and no fraction to aim at. It is
