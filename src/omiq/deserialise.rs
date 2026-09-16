@@ -86,6 +86,13 @@ pub struct AtomicContainer {
     pub id: GateId,
     pub name: Arc<str>,
 
+    /// Omiq's own label for the container - "DEFAULT" for an ordinary gate.
+    /// Modelled only so it survives the round trip: it was read and discarded
+    /// before, so an exported file was missing it on every container the editor
+    /// rebuilt, and Omiq hung rather than say so.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub filter_type: Option<Arc<str>>,
+
     // The "Global" fallback
     #[serde(rename = "defaultFilter")]
     pub default_filter: GateSerialized,
@@ -534,7 +541,11 @@ pub fn create_omiq_ellipse_geometry(
     let angle = if diff <= f64::EPSILON * scale {
         0.0
     } else if f.abs() <= f64::EPSILON * scale {
-        if e >= g { 0.0 } else { std::f64::consts::PI / 2.0 }
+        if e >= g {
+            0.0
+        } else {
+            std::f64::consts::PI / 2.0
+        }
     } else {
         // Rust's atan2 takes (y, x)
         (lambda1 - e).atan2(f)
@@ -655,7 +666,7 @@ pub fn get_composite_gates_from_filter_container(
                 &subgate_ids,
                 &subgate_names,
                 &x_transform,
-                &y_transform
+                &y_transform,
             )?;
             map.insert(
                 (default_gate_arc.get_id(), GateSource::Global),
@@ -687,7 +698,7 @@ pub fn get_composite_gates_from_filter_container(
                 subgate_ids.clone(),
                 &subgate_names,
                 &x_transform,
-                        &y_transform
+                &y_transform,
             )?;
             map.insert(
                 (default_gate_arc.get_id(), GateSource::Global),
@@ -762,7 +773,7 @@ pub fn get_composite_gates_from_filter_container(
                             &subgate_ids,
                             &subgate_names,
                             &x_transform,
-                            &y_transform
+                            &y_transform,
                         )?;
                         group_cache.insert(group_id.clone(), new_gate.clone());
                         // Insert into the final map with the Group key
@@ -826,7 +837,7 @@ pub fn get_composite_gates_from_filter_container(
                             subgate_ids.clone(),
                             &subgate_names,
                             &x_transform,
-                        &y_transform
+                            &y_transform,
                         )?;
 
                         group_cache.insert(group_id.clone(), new_gate.clone());
@@ -884,7 +895,7 @@ pub fn get_composite_gates_from_filter_container(
                         &subgate_ids,
                         &subgate_names,
                         &x_transform,
-                        &y_transform
+                        &y_transform,
                     )?;
 
                     map.insert(
@@ -928,7 +939,7 @@ pub fn get_composite_gates_from_filter_container(
                         subgate_ids.clone(),
                         &subgate_names,
                         &x_transform,
-                        &y_transform
+                        &y_transform,
                     )?;
 
                     map.insert(
@@ -979,7 +990,12 @@ pub fn get_sorted_subgate_ids_and_names(
 pub fn extract_axis_range_from_axis_settings(
     params: &(&Arc<str>, &Arc<str>),
     axis_settings: &im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
-) -> anyhow::Result<(RangeInclusive<f32>, RangeInclusive<f32>, TransformType, TransformType)> {
+) -> anyhow::Result<(
+    RangeInclusive<f32>,
+    RangeInclusive<f32>,
+    TransformType,
+    TransformType,
+)> {
     let x_axis = axis_settings.get(params.0).ok_or_else(|| {
         anyhow::anyhow!("Could not find axis settings for parameter {}", params.0)
     })?;
@@ -1028,24 +1044,21 @@ pub fn get_quadrant_gate_for_filter_container(
     subgate_ids: &[Arc<str>],
     subgate_names: &[String],
     x_transform: &TransformType,
-    y_transform: &TransformType
+    y_transform: &TransformType,
 ) -> anyhow::Result<Arc<dyn DrawableGate>> {
-    let default_data_points = make_data_points_for_quadrant_filter(
-        filter,
-        x_axis_range,
-        y_axis_range,
-    )?;
+    let default_data_points =
+        make_data_points_for_quadrant_filter(filter, x_axis_range, y_axis_range)?;
     let subgate_names: (String, String, String, String) = subgate_names
         .iter()
         .cloned()
         .collect_tuple()
         .ok_or_else(|| anyhow::anyhow!("Expected 4 items"))?;
 
-        let x_inf = get_infinite_bounds(x_transform);
+    let x_inf = get_infinite_bounds(x_transform);
 
-        let y_inf = get_infinite_bounds(y_transform);
+    let y_inf = get_infinite_bounds(y_transform);
 
-        let infs = (x_inf, y_inf);
+    let infs = (x_inf, y_inf);
 
     let default_gate = QuadrantGate::try_new_from_data_points(
         id,
@@ -1056,7 +1069,7 @@ pub fn get_quadrant_gate_for_filter_container(
         true,
         Some(subgate_ids.to_vec()),
         Some(subgate_names),
-        infs
+        infs,
     )?;
     let default_gate_arc: Arc<dyn DrawableGate> = Arc::new(default_gate);
     Ok(default_gate_arc)
@@ -1196,7 +1209,7 @@ pub fn get_skewed_quadrant_gate(
     subgate_ids: Vec<Arc<str>>,
     subgate_names: &[String],
     x_transform: &TransformType,
-    y_transform: &TransformType
+    y_transform: &TransformType,
 ) -> anyhow::Result<Arc<dyn DrawableGate>> {
     let default_gate_map: FxHashMap<_, _> = subgates
         .iter()
@@ -1231,9 +1244,9 @@ pub fn get_skewed_quadrant_gate(
 
     let x_inf = get_infinite_bounds(x_transform);
 
-        let y_inf = get_infinite_bounds(y_transform);
+    let y_inf = get_infinite_bounds(y_transform);
 
-        let infs = (x_inf, y_inf);
+    let infs = (x_inf, y_inf);
 
     let gate = SkewedQuadrantGate::try_new_from_data_points(
         gate_id.clone(),
@@ -1244,7 +1257,7 @@ pub fn get_skewed_quadrant_gate(
         true,
         Some(subgate_ids.clone()),
         Some(subgate_names),
-        infs
+        infs,
     )?;
 
     Ok(Arc::new(gate))

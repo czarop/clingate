@@ -336,6 +336,7 @@ fn container_for(
     rebuild: Option<&OmiqRebuildData>,
     metadata: &MetaDataFileMap,
     axes: &AxisSettings,
+    known_files: &rustc_hash::FxHashSet<crate::gate_editor::gates::gate_store::FileId>,
 ) -> anyhow::Result<FilterContainer> {
     // A boolean has no geometry; it is a compound container naming its operands.
     if let Some(boolean) = gate.as_any().downcast_ref::<BooleanGate>() {
@@ -361,20 +362,20 @@ fn container_for(
     let default_filter = gate_to_serialized(gate, container_id, source_type, axes)?;
 
     // Omiq stores one entry per file, even when a metadata column is what
-    // actually drives the position - so fan a group override back out over
-    // exactly the files the original listed, rather than a set derived from the
-    // metadata, which could differ.
+    // actually drives the position. So write the files this container already
+    // listed, plus any the session has since given a position of its own - but
+    // only files the *document* knows about.
     //
-    // The files the original listed, plus any this session has since given a
-    // position of its own - by rule or by hand. Taking only the original list
-    // was right while overrides could arrive from nowhere else, and wrong the
-    // moment the app began writing them: a container that imported global has
-    // no list, so an autogated position reached the screen and never reached
-    // the file.
+    // That last clause is the whole lesson. A metadata export describes the
+    // experiment; a gating task covers part of one. In a real workflow the
+    // metadata held 95 files while the task covered 67 - every full stain and
+    // FMO, and a single unstained. Drawing the added files from the metadata
+    // introduced 28 unstained files the document had never mentioned, and Omiq
+    // hung reading it back.
     let mut files: Vec<crate::gate_editor::gates::gate_store::FileId> =
         rebuild.map(|r| r.per_file_ids.clone()).unwrap_or_default();
     for file_id in state.files_with_own_position(container_id, metadata) {
-        if !files.contains(&file_id) {
+        if known_files.contains(&file_id) && !files.contains(&file_id) {
             files.push(file_id);
         }
     }
@@ -391,6 +392,13 @@ fn container_for(
     Ok(FilterContainer::Atomic(AtomicContainer {
         id: container_id.clone(),
         name: container_name(gate, container_id),
+        // Whatever Omiq called it, or "DEFAULT" for a gate drawn here - which
+        // is what Omiq writes for every ordinary container.
+        filter_type: Some(
+            rebuild
+                .map(|r| r.container_type.clone())
+                .unwrap_or_else(|| Arc::from("DEFAULT")),
+        ),
         default_filter,
         group_id: rebuild
             .and_then(|r| r.group_id.clone())
@@ -449,6 +457,17 @@ pub fn to_omiq_document_with_header(
     let rebuild = state.omiq_rebuild();
     let ids = container_ids(state);
 
+    // Every file this document has ever named. A gating task covers part of an
+    // experiment, and the metadata export describes all of it, so this - not
+    // the metadata - is the set a new per-file position may be written against.
+    // A file the task does not hold is one Omiq cannot resolve on the way back
+    // in.
+    let known_files: rustc_hash::FxHashSet<crate::gate_editor::gates::gate_store::FileId> = rebuild
+        .gates
+        .values()
+        .flat_map(|g| g.per_file_ids.iter().cloned())
+        .collect();
+
     let mut containers: HashMap<Arc<str>, FilterContainer> = HashMap::new();
 
     // One Omiq node per position in the editor's tree.
@@ -493,7 +512,15 @@ pub fn to_omiq_document_with_header(
 
         containers.insert(
             container_id.clone(),
-            container_for(state, &gate, &container_id, entry, metadata, axes)?,
+            container_for(
+                state,
+                &gate,
+                &container_id,
+                entry,
+                metadata,
+                axes,
+                &known_files,
+            )?,
         );
     }
 

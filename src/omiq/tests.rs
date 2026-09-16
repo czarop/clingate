@@ -4325,3 +4325,109 @@ fn a_group_override_written_here_reaches_the_file() {
         );
     }
 }
+
+/// A position may only be written against a file the document itself knows.
+///
+/// A metadata export describes a whole experiment; a gating task covers part of
+/// one. In a real workflow the metadata held 95 files while the task covered 67
+/// - every full stain and FMO, and one unstained - and writing the other 28
+/// unstained files into `perFileFilters` hung Omiq on reimport. The metadata is
+/// how files are grouped, never a list of what the document contains.
+#[test]
+fn a_file_the_document_does_not_hold_is_never_written() {
+    use crate::gate_rules::autogate::{place_for_specimen, translate_edge_to};
+    use crate::gate_rules::rule_store::Bound;
+    use crate::omiq::metadata::MetaDataKey;
+
+    let mut state = import_with_metadata(BEFORE);
+
+    // Metadata describing a third file the gating document has never mentioned,
+    // in the same group as one it has.
+    let mut metadata = fixture_metadata();
+    let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = rustc_hash::FxHashMap::default();
+    columns.insert(Arc::from("test"), Arc::from("one"));
+    columns.insert(Arc::from("Type"), Arc::from("one"));
+    metadata.insert(Arc::from("not_in_the_task") as Arc<str>, columns);
+
+    let Some((gate_id, gate, param, from)) = state.registered_ids().into_iter().find_map(|id| {
+        let gate = state.registered_gate(&id)?;
+        let (x, _) = gate.get_params();
+        let inner = gate.get_gate_ref(None)?;
+        let (low, _) = crate::gate_rules::autogate::extent_on(&inner.geometry, &x)?;
+        (low.is_finite() && low.abs() < 1e9).then_some((id, gate, x, low))
+    }) else {
+        panic!("the fixture should hold a gate with a finite x edge");
+    };
+
+    let moved = translate_edge_to(&gate, &param, Bound::Above, from as f64 + 25.0).unwrap();
+    place_for_specimen(
+        &mut state,
+        &gate_id,
+        &MetaDataKey {
+            parameter: Arc::from("test"),
+            group: Arc::from("one"),
+        },
+        &moved,
+    );
+
+    let written = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    for (id, container) in containers.iter() {
+        let Some(per_file) = container.get("perFileFilters").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        assert!(
+            !per_file.contains_key("not_in_the_task"),
+            "{id} wrote a position for a file the document does not hold"
+        );
+    }
+
+    // The group override still reaches the file that *is* in the document.
+    let per_file = containers[&*gate_id]["perFileFilters"]
+        .as_object()
+        .expect("per-file positions written");
+    assert!(per_file.contains_key("sample1"));
+}
+
+/// Omiq labels every atomic container, and the label has to survive.
+///
+/// It was read on import and never written back, so an exported file was
+/// missing `type` on every container the editor rebuilt - 120 of 247 in a real
+/// workflow - and Omiq hung on reimport rather than reporting it.
+#[test]
+fn every_atomic_container_keeps_its_type() {
+    for name in [BEFORE, AFTER] {
+        let written = export_with_metadata(name);
+        let containers = objects(&written, &["tree", "filterContainers"]);
+        for (id, container) in containers.iter() {
+            if container["containerType"] != "AtomicFilterContainer" {
+                continue;
+            }
+            assert!(
+                container.get("type").and_then(|v| v.as_str()).is_some(),
+                "{name}: container {id} lost the type Omiq gave it"
+            );
+        }
+    }
+}
+
+/// And it is the one Omiq gave it, not a guess.
+#[test]
+fn the_container_type_is_the_one_that_was_read() {
+    let source = original(BEFORE);
+    let written = export_with_metadata(BEFORE);
+    let from = objects(&source, &["tree", "filterContainers"]);
+    let to = objects(&written, &["tree", "filterContainers"]);
+
+    for (id, container) in from.iter() {
+        let Some(was) = container.get("type") else {
+            continue;
+        };
+        assert_eq!(
+            to[id].get("type"),
+            Some(was),
+            "container {id} changed the type it came in with"
+        );
+    }
+}
