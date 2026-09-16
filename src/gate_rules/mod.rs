@@ -15,11 +15,14 @@
 //! back - is mechanical by comparison, and keeping it out of here is what lets
 //! the decisions be tested exhaustively.
 
+pub mod autogate;
 pub mod confidence;
 pub mod rule;
 pub mod rule_store;
 pub mod threshold;
 
+#[cfg(test)]
+mod autogate_tests;
 #[cfg(test)]
 mod confidence_tests;
 mod harness_tests;

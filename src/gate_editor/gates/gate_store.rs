@@ -1052,6 +1052,22 @@ impl GateState {
         self.hierarchy.get_order(node.as_str())
     }
 
+    /// Write a gate into one of the three tiers.
+    ///
+    /// The store methods write back into the tier a gate was *resolved* from,
+    /// which is right for an edit - dragging a global gate should move the
+    /// global gate. Positioning by rule is the other case: it takes a gate that
+    /// resolved globally and gives one specimen its own copy, so the tier is
+    /// named rather than inherited.
+    pub fn place_gate(
+        &mut self,
+        ids: &[GateId],
+        gate: &Arc<dyn DrawableGate>,
+        source: &GateSource,
+    ) {
+        self.gate_store.insert_for_source(ids, gate, source);
+    }
+
     /// The gate registered under an id, if any.
     pub fn registered_gate(&self, gate_id: &GateId) -> Option<Arc<dyn DrawableGate>> {
         self.gate_store
