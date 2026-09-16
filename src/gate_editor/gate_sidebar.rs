@@ -276,7 +276,7 @@ fn GateNode(
                 div { class: "gate-node-container",
                     div {
                         class: format!("gate-node-row{}", if is_selected { " selected" } else { "" }),
-                        style: "padding-left: {padding};",
+
                         onclick: move |e: Event<MouseData>| {
 
                             e.stop_propagation();
@@ -321,6 +321,73 @@ fn GateNode(
 
                         },
 
+                        // The gutter: fixed, at the far left, outside the
+                        // indentation. These say what a gate *is* - active,
+                        // linked, positioned per group or per sample - and a
+                        // deep tree would otherwise push them off the right
+                        // edge of the pane, which is exactly where they are
+                        // least use.
+                        div { class: "row-gutter",
+                            button {
+                                class: "activate-btn",
+                                title: "Activate gate",
+                                onclick: move |e| {
+                                    // IMPORTANT: Stop the row's onclick from firing
+                                    e.stop_propagation();
+                                    let Some((x, y)) = gate_store
+                                        .gate_store()
+                                        .peek()
+                                        .primary_and_subgate_registry
+                                        .get(&gate_id)
+                                        .map(|g| g.get_params()) else { return };
+                                    let (new_x, new_y);
+                                    if let Some(x_axis_settings) = axis_store.settings().peek().get(&x) {
+                                        new_x = Some(x_axis_settings.param.clone());
+                                    } else {
+                                        new_x = None;
+                                    }
+                                    if let Some(y_axis_settings) = axis_store.settings().peek().get(&y) {
+                                        new_y = Some(y_axis_settings.param.clone());
+                                    } else {
+                                        new_y = None;
+                                    }
+                                    if let (Some(new_x), Some(new_y)) = (new_x, new_y) {
+                                        x_axis_param.set(new_x);
+                                        y_axis_param.set(new_y);
+                                        // This placement, not the gate: the plot
+                                        // below shows the population *this* node
+                                        // sees.
+                                        selected.set(Some(node_id.clone()));
+                                    }
+                                },
+                                "🎯"
+                            }
+                            if is_linked {
+                                span {
+                                    class: "row-badge linked-badge",
+                                    title: "This gate is applied at more than one point in the tree",
+                                    "\u{1f517}"
+                                }
+                            }
+                            if overrides.read().0.contains(&gate_id_for_badges) {
+                                span {
+                                    class: "row-badge tier-badge",
+                                    title: "Positioned per group - this gate moves with the specimen",
+                                    "G"
+                                }
+                            }
+                            if overrides.read().1.contains(&gate_id_for_badges) {
+                                span {
+                                    class: "row-badge tier-badge",
+                                    title: "Positioned per sample - this gate moves with the file",
+                                    "S"
+                                }
+                            }
+                        }
+
+                        // The tree proper, indented by depth.
+                        div { class: "row-body", style: "padding-left: {padding};",
+
                         if has_children {
                             div {
                                 class: format!("toggle-icon{}", if is_expanded() { " expanded" } else { "" }),
@@ -335,68 +402,8 @@ fn GateNode(
                             div { class: "toggle-icon-placeholder" }
                         }
 
-                        // The badges and the activate button come before the
-                        // name so they stay in view: a deep tree scrolls
-                        // sideways, and anything past the name is the first
-                        // thing to disappear.
-                        button {
-                            class: "activate-btn",
-                            title: "Activate gate",
-                            onclick: move |e| {
-                                // IMPORTANT: Stop the row's onclick from firing
-                                e.stop_propagation();
-                                let Some((x, y)) = gate_store
-                                    .gate_store()
-                                    .peek()
-                                    .primary_and_subgate_registry
-                                    .get(&gate_id)
-                                    .map(|g| g.get_params()) else { return };
-                                let (new_x, new_y);
-                                if let Some(x_axis_settings) = axis_store.settings().peek().get(&x) {
-                                    new_x = Some(x_axis_settings.param.clone());
-                                } else {
-                                    new_x = None;
-                                }
-                                if let Some(y_axis_settings) = axis_store.settings().peek().get(&y) {
-                                    new_y = Some(y_axis_settings.param.clone());
-                                } else {
-                                    new_y = None;
-                                }
-                                if let (Some(new_x), Some(new_y)) = (new_x, new_y) {
-                                    x_axis_param.set(new_x);
-                                    y_axis_param.set(new_y);
-                                    // This placement, not the gate: the plot
-                                    // below shows the population *this* node
-                                    // sees.
-                                    selected.set(Some(node_id.clone()));
-                                }
-
-                            },
-                            "🎯"
-                        }
-                        if is_linked {
-                            span {
-                                class: "row-badge linked-badge",
-                                title: "This gate is applied at more than one point in the tree",
-                                "\u{1f517}"
-                            }
-                        }
-                        if overrides.read().0.contains(&gate_id_for_badges) {
-                            span {
-                                class: "row-badge tier-badge",
-                                title: "Positioned per group - this gate moves with the specimen",
-                                "G"
-                            }
-                        }
-                        if overrides.read().1.contains(&gate_id_for_badges) {
-                            span {
-                                class: "row-badge tier-badge",
-                                title: "Positioned per sample - this gate moves with the file",
-                                "S"
-                            }
-                        }
-
                         span { class: "gate-name", "{gate_name}" }
+                        }
                     }
 
                     // 4. The Children (Recursive call)

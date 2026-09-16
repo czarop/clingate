@@ -98,6 +98,36 @@
     user-select: none;
     transition: background-color 0.15s ease;
     color: #4a5568;
+    /* Explicit, so the sticky gutter can inherit it and the tree cannot be
+       seen sliding underneath. */
+    background-color: #f8f9fa;
+}
+
+/* The fixed left gutter: what a gate *is*, never indented and never scrolled
+   away. Sticky rather than merely first, so a sideways scroll through a deep
+   tree leaves it pinned against the left edge. */
+.row-gutter {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px;
+    /* Fixed, so every name starts at the same place however many badges the
+       row happens to carry. */
+    width: 46px;
+    background-color: inherit;
+}
+
+/* The tree proper, indented by depth. */
+.row-body {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: max-content;
 }
 
 .gate-node-row:hover {
@@ -179,7 +209,6 @@
     font-size: var(--tree-font-size);
     line-height: 1;
     opacity: 0.65;
-    padding-right: 4px;
 }
 
 /* Shown while a link target is being picked. */
@@ -259,7 +288,6 @@
     flex: 0 0 auto;
     font-size: 0.7rem;
     line-height: 1;
-    margin-right: 3px;
 }
 
 .tier-badge {
