@@ -49,10 +49,23 @@ button:hover {
 /* Layout Container */
 .gate-window {
     display: flex;
+    /* Column so the sample name can sit above its own plot rather than
+       beside it. */
+    flex-direction: column;
     justify-content: start;
     align-items: flex-start;
     width: 100%;
-    gap: 20px;
+    gap: 4px;
+}
+
+.gate-window_title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    opacity: 0.85;
+    max-width: 600px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .gate-window-container{

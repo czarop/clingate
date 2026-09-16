@@ -100,6 +100,16 @@ pub struct SamplePairing {
     /// Consulted only when `sample_type_column` holds nothing for a file.
     #[serde(default)]
     pub derive_type: Option<DerivedSampleType>,
+    /// The order a specimen's files are shown in, by sample type. The FMO
+    /// belongs on the left, where the line is set, and the full stain on the
+    /// right, where the positives are read off - but which names those are is
+    /// the dataset's business, not this crate's.
+    #[serde(default = "default_display_order")]
+    pub display_order: Vec<Arc<str>>,
+}
+
+fn default_display_order() -> Vec<Arc<str>> {
+    vec![Arc::from("FMX"), Arc::from("FS")]
 }
 
 impl Default for SamplePairing {
@@ -108,6 +118,7 @@ impl Default for SamplePairing {
             sample_id_column: Arc::from("Sample ID"),
             sample_type_column: Arc::from("SampleType"),
             derive_type: None,
+            display_order: default_display_order(),
         }
     }
 }

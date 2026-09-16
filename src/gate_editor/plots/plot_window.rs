@@ -217,16 +217,24 @@ pub fn PlotWindow(
             // it here would put every gate edit back on the critical path.
             chain_gates.read();
             let current_resolver = resolver.peek().clone();
+            // Read here rather than in the async block below, for the reason
+            // given above: a read inside the async block registers no
+            // dependency. Reading it there meant this never re-ran when the FCS
+            // finished loading, so the first frame - taken while the file was
+            // still opening - left the plot empty and reporting that it could
+            // not get bounds. Only changing sample brought it back, because
+            // that writes `current_file_id`, which is tracked.
+            let current_data = scaled_data
+                .read()
+                .as_ref()
+                .and_then(|res| res.as_ref().ok())
+                .cloned();
             async move {
                 let Ok(resolver) = current_resolver else {
                     return Err(anyhow::anyhow!("No resolver"));
                 };
 
-                let d = scaled_data.read().as_ref()
-                    .and_then(|res| res.as_ref().ok())
-                    .cloned();
-
-                let Some(d) = d else { 
+                let Some(d) = current_data else { 
                     plot_data_signal.set(vec![]);
                     return Err(anyhow::anyhow!("No data yet"))
                 };
