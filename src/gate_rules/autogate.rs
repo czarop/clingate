@@ -139,3 +139,291 @@ pub fn place_for_specimen(
         &GateSource::Group((gate_id.clone(), specimen.clone())),
     );
 }
+
+// ── measuring what is there now ───────────────────────────────────────────
+
+use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
+use crate::gate_editor::gates::gate_store::{GroupId, NodeId};
+use crate::gate_rules::rule_store::RuleStore;
+use crate::omiq::metadata::MetaDataParameter;
+use polars::prelude::*;
+use rustc_hash::FxHashMap;
+
+/// One gate on one file, as it stands before any rule is applied.
+///
+/// The parent population travels with it because solving needs the values, and
+/// reading them costs a filtered pass over the frame that is not worth doing
+/// twice - the rule measures the FMO's population and applies the answer to the
+/// full stain's gate, so both files' measurements are needed at once.
+#[derive(Clone)]
+pub struct Measurement {
+    pub file: FileId,
+    pub gate_id: GateId,
+    pub gate: Arc<str>,
+    pub parent_gate: Option<Arc<str>>,
+    /// The parameter the bounding edge lies on - read off the gate, never
+    /// inferred from which axis it happens to be drawn on.
+    pub parameter: Arc<str>,
+    pub bound: Bound,
+    /// Where the edge sits now.
+    pub current: f64,
+    /// The parent population's values on `parameter`.
+    pub values: Vec<f64>,
+}
+
+/// Every gate on one file, with the population each one cuts.
+///
+/// A gate contributes a measurement only when exactly one of its four edges
+/// lies inside the data. None means it thresholds nothing; more than one is a
+/// window or a genuinely two-dimensional gate, and neither is a single line for
+/// a rule to solve.
+pub fn measure_file(
+    state: &GateState,
+    file: &FileId,
+    df: &DataFrame,
+    metadata: &MetaDataFileMap,
+) -> anyhow::Result<Vec<Measurement>> {
+    let groups: FxHashMap<MetaDataParameter, GroupId> = metadata
+        .get(file)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no metadata for {file}"))?;
+    let resolver = state.get_current_sample(file.clone(), &groups);
+
+    let mut out = Vec::new();
+    for (node, placement) in state.placements() {
+        let gate_id = &placement.gate_id;
+        let Some(gate) = state.gate_for_file(gate_id, file, metadata) else {
+            continue;
+        };
+        let Some(inner) = gate.get_gate_ref(None) else {
+            continue;
+        };
+        let GateGeometry::Rectangle { min, max } = &inner.geometry else {
+            continue;
+        };
+        let Some(parent) = state.parent_node(node) else {
+            continue;
+        };
+        let chain = state.gate_chain_for_node(&parent);
+        let (x_param, y_param) = gate.get_params();
+
+        // Every edge, each carrying the parameter it bounds. Which axis it is
+        // drawn on is reported by neither: the same marker appears on x in one
+        // plot and y in another within a single workflow.
+        let edges: [(Bound, Arc<str>, Option<f32>); 4] = [
+            (Bound::Above, x_param.clone(), min.get_coordinate(&x_param)),
+            (Bound::Below, x_param.clone(), max.get_coordinate(&x_param)),
+            (Bound::Above, y_param.clone(), min.get_coordinate(&y_param)),
+            (Bound::Below, y_param.clone(), max.get_coordinate(&y_param)),
+        ];
+
+        let mut candidates: Vec<(Bound, Arc<str>, f64, Vec<f64>)> = Vec::new();
+        let mut cache: FxHashMap<Arc<str>, Vec<f64>> = FxHashMap::default();
+        for (bound, param, value) in edges {
+            let Some(value) = value else { continue };
+            let value = value as f64;
+            if !value.is_finite() || value.abs() > UNBOUNDED as f64 {
+                continue;
+            }
+            if df.column(param.as_ref()).is_err() {
+                continue;
+            }
+            let values = match cache.get(&param) {
+                Some(v) => v.clone(),
+                None => {
+                    let v = parent_population(df, &chain, &resolver, &param)?;
+                    cache.insert(param.clone(), v.clone());
+                    v
+                }
+            };
+            if values.len() < 2 {
+                continue;
+            }
+            let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let inside = match bound {
+                Bound::Above => value > lo,
+                Bound::Below => value < hi,
+            };
+            if inside {
+                candidates.push((bound, param, value, values));
+            }
+        }
+        if candidates.len() != 1 {
+            continue;
+        }
+        let (bound, parameter, current, values) = candidates.pop().expect("one candidate");
+
+        out.push(Measurement {
+            file: file.clone(),
+            gate_id: gate_id.clone(),
+            gate: Arc::from(gate.get_name()),
+            parent_gate: parent_name(state, &parent),
+            parameter,
+            bound,
+            current,
+            values,
+        });
+    }
+    Ok(out)
+}
+
+fn parent_name(state: &GateState, parent: &NodeId) -> Option<Arc<str>> {
+    state
+        .gate_for_node(parent)
+        .and_then(|id| state.registered_gate(id))
+        .map(|g| Arc::from(g.get_name()))
+}
+
+fn parent_population(
+    df: &DataFrame,
+    chain: &[GateId],
+    resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
+    channel: &str,
+) -> anyhow::Result<Vec<f64>> {
+    let frame = if chain.is_empty() {
+        df.clone()
+    } else {
+        let mask = filter_events_by_hierarchy_to_mask(df, chain, resolver)?;
+        df.filter(&mask)?
+    };
+    Ok(frame
+        .column(channel)?
+        .f32()?
+        .into_no_null_iter()
+        .map(|v| v as f64)
+        .collect())
+}
+
+// ── solving and placing ──────────────────────────────────────────────────
+
+/// One gate that was positioned, and what it took to do it.
+pub struct Positioned {
+    pub file: FileId,
+    pub gate: Arc<str>,
+    pub specimen: Arc<str>,
+    /// The file whose population the rule read.
+    pub measured_on: FileId,
+    pub from: f64,
+    pub to: f64,
+    pub confidence: f64,
+    /// The measure holding the confidence down, for a person deciding what to
+    /// review first.
+    pub weakest: Option<&'static str>,
+}
+
+/// One gate that was not positioned, and why.
+pub struct Skipped {
+    pub file: FileId,
+    pub gate: Arc<str>,
+    pub reason: String,
+}
+
+#[derive(Default)]
+pub struct Report {
+    pub positioned: Vec<Positioned>,
+    pub skipped: Vec<Skipped>,
+}
+
+impl Report {
+    /// Gates whose confidence falls below `floor`, which is the list worth
+    /// opening by hand. On the hand-gated export everything at 0.30 or above
+    /// landed within a typical manual adjustment.
+    pub fn needs_review(&self, floor: f64) -> impl Iterator<Item = &Positioned> {
+        self.positioned.iter().filter(move |p| p.confidence < floor)
+    }
+}
+
+/// Solve every rule that matches, and give each specimen its own gate.
+///
+/// `measurements` must span every file the rules might measure, not just the
+/// ones being gated: a rule that reads the FMO needs the FMO's population, and
+/// that lives on a different file from the gate it positions.
+pub fn position_all(
+    state: &mut GateState,
+    store: &RuleStore,
+    measurements: &[Measurement],
+    metadata: &MetaDataFileMap,
+) -> Report {
+    let mut report = Report::default();
+
+    for measured in measurements {
+        let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
+            continue;
+        };
+        // A rule names the parameter it positions. A gate bounding a different
+        // one is not what this rule is about, however it is named.
+        if rule.parameter != measured.parameter {
+            continue;
+        }
+
+        let mut skip = |reason: String| {
+            report.skipped.push(Skipped {
+                file: measured.file.clone(),
+                gate: measured.gate.clone(),
+                reason,
+            });
+        };
+
+        let Some(specimen) = specimen_of(&store.pairing, &measured.file, metadata) else {
+            skip(format!(
+                "no {} for this file, so there is no specimen to position",
+                store.pairing.sample_id_column
+            ));
+            continue;
+        };
+        let Some(reference_id) = store.reference_file(&measured.file, &rule.measured_on, metadata)
+        else {
+            skip("no reference sample to measure".to_string());
+            continue;
+        };
+        // The rule reads its population from the reference file at this same
+        // gate - the FMO's events inside the same parent.
+        let Some(reference) = measurements
+            .iter()
+            .find(|m| m.file == reference_id && m.gate_id == measured.gate_id)
+        else {
+            skip(format!("{reference_id} was not measured"));
+            continue;
+        };
+
+        let solved = match rule.solve(&reference.values, Some(measured.current)) {
+            Ok(s) => s,
+            Err(e) => {
+                skip(e.to_string());
+                continue;
+            }
+        };
+
+        let Some(current) = state.gate_for_file(&measured.gate_id, &measured.file, metadata) else {
+            skip("the gate no longer resolves".to_string());
+            continue;
+        };
+        let moved = match translate_edge_to(
+            &current,
+            &measured.parameter,
+            measured.bound,
+            solved.threshold.x,
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                skip(e.to_string());
+                continue;
+            }
+        };
+        place_for_specimen(state, &measured.gate_id, &specimen, &moved);
+
+        report.positioned.push(Positioned {
+            file: measured.file.clone(),
+            gate: measured.gate.clone(),
+            specimen: specimen.group.clone(),
+            measured_on: reference_id,
+            from: measured.current,
+            to: solved.threshold.x,
+            confidence: solved.confidence.score,
+            weakest: solved.confidence.weakest().map(|c| c.name),
+        });
+    }
+
+    report
+}

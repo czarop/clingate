@@ -306,3 +306,257 @@ fn solving_a_specimen_twice_replaces_rather_than_stacks() {
 
     assert_eq!(edge_for(&state, &global.get_id(), "fs_a", &map), 175.0);
 }
+
+// ── the whole sweep ──────────────────────────────────────────────────────
+
+/// A frame whose X values run 1..=n, so the position of any tail fraction is
+/// arithmetic rather than a guess.
+fn ramp(n: usize) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    let xs: Vec<f32> = (1..=n).map(|i| i as f32).collect();
+    let ys: Vec<f32> = vec![0.0; n];
+    df![X => xs, Y => ys].unwrap()
+}
+
+/// A state holding one root-level gate named `CD134+`, open above 500 on X and
+/// unbounded on every other side - the shape a positive gate actually has.
+fn one_positive_gate() -> (crate::gate_editor::gates::GateState, Arc<str>) {
+    use crate::gate_editor::gates::GateState;
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::gate_editor::gates::gate_types::PrimaryGateType;
+    use crate::gate_editor::plots::axis_store::PlotMapper;
+    use flow_fcs::TransformType;
+
+    let mapper = PlotMapper::new(
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &mapper,
+            300.0,
+            300.0,
+            Arc::from(X),
+            Arc::from(Y),
+            None,
+            None,
+            PrimaryGateType::Rectangle,
+            Some("CD134+".to_string()),
+        )
+        .expect("a rectangle can be added at the root");
+
+    let gate_id = state
+        .placements()
+        .next()
+        .map(|(_, p)| p.gate_id.clone())
+        .expect("adding a gate leaves a placement");
+
+    // Replace the default geometry with the shape under test, keeping the id
+    // the placement points at.
+    let geometry = create_rectangle_geometry(
+        vec![(500.0, -1e16), (1e16, -1e16), (1e16, 1e16), (500.0, 1e16)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let mut inner = gate(&gate_id, geometry);
+    inner.name = "CD134+".to_string();
+    let positive: Arc<dyn DrawableGate> = Arc::new(RectangleGate::try_new(inner, true).unwrap());
+    state.place_gate(&[gate_id.clone()], &positive, &GateSource::Global);
+
+    (state, gate_id)
+}
+
+fn fs_and_fmx() -> crate::omiq::metadata::MetaDataFileMap {
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, kind) in [("fs_a", "FS"), ("fmx_a", "FMX")] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("Sample ID"), Arc::from("QC-A"));
+        columns.insert(Arc::from("SampleType"), Arc::from(kind));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    map
+}
+
+fn fmx_rule() -> crate::gate_rules::rule_store::RuleStore {
+    use crate::gate_rules::rule::{Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("CD134+"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Partner(Arc::from("FMX")),
+            rule: Rule::TailFraction(TailFractionRule::new((0.002, 0.005))),
+        },
+    );
+    store
+}
+
+/// Measure both files, then position everything the rules cover.
+fn sweep(
+    state: &mut crate::gate_editor::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+) -> crate::gate_rules::autogate::Report {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let frame = ramp(1000);
+    let mut measured = Vec::new();
+    for file in ["fs_a", "fmx_a"] {
+        measured.extend(measure_file(state, &Arc::from(file), &frame, map).unwrap());
+    }
+    position_all(state, store, &measured, map)
+}
+
+#[test]
+fn a_rule_positions_the_gate_where_it_solved() {
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.file == "fs_a")
+        .expect("the full stain should be positioned");
+
+    // 0.2-0.5% of 1000 events is 2 to 5, so the line belongs between the 5th
+    // and 2nd highest value - 995 and 999 on a 1..=1000 ramp.
+    assert!(
+        placed.to > 994.0 && placed.to < 1000.0,
+        "solved at {}, which is not in the 0.2-0.5% band",
+        placed.to
+    );
+    assert_eq!(placed.from, 500.0, "it should report where it moved from");
+
+    let on_file = state
+        .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+        .unwrap();
+    assert_eq!(
+        edges(&on_file, X).0 as f64,
+        placed.to,
+        "the gate should sit where the report says"
+    );
+}
+
+#[test]
+fn the_solved_gate_is_still_open_at_the_top() {
+    // A positive gate keeps everything above the line. Translating it must not
+    // quietly cap it.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    sweep(&mut state, &fmx_rule(), &map);
+
+    let on_file = state
+        .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+        .unwrap();
+    assert_eq!(edges(&on_file, X).1, 1e16);
+}
+
+#[test]
+fn the_rule_reads_the_fmo_and_gates_the_full_stain() {
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.file == "fs_a")
+        .unwrap();
+    assert_eq!(&*placed.measured_on, "fmx_a");
+    assert_eq!(&*placed.specimen, "QC-A");
+}
+
+#[test]
+fn a_rule_naming_another_parameter_leaves_the_gate_alone() {
+    // The rule is about a marker. A gate that thresholds something else is not
+    // its business, whatever the gate is called.
+    use crate::gate_rules::rule::{Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("CD134+"),
+        GateRule {
+            parameter: Arc::from("BV421-A"),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Partner(Arc::from("FMX")),
+            rule: Rule::TailFraction(TailFractionRule::new((0.002, 0.005))),
+        },
+    );
+    let report = sweep(&mut state, &store, &map);
+
+    assert!(report.positioned.is_empty());
+    let on_file = state
+        .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+        .unwrap();
+    assert_eq!(
+        edges(&on_file, X).0,
+        500.0,
+        "the gate should not have moved"
+    );
+}
+
+#[test]
+fn a_gate_with_no_rule_is_left_where_it_was() {
+    use crate::gate_rules::rule_store::RuleStore;
+
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &RuleStore::default(), &map);
+
+    assert!(report.positioned.is_empty());
+    assert!(
+        report.skipped.is_empty(),
+        "a gate nobody wrote a rule for is not a failure"
+    );
+    let on_file = state
+        .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+        .unwrap();
+    assert_eq!(edges(&on_file, X).0, 500.0);
+}
+
+#[test]
+fn a_missing_partner_is_reported_rather_than_guessed() {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let (mut state, _) = one_positive_gate();
+    // Only the full stain exists - the FMO was never run.
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+    columns.insert(Arc::from("Sample ID"), Arc::from("QC-A"));
+    columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+    map.insert(Arc::from("fs_a") as Arc<str>, columns);
+
+    let frame = ramp(1000);
+    let measured = measure_file(&state, &Arc::from("fs_a"), &frame, &map).unwrap();
+    let report = position_all(&mut state, &fmx_rule(), &measured, &map);
+
+    assert!(report.positioned.is_empty());
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].reason.contains("reference"));
+}
+
+#[test]
+fn low_confidence_placements_are_the_ones_flagged() {
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    // Nothing is below a floor of zero, and everything is below a floor of one.
+    assert_eq!(report.needs_review(0.0).count(), 0);
+    assert_eq!(report.needs_review(1.01).count(), report.positioned.len());
+}
