@@ -179,14 +179,19 @@ axis, and nothing should.
       percentile: this has to find the edge, so it needs the density rather than
       an order statistic. The KDE in `gate_move` is the obvious starting point.
 
-- [ ] **A rule store.** Attach a `Rule` to a gate - its band, its parameter,
-      which sample role it is measured on - and persist it to a sidecar, since
-      Omiq has no representation for rules. The harness currently hardcodes one
-      band for every gate, which measures the band rather than the solver. This
-      is the bookkeeping that stands between the solvers and real use.
+- [x] **A rule store.** `rule_store.rs`. A rule is attached to a *population* -
+      a gate name and optionally the parent it sits under, "Ki67+ of CD4+" -
+      rather than to a container. Container-keyed rules meant 52 rules for what
+      a person describes in four sentences, because "CD279+" alone occupied 25
+      containers. A target naming a parent wins over one that does not, so the
+      general rule is written once and the exception overrides it. Persisted to
+      a sidecar; Omiq has no representation for rules.
 
-- [ ] **The Gate Rules tab.** Choose a rule type per gate and set its
-      parameters. Wants the rule store first.
+- [x] **The Gate Rules tab.** `gate_rules_window.rs`, on `/rules`. The rules
+      that exist, and a form that offers only the gates, parents and parameters
+      the document actually holds. The sample pairing columns and hand-picked
+      reference files are set here too. The gate and metadata stores moved up
+      to the `NavBar` layout so the tab and the editor see the same document.
 
 - [ ] **Apply a solved threshold to a gate.** Rebuild the geometry and write it
       through `insert_for_source` with `GateSource::Sample`. Real files
