@@ -30,3 +30,5 @@
 .gate_rules-add { grid-column: 2; justify-self: start; margin-top: 0.5rem; padding: 0.3rem 1rem; }
 .gate_rules-remove { padding: 0.1rem 0.5rem; opacity: 0.8; }
 .gate_rules-message { margin-top: 0.75rem; opacity: 0.85; }
+.gate_rules-span { grid-column: 1 / -1; margin: 0 0 0.25rem; }
+.gate_rules-span .gate_rules-table { margin-bottom: 0.5rem; }

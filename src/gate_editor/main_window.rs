@@ -38,8 +38,10 @@ pub fn MainWindow() -> Element {
     let mut filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
     let mut message = use_signal(|| None::<String>);
 
-    let mut metadata_store = use_store_sync(MetaDataStore::default);
-    use_context_provider(|| metadata_store);
+    // Also created by the NavBar layout: the loaded metadata describes the
+    // document, and the gate rules tab reads the same file list.
+    let mut metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
 
     let meta_result = use_resource(move || async move {
         let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
