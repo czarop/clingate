@@ -11,6 +11,7 @@ use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataImplExt;
 use crate::omiq::metadata::MetaDataOrigin;
 use crate::omiq::metadata::MetaDataStore;
+use crate::omiq::serialise::to_omiq_document;
 
 use crate::omiq::metadata::MetaDataStoreStoreExt;
 use crate::searchable_select::SearchableSelectSet;
@@ -42,6 +43,70 @@ static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| 
     let (x, _) = flow_gates::transforms::get_plotting_area(PLOT_SIZE, PLOT_SIZE);
     (x.start, x.end - x.start)
 });
+
+/// Write the current gates back out as an Omiq gating file.
+///
+/// Everything the document needs is already held: the geometry comes from the
+/// gates as they stand - per-specimen and per-sample positions included, since
+/// the exporter resolves each file through `gate_for_file` - and the dataset,
+/// workflow and task ids from the header captured on import. A session that
+/// never imported a file has no header, and the error says so rather than
+/// writing a document Omiq would reject.
+#[component]
+fn ExportGatingFile() -> Element {
+    let gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+
+    let mut path = use_signal(|| "gating_export.omiqgt".to_string());
+    let mut result = use_signal(|| None::<Result<String, String>>);
+
+    rsx! {
+        div { class: "export-gating",
+            label { "Export to" }
+            input {
+                value: "{path}",
+                oninput: move |e| path.set(e.value()),
+            }
+            button {
+                class: "export-gating_go",
+                onclick: move |_| {
+                    let target = PathBuf::from(path());
+                    let written = (|| -> anyhow::Result<String> {
+                        let document = to_omiq_document(
+                            &gate_store.read(),
+                            &metadata_store.metadata().read(),
+                            &axis_store.settings().read(),
+                        )?;
+                        // Pretty-printed: the first thing anyone does with a
+                        // file Omiq rejects is open it and look.
+                        std::fs::write(&target, serde_json::to_string_pretty(&document)?)?;
+                        Ok(target.display().to_string())
+                    })();
+                    result
+                        .set(
+                            Some(match written {
+                                Ok(where_to) => Ok(where_to),
+                                Err(e) => Err(e.to_string()),
+                            }),
+                        );
+                },
+                "Write gating file"
+            }
+            if let Some(outcome) = result() {
+                match outcome {
+                    Ok(where_to) => rsx! {
+                        span { class: "export-gating_note", "Written to {where_to}" }
+                    },
+                    Err(why) => rsx! {
+                        span { class: "export-gating_note export-gating_warn", "{why}" }
+                    },
+                }
+            }
+        }
+    }
+}
 
 #[component]
 pub fn MainWindow() -> Element {
@@ -551,6 +616,7 @@ pub fn MainWindow() -> Element {
                     }
                     div { class: "file-info",
                         PairingColumns {}
+                        ExportGatingFile {}
                         div { class: "file-info_button-panel",
                             button { onclick: move |_| step_specimen(-1), "Prev" }
                             button { onclick: move |_| step_specimen(1), "Next" }

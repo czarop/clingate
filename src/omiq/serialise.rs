@@ -260,16 +260,16 @@ pub fn gate_to_serialized(
 // ─── Assembling the document ──────────────────────────────────────────────────
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_composite::bisector_gate::BisectorGate;
+use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
+use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::SkewedQuadrantGate;
 use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
+use crate::gate_editor::gates::gate_store::ROOTGATE;
 use crate::omiq::deserialise::{
     AtomicContainer, BooleanOpType, CompoundContainer, FilterContainer, GatingNode,
 };
 use crate::omiq::metadata::MetaDataFileMap;
 use crate::omiq::rebuild::{OmiqDocumentHeader, OmiqRebuildData};
-use crate::gate_editor::gates::gate_composite::bisector_gate::BisectorGate;
-use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
-use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::SkewedQuadrantGate;
-use crate::gate_editor::gates::gate_store::ROOTGATE;
 use std::collections::HashMap;
 
 /// The group id and written type for a corner of a composite created here.
@@ -364,15 +364,28 @@ fn container_for(
     // actually drives the position - so fan a group override back out over
     // exactly the files the original listed, rather than a set derived from the
     // metadata, which could differ.
-    let mut per_file_filters = rustc_hash::FxHashMap::default();
-    if let Some(rebuild) = rebuild {
-        for file_id in &rebuild.per_file_ids {
-            let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
-                continue;
-            };
-            let filter = gate_to_serialized(&for_file, container_id, source_type, axes)?;
-            per_file_filters.insert(file_id.clone(), filter);
+    //
+    // The files the original listed, plus any this session has since given a
+    // position of its own - by rule or by hand. Taking only the original list
+    // was right while overrides could arrive from nowhere else, and wrong the
+    // moment the app began writing them: a container that imported global has
+    // no list, so an autogated position reached the screen and never reached
+    // the file.
+    let mut files: Vec<crate::gate_editor::gates::gate_store::FileId> =
+        rebuild.map(|r| r.per_file_ids.clone()).unwrap_or_default();
+    for file_id in state.files_with_own_position(container_id, metadata) {
+        if !files.contains(&file_id) {
+            files.push(file_id);
         }
+    }
+
+    let mut per_file_filters = rustc_hash::FxHashMap::default();
+    for file_id in &files {
+        let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
+            continue;
+        };
+        let filter = gate_to_serialized(&for_file, container_id, source_type, axes)?;
+        per_file_filters.insert(file_id.clone(), filter);
     }
 
     Ok(FilterContainer::Atomic(AtomicContainer {

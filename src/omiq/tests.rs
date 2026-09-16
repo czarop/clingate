@@ -177,7 +177,9 @@ fn an_ellipse_gate_parses_its_four_control_nodes() {
     let gate: GateSerialized = serde_json::from_str(json).unwrap();
 
     match gate {
-        GateSerialized::Ellipse { left, right, top, .. } => {
+        GateSerialized::Ellipse {
+            left, right, top, ..
+        } => {
             assert_eq!((left.x, left.y), (-1.0, 0.0));
             assert_eq!((right.x, right.y), (1.0, 0.0));
             assert_eq!((top.x, top.y), (0.0, 2.0));
@@ -291,8 +293,7 @@ fn an_unrecognised_gate_type_falls_into_the_unknown_variant() {
 /// this build doesn't model took the whole import down.
 #[test]
 fn get_params_returns_none_for_an_unknown_gate_rather_than_panicking() {
-    let gate: GateSerialized =
-        serde_json::from_str(r#"{ "type": "SomeFutureGate" }"#).unwrap();
+    let gate: GateSerialized = serde_json::from_str(r#"{ "type": "SomeFutureGate" }"#).unwrap();
 
     assert!(gate.get_params().is_none());
 }
@@ -302,15 +303,17 @@ fn get_params_reports_the_axes_for_every_modelled_gate() {
     let exp = parse(&simple_experiment());
     let g1 = atomic(exp.tree.filter_containers.get("g1").unwrap());
 
-    let (x, y) = g1.default_filter.get_params().expect("rectangle has params");
+    let (x, y) = g1
+        .default_filter
+        .get_params()
+        .expect("rectangle has params");
     assert_eq!((&*x, &*y), ("FSC-A", "SSC-A"));
 }
 
 /// Regression: `to_drawable` used to `todo!()` on Unknown.
 #[test]
 fn to_drawable_errors_on_an_unknown_gate_rather_than_panicking() {
-    let gate: GateSerialized =
-        serde_json::from_str(r#"{ "type": "SomeFutureGate" }"#).unwrap();
+    let gate: GateSerialized = serde_json::from_str(r#"{ "type": "SomeFutureGate" }"#).unwrap();
 
     let result = gate.to_drawable(
         Arc::from("id"),
@@ -384,7 +387,10 @@ fn composite_group_ids_carry_their_type_and_position() {
         assert_eq!(group_id.contains("SKEWEDQUAD"), expect_skewed);
         // The trailing digit is the quadrant/half index.
         let position = group_id.chars().last().and_then(|c| c.to_digit(10));
-        assert!(position.is_some(), "{group_id} must end in its position index");
+        assert!(
+            position.is_some(),
+            "{group_id} must end in its position index"
+        );
     }
 }
 
@@ -425,7 +431,10 @@ fn per_file_filters_are_keyed_by_file_id() {
     assert_eq!(a.md.as_deref(), Some("$VOL"));
     assert_eq!(a.per_file_filters.len(), 1);
 
-    let override_gate = a.per_file_filters.get("12345").expect("file override present");
+    let override_gate = a
+        .per_file_filters
+        .get("12345")
+        .expect("file override present");
     match override_gate {
         GateSerialized::Rectangle { min, .. } => assert_eq!((min.x, min.y), (5.0, 5.0)),
         _ => panic!("expected a rectangle"),
@@ -556,7 +565,10 @@ fn subgates_are_sorted_by_descending_position() {
 
     let (ids, names) = get_sorted_subgate_ids_and_names(&containers);
 
-    assert_eq!(ids.iter().map(|i| &**i).collect::<Vec<_>>(), vec!["q3", "q2", "q1", "q0"]);
+    assert_eq!(
+        ids.iter().map(|i| &**i).collect::<Vec<_>>(),
+        vec!["q3", "q2", "q1", "q0"]
+    );
     assert_eq!(names, vec!["Q3", "Q2", "Q1", "Q0"]);
 }
 
@@ -678,7 +690,10 @@ fn an_axis_aligned_ellipse_recovers_its_centre_and_radii() {
             assert!((center.get_coordinate("CD4").unwrap() - 0.0).abs() < 1e-5);
             assert!((radius_x - 2.0).abs() < 1e-4, "radius_x was {radius_x}");
             assert!((radius_y - 1.0).abs() < 1e-4, "radius_y was {radius_y}");
-            assert!(angle.abs() < 1e-4, "an axis-aligned ellipse has no rotation");
+            assert!(
+                angle.abs() < 1e-4,
+                "an axis-aligned ellipse has no rotation"
+            );
         }
         _ => panic!("expected an ellipse geometry"),
     }
@@ -686,9 +701,8 @@ fn an_axis_aligned_ellipse_recovers_its_centre_and_radii() {
 
 #[test]
 fn an_offset_ellipse_recovers_its_centre() {
-    let geometry =
-        create_omiq_ellipse_geometry((3.0, 5.0), (7.0, 5.0), (5.0, 6.0), "CD3", "CD4")
-            .expect("valid ellipse");
+    let geometry = create_omiq_ellipse_geometry((3.0, 5.0), (7.0, 5.0), (5.0, 6.0), "CD3", "CD4")
+        .expect("valid ellipse");
 
     match geometry {
         flow_gates::GateGeometry::Ellipse { center, .. } => {
@@ -703,12 +717,13 @@ fn an_offset_ellipse_recovers_its_centre() {
 fn the_major_radius_is_never_smaller_than_the_minor_one() {
     // A tall ellipse: the eigen-decomposition should still report the larger
     // eigenvalue as radius_x, with the rotation carrying the orientation.
-    let geometry =
-        create_omiq_ellipse_geometry((-1.0, 0.0), (1.0, 0.0), (0.0, 4.0), "A", "B")
-            .expect("valid ellipse");
+    let geometry = create_omiq_ellipse_geometry((-1.0, 0.0), (1.0, 0.0), (0.0, 4.0), "A", "B")
+        .expect("valid ellipse");
 
     match geometry {
-        flow_gates::GateGeometry::Ellipse { radius_x, radius_y, .. } => {
+        flow_gates::GateGeometry::Ellipse {
+            radius_x, radius_y, ..
+        } => {
             assert!(radius_x >= radius_y, "{radius_x} should be the major axis");
         }
         _ => panic!("expected an ellipse geometry"),
@@ -751,7 +766,12 @@ fn axis_ranges_are_read_from_the_matching_parameter() {
     let y: Arc<str> = Arc::from("CD3");
     let s = settings(vec![
         axis("FSC-A", 0.0, 100.0, TransformType::Linear),
-        axis("CD3", -1.0, 4.5, TransformType::Arcsinh { cofactor: 6000.0 }),
+        axis(
+            "CD3",
+            -1.0,
+            4.5,
+            TransformType::Arcsinh { cofactor: 6000.0 },
+        ),
     ]);
 
     let (x_range, y_range, _, _) =
@@ -771,7 +791,12 @@ fn each_axis_reports_its_own_transform() {
     let y: Arc<str> = Arc::from("CD3");
     let s = settings(vec![
         axis("FSC-A", 0.0, 100.0, TransformType::Linear),
-        axis("CD3", -1.0, 4.5, TransformType::Arcsinh { cofactor: 6000.0 }),
+        axis(
+            "CD3",
+            -1.0,
+            4.5,
+            TransformType::Arcsinh { cofactor: 6000.0 },
+        ),
     ]);
 
     let (_, _, x_transform, y_transform) =
@@ -793,7 +818,12 @@ fn the_two_axes_keep_distinct_cofactors() {
     let y: Arc<str> = Arc::from("CD8");
     let s = settings(vec![
         axis("CD4", -1.0, 4.0, TransformType::Arcsinh { cofactor: 500.0 }),
-        axis("CD8", -1.0, 4.0, TransformType::Arcsinh { cofactor: 9000.0 }),
+        axis(
+            "CD8",
+            -1.0,
+            4.0,
+            TransformType::Arcsinh { cofactor: 9000.0 },
+        ),
     ]);
 
     let (_, _, x_transform, y_transform) =
@@ -820,11 +850,16 @@ fn a_missing_axis_setting_is_an_error() {
 // on. An imported gate therefore carries its original handles so that a
 // round trip returns them unchanged rather than a canonicalised equivalent.
 
-use crate::gate_editor::gates::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
 use crate::gate_editor::gates::gate_drag::GateDragData;
+use crate::gate_editor::gates::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 
-fn ellipse_json(left: (f64, f64), top: (f64, f64), right: (f64, f64), bottom: (f64, f64)) -> String {
+fn ellipse_json(
+    left: (f64, f64),
+    top: (f64, f64),
+    right: (f64, f64),
+    bottom: (f64, f64),
+) -> String {
     format!(
         r#"{{
             "type": "EllipseGate",
@@ -997,8 +1032,16 @@ fn derived_handles_follow_the_rotation_angle() {
     let handles = EllipseHandles::from_canonical((0.0, 0.0), 4.0, 2.0, quarter);
 
     // A quarter turn puts the major axis on y.
-    assert!((handles.right.0).abs() < 1e-5, "right x was {}", handles.right.0);
-    assert!((handles.right.1 - 4.0).abs() < 1e-5, "right y was {}", handles.right.1);
+    assert!(
+        (handles.right.0).abs() < 1e-5,
+        "right x was {}",
+        handles.right.0
+    );
+    assert!(
+        (handles.right.1 - 4.0).abs() < 1e-5,
+        "right y was {}",
+        handles.right.1
+    );
 }
 
 #[test]
@@ -1023,7 +1066,12 @@ fn a_circle_reconstructs_with_no_rotation() {
         create_omiq_ellipse_geometry((-2.0, 0.0), (2.0, 0.0), (0.0, 2.0), "A", "B").unwrap();
 
     match geometry {
-        flow_gates::GateGeometry::Ellipse { radius_x, radius_y, angle, .. } => {
+        flow_gates::GateGeometry::Ellipse {
+            radius_x,
+            radius_y,
+            angle,
+            ..
+        } => {
             assert!((radius_x - radius_y).abs() < 1e-4, "should be a circle");
             assert_eq!(angle, 0.0, "a circle has no meaningful rotation");
         }
@@ -1062,8 +1110,8 @@ fn a_near_axis_aligned_ellipse_is_treated_as_aligned() {
 // boolean built off one corner, then the quadrant deleted.
 
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::ROOTGATE;
 use crate::gate_editor::gates::gate_store::NodeId;
+use crate::gate_editor::gates::gate_store::ROOTGATE;
 
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1078,8 +1126,14 @@ fn fixture_axes() -> im::HashMap<Arc<str>, AxisInfo, FxBuildHasher> {
     // the export uses each axis's transform to tell an unbounded edge from a
     // real coordinate.
     for channel in [
-        "BUV661-A", "BV785-A", "Alexa Fluor 700-A", "BUV737-A", "BUV805-A",
-        "BUV563-A", "Alexa Fluor 647-A", "Vio Bright 423-A",
+        "BUV661-A",
+        "BV785-A",
+        "Alexa Fluor 700-A",
+        "BUV737-A",
+        "BUV805-A",
+        "BUV563-A",
+        "Alexa Fluor 647-A",
+        "Vio Bright 423-A",
     ] {
         settings.insert(
             Arc::from(channel) as Arc<str>,
@@ -1232,7 +1286,11 @@ use crate::omiq::rebuild::{OmiqGateType, OmiqRebuildStore};
 #[test]
 fn the_document_header_is_captured() {
     let state = import(BEFORE);
-    let header = state.omiq_rebuild().header.as_ref().expect("captured from the file");
+    let header = state
+        .omiq_rebuild()
+        .header
+        .as_ref()
+        .expect("captured from the file");
 
     assert_eq!(header.workflow_id, 1);
     assert_eq!(header.dataset_id, 2);
@@ -1281,7 +1339,10 @@ fn a_root_gate_records_an_empty_parent() {
     let state = import(BEFORE);
     let entry = state.omiq_rebuild().get(&Arc::from("uN8Y")).unwrap();
 
-    assert_eq!(&*entry.primary_node().expect("has a node").parent_node_id, "");
+    assert_eq!(
+        &*entry.primary_node().expect("has a node").parent_node_id,
+        ""
+    );
 }
 
 /// The group id is what says "this is corner 3 of quadrant IinB". It must
@@ -1306,15 +1367,30 @@ fn the_metadata_column_is_captured() {
     let state = import(BEFORE);
 
     assert_eq!(
-        state.omiq_rebuild().get(&Arc::from("0lmI")).unwrap().md.as_deref(),
+        state
+            .omiq_rebuild()
+            .get(&Arc::from("0lmI"))
+            .unwrap()
+            .md
+            .as_deref(),
         Some("test")
     );
     assert_eq!(
-        state.omiq_rebuild().get(&Arc::from("QCVn")).unwrap().md.as_deref(),
+        state
+            .omiq_rebuild()
+            .get(&Arc::from("QCVn"))
+            .unwrap()
+            .md
+            .as_deref(),
         Some("Type")
     );
     assert!(
-        state.omiq_rebuild().get(&Arc::from("2PJQ")).unwrap().md.is_none(),
+        state
+            .omiq_rebuild()
+            .get(&Arc::from("2PJQ"))
+            .unwrap()
+            .md
+            .is_none(),
         "a gate with no metadata grouping records none"
     );
 }
@@ -1326,10 +1402,22 @@ fn the_source_gate_type_is_captured() {
     let state = import(BEFORE);
     let r = state.omiq_rebuild();
 
-    assert_eq!(r.get(&Arc::from("uN8Y")).unwrap().source_type, Some(OmiqGateType::Rectangle));
-    assert_eq!(r.get(&Arc::from("4ECA")).unwrap().source_type, Some(OmiqGateType::Polygon));
-    assert_eq!(r.get(&Arc::from("XdrW")).unwrap().source_type, Some(OmiqGateType::Ellipse));
-    assert_eq!(r.get(&Arc::from("4RZa")).unwrap().source_type, Some(OmiqGateType::Rectangle));
+    assert_eq!(
+        r.get(&Arc::from("uN8Y")).unwrap().source_type,
+        Some(OmiqGateType::Rectangle)
+    );
+    assert_eq!(
+        r.get(&Arc::from("4ECA")).unwrap().source_type,
+        Some(OmiqGateType::Polygon)
+    );
+    assert_eq!(
+        r.get(&Arc::from("XdrW")).unwrap().source_type,
+        Some(OmiqGateType::Ellipse)
+    );
+    assert_eq!(
+        r.get(&Arc::from("4RZa")).unwrap().source_type,
+        Some(OmiqGateType::Rectangle)
+    );
     // A boolean has no geometry of its own.
     assert_eq!(r.get(&Arc::from("Z2Ti")).unwrap().source_type, None);
 }
@@ -1339,11 +1427,19 @@ fn a_boolean_records_its_operation_as_its_container_type() {
     let state = import(BEFORE);
 
     assert_eq!(
-        &*state.omiq_rebuild().get(&Arc::from("Z2Ti")).unwrap().container_type,
+        &*state
+            .omiq_rebuild()
+            .get(&Arc::from("Z2Ti"))
+            .unwrap()
+            .container_type,
         "NOT"
     );
     assert_eq!(
-        &*state.omiq_rebuild().get(&Arc::from("PvRn")).unwrap().container_type,
+        &*state
+            .omiq_rebuild()
+            .get(&Arc::from("PvRn"))
+            .unwrap()
+            .container_type,
         "AND"
     );
 }
@@ -1357,14 +1453,23 @@ fn the_per_file_ids_are_captured_in_a_stable_order() {
 
     assert_eq!(entry.per_file_ids.len(), 2);
     let ids: Vec<&str> = entry.per_file_ids.iter().map(|f| &**f).collect();
-    assert_eq!(ids, vec!["sample1", "sample2"], "sorted for reproducible output");
+    assert_eq!(
+        ids,
+        vec!["sample1", "sample2"],
+        "sorted for reproducible output"
+    );
 }
 
 #[test]
 fn a_gate_with_no_per_file_positions_records_none() {
     let state = import(BEFORE);
     assert!(
-        state.omiq_rebuild().get(&Arc::from("4ECA")).unwrap().per_file_ids.is_empty()
+        state
+            .omiq_rebuild()
+            .get(&Arc::from("4ECA"))
+            .unwrap()
+            .per_file_ids
+            .is_empty()
     );
 }
 
@@ -1374,7 +1479,10 @@ fn a_ghost_records_no_node() {
     let state = import(AFTER);
     let entry = state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap();
 
-    assert!(entry.nodes.is_empty(), "a ghost has no placement in the tree");
+    assert!(
+        entry.nodes.is_empty(),
+        "a ghost has no placement in the tree"
+    );
     assert!(entry.primary_node().is_none());
 }
 
@@ -1398,7 +1506,10 @@ fn unreachable_containers_are_kept_verbatim() {
     store.capture_ghosts(&raw, &reachable);
 
     assert_eq!(store.ghost_containers.len(), 1);
-    let ghost = store.ghost_containers.get(&Arc::from("ghost") as &Arc<str>).unwrap();
+    let ghost = store
+        .ghost_containers
+        .get(&Arc::from("ghost") as &Arc<str>)
+        .unwrap();
     assert_eq!(
         ghost.get("somethingWeDoNotModel").and_then(|v| v.as_i64()),
         Some(42),
@@ -1414,8 +1525,7 @@ fn unmodelled_header_fields_are_kept() {
             "someFutureField":{"nested":true}}"#,
     )
     .unwrap();
-    let header: crate::omiq::rebuild::OmiqDocumentHeader =
-        serde_json::from_value(raw).unwrap();
+    let header: crate::omiq::rebuild::OmiqDocumentHeader = serde_json::from_value(raw).unwrap();
 
     assert!(header.inverted);
     assert!(
@@ -1444,8 +1554,8 @@ fn deleting_a_gate_drops_its_rebuild_entry() {
 #[test]
 fn deleting_a_parent_drops_its_childrens_rebuild_entries() {
     let mut state = import(BEFORE);
-    let parent: Arc<str> = Arc::from("hu4H");  // "teff_naive"
-    let child: Arc<str> = Arc::from("2PJQ");   // "IFny+", nested below it
+    let parent: Arc<str> = Arc::from("hu4H"); // "teff_naive"
+    let child: Arc<str> = Arc::from("2PJQ"); // "IFny+", nested below it
 
     assert!(state.omiq_rebuild().get(&child).is_some());
     state.remove_gate(parent).unwrap();
@@ -1498,7 +1608,10 @@ fn round_trip(state: &GateState, id: &str) -> GateSerialized {
     let gate = state
         .registered_gate(&gate_id)
         .unwrap_or_else(|| panic!("{id} should be registered"));
-    let source_type = state.omiq_rebuild().get(&gate_id).and_then(|r| r.source_type);
+    let source_type = state
+        .omiq_rebuild()
+        .get(&gate_id)
+        .and_then(|r| r.source_type);
     gate_to_serialized(&gate, &gate_id, source_type, &fixture_axes())
         .unwrap_or_else(|e| panic!("{id} should serialise, got: {e}"))
 }
@@ -1524,10 +1637,25 @@ fn a_rectangle_writes_back_as_it_came_in() {
     let state = import(BEFORE);
     let originals = original_filters(BEFORE);
 
-    match (round_trip(&state, "uN8Y"), &originals[&Arc::from("uN8Y") as &Arc<str>]) {
+    match (
+        round_trip(&state, "uN8Y"),
+        &originals[&Arc::from("uN8Y") as &Arc<str>],
+    ) {
         (
-            GateSerialized::Rectangle { x_param, y_param, min, max, .. },
-            GateSerialized::Rectangle { x_param: ex, y_param: ey, min: emin, max: emax, .. },
+            GateSerialized::Rectangle {
+                x_param,
+                y_param,
+                min,
+                max,
+                ..
+            },
+            GateSerialized::Rectangle {
+                x_param: ex,
+                y_param: ey,
+                min: emin,
+                max: emax,
+                ..
+            },
         ) => {
             assert_eq!((&*x_param, &*y_param), (&**ex, &**ey));
             assert_point(min, *emin, "rectangle min");
@@ -1542,10 +1670,15 @@ fn a_polygon_writes_back_with_every_vertex_in_order() {
     let state = import(BEFORE);
     let originals = original_filters(BEFORE);
 
-    match (round_trip(&state, "4ECA"), &originals[&Arc::from("4ECA") as &Arc<str>]) {
+    match (
+        round_trip(&state, "4ECA"),
+        &originals[&Arc::from("4ECA") as &Arc<str>],
+    ) {
         (
             GateSerialized::Polygon { points, .. },
-            GateSerialized::Polygon { points: expected, .. },
+            GateSerialized::Polygon {
+                points: expected, ..
+            },
         ) => {
             assert_eq!(points.len(), expected.len(), "vertex count changed");
             for (i, (got, want)) in points.iter().zip(expected).enumerate() {
@@ -1563,10 +1696,25 @@ fn an_ellipse_writes_back_its_original_handles() {
     let state = import(BEFORE);
     let originals = original_filters(BEFORE);
 
-    match (round_trip(&state, "XdrW"), &originals[&Arc::from("XdrW") as &Arc<str>]) {
+    match (
+        round_trip(&state, "XdrW"),
+        &originals[&Arc::from("XdrW") as &Arc<str>],
+    ) {
         (
-            GateSerialized::Ellipse { left, top, right, bottom, .. },
-            GateSerialized::Ellipse { left: el, top: et, right: er, bottom: eb, .. },
+            GateSerialized::Ellipse {
+                left,
+                top,
+                right,
+                bottom,
+                ..
+            },
+            GateSerialized::Ellipse {
+                left: el,
+                top: et,
+                right: er,
+                bottom: eb,
+                ..
+            },
         ) => {
             assert_point(left, *el, "ellipse left");
             assert_point(top, *et, "ellipse top");
@@ -1584,10 +1732,17 @@ fn a_quadrant_corner_writes_back_as_a_rectangle_not_a_polygon() {
     let state = import(BEFORE);
     let originals = original_filters(BEFORE);
 
-    match (round_trip(&state, "4RZa"), &originals[&Arc::from("4RZa") as &Arc<str>]) {
+    match (
+        round_trip(&state, "4RZa"),
+        &originals[&Arc::from("4RZa") as &Arc<str>],
+    ) {
         (
             GateSerialized::Rectangle { min, max, .. },
-            GateSerialized::Rectangle { min: emin, max: emax, .. },
+            GateSerialized::Rectangle {
+                min: emin,
+                max: emax,
+                ..
+            },
         ) => {
             assert_point(min, *emin, "corner min");
             assert_point(max, *emax, "corner max");
@@ -1617,10 +1772,17 @@ fn every_corner_of_an_intact_quadrant_writes_back() {
     let originals = original_filters(BEFORE);
 
     for corner in ["uevU", "2gGu", "2y0f", "4RZa"] {
-        match (round_trip(&state, corner), &originals[&Arc::from(corner) as &Arc<str>]) {
+        match (
+            round_trip(&state, corner),
+            &originals[&Arc::from(corner) as &Arc<str>],
+        ) {
             (
                 GateSerialized::Rectangle { min, max, .. },
-                GateSerialized::Rectangle { min: emin, max: emax, .. },
+                GateSerialized::Rectangle {
+                    min: emin,
+                    max: emax,
+                    ..
+                },
             ) => {
                 assert_point(min, *emin, &format!("{corner} min"));
                 assert_point(max, *emax, &format!("{corner} max"));
@@ -1637,10 +1799,17 @@ fn an_orphaned_corner_still_writes_back_as_its_original_type() {
     let state = import(AFTER);
     let originals = original_filters(AFTER);
 
-    match (round_trip(&state, "4RZa"), &originals[&Arc::from("4RZa") as &Arc<str>]) {
+    match (
+        round_trip(&state, "4RZa"),
+        &originals[&Arc::from("4RZa") as &Arc<str>],
+    ) {
         (
             GateSerialized::Rectangle { min, max, .. },
-            GateSerialized::Rectangle { min: emin, max: emax, .. },
+            GateSerialized::Rectangle {
+                min: emin,
+                max: emax,
+                ..
+            },
         ) => {
             assert_point(min, *emin, "orphan min");
             assert_point(max, *emax, "orphan max");
@@ -1649,7 +1818,12 @@ fn an_orphaned_corner_still_writes_back_as_its_original_type() {
     }
     // And it still knows which group it belonged to.
     assert_eq!(
-        state.omiq_rebuild().get(&Arc::from("4RZa")).unwrap().group_id.as_deref(),
+        state
+            .omiq_rebuild()
+            .get(&Arc::from("4RZa"))
+            .unwrap()
+            .group_id
+            .as_deref(),
         Some("IinB_QUAD3")
     );
 }
@@ -1664,7 +1838,9 @@ fn every_gate_in_both_fixtures_round_trips() {
         let mut checked = 0;
 
         for (id, original) in &originals {
-            let Some(gate) = state.registered_gate(id) else { continue };
+            let Some(gate) = state.registered_gate(id) else {
+                continue;
+            };
             if gate.is_composite() {
                 continue; // written per corner, covered above
             }
@@ -1721,7 +1897,10 @@ fn original(name: &str) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(fixture(name)).unwrap()).unwrap()
 }
 
-fn objects<'a>(doc: &'a serde_json::Value, path: &[&str]) -> &'a serde_json::Map<String, serde_json::Value> {
+fn objects<'a>(
+    doc: &'a serde_json::Value,
+    path: &[&str],
+) -> &'a serde_json::Map<String, serde_json::Value> {
     let mut cursor = doc;
     for key in path {
         cursor = cursor.get(key).unwrap_or_else(|| panic!("missing {key}"));
@@ -1735,7 +1914,14 @@ fn the_document_header_is_written_back() {
         let written = export(name);
         let source = original(name);
 
-        for key in ["date", "datasetId", "inverted", "taskId", "url", "workflowId"] {
+        for key in [
+            "date",
+            "datasetId",
+            "inverted",
+            "taskId",
+            "url",
+            "workflowId",
+        ] {
             assert_eq!(
                 written.get(key),
                 source.get(key),
@@ -1777,9 +1963,13 @@ fn every_container_is_written_back() {
         let source = original(name);
 
         let written_ids: std::collections::BTreeSet<&String> =
-            objects(&written, &["tree", "filterContainers"]).keys().collect();
+            objects(&written, &["tree", "filterContainers"])
+                .keys()
+                .collect();
         let source_ids: std::collections::BTreeSet<&String> =
-            objects(&source, &["tree", "filterContainers"]).keys().collect();
+            objects(&source, &["tree", "filterContainers"])
+                .keys()
+                .collect();
 
         assert_eq!(written_ids, source_ids, "{name}: container set changed");
     }
@@ -1830,7 +2020,10 @@ fn a_not_gate_keeps_its_single_operand() {
 
     assert_eq!(containers["Z2Ti"]["type"], "NOT");
     assert_eq!(
-        containers["Z2Ti"]["filterContainerIds"].as_array().unwrap().len(),
+        containers["Z2Ti"]["filterContainerIds"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
 }
@@ -1843,7 +2036,9 @@ fn a_gate_geometry_is_written_back_to_the_same_values() {
     let s = objects(&source, &["tree", "filterContainers"]);
 
     for (id, container) in s {
-        let Some(expected) = container.get("defaultFilter") else { continue };
+        let Some(expected) = container.get("defaultFilter") else {
+            continue;
+        };
         let got = w[id].get("defaultFilter").expect("a filter was written");
 
         assert_eq!(
@@ -1908,10 +2103,8 @@ fn an_exported_document_can_be_imported_again() {
         let first = import(name);
         let written = export(name);
 
-        let path = std::env::temp_dir().join(format!(
-            "clingate-roundtrip-{}-{name}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("clingate-roundtrip-{}-{name}", std::process::id()));
         std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
 
         let mut second = GateState::default();
@@ -1952,7 +2145,8 @@ fn an_exported_document_can_be_imported_again() {
 fn fixture_metadata() -> MetaDataFileMap {
     let mut map = im::HashMap::with_hasher(FxBuildHasher);
     for (file, group) in [("sample1", "one"), ("sample2", "two")] {
-        let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = rustc_hash::FxHashMap::default();
+        let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> =
+            rustc_hash::FxHashMap::default();
         columns.insert(Arc::from("test"), Arc::from(group));
         columns.insert(Arc::from("Type"), Arc::from(group));
         map.insert(Arc::from(file) as Arc<str>, columns);
@@ -1988,7 +2182,9 @@ fn a_grouped_gate_fans_back_out_to_every_file() {
     let files: std::collections::BTreeSet<&String> = per_file.keys().collect();
     assert_eq!(
         files,
-        ["sample1".to_string(), "sample2".to_string()].iter().collect(),
+        ["sample1".to_string(), "sample2".to_string()]
+            .iter()
+            .collect(),
         "both files need an entry"
     );
 }
@@ -2037,14 +2233,14 @@ fn the_default_position_is_unaffected_by_the_per_file_ones() {
     let written = export_with_metadata(BEFORE);
     let source = original(BEFORE);
 
-    let got = objects(&written, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]
-        ["f1Val"]
-        .as_f64()
-        .unwrap();
-    let want = objects(&source, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]
-        ["f1Val"]
-        .as_f64()
-        .unwrap();
+    let got =
+        objects(&written, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]["f1Val"]
+            .as_f64()
+            .unwrap();
+    let want =
+        objects(&source, &["tree", "filterContainers"])["QCVn"]["defaultFilter"]["min"]["f1Val"]
+            .as_f64()
+            .unwrap();
 
     assert!((got - want).abs() < 1e-6, "wrote {got}, file had {want}");
 }
@@ -2147,7 +2343,10 @@ fn each_placement_keeps_its_own_parent_and_flags() {
     assert_eq!(&*nc.parent_node_id, "na");
     assert_eq!(&*nd.parent_node_id, "nb");
     assert!(!nc.collapsed);
-    assert!(nd.collapsed, "the two placements differ in more than parent");
+    assert!(
+        nd.collapsed,
+        "the two placements differ in more than parent"
+    );
 }
 
 /// Regression: every placement has to come back, or branches of the tree
@@ -2227,8 +2426,7 @@ fn a_real_gating_file_survives_a_round_trip() {
 
     let mut axes = im::HashMap::with_hasher(FxBuildHasher);
     for channel in &channels {
-        let linear =
-            channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
+        let linear = channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
         axes.insert(
             Arc::from(channel.as_str()) as Arc<str>,
             AxisInfo {
@@ -2251,7 +2449,11 @@ fn a_real_gating_file_survives_a_round_trip() {
     // resolve; the groups themselves do not matter here.
     let mut files = std::collections::BTreeSet::new();
     let mut columns = std::collections::BTreeSet::new();
-    for container in source["tree"]["filterContainers"].as_object().unwrap().values() {
+    for container in source["tree"]["filterContainers"]
+        .as_object()
+        .unwrap()
+        .values()
+    {
         if let Some(per_file) = container.get("perFileFilters").and_then(|v| v.as_object()) {
             files.extend(per_file.keys().cloned());
         }
@@ -2285,7 +2487,10 @@ fn a_real_gating_file_survives_a_round_trip() {
     );
     assert_eq!(
         objects(&written, &["tree", "filterContainers"]).len(),
-        source["tree"]["filterContainers"].as_object().unwrap().len(),
+        source["tree"]["filterContainers"]
+            .as_object()
+            .unwrap()
+            .len(),
         "container count changed - unreachable containers must be passed through"
     );
 
@@ -2318,18 +2523,29 @@ use crate::omiq::serialise::to_omiq_document_with_header;
 
 fn editor_mapper() -> PlotMapper {
     PlotMapper::new(
-        600.0, 600.0,
-        0.0..=1000.0, 0.0..=1000.0, 0.0..=1000.0, 0.0..=1000.0,
-        TransformType::Linear, TransformType::Linear,
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
     )
 }
 
 fn add(state: &mut GateState, kind: PrimaryGateType, name: &str, parent: Option<GateId>) -> GateId {
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("FSC-A"), Arc::from("SSC-A"),
-            None, parent, kind, Some(name.to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            parent,
+            kind,
+            Some(name.to_string()),
         )
         .unwrap();
     state
@@ -2388,7 +2604,11 @@ fn a_new_gate_carries_its_sibling_order() {
     let id = add(&mut state, PrimaryGateType::Rectangle, "ordered", None);
 
     let written = export_new(&state);
-    let node = objects(&written, &["tree", "nodes"]).values().next().unwrap().clone();
+    let node = objects(&written, &["tree", "nodes"])
+        .values()
+        .next()
+        .unwrap()
+        .clone();
 
     assert_eq!(
         node["ord"].as_u64(),
@@ -2402,13 +2622,24 @@ fn a_new_gate_carries_its_sibling_order() {
 fn a_new_child_hangs_off_its_new_parent() {
     let mut state = GateState::default();
     let parent = add(&mut state, PrimaryGateType::Rectangle, "parent", None);
-    let child = add(&mut state, PrimaryGateType::Rectangle, "child", Some(parent.clone()));
+    let child = add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "child",
+        Some(parent.clone()),
+    );
 
     let written = export_new(&state);
     let nodes = objects(&written, &["tree", "nodes"]);
 
-    let parent_node = nodes.values().find(|n| n["filterContainerId"] == &*parent).unwrap();
-    let child_node = nodes.values().find(|n| n["filterContainerId"] == &*child).unwrap();
+    let parent_node = nodes
+        .values()
+        .find(|n| n["filterContainerId"] == &*parent)
+        .unwrap();
+    let child_node = nodes
+        .values()
+        .find(|n| n["filterContainerId"] == &*child)
+        .unwrap();
 
     assert_eq!(
         child_node["parentId"], parent_node["id"],
@@ -2432,7 +2663,10 @@ fn a_new_child_of_an_imported_gate_attaches_to_its_existing_node() {
     let written = export_new(&state);
     let nodes = objects(&written, &["tree", "nodes"]);
 
-    let child_node = nodes.values().find(|n| n["filterContainerId"] == &*child).unwrap();
+    let child_node = nodes
+        .values()
+        .find(|n| n["filterContainerId"] == &*child)
+        .unwrap();
     assert_eq!(
         child_node["parentId"], "fn1o",
         "the imported parent's own node id"
@@ -2446,9 +2680,15 @@ fn a_new_quadrant_keeps_its_corners_grouped() {
     let mut state = GateState::default();
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("FSC-A"), Arc::from("SSC-A"),
-            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            PrimaryGateType::Quadrant,
+            Some("new quad".to_string()),
         )
         .unwrap();
 
@@ -2463,12 +2703,16 @@ fn a_new_quadrant_keeps_its_corners_grouped() {
     assert_eq!(groups.len(), 4, "all four corners need a groupId");
 
     // One shared prefix, and all four indices present.
-    let prefixes: std::collections::BTreeSet<&str> =
-        groups.iter().map(|g| g.rsplit_once("_QUAD").unwrap().0).collect();
+    let prefixes: std::collections::BTreeSet<&str> = groups
+        .iter()
+        .map(|g| g.rsplit_once("_QUAD").unwrap().0)
+        .collect();
     assert_eq!(prefixes.len(), 1, "the corners must share one group");
 
-    let indices: std::collections::BTreeSet<&str> =
-        groups.iter().map(|g| g.rsplit_once("_QUAD").unwrap().1).collect();
+    let indices: std::collections::BTreeSet<&str> = groups
+        .iter()
+        .map(|g| g.rsplit_once("_QUAD").unwrap().1)
+        .collect();
     assert_eq!(
         indices,
         ["0", "1", "2", "3"].into_iter().collect(),
@@ -2483,9 +2727,15 @@ fn a_new_quadrants_corners_are_written_as_rectangles() {
     let mut state = GateState::default();
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("FSC-A"), Arc::from("SSC-A"),
-            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            PrimaryGateType::Quadrant,
+            Some("new quad".to_string()),
         )
         .unwrap();
 
@@ -2503,9 +2753,15 @@ fn a_new_bisector_keeps_its_halves_grouped() {
     let mut state = GateState::default();
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("FSC-A"), Arc::from("SSC-A"),
-            None, None, PrimaryGateType::Bisector, Some("new split".to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            PrimaryGateType::Bisector,
+            Some("new split".to_string()),
         )
         .unwrap();
 
@@ -2516,8 +2772,10 @@ fn a_new_bisector_keeps_its_halves_grouped() {
         .collect();
 
     assert_eq!(groups.len(), 2);
-    let indices: std::collections::BTreeSet<&str> =
-        groups.iter().map(|g| g.rsplit_once("_SPLIT").unwrap().1).collect();
+    let indices: std::collections::BTreeSet<&str> = groups
+        .iter()
+        .map(|g| g.rsplit_once("_SPLIT").unwrap().1)
+        .collect();
     assert_eq!(indices, ["0", "1"].into_iter().collect(), "got {groups:?}");
 }
 
@@ -2526,9 +2784,15 @@ fn every_corner_of_a_new_composite_gets_its_own_node() {
     let mut state = GateState::default();
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("FSC-A"), Arc::from("SSC-A"),
-            None, None, PrimaryGateType::Quadrant, Some("new quad".to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            PrimaryGateType::Quadrant,
+            Some("new quad".to_string()),
         )
         .unwrap();
 
@@ -2630,7 +2894,6 @@ fn a_file_with_new_gates_can_be_imported_again() {
         "and kept its place in the tree"
     );
 }
-
 
 // ─── Linked gates in the tree ─────────────────────────────────────────────────
 //
@@ -2783,13 +3046,9 @@ fn deleting_a_linked_gate_removes_every_placement() {
 #[test]
 fn every_placement_survives_the_round_trip() {
     let state = import_json(&linked_gate_json());
-    let doc = to_omiq_document_with_header(
-        &state,
-        &fixture_metadata(),
-        &fixture_axes(),
-        test_header(),
-    )
-    .expect("exports");
+    let doc =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
 
     let nodes = doc["tree"]["nodes"].as_object().unwrap();
     let shared_nodes = nodes
@@ -2799,7 +3058,6 @@ fn every_placement_survives_the_round_trip() {
 
     assert_eq!(shared_nodes, 2, "both placements must be written");
 }
-
 
 // ─── The exported tree is the editor's tree ───────────────────────────────────
 //
@@ -2845,10 +3103,9 @@ fn assert_nodes_match_tree(state: &GateState, written: &serde_json::Value) {
 #[test]
 fn an_imported_tree_exports_exactly_its_placements() {
     let state = import_json(&linked_gate_json());
-    let written = to_omiq_document_with_header(
-        &state, &fixture_metadata(), &fixture_axes(), test_header(),
-    )
-    .expect("exports");
+    let written =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
 
     assert_nodes_match_tree(&state, &written);
 }
@@ -2857,7 +3114,12 @@ fn an_imported_tree_exports_exactly_its_placements() {
 fn a_tree_of_new_gates_exports_exactly_its_placements() {
     let mut state = GateState::default();
     let parent = add(&mut state, PrimaryGateType::Rectangle, "parent", None);
-    add(&mut state, PrimaryGateType::Rectangle, "child", Some(parent.clone()));
+    add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "child",
+        Some(parent.clone()),
+    );
 
     assert_nodes_match_tree(&state, &export_new(&state));
 }
@@ -2865,12 +3127,16 @@ fn a_tree_of_new_gates_exports_exactly_its_placements() {
 #[test]
 fn new_and_imported_gates_share_one_node_source() {
     let mut state = import_json(&linked_gate_json());
-    add(&mut state, PrimaryGateType::Rectangle, "added later", Some(Arc::from("g1")));
+    add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "added later",
+        Some(Arc::from("g1")),
+    );
 
-    let written = to_omiq_document_with_header(
-        &state, &fixture_metadata(), &fixture_axes(), test_header(),
-    )
-    .expect("exports");
+    let written =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
 
     assert_nodes_match_tree(&state, &written);
 }
@@ -2887,10 +3153,9 @@ fn a_ghost_writes_a_container_but_no_node() {
         .filter(|id| state.is_ghost(id))
         .collect();
 
-    let written = to_omiq_document_with_header(
-        &state, &fixture_metadata(), &fixture_axes(), test_header(),
-    )
-    .expect("exports");
+    let written =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
     let nodes = objects(&written, &["tree", "nodes"]);
 
     for ghost in ghosts {
@@ -2903,7 +3168,6 @@ fn a_ghost_writes_a_container_but_no_node() {
     }
     assert_nodes_match_tree(&state, &written);
 }
-
 
 // ─── Linking, unlinking, and deleting one instance ────────────────────────────
 
@@ -2971,12 +3235,21 @@ fn deleting_an_instance_takes_that_placements_children_only() {
     let mut state = import_json(&linked_gate_json());
     let shared = shared_gate();
     let nodes = state.nodes_for_gate(&shared).to_vec();
-    let child = add(&mut state, PrimaryGateType::Rectangle, "under one", Some(nodes[0].as_arc().clone()));
+    let child = add(
+        &mut state,
+        PrimaryGateType::Rectangle,
+        "under one",
+        Some(nodes[0].as_arc().clone()),
+    );
 
     state.delete_placement(&nodes[0]).unwrap();
 
     assert_eq!(state.placement_count(&child), 0, "its child went with it");
-    assert_eq!(state.placement_count(&shared), 1, "the other position is untouched");
+    assert_eq!(
+        state.placement_count(&shared),
+        1,
+        "the other position is untouched"
+    );
 }
 
 #[test]
@@ -3041,9 +3314,15 @@ fn gates_on_different_axes_cannot_be_linked() {
     // A second gate on a different parameter pair.
     state
         .add_gate(
-            &editor_mapper(), 300.0, 300.0,
-            Arc::from("CD3"), Arc::from("CD4"),
-            None, None, PrimaryGateType::Rectangle, Some("on cd3 cd4".to_string()),
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("CD3"),
+            Arc::from("CD4"),
+            None,
+            None,
+            PrimaryGateType::Rectangle,
+            Some("on cd3 cd4".to_string()),
         )
         .unwrap();
     let b = state
@@ -3070,7 +3349,11 @@ fn unlinking_gives_a_position_a_gate_of_its_own() {
 
     assert_ne!(new_id, shared);
     assert_eq!(state.gate_for_node(&node), Some(&new_id));
-    assert_eq!(state.placement_count(&shared), 1, "the other keeps the original");
+    assert_eq!(
+        state.placement_count(&shared),
+        1,
+        "the other keeps the original"
+    );
     assert_eq!(state.placement_count(&new_id), 1);
     assert!(!state.is_linked(&shared));
     assert!(!state.is_linked(&new_id));
@@ -3088,7 +3371,10 @@ fn an_unlinked_copy_keeps_the_geometry_it_had() {
 
     assert_eq!(after.get_params(), before.get_params());
     assert_eq!(
-        after.get_gate_ref(None).map(|g| g.geometry.clone()).is_some(),
+        after
+            .get_gate_ref(None)
+            .map(|g| g.geometry.clone())
+            .is_some(),
         true
     );
     assert_eq!(after.get_id(), new_id, "the copy answers to its own id");
@@ -3114,10 +3400,9 @@ fn a_link_made_here_is_written_to_the_file() {
         )
         .unwrap();
 
-    let written = to_omiq_document_with_header(
-        &state, &fixture_metadata(), &fixture_axes(), test_header(),
-    )
-    .expect("exports");
+    let written =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
 
     let nodes = objects(&written, &["tree", "nodes"]);
     let g2_nodes = nodes
@@ -3135,16 +3420,17 @@ fn an_unlink_made_here_is_written_to_the_file() {
     let node = state.nodes_for_gate(&shared_gate())[0].clone();
     let new_id = state.unlink_node(&node).unwrap();
 
-    let written = to_omiq_document_with_header(
-        &state, &fixture_metadata(), &fixture_axes(), test_header(),
-    )
-    .expect("exports");
+    let written =
+        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
+            .expect("exports");
 
     let containers = objects(&written, &["tree", "filterContainers"]);
-    assert!(containers.contains_key(&*new_id), "the copy needs a container");
+    assert!(
+        containers.contains_key(&*new_id),
+        "the copy needs a container"
+    );
     assert_nodes_match_tree(&state, &written);
 }
-
 
 // ─── What is drawn on a plot after linking and unlinking ──────────────────────
 //
@@ -3165,8 +3451,15 @@ fn unlinking_leaves_one_gate_on_the_plot_not_two() {
     let new_id = state.unlink_node(&node).unwrap();
     let drawn = state.view_ids_for_probe(&plot);
 
-    assert_eq!(drawn.len(), before, "unlinking must not add a gate to the plot");
-    assert!(drawn.contains(&new_id.to_string()), "the copy is drawn: {drawn:?}");
+    assert_eq!(
+        drawn.len(),
+        before,
+        "unlinking must not add a gate to the plot"
+    );
+    assert!(
+        drawn.contains(&new_id.to_string()),
+        "the copy is drawn: {drawn:?}"
+    );
     assert!(
         !drawn.contains(&shared.to_string()),
         "the gate this position stopped showing must come off the plot: {drawn:?}"
@@ -3183,7 +3476,9 @@ fn unlinking_leaves_the_other_position_drawing_the_original() {
     state.unlink_node(&nodes[0]).unwrap();
 
     assert!(
-        state.view_ids_for_probe(&other_plot).contains(&shared.to_string()),
+        state
+            .view_ids_for_probe(&other_plot)
+            .contains(&shared.to_string()),
         "the sibling position still shows the original"
     );
 }
@@ -3201,7 +3496,10 @@ fn linking_takes_the_old_gate_off_the_plot() {
         .unwrap();
 
     let drawn = state.view_ids_for_probe(&plot);
-    assert!(!drawn.contains(&g1.to_string()), "g1 is no longer applied here: {drawn:?}");
+    assert!(
+        !drawn.contains(&g1.to_string()),
+        "g1 is no longer applied here: {drawn:?}"
+    );
     assert!(drawn.contains(&g2.to_string()), "g2 is: {drawn:?}");
 }
 
@@ -3228,7 +3526,10 @@ fn a_gate_shown_twice_on_one_plot_stays_when_one_position_goes() {
     state.delete_placement(&NodeId::from(b)).unwrap();
 
     let drawn = state.view_ids_for_probe(&ROOTGATE);
-    assert!(drawn.contains(&a.to_string()), "still shown at its other position: {drawn:?}");
+    assert!(
+        drawn.contains(&a.to_string()),
+        "still shown at its other position: {drawn:?}"
+    );
 }
 
 #[test]
@@ -3241,11 +3542,12 @@ fn deleting_a_position_takes_its_gate_off_that_plot() {
     state.delete_placement(&node).unwrap();
 
     assert!(
-        !state.view_ids_for_probe(&plot).contains(&shared.to_string()),
+        !state
+            .view_ids_for_probe(&plot)
+            .contains(&shared.to_string()),
         "nothing shows it on that plot any more"
     );
 }
-
 
 // ─── Linking composites ───────────────────────────────────────────────────────
 //
@@ -3260,8 +3562,15 @@ fn two_quadrants() -> (GateState, Arc<dyn DrawableGate>, Arc<dyn DrawableGate>) 
     for name in ["first", "second"] {
         state
             .add_gate(
-                &editor_mapper(), 300.0, 300.0, Arc::from("FSC-A"), Arc::from("SSC-A"),
-                None, None, PrimaryGateType::Quadrant, Some(name.to_string()),
+                &editor_mapper(),
+                300.0,
+                300.0,
+                Arc::from("FSC-A"),
+                Arc::from("SSC-A"),
+                None,
+                None,
+                PrimaryGateType::Quadrant,
+                Some(name.to_string()),
             )
             .unwrap();
     }
@@ -3293,8 +3602,16 @@ fn linking_a_composite_moves_every_corner() {
         .iter()
         .zip(target.get_inner_gate_ids().iter())
     {
-        assert_eq!(state.placement_count(from), 0, "{from} is applied nowhere now");
-        assert_eq!(state.placement_count(to), 2, "{to} is applied at both points");
+        assert_eq!(
+            state.placement_count(from),
+            0,
+            "{from} is applied nowhere now"
+        );
+        assert_eq!(
+            state.placement_count(to),
+            2,
+            "{to} is applied at both points"
+        );
         assert!(state.is_linked(to));
     }
 }
@@ -3347,8 +3664,15 @@ fn a_quadrant_cannot_be_linked_to_a_bisector() {
     ] {
         state
             .add_gate(
-                &editor_mapper(), 300.0, 300.0, Arc::from("FSC-A"), Arc::from("SSC-A"),
-                None, None, kind, Some(name.to_string()),
+                &editor_mapper(),
+                300.0,
+                300.0,
+                Arc::from("FSC-A"),
+                Arc::from("SSC-A"),
+                None,
+                None,
+                kind,
+                Some(name.to_string()),
             )
             .unwrap();
     }
@@ -3369,7 +3693,10 @@ fn a_quadrant_cannot_be_linked_to_a_bisector() {
     let node = state.nodes_for_gate(&quad.get_inner_gate_ids()[0])[0].clone();
     let target = state.nodes_for_gate(&split.get_inner_gate_ids()[0])[0].clone();
 
-    let err = state.link_node_to_gate(&node, &target).unwrap_err().to_string();
+    let err = state
+        .link_node_to_gate(&node, &target)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("different numbers of parts"), "{err}");
 }
 
@@ -3407,7 +3734,6 @@ fn a_linked_composite_is_written_to_the_file() {
     }
     assert_nodes_match_tree(&state, &written);
 }
-
 
 /// A real export's linked composite, checked against the editor's model of it.
 /// Gated on `OMIQ_GATING_FILE`; skipped when unset.
@@ -3480,7 +3806,10 @@ fn a_real_linked_composite_is_modelled_as_a_group() {
     // to the test, not of the format - one real file has a single linked
     // skewed quadrant, another has none. What has to hold on any of them is
     // the invariant above: a composite is placed as a whole or not at all.
-    println!("{} composites, {linked_groups} of them linked", composites.len());
+    println!(
+        "{} composites, {linked_groups} of them linked",
+        composites.len()
+    );
 }
 
 /// Axis settings and metadata for a real gating file: scatter linear, the rest
@@ -3488,7 +3817,10 @@ fn a_real_linked_composite_is_modelled_as_a_group() {
 /// composites resolve. Shared by the tests gated on `OMIQ_GATING_FILE`.
 fn real_ctx(
     source: &serde_json::Value,
-) -> (MetaDataFileMap, im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>) {
+) -> (
+    MetaDataFileMap,
+    im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+) {
     let mut channels = std::collections::BTreeSet::new();
     fn walk(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
         match v {
@@ -3508,8 +3840,7 @@ fn real_ctx(
 
     let mut axes = im::HashMap::with_hasher(FxBuildHasher);
     for channel in &channels {
-        let linear =
-            channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
+        let linear = channel.contains("FSC") || channel.contains("SSC") || channel.contains("Time");
         axes.insert(
             Arc::from(channel.as_str()) as Arc<str>,
             AxisInfo {
@@ -3530,7 +3861,11 @@ fn real_ctx(
 
     let mut files = std::collections::BTreeSet::new();
     let mut columns = std::collections::BTreeSet::new();
-    for container in source["tree"]["filterContainers"].as_object().unwrap().values() {
+    for container in source["tree"]["filterContainers"]
+        .as_object()
+        .unwrap()
+        .values()
+    {
         if let Some(per_file) = container.get("perFileFilters").and_then(|v| v.as_object()) {
             files.extend(per_file.keys().cloned());
         }
@@ -3552,7 +3887,6 @@ fn real_ctx(
 
     (metadata, axes)
 }
-
 
 #[test]
 fn deleting_one_instance_of_a_composite_takes_the_whole_group() {
@@ -3589,10 +3923,13 @@ fn deleting_the_only_instance_of_a_composite_takes_every_corner() {
     state.delete_placement(&node).unwrap();
 
     for corner in &corners {
-        assert_eq!(state.placement_count(corner), 0, "{corner} is placed nowhere");
+        assert_eq!(
+            state.placement_count(corner),
+            0,
+            "{corner} is placed nowhere"
+        );
     }
 }
-
 
 // ─── Unlinking composites ─────────────────────────────────────────────────────
 
@@ -3614,7 +3951,9 @@ fn unlinking_a_composite_gives_every_corner_a_new_gate() {
 
     let new_id = state.unlink_node(&node).unwrap();
 
-    let copy = state.registered_gate(&new_id).expect("the copy is registered");
+    let copy = state
+        .registered_gate(&new_id)
+        .expect("the copy is registered");
     assert!(copy.is_composite());
     let new_corners = copy.get_inner_gate_ids();
     assert_eq!(new_corners.len(), target_corners.len());
@@ -3627,7 +3966,11 @@ fn unlinking_a_composite_gives_every_corner_a_new_gate() {
     }
     // And the original keeps its other position.
     for corner in &target_corners {
-        assert_eq!(state.placement_count(corner), 1, "{corner} keeps one position");
+        assert_eq!(
+            state.placement_count(corner),
+            1,
+            "{corner} keeps one position"
+        );
         assert!(!state.is_linked(corner));
     }
 }
@@ -3652,7 +3995,9 @@ fn an_unlinked_composite_copy_resolves_from_any_of_its_corners() {
 #[test]
 fn an_unlinked_composite_keeps_its_shape() {
     let (mut state, _, target) = linked_quadrants();
-    let before = state.registered_gate(&target.get_inner_gate_ids()[0]).unwrap();
+    let before = state
+        .registered_gate(&target.get_inner_gate_ids()[0])
+        .unwrap();
     let node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
 
     let new_id = state.unlink_node(&node).unwrap();
@@ -3904,4 +4249,79 @@ fn a_quadrant_on_the_tree_survives_a_sweep() {
         before,
         "the sweep took only the gate that was deleted"
     );
+}
+
+/// A group override written *by the app* - which is what the autogater
+/// produces - has to reach `perFileFilters` on the way out.
+///
+/// Import already round-trips the ones Omiq itself wrote; this is the other
+/// direction, and it is the whole point of positioning by rule. A gate placed
+/// per specimen that never reaches the file would be work the user can see on
+/// screen and Omiq never receives.
+#[test]
+fn a_group_override_written_here_reaches_the_file() {
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::gate_rules::autogate::{place_for_specimen, translate_edge_to};
+    use crate::gate_rules::rule_store::Bound;
+    use crate::omiq::metadata::MetaDataKey;
+
+    let mut state = import_with_metadata(BEFORE);
+    let metadata = fixture_metadata();
+
+    // A gate positioned globally, with a finite x edge to move.
+    let Some((gate_id, gate, param, from)) = state.registered_ids().into_iter().find_map(|id| {
+        let gate = state.registered_gate(&id)?;
+        let (x, _) = gate.get_params();
+        let inner = gate.get_gate_ref(None)?;
+        let (low, _) = crate::gate_rules::autogate::extent_on(&inner.geometry, &x)?;
+        (low.is_finite() && low.abs() < 1e9).then_some((id, gate, x, low))
+    }) else {
+        panic!("the fixture should hold a gate with a finite x edge");
+    };
+
+    let moved = translate_edge_to(&gate, &param, Bound::Above, from as f64 + 25.0)
+        .expect("it can be slid along x");
+    let specimen = MetaDataKey {
+        parameter: Arc::from("test"),
+        group: Arc::from("one"),
+    };
+    place_for_specimen(&mut state, &gate_id, &specimen, &moved);
+
+    // It resolves for sample1, which is in group "one", and not for sample2.
+    assert!(matches!(
+        state
+            .get_current_sample(
+                Arc::from("sample1"),
+                &fixture_metadata()[&Arc::from("sample1") as &Arc<str>]
+            )
+            .gate_origins
+            .get(&gate_id),
+        Some(GateSource::Group(_))
+    ));
+
+    let written = to_omiq_document(&state, &metadata, &fixture_axes())
+        .expect("a state that imported a header can be written");
+    let containers = objects(&written, &["tree", "filterContainers"]);
+    let per_file = containers[&*gate_id]["perFileFilters"]
+        .as_object()
+        .expect("the moved gate needs per-file positions written");
+
+    assert!(
+        per_file.contains_key("sample1"),
+        "the specimen that was positioned must reach the file"
+    );
+
+    // Compared as written rather than by picking at coordinates, so the check
+    // holds whatever shape the fixture's gate happens to be.
+    let default_filter = &containers[&*gate_id]["defaultFilter"];
+    assert_ne!(
+        &per_file["sample1"], default_filter,
+        "sample1 should carry the moved position, not the one everyone else has"
+    );
+    if let Some(other) = per_file.get("sample2") {
+        assert_eq!(
+            other, default_filter,
+            "sample2 is in another group and should be left where it was"
+        );
+    }
 }

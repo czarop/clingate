@@ -1082,6 +1082,33 @@ impl GateState {
         (groups, samples)
     }
 
+    /// Every file this gate resolves differently for than its global position.
+    ///
+    /// The export needs this because a position written in this session - by
+    /// the autogater, or by dragging a gate on one sample - belongs to no list
+    /// captured at import. A container that arrived global has no per-file ids
+    /// at all, so without asking, an override written afterwards reaches the
+    /// screen and never reaches the file.
+    pub fn files_with_own_position(
+        &self,
+        gate_id: &GateId,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+    ) -> Vec<FileId> {
+        let global = self.registered_gate(gate_id);
+        metadata
+            .keys()
+            .filter(|file| {
+                match (self.gate_for_file(gate_id, file, metadata), &global) {
+                    // Resolved to something other than the registry entry.
+                    (Some(resolved), Some(global)) => !Arc::ptr_eq(&resolved, global),
+                    (Some(_), None) => true,
+                    _ => false,
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Write a gate into one of the three tiers.
     ///
     /// The store methods write back into the tier a gate was *resolved* from,

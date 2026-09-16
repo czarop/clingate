@@ -179,3 +179,24 @@ button:hover {
 .combobox-container {
     width: 100% !important;
 }
+/* Writing the gates back out as an Omiq file. */
+.export-gating {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    align-items: center;
+    font-size: 0.8rem;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #e2e8f0;
+}
+.export-gating label { justify-self: start; opacity: 0.75; }
+.export-gating input { min-width: 9rem; padding: 1px 3px; }
+.export-gating_go { grid-column: 1 / -1; padding: 0.25rem 0.75rem; }
+.export-gating_note {
+    grid-column: 1 / -1;
+    font-size: 0.75rem;
+    opacity: 0.8;
+    word-break: break-all;
+}
+.export-gating_warn { color: hsl(0, 70%, 45%); opacity: 1; }
