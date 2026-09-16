@@ -792,12 +792,20 @@ fn position_one(
     let mut sorted = reference.measurement.values.clone();
     sorted.sort_by(|a, b| b.total_cmp(a));
     let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
+    // Nudge the gate either side and see how much of its contents survive.
+    // Relative to what it holds, not an absolute count: the model reads a swing
+    // of 1 as "a nudge changes the contents by as much as the gate holds", and
+    // feeding it a raw event difference made every small gate look unstable.
     let nudge = (spread * crate::gate_rules::threshold::STABILITY_WINDOW).max(f64::EPSILON);
-    let swing = translate_by(&moved, &measured.parameter, nudge)
-        .ok()
-        .and_then(|nudged| admitted_by(&nudged, population))
-        .map(|other| (other - achieved).abs() * parent_events as f64)
-        .unwrap_or(0.0);
+    let at = |delta: f64| {
+        translate_by(&moved, &measured.parameter, delta)
+            .ok()
+            .and_then(|g| admitted_by(&g, population))
+    };
+    let swing = match (at(-nudge), at(nudge), achieved) {
+        (Some(back), Some(forward), held) if held > 0.0 => (back - forward).abs() / held,
+        _ => 0.0,
+    };
 
     let threshold = crate::gate_rules::threshold::Threshold {
         x: to,

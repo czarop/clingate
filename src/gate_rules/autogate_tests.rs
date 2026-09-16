@@ -993,3 +993,81 @@ fn slide_into_band(
     .expect("a position holding the band exists")
     .0
 }
+
+#[test]
+fn a_gate_keeping_the_dim_side_slides_the_other_way() {
+    // The same search drives a negative gate - Live, CD19-, Ki67- - and the
+    // direction reverses: sliding such a gate *up* the parameter admits more,
+    // not fewer, so a gate holding too much has to come down.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::{admitted_by, position_by_capture};
+    use polars::prelude::*;
+
+    let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    let frame = Arc::new(df![X => xs, Y => vec![0.0f32; 1000]].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
+            .unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
+
+    // Open to the left, capped at 800: holds 80% of the population, far too
+    // much for a 0.2-0.5% band.
+    let gate = rect(-1e16, -1e16, 800.0, 1e16);
+    assert!(admitted_by(&gate, &index).unwrap() > 0.5);
+
+    let values: Vec<f64> = (1..=1000).map(|i| i as f64).collect();
+    let (moved, to, held) = position_by_capture(
+        &gate,
+        X,
+        Bound::Below,
+        &index,
+        (0.002, 0.005),
+        &values,
+        800.0,
+    )
+    .expect("a position holding the band exists");
+
+    assert!(
+        (0.002..=0.005).contains(&held),
+        "a Below gate should land in the band too, got {held}"
+    );
+    assert!(to < 800.0, "it has to come down, not go up - ended at {to}");
+    assert_eq!(admitted_by(&moved, &index).unwrap(), held);
+}
+
+#[test]
+fn a_gate_holding_too_little_moves_the_other_way_again() {
+    // The search is not one-directional. A gate holding less than the band has
+    // to open up, whichever side it keeps.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::{admitted_by, position_by_capture};
+    use polars::prelude::*;
+
+    let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    let frame = Arc::new(df![X => xs, Y => vec![0.0f32; 1000]].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
+            .unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
+    let values: Vec<f64> = (1..=1000).map(|i| i as f64).collect();
+
+    // An Above gate starting past the data: holds nothing, so it must come down.
+    let empty = rect(2000.0, -1e16, 1e16, 1e16);
+    assert_eq!(admitted_by(&empty, &index).unwrap(), 0.0);
+    let (_, to, held) = position_by_capture(
+        &empty,
+        X,
+        Bound::Above,
+        &index,
+        (0.002, 0.005),
+        &values,
+        2000.0,
+    )
+    .expect("reachable");
+    assert!((0.002..=0.005).contains(&held), "got {held}");
+    assert!(to < 2000.0, "it has to come down to reach the data");
+}
