@@ -49,6 +49,15 @@ impl Tab {
 
 const TABS: [Tab; 2] = [Tab::Editor, Tab::Rules];
 
+/// Every panel is mounted; only the one in front is displayed.
+fn panel_class(active: Tab, tab: Tab) -> &'static str {
+    if active == tab {
+        "tab-panel"
+    } else {
+        "tab-panel tab-panel_hidden"
+    }
+}
+
 #[component]
 pub fn Shell() -> Element {
     // The document, shared by every tab. A store here is the document; a signal
@@ -74,18 +83,14 @@ pub fn Shell() -> Element {
     use_context_provider(|| active);
 
     rsx! {
-        // `display: none` rather than a conditional: the difference between
-        // hiding a tab and unmounting it is the whole point.
-        div {
-            class: "tab-panel",
-            style: if active() == Tab::Editor { "" } else { "display: none;" },
-            MainWindow {}
-        }
-        div {
-            class: "tab-panel",
-            style: if active() == Tab::Rules { "" } else { "display: none;" },
-            GateRulesWindow {}
-        }
+        // Hidden by class, not by an inline style. Diffing `style` down to an
+        // empty string does not reliably clear what was set before, which left
+        // both panels displaying none and the nav bar alone at the top of the
+        // window. A class is a value the renderer always replaces wholesale.
+        //
+        // Hiding, not unmounting: that difference is the whole point.
+        div { class: panel_class(active(), Tab::Editor), MainWindow {} }
+        div { class: panel_class(active(), Tab::Rules), GateRulesWindow {} }
 
         div { class: "route-nav_bar",
             nav { aria_label: "main navigation", role: "navigation",

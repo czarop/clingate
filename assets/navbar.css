@@ -88,9 +88,9 @@ html, body {
     box-sizing: border-box;
 }
 
-/* One per tab. All of them are mounted; the inactive ones carry an inline
-   `display: none`, which overrides the `flex` here and takes them out of the
-   layout without unmounting them. */
+/* One per tab. All of them are mounted; the inactive ones take
+   `tab-panel_hidden`, which drops them out of the layout without unmounting
+   them - their signals, resources and in-flight work all carry on. */
 .tab-panel {
     flex-grow: 1;          /* This is the magic: it eats all free space */
     display: flex;
@@ -98,6 +98,10 @@ html, body {
     overflow-y: auto;      /* Only the content scrolls */
     min-height: 0;         /* Critical for flex-grow + overflow to work */
     padding: 1rem;
+}
+
+.tab-panel_hidden {
+    display: none;
 }
 
 .route-nav_bar {
