@@ -20,6 +20,7 @@
 //! app to write one.
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
@@ -35,14 +36,81 @@ const UNBOUNDED: f32 = 1e9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
-    #[error("only rectangles can be positioned by a rule; {0} is not one")]
-    NotARectangle(GateId),
+    #[error("{0} is drawn as a shape a rule cannot slide along one axis")]
+    UnsupportedShape(GateId),
     #[error("{gate} does not bound {parameter}")]
     NoSuchParameter { gate: GateId, parameter: Arc<str> },
     #[error("the edge of {0} that the rule positions is unbounded, so there is nothing to move")]
     UnboundedEdge(GateId),
     #[error("{0}")]
     Rebuild(String),
+}
+
+/// How far a gate reaches along one parameter, whatever shape it is drawn as.
+///
+/// A rule positions a *line*, and every shape that can sit either side of one
+/// has a leading and a trailing extent on the parameter it cuts. Reading that
+/// rather than a rectangle's corners is what lets the same rule work on the
+/// polygons a real workflow is full of - in one export, 41 of 211 gates.
+///
+/// Returns `(low, high)`.
+pub fn extent_on(geometry: &GateGeometry, parameter: &str) -> Option<(f32, f32)> {
+    match geometry {
+        GateGeometry::Rectangle { min, max } => Some((
+            min.get_coordinate(parameter)?,
+            max.get_coordinate(parameter)?,
+        )),
+        GateGeometry::Polygon { nodes, .. } => {
+            let mut low = f32::INFINITY;
+            let mut high = f32::NEG_INFINITY;
+            for node in nodes {
+                let v = node.get_coordinate(parameter)?;
+                low = low.min(v);
+                high = high.max(v);
+            }
+            low.is_finite().then_some((low, high))
+        }
+        // An ellipse carries a rotation, so its extent on a parameter is not
+        // simply its radius, and sliding one is a different piece of work.
+        // Better to say so than to move it wrongly.
+        _ => None,
+    }
+}
+
+/// The same shape, slid along `parameter` by `delta`.
+///
+/// Every point moves by the same amount, which is what makes this a
+/// translation: the shape a person drew survives intact. An edge at Omiq's
+/// `1e16` sentinel stays put - shifting it would be arithmetic on a flag, and
+/// rounding it into a real number would close a side left open.
+fn slide(geometry: &GateGeometry, parameter: &str, delta: f32) -> GateGeometry {
+    let shift = |value: f32| -> f32 {
+        if !value.is_finite() || value.abs() > UNBOUNDED {
+            value
+        } else {
+            value + delta
+        }
+    };
+    let mut moved = geometry.clone();
+    match &mut moved {
+        GateGeometry::Rectangle { min, max } => {
+            if let Some(v) = min.get_coordinate(parameter) {
+                min.set_coordinate(parameter, shift(v));
+            }
+            if let Some(v) = max.get_coordinate(parameter) {
+                max.set_coordinate(parameter, shift(v));
+            }
+        }
+        GateGeometry::Polygon { nodes, .. } => {
+            for node in nodes.iter_mut() {
+                if let Some(v) = node.get_coordinate(parameter) {
+                    node.set_coordinate(parameter, shift(v));
+                }
+            }
+        }
+        _ => {}
+    }
+    moved
 }
 
 /// The same rectangle, shifted along `parameter` so its `bound` edge sits at
@@ -62,20 +130,21 @@ pub fn translate_edge_to(
     let id = gate.get_id();
     let inner = gate
         .get_gate_ref(None)
-        .ok_or_else(|| ApplyError::NotARectangle(id.clone()))?;
-    let GateGeometry::Rectangle { min, max } = &inner.geometry else {
-        return Err(ApplyError::NotARectangle(id.clone()));
-    };
+        .ok_or_else(|| ApplyError::UnsupportedShape(id.clone()))?;
 
-    let (Some(low), Some(high)) = (min.get_coordinate(parameter), max.get_coordinate(parameter))
-    else {
-        return Err(ApplyError::NoSuchParameter {
-            gate: id.clone(),
-            parameter: Arc::from(parameter),
+    let Some((low, high)) = extent_on(&inner.geometry, parameter) else {
+        return Err(match &inner.geometry {
+            GateGeometry::Rectangle { .. } | GateGeometry::Polygon { .. } => {
+                ApplyError::NoSuchParameter {
+                    gate: id.clone(),
+                    parameter: Arc::from(parameter),
+                }
+            }
+            _ => ApplyError::UnsupportedShape(id.clone()),
         });
     };
 
-    // The edge the rule positions, and the one that follows it.
+    // The edge the rule positions is the one the gate keeps events *from*.
     let leading = match bound {
         Bound::Above => low,
         Bound::Below => high,
@@ -83,25 +152,22 @@ pub fn translate_edge_to(
     if !leading.is_finite() || leading.abs() > UNBOUNDED {
         return Err(ApplyError::UnboundedEdge(id.clone()));
     }
-    let delta = to as f32 - leading;
 
-    let shift = |value: f32| -> f32 {
-        if !value.is_finite() || value.abs() > UNBOUNDED {
-            value
-        } else {
-            value + delta
-        }
-    };
-
+    let moved_geometry = slide(&inner.geometry, parameter, to as f32 - leading);
     let mut moved = inner.clone();
-    if let GateGeometry::Rectangle { min, max } = &mut moved.geometry {
-        min.set_coordinate(parameter, shift(low));
-        max.set_coordinate(parameter, shift(high));
-    }
+    moved.geometry = moved_geometry;
 
-    let rebuilt = RectangleGate::try_new(moved, gate.is_primary())
-        .map_err(|e| ApplyError::Rebuild(e.to_string()))?;
-    Ok(Arc::new(rebuilt))
+    let rebuilt: Arc<dyn DrawableGate> = match &moved.geometry {
+        GateGeometry::Polygon { .. } => Arc::new(
+            PolygonGate::try_new(moved, gate.is_primary())
+                .map_err(|e| ApplyError::Rebuild(e.to_string()))?,
+        ),
+        _ => Arc::new(
+            RectangleGate::try_new(moved, gate.is_primary())
+                .map_err(|e| ApplyError::Rebuild(e.to_string()))?,
+        ),
+    };
+    Ok(rebuilt)
 }
 
 /// The specimen a file belongs to, as a key into the group override tier.
@@ -182,7 +248,8 @@ pub fn measure_file(
     file: &FileId,
     df: &DataFrame,
     metadata: &MetaDataFileMap,
-) -> anyhow::Result<Vec<Measurement>> {
+) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
+    let mut unmeasured: Vec<Unmeasured> = Vec::new();
     let groups: FxHashMap<MetaDataParameter, GroupId> = metadata
         .get(file)
         .cloned()
@@ -195,26 +262,46 @@ pub fn measure_file(
         let Some(gate) = state.gate_for_file(gate_id, file, metadata) else {
             continue;
         };
+        let name: Arc<str> = Arc::from(gate.get_name());
         let Some(inner) = gate.get_gate_ref(None) else {
-            continue;
-        };
-        let GateGeometry::Rectangle { min, max } = &inner.geometry else {
+            unmeasured.push(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: name,
+                reason: "this gate has no geometry of its own".to_string(),
+            });
             continue;
         };
         let Some(parent) = state.parent_node(node) else {
+            unmeasured.push(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: name,
+                reason: "this gate sits at the root, so it has no parent population".to_string(),
+            });
             continue;
         };
         let chain = state.gate_chain_for_node(&parent);
         let (x_param, y_param) = gate.get_params();
 
-        // Every edge, each carrying the parameter it bounds. Which axis it is
-        // drawn on is reported by neither: the same marker appears on x in one
-        // plot and y in another within a single workflow.
+        // Every bounding extent, each carrying the parameter it bounds. Read off
+        // the shape rather than assumed from the axis: the same marker appears
+        // on x in one plot and y in another within a single workflow. Polygons
+        // are as ordinary here as rectangles - in one real export, 41 of 211.
+        let (x_low, x_high) = extent_on(&inner.geometry, &x_param).unzip();
+        let (y_low, y_high) = extent_on(&inner.geometry, &y_param).unzip();
+        if x_low.is_none() && y_low.is_none() {
+            unmeasured.push(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: name,
+                reason: "this gate is drawn as a shape a rule cannot slide along one axis"
+                    .to_string(),
+            });
+            continue;
+        }
         let edges: [(Bound, Arc<str>, Option<f32>); 4] = [
-            (Bound::Above, x_param.clone(), min.get_coordinate(&x_param)),
-            (Bound::Below, x_param.clone(), max.get_coordinate(&x_param)),
-            (Bound::Above, y_param.clone(), min.get_coordinate(&y_param)),
-            (Bound::Below, y_param.clone(), max.get_coordinate(&y_param)),
+            (Bound::Above, x_param.clone(), x_low),
+            (Bound::Below, x_param.clone(), x_high),
+            (Bound::Above, y_param.clone(), y_low),
+            (Bound::Below, y_param.clone(), y_high),
         ];
 
         let mut candidates: Vec<(Bound, Arc<str>, f64, Vec<f64>)> = Vec::new();
@@ -250,6 +337,19 @@ pub fn measure_file(
             }
         }
         if candidates.len() != 1 {
+            unmeasured.push(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: Arc::from(gate.get_name()),
+                reason: if candidates.is_empty() {
+                    "no edge of this gate lies inside the data, so it thresholds nothing"
+                        .to_string()
+                } else {
+                    format!(
+                        "{} edges lie inside the data - a rule positions one line, not a window",
+                        candidates.len()
+                    )
+                },
+            });
             continue;
         }
         let (bound, parameter, current, values) = candidates.pop().expect("one candidate");
@@ -265,7 +365,7 @@ pub fn measure_file(
             values,
         });
     }
-    Ok(out)
+    Ok((out, unmeasured))
 }
 
 fn parent_name(state: &GateState, parent: &NodeId) -> Option<Arc<str>> {
@@ -310,6 +410,29 @@ pub struct Positioned {
     /// The measure holding the confidence down, for a person deciding what to
     /// review first.
     pub weakest: Option<&'static str>,
+    /// What the gate actually captures on the sample it was measured against,
+    /// and how many events that was out of.
+    pub achieved: f64,
+    pub reference_events: usize,
+    /// Whether that landed inside the band the rule asked for.
+    ///
+    /// It can miss even when the solver did its best. A gate admits a whole
+    /// number of events, so a narrow band over a small population may contain
+    /// no achievable fraction at all, and ties in the data can block the ones
+    /// it does contain. The threshold is then the nearest achievable - worth
+    /// having, but not worth trusting silently.
+    pub in_band: bool,
+}
+
+/// A gate no rule could even be tried against, and why.
+///
+/// Worth carrying rather than dropping: a gate a rule names but which never
+/// produces a measurement would otherwise vanish without a word, and "nothing
+/// happened" is the least useful thing an autogater can say.
+pub struct Unmeasured {
+    pub gate_id: GateId,
+    pub gate: Arc<str>,
+    pub reason: String,
 }
 
 /// One gate that was not positioned, and why.
@@ -330,7 +453,9 @@ impl Report {
     /// opening by hand. On the hand-gated export everything at 0.30 or above
     /// landed within a typical manual adjustment.
     pub fn needs_review(&self, floor: f64) -> impl Iterator<Item = &Positioned> {
-        self.positioned.iter().filter(move |p| p.confidence < floor)
+        self.positioned
+            .iter()
+            .filter(move |p| p.confidence < floor || !p.in_band)
     }
 }
 
@@ -343,9 +468,31 @@ pub fn position_all(
     state: &mut GateState,
     store: &RuleStore,
     measurements: &[Measurement],
+    unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
 ) -> Report {
     let mut report = Report::default();
+
+    // A gate a rule names but which never yielded a measurement is the one case
+    // that used to pass in silence - nothing positioned, nothing skipped, and
+    // no clue why. Reported once per gate rather than once per file, since the
+    // reason is a property of how the gate is drawn.
+    let mut told: FxHashMap<GateId, ()> = FxHashMap::default();
+    for miss in unmeasured {
+        if store.rule_for(&miss.gate, None).is_none()
+            && !store.entries().iter().any(|e| e.target.gate == miss.gate)
+        {
+            continue;
+        }
+        if told.insert(miss.gate_id.clone(), ()).is_some() {
+            continue;
+        }
+        report.skipped.push(Skipped {
+            file: Arc::from(""),
+            gate: miss.gate.clone(),
+            reason: miss.reason.clone(),
+        });
+    }
 
     for measured in measurements {
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
@@ -422,6 +569,13 @@ pub fn position_all(
             to: solved.threshold.x,
             confidence: solved.confidence.score,
             weakest: solved.confidence.weakest().map(|c| c.name),
+            achieved: solved.threshold.fraction_admitted,
+            reference_events: solved.threshold.parent_events,
+            in_band: matches!(
+                solved.threshold.status,
+                crate::gate_rules::threshold::Status::InBand
+                    | crate::gate_rules::threshold::Status::NoBand
+            ),
         });
     }
 

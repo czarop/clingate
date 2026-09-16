@@ -542,13 +542,23 @@ pub fn GateRulesWindow() -> Element {
 
                         let mut state = gate_store.write();
                         let mut measured = Vec::new();
+                        let mut unmeasured = Vec::new();
                         for (id, df) in &frames {
                             match measure_file(&state, id, df, &metadata) {
-                                Ok(mut m) => measured.append(&mut m),
+                                Ok((mut m, mut u)) => {
+                                    measured.append(&mut m);
+                                    unmeasured.append(&mut u);
+                                }
                                 Err(e) => problems.push(format!("{id}: {e}")),
                             }
                         }
-                        let mut run = position_all(&mut state, &rules_now, &measured, &metadata);
+                        let mut run = position_all(
+                            &mut state,
+                            &rules_now,
+                            &measured,
+                            &unmeasured,
+                            &metadata,
+                        );
                         drop(state);
 
                         for problem in problems {
@@ -583,6 +593,7 @@ pub fn GateRulesWindow() -> Element {
                                     th { "Measured on" }
                                     th { "From" }
                                     th { "To" }
+                                    th { "Captured" }
                                     th { "Confidence" }
                                     th { "Weakest" }
                                 }
@@ -590,12 +601,19 @@ pub fn GateRulesWindow() -> Element {
                             tbody {
                                 for placed in run.positioned.iter() {
                                     tr {
-                                        class: if placed.confidence < REVIEW_FLOOR { "gate_rules-weak" } else { "" },
+                                        class: if placed.confidence < REVIEW_FLOOR || !placed.in_band { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
                                         td { "{placed.gate}" }
                                         td { "{name_of(&files.read(), &placed.measured_on)}" }
                                         td { "{placed.from:.3}" }
                                         td { "{placed.to:.3}" }
+                                        td {
+                                            title: "of {placed.reference_events} events on the file it measured",
+                                            "{placed.achieved * 100.0:.3}%"
+                                            if !placed.in_band {
+                                                " (outside the band - nearest achievable)"
+                                            }
+                                        }
                                         td { "{placed.confidence:.2}" }
                                         td { "{placed.weakest.unwrap_or(\"-\")}" }
                                     }

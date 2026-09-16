@@ -36,6 +36,32 @@ fn rect(x1: f32, y1: f32, x2: f32, y2: f32) -> Arc<dyn DrawableGate> {
     Arc::new(RectangleGate::try_new(gate("r", geometry), true).unwrap())
 }
 
+/// A triangle spanning x 100..300, as a `DrawableGate`.
+fn triangle() -> Arc<dyn DrawableGate> {
+    let geometry =
+        create_polygon_geometry(vec![(100.0, 100.0), (300.0, 100.0), (200.0, 300.0)], X, Y)
+            .unwrap();
+    Arc::new(
+        crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate::try_new(
+            gate("p", geometry),
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+/// Every vertex's coordinate on `param`, in order.
+fn polygon_points(gate: &Arc<dyn DrawableGate>, param: &str) -> Vec<f32> {
+    let inner = gate.get_gate_ref(None).unwrap();
+    let GateGeometry::Polygon { nodes, .. } = &inner.geometry else {
+        panic!("not a polygon");
+    };
+    nodes
+        .iter()
+        .map(|n| n.get_coordinate(param).unwrap())
+        .collect()
+}
+
 /// The two edges bounding `param`, read back out of a gate.
 fn edges(gate: &Arc<dyn DrawableGate>, param: &str) -> (f32, f32) {
     let inner = gate.get_gate_ref(None).unwrap();
@@ -118,22 +144,59 @@ fn a_parameter_the_gate_does_not_bound_is_an_error_not_a_guess() {
 }
 
 #[test]
-fn a_shape_that_is_not_a_rectangle_is_refused() {
-    // A polygon has no single edge to translate, and guessing one would move a
-    // gate in a way the person could not predict.
-    let geometry =
-        create_polygon_geometry(vec![(100.0, 100.0), (300.0, 100.0), (200.0, 300.0)], X, Y)
-            .unwrap();
-    let poly: Arc<dyn DrawableGate> = Arc::new(
-        crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate::try_new(
-            gate("p", geometry),
+fn a_polygon_slides_along_the_parameter_keeping_its_shape() {
+    // Real workflows are full of polygons - 41 of 211 gates in one export - and
+    // refusing them meant the autogater did nothing at all, silently, for the
+    // gates a person most wanted positioned.
+    let before = triangle();
+    let moved = translate_edge_to(&before, X, Bound::Above, 150.0)
+        .expect("a polygon bounding x can be positioned");
+
+    assert_eq!(polygon_points(&moved, X), vec![150.0, 350.0, 250.0]);
+    assert_eq!(
+        polygon_points(&moved, Y),
+        polygon_points(&before, Y),
+        "the other parameter should not move"
+    );
+}
+
+#[test]
+fn a_polygon_keeps_every_vertex_when_it_moves() {
+    // Sliding by a delta, not rebuilding from a bounding box: a polygon squashed
+    // into its own bounding rectangle would gate a different population.
+    let moved = translate_edge_to(&triangle(), X, Bound::Above, 150.0).unwrap();
+    assert_eq!(polygon_points(&moved, X).len(), 3);
+}
+
+#[test]
+fn a_negative_polygon_moves_its_upper_extent() {
+    let moved = translate_edge_to(&triangle(), X, Bound::Below, 250.0).unwrap();
+    let xs = polygon_points(&moved, X);
+    assert_eq!(xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max), 250.0);
+}
+
+#[test]
+fn an_ellipse_is_refused_rather_than_moved_wrongly() {
+    // An ellipse carries a rotation, so its extent on a parameter is not simply
+    // its radius. Better to say so than to slide it by the wrong amount.
+    let geometry = crate::omiq::deserialise::create_omiq_ellipse_geometry(
+        (100.0, 200.0),
+        (300.0, 200.0),
+        (200.0, 250.0),
+        X,
+        Y,
+    )
+    .unwrap();
+    let ellipse: Arc<dyn DrawableGate> = Arc::new(
+        crate::gate_editor::gates::gate_single::ellipse_gate::EllipseGate::try_new(
+            gate("e", geometry),
             true,
         )
         .unwrap(),
     );
     assert!(matches!(
-        translate_edge_to(&poly, X, Bound::Above, 150.0),
-        Err(ApplyError::NotARectangle(_))
+        translate_edge_to(&ellipse, X, Bound::Above, 150.0),
+        Err(ApplyError::UnsupportedShape(_))
     ));
 }
 
@@ -412,10 +475,13 @@ fn sweep(
 
     let frame = ramp(1000);
     let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
     for file in ["fs_a", "fmx_a"] {
-        measured.extend(measure_file(state, &Arc::from(file), &frame, map).unwrap());
+        let (m, u) = measure_file(state, &Arc::from(file), &frame, map).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
     }
-    position_all(state, store, &measured, map)
+    position_all(state, store, &measured, &unmeasured, map)
 }
 
 #[test]
@@ -542,8 +608,8 @@ fn a_missing_partner_is_reported_rather_than_guessed() {
     map.insert(Arc::from("fs_a") as Arc<str>, columns);
 
     let frame = ramp(1000);
-    let measured = measure_file(&state, &Arc::from("fs_a"), &frame, &map).unwrap();
-    let report = position_all(&mut state, &fmx_rule(), &measured, &map);
+    let (measured, unmeasured) = measure_file(&state, &Arc::from("fs_a"), &frame, &map).unwrap();
+    let report = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
 
     assert!(report.positioned.is_empty());
     assert_eq!(report.skipped.len(), 1);
@@ -559,4 +625,99 @@ fn low_confidence_placements_are_the_ones_flagged() {
     // Nothing is below a floor of zero, and everything is below a floor of one.
     assert_eq!(report.needs_review(0.0).count(), 0);
     assert_eq!(report.needs_review(1.01).count(), report.positioned.len());
+}
+
+#[test]
+fn a_gate_a_rule_names_but_cannot_measure_says_so() {
+    // The silent case: a shape that yields no measurement never reaches the
+    // rule check, so nothing was positioned, nothing was skipped, and the run
+    // reported "0 gates" with no clue why. An unmeasurable gate a rule names
+    // has to account for itself.
+    use crate::gate_rules::autogate::{Unmeasured, position_all};
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let unmeasured = vec![Unmeasured {
+        gate_id: Arc::from("whatever"),
+        gate: Arc::from("CD134+"),
+        reason: "drawn as a shape a rule cannot slide".to_string(),
+    }];
+    let report = position_all(&mut state, &fmx_rule(), &[], &unmeasured, &map);
+
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].reason.contains("cannot slide"));
+}
+
+#[test]
+fn an_unmeasurable_gate_no_rule_names_stays_quiet() {
+    // Most gates in a workflow have no rule. Reporting every one of them would
+    // bury the handful that matter.
+    use crate::gate_rules::autogate::{Unmeasured, position_all};
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let unmeasured = vec![Unmeasured {
+        gate_id: Arc::from("whatever"),
+        gate: Arc::from("Singlets"),
+        reason: "no edge inside the data".to_string(),
+    }];
+    let report = position_all(&mut state, &fmx_rule(), &[], &unmeasured, &map);
+
+    assert!(report.skipped.is_empty());
+}
+
+#[test]
+fn a_band_too_narrow_for_the_population_is_flagged_not_hidden() {
+    // A gate admits a whole number of events. Over a small population a
+    // 0.2-0.5% band can contain no achievable fraction at all, and ties in the
+    // data can block the ones it does contain - so the solver returns the
+    // nearest achievable instead. That is worth having and not worth trusting
+    // silently, which is what "0.19% when the rule said 0.2" looks like.
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+
+    // 600 events: the band allows 2 to 3, and every value is distinct, so the
+    // midpoint is reachable.
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    let frame = ramp(600);
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let report = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.file == "fs_a")
+        .expect("positioned");
+    assert!(placed.in_band, "2 or 3 of 600 is inside 0.2-0.5%");
+    assert_eq!(placed.reference_events, 600);
+
+    // 200 events: 0.2-0.5% is 0.4 to 1.0 events, so only one whole count is
+    // allowed and the nearest achievable may miss the band entirely.
+    let (mut state, _) = one_positive_gate();
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    let frame = ramp(200);
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let report = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.file == "fs_a")
+        .expect("positioned");
+    assert_eq!(placed.achieved, 0.005, "1 of 200");
+    // Whatever it achieved, a miss must reach needs_review even at full
+    // confidence - the count is the problem, not the confidence.
+    if !placed.in_band {
+        assert_eq!(report.needs_review(0.0).count(), 1);
+    }
 }
