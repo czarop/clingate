@@ -1,4 +1,5 @@
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
+use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
@@ -325,7 +326,10 @@ pub fn MainWindow() -> Element {
 
             main { class: "main-content",
 
-                div { class: "gate-window",
+                // The top bar: axis controls on the left, sample selection on
+                // the right. Its own class - `gate-window` stacks a plot under
+                // its title, which is the opposite of what this row wants.
+                div { class: "controls-row",
 
                     div { class: "axis-controls-grid", style: "width: 600px;",
                         div { class: "grid-label", "X-Axis" }
@@ -535,6 +539,7 @@ pub fn MainWindow() -> Element {
                         }
                     }
                     div { class: "file-info",
+                        PairingColumns {}
                         div { class: "file-info_button-panel",
                             button { onclick: move |_| step_specimen(-1), "Prev" }
                             button { onclick: move |_| step_specimen(1), "Next" }

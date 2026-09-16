@@ -58,6 +58,32 @@ button:hover {
     gap: 4px;
 }
 
+/* The top bar: axis controls on the left, sample selection on the right. */
+.controls-row {
+    display: flex;
+    flex-direction: row;
+    justify-content: start;
+    align-items: flex-start;
+    width: 100%;
+    gap: 20px;
+}
+
+.pairing-columns {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    align-items: center;
+    font-size: 0.8rem;
+}
+.pairing-columns label { justify-self: end; opacity: 0.75; }
+.pairing-columns select { min-width: 9rem; padding: 1px 3px; }
+.pairing-columns_note {
+    grid-column: 1 / -1;
+    opacity: 0.7;
+    font-size: 0.75rem;
+}
+.pairing-columns_warn { color: hsl(35, 90%, 45%); opacity: 1; font-weight: 600; }
+
 .gate-window_title {
     font-size: 0.85rem;
     font-weight: 600;

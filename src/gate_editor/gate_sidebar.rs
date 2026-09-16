@@ -1,9 +1,12 @@
 use crate::components::context_menu::*;
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
+use crate::gate_editor::gates::gate_store::{
+    GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE,
+};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
+use rustc_hash::FxHashSet;
 use std::sync::Arc;
 static SIDEBAR_STYLE: Asset = asset!("assets/gate_sidebar.css");
 
@@ -39,6 +42,13 @@ pub fn GateSidebar(
     let gate_store = use_context::<SyncStore<GateState>>();
     let hierarchy = gate_store.hierarchy();
     let roots = hierarchy.read().get_roots();
+    // Which gates carry a per-specimen or per-file position, worked out once
+    // for the whole tree: the override maps hold an entry per specimen, so
+    // asking per row would be a scan of thousands each time.
+    let overrides =
+        use_context_provider(|| Overrides(Memo::new(move || gate_store.read().overridden_ids())));
+    let _ = overrides;
+
     let link_pick = use_context_provider(|| LinkPick(Signal::new(None)));
     let link_error = use_context_provider(|| LinkError(Signal::new(None)));
     let mut picking = link_pick.0;
@@ -144,6 +154,10 @@ pub fn GateSidebar(
 }
 
 // Keep your exact ChevronIcon, we'll just rotate it with CSS
+/// Which gate ids are positioned per group and per sample.
+#[derive(Clone, Copy)]
+struct Overrides(Memo<(FxHashSet<Arc<str>>, FxHashSet<Arc<str>>)>);
+
 #[component]
 fn ChevronIcon() -> Element {
     rsx! {
@@ -171,6 +185,7 @@ fn GateNode(
     y_axis_param: Signal<Param>,
 ) -> Element {
     let mut gate_store = use_context::<SyncStore<GateState>>();
+    let overrides = use_context::<Overrides>().0;
     let mut picking = use_context::<LinkPick>().0;
     let mut link_error = use_context::<LinkError>().0;
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
@@ -238,6 +253,7 @@ fn GateNode(
     let padding = format!("{}px", level * 8 + 6);
 
     let gate_id_clone = gate_id.clone();
+    let gate_id_for_badges = gate_id.clone();
     let node_id_for_click = node_id.clone();
     let node_id_for_link = node_id.clone();
     let node_id_for_unlink = node_id.clone();
@@ -319,15 +335,10 @@ fn GateNode(
                             div { class: "toggle-icon-placeholder" }
                         }
 
-                        // 3. The Label
-                        span { class: "gate-name", "{gate_name}" }
-                        if is_linked {
-                            span {
-                                class: "linked-badge",
-                                title: "This gate is applied at more than one point in the tree",
-                                "\u{1f517}"
-                            }
-                        }
+                        // The badges and the activate button come before the
+                        // name so they stay in view: a deep tree scrolls
+                        // sideways, and anything past the name is the first
+                        // thing to disappear.
                         button {
                             class: "activate-btn",
                             title: "Activate gate",
@@ -363,7 +374,29 @@ fn GateNode(
                             },
                             "🎯"
                         }
-                    
+                        if is_linked {
+                            span {
+                                class: "row-badge linked-badge",
+                                title: "This gate is applied at more than one point in the tree",
+                                "\u{1f517}"
+                            }
+                        }
+                        if overrides.read().0.contains(&gate_id_for_badges) {
+                            span {
+                                class: "row-badge tier-badge",
+                                title: "Positioned per group - this gate moves with the specimen",
+                                "G"
+                            }
+                        }
+                        if overrides.read().1.contains(&gate_id_for_badges) {
+                            span {
+                                class: "row-badge tier-badge",
+                                title: "Positioned per sample - this gate moves with the file",
+                                "S"
+                            }
+                        }
+
+                        span { class: "gate-name", "{gate_name}" }
                     }
 
                     // 4. The Children (Recursive call)
@@ -517,7 +550,7 @@ fn GateNode(
                     "Add OR Gate"
                 }
             }
-        
+
         }
     }
 }

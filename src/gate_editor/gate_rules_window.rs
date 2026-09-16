@@ -5,6 +5,7 @@
 //! occupied twenty-five containers; four rules covered the whole panel.
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, measure_file, position_all};
 use crate::gate_rules::rule::{PercentileOffsetRule, Rule, TailFractionRule};
@@ -106,33 +107,6 @@ fn name_of(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// Every column the loaded metadata carries, sorted.
-fn metadata_columns(metadata: &crate::omiq::metadata::MetaDataFileMap) -> Vec<Arc<str>> {
-    let mut out: Vec<Arc<str>> = Vec::new();
-    for columns in metadata.values() {
-        for name in columns.keys() {
-            if !out.iter().any(|existing| existing == name) {
-                out.push(name.clone());
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// The columns to offer, with the current choice always among them.
-///
-/// A select whose value is not in its options shows the wrong thing, and the
-/// stored column can legitimately name something this metadata does not have -
-/// a sidecar written for another export, or a file not loaded yet.
-fn offered(columns: &[Arc<str>], current: &Arc<str>) -> Vec<Arc<str>> {
-    let mut out = columns.to_vec();
-    if !out.iter().any(|c| c == current) {
-        out.insert(0, current.clone());
-    }
-    out
-}
-
 /// The loaded files, by the name a person recognises them by.
 ///
 /// Rules address files by the id the gating document uses, which is opaque -
@@ -157,7 +131,6 @@ pub fn GateRulesWindow() -> Element {
 
     let choices = use_memo(move || choices(&gate_store.read()));
     let files = use_memo(move || loaded_files(&metadata_store.file_name_to_gating_id().read()));
-    let columns = use_memo(move || metadata_columns(&metadata_store.metadata().read()));
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -406,61 +379,7 @@ pub fn GateRulesWindow() -> Element {
                     "Naming conventions differ between datasets, so the columns that group a specimen's files are named here rather than guessed."
                 }
 
-                label { "Sample ID column" }
-                select {
-                    value: "{rules.read().pairing.sample_id_column}",
-                    onchange: move |e| {
-                        rules.write().pairing.sample_id_column = Arc::from(e.value().as_str());
-                    },
-                    for name in offered(&columns.read(), &rules.read().pairing.sample_id_column) {
-                        option { value: "{name}", "{name}" }
-                    }
-                }
-
-                label { "Sample type column" }
-                select {
-                    value: "{rules.read().pairing.sample_type_column}",
-                    onchange: move |e| {
-                        rules.write().pairing.sample_type_column = Arc::from(e.value().as_str());
-                    },
-                    for name in offered(&columns.read(), &rules.read().pairing.sample_type_column) {
-                        option { value: "{name}", "{name}" }
-                    }
-                }
-
-                // A column name that matches nothing is the quietest way for
-                // all of this to go wrong: every file lands in its own
-                // specimen, no partner is ever found, and the only symptom is
-                // one plot where there should be two.
-                div { class: "gate_rules-span",
-                    {
-                        let pairing = rules.read().pairing.clone();
-                        let matched = metadata_store
-                            .metadata()
-                            .read()
-                            .values()
-                            .filter(|c| c.contains_key(&pairing.sample_id_column))
-                            .count();
-                        let total = metadata_store.metadata().read().len();
-                        if total == 0 {
-                            rsx! {
-                                span { class: "gate_rules-hint", "No metadata loaded yet." }
-                            }
-                        } else if matched == total {
-                            rsx! {
-                                span { class: "gate_rules-hint",
-                                    "Grouping all {total} files by {pairing.sample_id_column}."
-                                }
-                            }
-                        } else {
-                            rsx! {
-                                span { class: "gate_rules-weak",
-                                    "Only {matched} of {total} files carry {pairing.sample_id_column} - the rest cannot be paired or positioned."
-                                }
-                            }
-                        }
-                    }
-                }
+                PairingColumns {}
             }
 
             // ── references chosen by hand ─────────────────────────────────

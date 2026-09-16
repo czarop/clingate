@@ -36,7 +36,12 @@
 /* The scroll container: horizontal for long names, vertical for deep trees. */
 .sidebar-tree {
     flex: 1 1 auto;
-    overflow: auto;
+    /* `scroll`, not `auto`: macOS hides an overlay scrollbar until something is
+       actually scrolling, which on a tree that only sometimes overflows means
+       the one affordance telling you there is more to the right is invisible
+       until you have already found it. Reserving the track keeps it there. */
+    overflow-y: auto;
+    overflow-x: scroll;
     overscroll-behavior: contain;
     padding: 6px 0;
     font-size: var(--tree-font-size);
@@ -51,14 +56,19 @@
     min-width: 100%;
 }
 
+/* Without `-webkit-appearance: none` WebKit keeps the system overlay bar and
+   ignores the styling below, which is what left it hidden on macOS. */
 .sidebar-tree::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
 }
 
 .sidebar-tree::-webkit-scrollbar-thumb {
-    background-color: #cbd5e1;
-    border-radius: 4px;
+    background-color: #94a3b8;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
 }
 
 .sidebar-tree::-webkit-scrollbar-thumb:hover {
@@ -66,7 +76,8 @@
 }
 
 .sidebar-tree::-webkit-scrollbar-track {
-    background: transparent;
+    background: rgba(148, 163, 184, 0.15);
+    border-radius: 5px;
 }
 
 .gate-node-container,
@@ -240,4 +251,25 @@
     background-color: #fee2e2;
     border-bottom: 1px solid #fecaca;
     color: #7f1d1d;
+}
+
+/* Badges sit before the name so a sideways scroll never takes them out of
+   view. Fixed width so the names stay aligned down the tree. */
+.row-badge {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    line-height: 1;
+    margin-right: 3px;
+}
+
+.tier-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    font-weight: 700;
+    background-color: hsl(101, 45%, 42%);
+    color: #fff;
 }

@@ -818,7 +818,9 @@ impl GateState {
         let new_id: GateId = Arc::from(Uuid::new_v4().to_string().as_str());
         let copy: Arc<dyn DrawableGate> = gate
             .with_new_group_id(new_id.clone())
-            .ok_or_else(|| anyhow!("this kind of composite cannot be copied, so it cannot be unlinked"))?
+            .ok_or_else(|| {
+                anyhow!("this kind of composite cannot be copied, so it cannot be unlinked")
+            })?
             .into();
         let new_corners = copy.get_inner_gate_ids();
         if new_corners.len() != old_corners.len() {
@@ -947,7 +949,10 @@ impl GateState {
 
     /// The node above this one in the tree.
     pub fn parent_node(&self, node: &NodeId) -> Option<NodeId> {
-        self.hierarchy.get_parent(node.as_str()).cloned().map(NodeId::from)
+        self.hierarchy
+            .get_parent(node.as_str())
+            .cloned()
+            .map(NodeId::from)
     }
 
     /// Child nodes of a node, in sibling order.
@@ -962,7 +967,11 @@ impl GateState {
 
     /// Root nodes of the tree.
     pub fn root_nodes(&self) -> Vec<NodeId> {
-        self.hierarchy.get_roots().into_iter().map(NodeId::from).collect()
+        self.hierarchy
+            .get_roots()
+            .into_iter()
+            .map(NodeId::from)
+            .collect()
     }
 
     /// The gates to apply, root first, to reach the population this node sees -
@@ -1050,6 +1059,27 @@ impl GateState {
     /// A node's sort order among its siblings.
     pub fn node_order(&self, node: &NodeId) -> Option<u64> {
         self.hierarchy.get_order(node.as_str())
+    }
+
+    /// Which gate ids carry a per-group and a per-sample override.
+    ///
+    /// Returned as sets rather than answered per gate: the sidebar asks for
+    /// every row it draws, and the override maps hold an entry per specimen or
+    /// file, so a scan each time would be a scan of thousands per row.
+    pub fn overridden_ids(&self) -> (FxHashSet<GateId>, FxHashSet<GateId>) {
+        let groups = self
+            .gate_store
+            .group_position_overrides
+            .keys()
+            .map(|(id, _)| id.clone())
+            .collect();
+        let samples = self
+            .gate_store
+            .sample_position_overrides
+            .keys()
+            .map(|(id, _)| id.clone())
+            .collect();
+        (groups, samples)
     }
 
     /// Write a gate into one of the three tiers.
@@ -1145,7 +1175,9 @@ impl GateState {
             // to leave the registry.
             if nodes.is_empty() {
                 gates_to_delete.insert(brother.clone());
-                parents.entry(brother.clone()).or_insert_with(|| ROOTGATE.clone());
+                parents
+                    .entry(brother.clone())
+                    .or_insert_with(|| ROOTGATE.clone());
                 continue;
             }
 
@@ -1216,12 +1248,10 @@ impl GateState {
 
         // Drop the position overrides for every gate that went, not just the one
         // that was asked for.
-        self
-            .gate_store
+        self.gate_store
             .sample_position_overrides
             .retain(|(gid, _file_id), _| !gates_to_delete.contains(gid));
-        self
-            .gate_store
+        self.gate_store
             .group_position_overrides
             .retain(|(gid, _group_id), _| !gates_to_delete.contains(gid));
 
@@ -1236,8 +1266,7 @@ impl GateState {
         for dependents in self.boolean_gate_links.values_mut() {
             dependents.retain(|id| !gates_to_delete.contains(id));
         }
-        self
-            .boolean_gate_links
+        self.boolean_gate_links
             .retain(|id, dependents| !dependents.is_empty() && !gates_to_delete.contains(id));
 
         // Deleting the last boolean that referenced a ghost strands it. Sweep
@@ -1270,7 +1299,8 @@ impl GateState {
         // The tree is keyed by node, and so is the view index: a linked gate at
         // two points in the tree sits on two different populations, so it is the
         // placement, not the gate, that says which plot this belongs to.
-        let parent_node = self.as_parent_node(&parental_gate_id.unwrap_or_else(|| ROOTGATE.clone()));
+        let parent_node =
+            self.as_parent_node(&parental_gate_id.unwrap_or_else(|| ROOTGATE.clone()));
         let key = GatesOnPlotKey::new(
             x_param.clone(),
             y_param.clone(),
@@ -1375,7 +1405,6 @@ impl GateState {
             _ => panic!("add boolean gate with add_boolean_gate"),
         };
 
-
         let gate_key = g.get_id();
 
         self.gate_ids_by_view
@@ -1387,11 +1416,8 @@ impl GateState {
             let gates = g.get_inner_gate_ids();
             for sg in gates {
                 println!("Adding composite subgate gate {sg} with parent {parent_node}");
-                self.hierarchy.add_gate_child(
-                    parent_node.as_arc().clone(),
-                    sg.clone(),
-                    None,
-                )?;
+                self.hierarchy
+                    .add_gate_child(parent_node.as_arc().clone(), sg.clone(), None)?;
                 self.record_placement(NodeId::from(sg.clone()), sg.clone(), false);
                 self.gate_store
                     .primary_and_subgate_registry
@@ -1399,11 +1425,8 @@ impl GateState {
             }
         } else {
             println!("Adding gate {} with parent {parent_node}", g.get_id());
-            self.hierarchy.add_gate_child(
-                parent_node.as_arc().clone(),
-                g.get_id(),
-                None,
-            )?;
+            self.hierarchy
+                .add_gate_child(parent_node.as_arc().clone(), g.get_id(), None)?;
             self.record_placement(NodeId::from(g.get_id()), g.get_id(), false);
         }
 
@@ -1481,7 +1504,11 @@ impl GateState {
 
         let mut reachable: FxHashSet<Arc<str>> = FxHashSet::default();
         for node in experiment.tree.nodes.values() {
-            collect_reachable(&node.filter_container_id, &experiment.tree.filter_containers, &mut reachable);
+            collect_reachable(
+                &node.filter_container_id,
+                &experiment.tree.filter_containers,
+                &mut reachable,
+            );
         }
 
         // Capture what the file carries before any of it is turned into gates.
@@ -1498,8 +1525,8 @@ impl GateState {
         let mut boolean_gates = vec![];
         // step 1 is to separate the composite gates from the primary gates
         for (id, container) in &experiment.tree.filter_containers {
-            if !reachable.contains(id){
-                continue
+            if !reachable.contains(id) {
+                continue;
             }
             let container = match container {
                 FilterContainer::Atomic(atomic_container) => atomic_container,
@@ -1543,8 +1570,6 @@ impl GateState {
                 .push((group_position, container.clone()));
         }
 
-
-
         let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
 
         // 2. Sort nodes by their depth in the tree
@@ -1552,7 +1577,7 @@ impl GateState {
         sorted_nodes.sort_by_cached_key(|node| {
             let mut depth = 0;
             let mut current_parent: &str = &node.parent_id;
-            
+
             // Walk up the tree to the root to find the depth
             while current_parent != "" {
                 if let Some(parent) = experiment.tree.nodes.get(current_parent) {
@@ -1669,12 +1694,18 @@ impl GateState {
                             .and_then(|n| self.parent_node(&n))
                             .map(|n| n.as_arc().clone())
                             .ok_or_else(|| {
-                                anyhow::anyhow!("Could not locate parent of subgate {} in hierarchy", any_subgate)
+                                anyhow::anyhow!(
+                                    "Could not locate parent of subgate {} in hierarchy",
+                                    any_subgate
+                                )
                             })?;
                         let params = gate.get_params();
                         let key = GatesOnPlotKey::new(params.0, params.1, Some(parent));
 
-                        self.gate_ids_by_view.entry(key).or_default().push(id.clone());
+                        self.gate_ids_by_view
+                            .entry(key)
+                            .or_default()
+                            .push(id.clone());
                         self.gate_store
                             .primary_and_subgate_registry
                             .insert(id.clone(), gate.clone());
@@ -1838,7 +1869,8 @@ impl<Lens> Store<GateState, Lens> {
             y_param,
         )?);
 
-        self.write().place_new_gate(parental_gate_id, gate_id.clone())?;
+        self.write()
+            .place_new_gate(parental_gate_id, gate_id.clone())?;
 
         self.gate_store()
             .primary_and_subgate_registry()
@@ -2054,7 +2086,7 @@ impl<Lens> Store<GateState, Lens> {
                 // } else {
                 //     (*(plot_map.y_data_min_max().start()), *(plot_map.y_data_min_max().end()))
                 // };
-                
+
                 if marker == &x_marker || marker == &y_marker {
                     let new_gate = match gate.recalculate_gate_for_rescaled_axis(
                         marker.clone(),
@@ -2162,7 +2194,6 @@ fn collect_reachable(
             collect_reachable(sub_id, filter_containers, reachable);
         }
     }
-    
 }
 //cargo test gate_store_tests -- --nocapture
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -2409,7 +2440,10 @@ mod gate_store_tests {
         store.map_gates(|_| replacement.clone());
 
         assert!(Arc::ptr_eq(
-            store.primary_and_subgate_registry.get(&original.get_id()).unwrap(),
+            store
+                .primary_and_subgate_registry
+                .get(&original.get_id())
+                .unwrap(),
             &replacement
         ));
     }
@@ -2446,7 +2480,12 @@ mod gate_store_tests {
         let mut state = GateState::default();
         let id = add_rect(&mut state, None);
 
-        assert!(state.gate_store.primary_and_subgate_registry.contains_key(&id));
+        assert!(
+            state
+                .gate_store
+                .primary_and_subgate_registry
+                .contains_key(&id)
+        );
         assert_eq!(
             state.hierarchy.get_parent(&id).map(|p| p.to_string()),
             Some(ROOTGATE.to_string())
@@ -2552,7 +2591,11 @@ mod gate_store_tests {
         state.remove_gate(child.clone()).unwrap();
 
         let key = GatesOnPlotKey::new(Arc::from(X), Arc::from(Y), Some(parent));
-        let on_plot = state.gate_ids_by_view.get(&key).cloned().unwrap_or_default();
+        let on_plot = state
+            .gate_ids_by_view
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
         assert!(
             !on_plot.contains(&child),
             "the deleted gate is still listed on its plot: {on_plot:?}"
@@ -2566,7 +2609,12 @@ mod gate_store_tests {
 
         state.remove_gate(id.clone()).unwrap();
 
-        assert!(!state.gate_store.primary_and_subgate_registry.contains_key(&id));
+        assert!(
+            !state
+                .gate_store
+                .primary_and_subgate_registry
+                .contains_key(&id)
+        );
         assert!(state.hierarchy.get_parent(&id).is_none());
     }
 
@@ -2597,9 +2645,17 @@ mod gate_store_tests {
 
         state.remove_gate(parent.clone()).unwrap();
 
-        assert!(!state.gate_store.primary_and_subgate_registry.contains_key(&parent));
         assert!(
-            !state.gate_store.primary_and_subgate_registry.contains_key(&child),
+            !state
+                .gate_store
+                .primary_and_subgate_registry
+                .contains_key(&parent)
+        );
+        assert!(
+            !state
+                .gate_store
+                .primary_and_subgate_registry
+                .contains_key(&child),
             "the child outlived its parent"
         );
     }
@@ -2633,16 +2689,26 @@ mod gate_store_tests {
 
         // Give both a per-sample override.
         let moved = rectangle("moved");
-        state.gate_store.sample_position_overrides
+        state
+            .gate_store
+            .sample_position_overrides
             .insert((parent.clone(), file("s1")), moved.clone());
-        state.gate_store.sample_position_overrides
+        state
+            .gate_store
+            .sample_position_overrides
             .insert((child.clone(), file("s1")), moved.clone());
 
         state.remove_gate(parent.clone()).unwrap();
 
-        assert!(state.gate_store.sample_position_overrides.is_empty(),
+        assert!(
+            state.gate_store.sample_position_overrides.is_empty(),
             "overrides left behind: {:?}",
-            state.gate_store.sample_position_overrides.keys().collect::<Vec<_>>());
+            state
+                .gate_store
+                .sample_position_overrides
+                .keys()
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Regression: only the subgate ids were removed, so the composite's own
@@ -2670,7 +2736,11 @@ mod gate_store_tests {
         assert!(
             state.gate_store.primary_and_subgate_registry.is_empty(),
             "registry still holds: {:?}",
-            state.gate_store.primary_and_subgate_registry.keys().collect::<Vec<_>>()
+            state
+                .gate_store
+                .primary_and_subgate_registry
+                .keys()
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2681,7 +2751,12 @@ mod gate_store_tests {
 
         state.remove_gate(Arc::from("does-not-exist")).unwrap();
 
-        assert!(state.gate_store.primary_and_subgate_registry.contains_key(&id));
+        assert!(
+            state
+                .gate_store
+                .primary_and_subgate_registry
+                .contains_key(&id)
+        );
     }
 
     // ── GateState::get_current_sample ─────────────────────────────────────────
@@ -2697,11 +2772,16 @@ mod gate_store_tests {
     fn a_gate_with_no_override_resolves_to_its_global_position() {
         let mut state = GateState::default();
         let g = rectangle("r");
-        state.gate_store.insert_for_source(&[g.get_id()], &g, &GateSource::Global);
+        state
+            .gate_store
+            .insert_for_source(&[g.get_id()], &g, &GateSource::Global);
 
         let resolver = state.get_current_sample(file("s1"), &groups(&[]));
 
-        assert!(Arc::ptr_eq(&resolver.active_gates.get(&g.get_id()).unwrap().0, &g));
+        assert!(Arc::ptr_eq(
+            &resolver.active_gates.get(&g.get_id()).unwrap().0,
+            &g
+        ));
         assert_eq!(
             resolver.gate_origins.get(&g.get_id()),
             Some(&GateSource::Global)
@@ -2713,8 +2793,12 @@ mod gate_store_tests {
         let mut state = GateState::default();
         let global = rectangle("r");
         let override_gate = rectangle("r");
-        state.gate_store.insert_for_source(&[global.get_id()], &global, &GateSource::Global);
-        state.gate_store.sample_position_overrides
+        state
+            .gate_store
+            .insert_for_source(&[global.get_id()], &global, &GateSource::Global);
+        state
+            .gate_store
+            .sample_position_overrides
             .insert((global.get_id(), file("s1")), override_gate.clone());
 
         let overridden = state.get_current_sample(file("s1"), &groups(&[]));
@@ -2736,8 +2820,12 @@ mod gate_store_tests {
         let global = rectangle("r");
         let group_gate = rectangle("r");
         let key = group_key("$VOL", "high");
-        state.gate_store.insert_for_source(&[global.get_id()], &global, &GateSource::Global);
-        state.gate_store.group_position_overrides
+        state
+            .gate_store
+            .insert_for_source(&[global.get_id()], &global, &GateSource::Global);
+        state
+            .gate_store
+            .group_position_overrides
             .insert((global.get_id(), key.clone()), group_gate.clone());
 
         let in_group = state.get_current_sample(file("s1"), &groups(&[("$VOL", "high")]));
@@ -2762,10 +2850,16 @@ mod gate_store_tests {
         let sample_gate = rectangle("r");
         let key = group_key("$VOL", "high");
 
-        state.gate_store.insert_for_source(&[global.get_id()], &global, &GateSource::Global);
-        state.gate_store.group_position_overrides
+        state
+            .gate_store
+            .insert_for_source(&[global.get_id()], &global, &GateSource::Global);
+        state
+            .gate_store
+            .group_position_overrides
             .insert((global.get_id(), key), group_gate);
-        state.gate_store.sample_position_overrides
+        state
+            .gate_store
+            .sample_position_overrides
             .insert((global.get_id(), file("s1")), sample_gate.clone());
 
         let resolver = state.get_current_sample(file("s1"), &groups(&[("$VOL", "high")]));
@@ -2785,7 +2879,9 @@ mod gate_store_tests {
         let mut state = GateState::default();
         for id in ["a", "b", "c"] {
             let g = rectangle(id);
-            state.gate_store.insert_for_source(&[g.get_id()], &g, &GateSource::Global);
+            state
+                .gate_store
+                .insert_for_source(&[g.get_id()], &g, &GateSource::Global);
         }
 
         let resolver = state.get_current_sample(file("s1"), &groups(&[]));
@@ -2825,8 +2921,15 @@ mod gate_store_tests {
         let mut state = GateState::default();
         state
             .add_gate(
-                &mapper(), 300.0, 300.0, Arc::from(X), Arc::from(Y),
-                None, None, PrimaryGateType::Quadrant, Some("q".to_string()),
+                &mapper(),
+                300.0,
+                300.0,
+                Arc::from(X),
+                Arc::from(Y),
+                None,
+                None,
+                PrimaryGateType::Quadrant,
+                Some("q".to_string()),
             )
             .unwrap();
 
@@ -2846,7 +2949,10 @@ mod gate_store_tests {
 
         assert_eq!(state.placement_count(&id), 0);
         assert!(state.gate_for_node(&NodeId::from(id.clone())).is_none());
-        assert!(state.nodes_by_gate.get(&id).is_none(), "no empty vec left behind");
+        assert!(
+            state.nodes_by_gate.get(&id).is_none(),
+            "no empty vec left behind"
+        );
     }
 
     #[test]
@@ -2870,7 +2976,10 @@ mod gate_store_tests {
         let child = add_rect(&mut state, Some(id.clone()));
 
         assert_eq!(state.placements.len(), 2);
-        assert_eq!(state.gate_for_node(&NodeId::from(child.clone())), Some(&child));
+        assert_eq!(
+            state.gate_for_node(&NodeId::from(child.clone())),
+            Some(&child)
+        );
     }
 
     /// Re-pointing a node at another gate must leave the first gate's list
@@ -2891,7 +3000,11 @@ mod gate_store_tests {
 
         state.record_placement(node.clone(), b.clone(), false);
 
-        assert_eq!(state.placement_count(&a), 0, "no stale entry on the old gate");
+        assert_eq!(
+            state.placement_count(&a),
+            0,
+            "no stale entry on the old gate"
+        );
         assert_eq!(state.placement_count(&b), 2);
         assert!(state.is_linked(&b));
         assert_eq!(state.gate_for_node(&node), Some(&b));
