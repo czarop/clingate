@@ -35,6 +35,14 @@ use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/main_window.css");
 
+/// The plot is 600x600, and the drawing area inside it is inset by the axis
+/// labels. Taken from the same helper the gate geometry uses, so the two agree.
+const PLOT_SIZE: u32 = 600;
+static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| {
+    let (x, _) = flow_gates::transforms::get_plotting_area(PLOT_SIZE, PLOT_SIZE);
+    (x.start, x.end - x.start)
+});
+
 #[component]
 pub fn MainWindow() -> Element {
     // Created by the NavBar layout: which files are open describes the
@@ -566,7 +574,9 @@ pub fn MainWindow() -> Element {
                 }
 
                 div {
-                    NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                    div { class: "new-gate-pane",
+                        NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                    }
                     {
                         // The specimen holding the selected file, so both plots
                         // show the same donor and timepoint.
@@ -602,7 +612,18 @@ pub fn MainWindow() -> Element {
                                 div { class: "gate-window-container",
                                     for (name , sample_stub) in shown {
                                         div { class: "gate-window", key: "{name}",
-                                            div { class: "gate-window_title", title: "{name}", "{name}" }
+                                            // Centred over the data area rather
+                                            // than the image: the plot carries
+                                            // a label gutter down its left
+                                            // side, so centring on the whole
+                                            // width would sit the name visibly
+                                            // right of the cloud it names.
+                                            div {
+                                                class: "gate-window_title",
+                                                style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
+                                                title: "{name}",
+                                                "{name}"
+                                            }
                                             PlotWindow {
                                                 sample_stub,
                                                 x_axis_marker,

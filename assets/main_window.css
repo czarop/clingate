@@ -95,10 +95,18 @@ button:hover {
     font-size: 0.85rem;
     font-weight: 600;
     opacity: 0.85;
-    max-width: 600px;
+    /* Width and offset come from the plot's own drawing area, set inline. */
+    box-sizing: border-box;
+    text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Room to breathe around the gate tools, between the controls above and the
+   plots below. */
+.new-gate-pane {
+    padding: 10px 0 12px;
 }
 
 .gate-window-container{
