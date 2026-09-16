@@ -129,6 +129,60 @@ impl SamplePairing {
     }
 }
 
+/// Which gates a rule applies to.
+///
+/// Named, not identified. A gate called "CD279+" occupied twenty-five separate
+/// containers in one real export, and writing a rule per container is both
+/// miserable to author and wrong in principle: the rule is a statement about a
+/// population, and the population is "CD279+ of CD4+", not container `1TBQ`.
+///
+/// `parent` is what distinguishes the same marker gated on different
+/// populations, which is how gates are spoken about - "Ki67+ of CD4+". Leaving
+/// it out applies the rule to every gate of that name, which is the common
+/// case; a target that names a parent wins over one that does not.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RuleTarget {
+    /// The gate's name, as Omiq stores it on the container.
+    pub gate: Arc<str>,
+    /// The name of the gate above it, when the rule is specific to one
+    /// population.
+    #[serde(default)]
+    pub parent: Option<Arc<str>>,
+}
+
+impl RuleTarget {
+    /// Every gate of this name, wherever it appears.
+    pub fn named(gate: impl Into<Arc<str>>) -> Self {
+        Self {
+            gate: gate.into(),
+            parent: None,
+        }
+    }
+
+    /// Gates of this name under a parent of that name.
+    pub fn under(gate: impl Into<Arc<str>>, parent: impl Into<Arc<str>>) -> Self {
+        Self {
+            gate: gate.into(),
+            parent: Some(parent.into()),
+        }
+    }
+
+    /// How it reads in a list: "Ki67+ of CD4+", or just "Ki67+".
+    pub fn describe(&self) -> String {
+        match &self.parent {
+            Some(parent) => format!("{} of {}", self.gate, parent),
+            None => self.gate.to_string(),
+        }
+    }
+}
+
+/// A rule and the gates it applies to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuleEntry {
+    pub target: RuleTarget,
+    pub rule: GateRule,
+}
+
 /// One gate's rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GateRule {
@@ -179,10 +233,9 @@ impl GateRule {
 pub struct RuleStore {
     #[serde(default)]
     pub pairing: SamplePairing,
-    /// Keyed by gate, matching Omiq's own model: a rule belongs to the gate,
-    /// not to one of its positions in the tree, so linking a gate carries its
-    /// rule with it.
-    rules: FxHashMap<Arc<str>, GateRule>,
+    /// A list rather than a map because a target is a pair, and because the
+    /// order a person adds rules in is worth keeping.
+    rules: Vec<RuleEntry>,
     /// Consulted before the pairing. A list rather than a map because a JSON
     /// object cannot key on a pair, and there are few of these by nature.
     #[serde(default)]
@@ -198,16 +251,49 @@ impl RuleStore {
         }
     }
 
-    pub fn get(&self, gate: &str) -> Option<&GateRule> {
-        self.rules.get(gate)
+    /// The rule for a gate of this name under a parent of that name.
+    ///
+    /// A target naming the parent wins over one that does not, so a general
+    /// rule can be written once and then overridden for the population that
+    /// needs different treatment.
+    pub fn rule_for(&self, gate: &str, parent: Option<&str>) -> Option<&GateRule> {
+        let specific = self.rules.iter().find(|e| {
+            &*e.target.gate == gate
+                && e.target
+                    .parent
+                    .as_deref()
+                    .is_some_and(|p| Some(p) == parent)
+        });
+        specific
+            .or_else(|| {
+                self.rules
+                    .iter()
+                    .find(|e| &*e.target.gate == gate && e.target.parent.is_none())
+            })
+            .map(|e| &e.rule)
     }
 
-    pub fn insert(&mut self, gate: Arc<str>, rule: GateRule) -> Option<GateRule> {
-        self.rules.insert(gate, rule)
+    pub fn get(&self, target: &RuleTarget) -> Option<&GateRule> {
+        self.rules
+            .iter()
+            .find(|e| &e.target == target)
+            .map(|e| &e.rule)
     }
 
-    pub fn remove(&mut self, gate: &str) -> Option<GateRule> {
-        self.rules.remove(gate)
+    /// Add a rule, replacing any that targets exactly the same gates.
+    pub fn insert(&mut self, target: RuleTarget, rule: GateRule) -> Option<GateRule> {
+        let previous = self.remove(&target);
+        self.rules.push(RuleEntry { target, rule });
+        previous
+    }
+
+    pub fn remove(&mut self, target: &RuleTarget) -> Option<GateRule> {
+        let at = self.rules.iter().position(|e| &e.target == target)?;
+        Some(self.rules.remove(at).rule)
+    }
+
+    pub fn entries(&self) -> &[RuleEntry] {
+        &self.rules
     }
 
     pub fn len(&self) -> usize {
@@ -216,10 +302,6 @@ impl RuleStore {
 
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &GateRule)> {
-        self.rules.iter()
     }
 
     /// Name the file to measure when gating `gated` and the rule asks for

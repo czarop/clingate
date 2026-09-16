@@ -219,9 +219,9 @@ fn the_pairing_columns_are_configurable() {
 #[test]
 fn a_store_round_trips_through_its_sidecar() {
     let mut original = store();
-    original.insert(Arc::from("gate-1"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
     original.insert(
-        Arc::from("gate-2"),
+        RuleTarget::under("CD38+", "CD19+CD33-"),
         GateRule {
             parameter: Arc::from("RB613-A"),
             bound: Bound::Below,
@@ -260,7 +260,7 @@ fn a_sidecar_keeps_the_pairing_it_was_written_with() {
 /// A sidecar written before the pairing existed still loads, on the defaults.
 #[test]
 fn a_sidecar_without_a_pairing_falls_back_to_the_default_columns() {
-    let back: RuleStore = serde_json::from_str(r#"{"rules":{}}"#).unwrap();
+    let back: RuleStore = serde_json::from_str(r#"{"rules":[]}"#).unwrap();
 
     assert_eq!(back.pairing, SamplePairing::default());
     assert!(back.is_empty());
@@ -269,14 +269,16 @@ fn a_sidecar_without_a_pairing_falls_back_to_the_default_columns() {
 #[test]
 fn a_rule_can_be_replaced_and_removed() {
     let mut s = store();
+    let target = RuleTarget::named("Ki67+");
     assert!(
-        s.insert(Arc::from("g"), gate_rule(Bound::Above, (0.0, 0.1)))
+        s.insert(target.clone(), gate_rule(Bound::Above, (0.0, 0.1)))
             .is_none()
     );
-    let previous = s.insert(Arc::from("g"), gate_rule(Bound::Below, (0.0, 0.1)));
+    let previous = s.insert(target.clone(), gate_rule(Bound::Below, (0.0, 0.1)));
     assert_eq!(previous.map(|r| r.bound), Some(Bound::Above));
-    assert_eq!(s.get("g").map(|r| r.bound), Some(Bound::Below));
-    assert!(s.remove("g").is_some());
+    assert_eq!(s.get(&target).map(|r| r.bound), Some(Bound::Below));
+    assert_eq!(s.len(), 1, "replaced, not appended");
+    assert!(s.remove(&target).is_some());
     assert!(s.is_empty());
 }
 
@@ -418,7 +420,7 @@ fn a_rule_measured_on_a_named_file_always_reads_it() {
 #[test]
 fn hand_set_references_survive_the_sidecar() {
     let mut original = store();
-    original.insert(Arc::from("g"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
     original.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
 
     let back: RuleStore = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
@@ -429,7 +431,7 @@ fn hand_set_references_survive_the_sidecar() {
 
 #[test]
 fn a_sidecar_without_overrides_still_loads() {
-    let back: RuleStore = serde_json::from_str(r#"{"rules":{}}"#).unwrap();
+    let back: RuleStore = serde_json::from_str(r#"{"rules":[]}"#).unwrap();
     assert!(back.references().is_empty());
 }
 
@@ -558,4 +560,101 @@ fn a_derivation_survives_the_sidecar() {
     let back: RuleStore = serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
 
     assert_eq!(back.pairing, store.pairing);
+}
+
+// ─── naming the gates a rule applies to ───────────────────────────────────────
+
+#[test]
+fn one_rule_covers_every_gate_of_that_name() {
+    // The case this exists for: "CD279+" occupied twenty-five containers in a
+    // real export, and a rule per container is both miserable and wrong.
+    let mut s = store();
+    s.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+
+    assert_eq!(s.len(), 1);
+    for parent in [Some("CD4+"), Some("CD8+"), Some("anything at all"), None] {
+        assert!(
+            s.rule_for("CD279+", parent).is_some(),
+            "should apply under {parent:?}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_naming_a_parent_wins_over_one_that_does_not() {
+    let mut s = store();
+    s.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    s.insert(
+        RuleTarget::under("Ki67+", "CD4+"),
+        gate_rule(Bound::Above, (0.05, 0.06)),
+    );
+
+    let general = s.rule_for("Ki67+", Some("CD8+")).expect("the general rule");
+    let specific = s.rule_for("Ki67+", Some("CD4+")).expect("the specific one");
+
+    assert_ne!(general.rule, specific.rule, "the parent has to matter");
+}
+
+/// Order of insertion must not decide it - the specific one wins either way.
+#[test]
+fn the_specific_rule_wins_whichever_order_it_was_added() {
+    for specific_first in [true, false] {
+        let mut s = store();
+        let general = (RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+        let specific = (
+            RuleTarget::under("Ki67+", "CD4+"),
+            gate_rule(Bound::Below, (0.002, 0.005)),
+        );
+        if specific_first {
+            s.insert(specific.0.clone(), specific.1.clone());
+            s.insert(general.0.clone(), general.1.clone());
+        } else {
+            s.insert(general.0.clone(), general.1.clone());
+            s.insert(specific.0.clone(), specific.1.clone());
+        }
+
+        assert_eq!(
+            s.rule_for("Ki67+", Some("CD4+")).map(|r| r.bound),
+            Some(Bound::Below),
+            "specific_first was {specific_first}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_for_one_parent_does_not_reach_another() {
+    let mut s = store();
+    s.insert(
+        RuleTarget::under("Ki67+", "CD4+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
+
+    assert!(s.rule_for("Ki67+", Some("CD4+")).is_some());
+    assert!(s.rule_for("Ki67+", Some("CD8+")).is_none());
+    assert!(s.rule_for("Ki67+", None).is_none());
+    assert!(s.rule_for("CD38+", Some("CD4+")).is_none());
+}
+
+#[test]
+fn a_target_reads_the_way_a_gate_is_spoken_about() {
+    assert_eq!(RuleTarget::under("Ki67+", "CD4+").describe(), "Ki67+ of CD4+");
+    assert_eq!(RuleTarget::named("Ki67+").describe(), "Ki67+");
+}
+
+#[test]
+fn targets_survive_the_sidecar() {
+    let mut original = store();
+    original.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::under("Ki67+", "CD4+"),
+        gate_rule(Bound::Below, (0.01, 0.02)),
+    );
+
+    let back: RuleStore = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+
+    assert_eq!(back, original);
+    assert_eq!(
+        back.rule_for("Ki67+", Some("CD4+")).map(|r| r.bound),
+        Some(Bound::Below)
+    );
 }

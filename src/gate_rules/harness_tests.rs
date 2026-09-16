@@ -80,6 +80,9 @@ struct Row {
     file_id: FileId,
     gate: String,
     gate_id: GateId,
+    /// The name of the gate above it, which is how a rule names a population -
+    /// "Ki67+ of CD4+".
+    parent_gate: Option<String>,
     channel: String,
     parent_events: usize,
     bound: Bound,
@@ -302,6 +305,10 @@ fn rows_for_file(
             file_id: file_id.clone(),
             gate: gate.get_name().to_string(),
             gate_id: gate_id.clone(),
+            parent_gate: state
+                .gate_for_node(&parent)
+                .and_then(|id| state.registered_gate(id))
+                .map(|g| g.get_name().to_string()),
             channel: param.to_string(),
             parent_events: values.len(),
             bound,
@@ -517,7 +524,16 @@ fn score_with_each_gates_own_band(rows: &[Row]) {
 /// an FMO and applying the answer to the full stain.
 fn score_from_rules(store: &RuleStore, rows: &[Row], metadata: &MetaDataFileMap) {
     println!("\n{}", "=".repeat(112));
-    println!("Solved from {} rules in the sidecar", store.len());
+    println!(
+        "Solved from {} rules in the sidecar: {}",
+        store.len(),
+        store
+            .entries()
+            .iter()
+            .map(|e| e.target.describe())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("{}", "=".repeat(112));
     println!(
         "{:<22} {:<20} {:<20} {:>7} {:>9} {:>9} {:>8} {:>6}  {}",
@@ -527,7 +543,7 @@ fn score_from_rules(store: &RuleStore, rows: &[Row], metadata: &MetaDataFileMap)
     let mut diffs: Vec<f64> = Vec::new();
     let mut unresolved = 0;
     for row in rows {
-        let Some(rule) = store.get(&row.gate_id) else {
+        let Some(rule) = store.rule_for(&row.gate, row.parent_gate.as_deref()) else {
             continue;
         };
         // A rule names the parameter it positions. If the gate the row came
