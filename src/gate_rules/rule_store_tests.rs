@@ -277,3 +277,156 @@ fn a_rule_can_be_replaced_and_removed() {
     assert!(s.remove("g").is_some());
     assert!(s.is_empty());
 }
+
+// ─── choosing the reference by hand ───────────────────────────────────────────
+
+#[test]
+fn a_hand_set_reference_beats_the_pairing() {
+    let meta = metadata(&[
+        ("fs_a", "donor1_wk1", "FS"),
+        ("fmx_a", "donor1_wk1", "FMX"),
+        ("fmx_b", "donor2_wk1", "FMX"),
+    ]);
+    let mut s = store();
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
+
+    let found = s.reference_file(
+        &Arc::from("fs_a"),
+        &MeasuredOn::Partner(Arc::from("FMX")),
+        &meta,
+    );
+
+    assert_eq!(
+        found.as_deref(),
+        Some("fmx_b"),
+        "the chosen one, not the pairing's"
+    );
+}
+
+/// The case it exists for: a specimen whose FMO was never run.
+#[test]
+fn a_hand_set_reference_rescues_a_specimen_with_no_partner() {
+    let meta = metadata(&[("fs_a", "donor1_wk1", "FS"), ("fmx_b", "donor2_wk1", "FMX")]);
+    let partner = MeasuredOn::Partner(Arc::from("FMX"));
+    let mut s = store();
+    assert_eq!(s.reference_file(&Arc::from("fs_a"), &partner, &meta), None);
+
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
+
+    assert_eq!(
+        s.reference_file(&Arc::from("fs_a"), &partner, &meta)
+            .as_deref(),
+        Some("fmx_b")
+    );
+}
+
+#[test]
+fn a_reference_is_set_per_file_and_sample_type() {
+    let meta = metadata(&[
+        ("fs_a", "donor1_wk1", "FS"),
+        ("fmx_a", "donor1_wk1", "FMX"),
+        ("fs_b", "donor2_wk1", "FS"),
+        ("fmx_b", "donor2_wk1", "FMX"),
+    ]);
+    let mut s = store();
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
+
+    // Another file of the same type is untouched.
+    let found = s.reference_file(
+        &Arc::from("fs_b"),
+        &MeasuredOn::Partner(Arc::from("FMX")),
+        &meta,
+    );
+    assert_eq!(
+        found.as_deref(),
+        Some("fmx_b"),
+        "from the pairing, not the override"
+    );
+
+    // And another sample type for the same file is untouched.
+    let unstained = s.reference_file(
+        &Arc::from("fs_a"),
+        &MeasuredOn::Partner(Arc::from("U")),
+        &meta,
+    );
+    assert_eq!(unstained, None);
+}
+
+#[test]
+fn setting_a_reference_twice_replaces_it() {
+    let meta = metadata(&[
+        ("fs_a", "donor1_wk1", "FS"),
+        ("x", "other", "FMX"),
+        ("y", "other", "FMX"),
+    ]);
+    let mut s = store();
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("x"));
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("y"));
+
+    assert_eq!(s.references().len(), 1, "not two entries for one pair");
+    assert_eq!(
+        s.reference_file(
+            &Arc::from("fs_a"),
+            &MeasuredOn::Partner(Arc::from("FMX")),
+            &meta
+        )
+        .as_deref(),
+        Some("y")
+    );
+}
+
+#[test]
+fn clearing_a_reference_falls_back_to_the_pairing() {
+    let meta = metadata(&[
+        ("fs_a", "donor1_wk1", "FS"),
+        ("fmx_a", "donor1_wk1", "FMX"),
+        ("fmx_b", "donor2_wk1", "FMX"),
+    ]);
+    let partner = MeasuredOn::Partner(Arc::from("FMX"));
+    let mut s = store();
+    s.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
+
+    assert!(s.clear_reference("fs_a", "FMX"));
+    assert!(!s.clear_reference("fs_a", "FMX"), "already gone");
+
+    assert_eq!(
+        s.reference_file(&Arc::from("fs_a"), &partner, &meta)
+            .as_deref(),
+        Some("fmx_a")
+    );
+}
+
+/// A rule measured on one named file - a QC or template run - ignores both the
+/// pairing and the sample being gated.
+#[test]
+fn a_rule_measured_on_a_named_file_always_reads_it() {
+    let meta = metadata(&[("fs_a", "donor1_wk1", "FS"), ("qc", "qc4", "FS")]);
+    let on_qc = MeasuredOn::File(Arc::from("qc"));
+
+    for gated in ["fs_a", "anything", "not even in the metadata"] {
+        assert_eq!(
+            store()
+                .reference_file(&Arc::from(gated), &on_qc, &meta)
+                .as_deref(),
+            Some("qc")
+        );
+    }
+}
+
+#[test]
+fn hand_set_references_survive_the_sidecar() {
+    let mut original = store();
+    original.insert(Arc::from("g"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
+
+    let back: RuleStore = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+
+    assert_eq!(back, original);
+    assert_eq!(back.references().len(), 1);
+}
+
+#[test]
+fn a_sidecar_without_overrides_still_loads() {
+    let back: RuleStore = serde_json::from_str(r#"{"rules":{}}"#).unwrap();
+    assert!(back.references().is_empty());
+}

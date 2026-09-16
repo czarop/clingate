@@ -41,6 +41,26 @@ pub enum MeasuredOn {
     Partner(Arc<str>),
     /// The sample being gated.
     Itself,
+    /// One named file, whichever sample is being gated - a QC or template run
+    /// that every sample is positioned against.
+    File(FileId),
+}
+
+/// A reference file chosen by hand, overriding what the pairing would find.
+///
+/// The pairing covers the ordinary case, but it cannot cover every one: a
+/// specimen's FMO is not always run, a metadata column can be wrong, and a
+/// sample can need a stand-in from another specimen. Rather than let the rule
+/// fail or quietly measure the wrong thing, the choice is settable - this is
+/// what the UI writes when a person picks a reference by hand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceOverride {
+    /// The file being gated.
+    pub gated: FileId,
+    /// The sample type its rule asks for.
+    pub sample_type: Arc<str>,
+    /// The file to measure instead.
+    pub reference: FileId,
 }
 
 /// The metadata columns that say which files belong together.
@@ -118,6 +138,10 @@ pub struct RuleStore {
     /// not to one of its positions in the tree, so linking a gate carries its
     /// rule with it.
     rules: FxHashMap<Arc<str>, GateRule>,
+    /// Consulted before the pairing. A list rather than a map because a JSON
+    /// object cannot key on a pair, and there are few of these by nature.
+    #[serde(default)]
+    overrides: Vec<ReferenceOverride>,
 }
 
 impl RuleStore {
@@ -153,13 +177,39 @@ impl RuleStore {
         self.rules.iter()
     }
 
+    /// Name the file to measure when gating `gated` and the rule asks for
+    /// `sample_type`, in place of whatever the pairing would find. Replaces any
+    /// previous choice for the same pair.
+    pub fn set_reference(&mut self, gated: FileId, sample_type: Arc<str>, reference: FileId) {
+        self.clear_reference(&gated, &sample_type);
+        self.overrides.push(ReferenceOverride {
+            gated,
+            sample_type,
+            reference,
+        });
+    }
+
+    /// Fall back to the pairing for this pair again.
+    pub fn clear_reference(&mut self, gated: &str, sample_type: &str) -> bool {
+        let before = self.overrides.len();
+        self.overrides
+            .retain(|o| !(&*o.gated == gated && &*o.sample_type == sample_type));
+        self.overrides.len() != before
+    }
+
+    pub fn references(&self) -> &[ReferenceOverride] {
+        &self.overrides
+    }
+
     /// The file a rule is measured on, given the file being gated.
     ///
-    /// `Itself` is the file it was handed. `Partner` looks for the one file in
-    /// the same specimen whose sample type matches. Returns `None` when there
-    /// is no such partner - an FMO is not always run - which the caller should
-    /// report rather than silently fall back to the sample itself, since the
-    /// two give quite different answers.
+    /// `Itself` is the file it was handed and `File` the one it names. `Partner`
+    /// takes a hand-set reference if there is one for this pair, and otherwise
+    /// looks for the one file in the same specimen whose sample type matches.
+    ///
+    /// Returns `None` when there is no such partner - an FMO is not always run -
+    /// which the caller should report rather than silently fall back to the
+    /// sample itself, since the two give quite different answers.
     pub fn reference_file(
         &self,
         file: &FileId,
@@ -168,8 +218,16 @@ impl RuleStore {
     ) -> Option<FileId> {
         let wanted = match measured_on {
             MeasuredOn::Itself => return Some(file.clone()),
+            MeasuredOn::File(named) => return Some(named.clone()),
             MeasuredOn::Partner(t) => t,
         };
+        if let Some(chosen) = self
+            .overrides
+            .iter()
+            .find(|o| o.gated == *file && o.sample_type == *wanted)
+        {
+            return Some(chosen.reference.clone());
+        }
         let specimen = metadata.get(file)?.get(&self.pairing.sample_id_column)?;
         metadata
             .iter()
