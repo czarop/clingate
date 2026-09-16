@@ -28,7 +28,7 @@ fn fixture(
         let id: Arc<str> = Arc::from(format!("id{i}").as_str());
         names.insert(key, id.clone());
         let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
-        columns.insert(Arc::from("Sample ID"), Arc::from(*specimen));
+        columns.insert(Arc::from("SampleID"), Arc::from(*specimen));
         if let Some(kind) = kind {
             columns.insert(Arc::from("SampleType"), Arc::from(*kind));
         }
@@ -157,4 +157,27 @@ fn a_file_with_a_specimen_but_no_type_still_pairs() {
 
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].files, vec![1, 0], "the typed file takes the left");
+}
+
+#[test]
+fn the_defaults_match_an_omiq_metadata_export() {
+    // Real exports carry `SampleID` and `SampleType`, and three files per
+    // specimen: unstained, FMO, full stain. A default that misses the column -
+    // "Sample ID", with a space - fails silently: every file lands in its own
+    // specimen, no partner is ever found, and the only symptom is one plot
+    // where there should be two.
+    let pairing = SamplePairing::default();
+    assert_eq!(&*pairing.sample_id_column, "SampleID");
+    assert_eq!(&*pairing.sample_type_column, "SampleType");
+
+    let (keys, names, metadata) = fixture(&[
+        (Some("QC5_N/A"), Some("U")),
+        (Some("QC5_N/A"), Some("FMX")),
+        (Some("QC5_N/A"), Some("FS")),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &pairing);
+
+    assert_eq!(pairs.len(), 1, "one specimen, not three");
+    assert_eq!(pairs[0].left(), Some(1), "the FMO is shown first");
+    assert_eq!(pairs[0].right(), Some(2), "the full stain beside it");
 }

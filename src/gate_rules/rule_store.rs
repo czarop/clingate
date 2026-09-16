@@ -115,7 +115,7 @@ fn default_display_order() -> Vec<Arc<str>> {
 impl Default for SamplePairing {
     fn default() -> Self {
         Self {
-            sample_id_column: Arc::from("Sample ID"),
+            sample_id_column: Arc::from("SampleID"),
             sample_type_column: Arc::from("SampleType"),
             derive_type: None,
             display_order: default_display_order(),

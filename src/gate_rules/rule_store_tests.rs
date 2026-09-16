@@ -125,7 +125,7 @@ fn metadata(rows: &[(&str, &str, &str)]) -> MetaDataFileMap {
     let mut map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
     for (file, specimen, kind) in rows {
         let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
-        columns.insert(Arc::from("Sample ID"), Arc::from(*specimen));
+        columns.insert(Arc::from("SampleID"), Arc::from(*specimen));
         columns.insert(Arc::from("SampleType"), Arc::from(*kind));
         map.insert(Arc::from(*file) as FileId, columns);
     }
@@ -443,7 +443,7 @@ fn metadata_without_type(rows: &[(&str, &str, &str)]) -> MetaDataFileMap {
     let mut map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
     for (file, specimen, filename) in rows {
         let mut columns: FxHashMap<MetaDataParameter, GroupId> = FxHashMap::default();
-        columns.insert(Arc::from("Sample ID"), Arc::from(*specimen));
+        columns.insert(Arc::from("SampleID"), Arc::from(*specimen));
         columns.insert(Arc::from("$FIL"), Arc::from(*filename));
         map.insert(Arc::from(*file) as FileId, columns);
     }

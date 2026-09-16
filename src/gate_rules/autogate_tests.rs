@@ -170,9 +170,9 @@ fn metadata(file: &str, pairs: &[(&str, &str)]) -> crate::omiq::metadata::MetaDa
 #[test]
 fn a_files_specimen_comes_from_the_column_the_pairing_names() {
     let pairing = SamplePairing::default();
-    let map = metadata("f1", &[("Sample ID", "QC-A"), ("SampleType", "FS")]);
+    let map = metadata("f1", &[("SampleID", "QC-A"), ("SampleType", "FS")]);
     let key = specimen_of(&pairing, &Arc::from("f1"), &map).expect("f1 has a sample id");
-    assert_eq!(&*key.parameter, "Sample ID");
+    assert_eq!(&*key.parameter, "SampleID");
     assert_eq!(&*key.group, "QC-A");
 }
 
@@ -184,7 +184,7 @@ fn renaming_the_column_in_the_pairing_follows_through() {
         sample_id_column: Arc::from("Donor"),
         ..SamplePairing::default()
     };
-    let map = metadata("f1", &[("Donor", "D7"), ("Sample ID", "QC-A")]);
+    let map = metadata("f1", &[("Donor", "D7"), ("SampleID", "QC-A")]);
     let key = specimen_of(&pairing, &Arc::from("f1"), &map).unwrap();
     assert_eq!(&*key.group, "D7");
 }
@@ -220,7 +220,7 @@ fn workflow() -> (
         ("fs_b", "QC-B", "FS"),
     ] {
         let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
-        columns.insert(Arc::from("Sample ID"), Arc::from(specimen));
+        columns.insert(Arc::from("SampleID"), Arc::from(specimen));
         columns.insert(Arc::from("SampleType"), Arc::from(kind));
         map.insert(Arc::from(file) as Arc<str>, columns);
     }
@@ -378,7 +378,7 @@ fn fs_and_fmx() -> crate::omiq::metadata::MetaDataFileMap {
     let mut map = im::HashMap::with_hasher(FxBuildHasher);
     for (file, kind) in [("fs_a", "FS"), ("fmx_a", "FMX")] {
         let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
-        columns.insert(Arc::from("Sample ID"), Arc::from("QC-A"));
+        columns.insert(Arc::from("SampleID"), Arc::from("QC-A"));
         columns.insert(Arc::from("SampleType"), Arc::from(kind));
         map.insert(Arc::from(file) as Arc<str>, columns);
     }
@@ -537,7 +537,7 @@ fn a_missing_partner_is_reported_rather_than_guessed() {
     // Only the full stain exists - the FMO was never run.
     let mut map = im::HashMap::with_hasher(FxBuildHasher);
     let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
-    columns.insert(Arc::from("Sample ID"), Arc::from("QC-A"));
+    columns.insert(Arc::from("SampleID"), Arc::from("QC-A"));
     columns.insert(Arc::from("SampleType"), Arc::from("FS"));
     map.insert(Arc::from("fs_a") as Arc<str>, columns);
 
