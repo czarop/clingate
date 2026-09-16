@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use clingate::gate_editor::route::Route;
+use clingate::gate_editor::route::Shell;
 use dioxus::prelude::*;
 
 use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
@@ -66,7 +66,7 @@ fn App() -> Element {
         document::Stylesheet { href: SPINNER_STYLE }
         div { class: "main_div",
             FPSCounter {}
-            Router::<Route> {}
+            Shell {}
         }
     }
 }

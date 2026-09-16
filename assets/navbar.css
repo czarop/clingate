@@ -11,8 +11,18 @@
     background-color: var(--color-background-body);
 }
 
+.nav_bar-item {
+    cursor: pointer;
+}
+
 .nav_bar-item:hover {
     background-color: rgba(127, 127, 127, 0.15);
+}
+
+/* The tab in front. */
+.nav_bar-item.selected {
+    background-color: rgba(127, 127, 127, 0.22);
+    box-shadow: inset 0 -3px 0 hsla(101, 79%, 44%, 0.905);
 }
 
 /* Between tabs, not spread across the bar. */
@@ -78,20 +88,20 @@ html, body {
     box-sizing: border-box;
 }
 
-.route-outlet {
+/* One per tab. All of them are mounted; the inactive ones carry an inline
+   `display: none`, which overrides the `flex` here and takes them out of the
+   layout without unmounting them. */
+.tab-panel {
     flex-grow: 1;          /* This is the magic: it eats all free space */
     display: flex;
     flex-direction: column;
     overflow-y: auto;      /* Only the content scrolls */
     min-height: 0;         /* Critical for flex-grow + overflow to work */
     padding: 1rem;
-    /* Remove 'height: 100%' - it can conflict with flex-grow */
-    border: 1px solid red;
 }
 
 .route-nav_bar {
     height: 4rem;
-    flex-shrink: 0;        /* Don't let the outlet squish the nav */
-    border-top: 1px solid #eee; /* Optional visual separation */
-    border: 1px solid black;
+    flex-shrink: 0;        /* Don't let the panels squish the nav */
+    border-top: 1px solid #e2e8f0;
 }

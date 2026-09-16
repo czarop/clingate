@@ -1,3 +1,19 @@
+//! The app shell: the tabs, and the document they all share.
+//!
+//! Every tab is mounted once and hidden with CSS rather than swapped in and
+//! out. A router unmounts the route it leaves, and unmounting is what was
+//! losing the editor's setup on every tab change - the selected sample, the
+//! axis markers, and `upload_succeded`, the flag that stops the gating file
+//! being re-imported. Coming back re-imported it, rebuilding `GateState` and
+//! discarding any positioning the autogater had done.
+//!
+//! Hiding keeps every signal, resource and in-flight task alive, so there is no
+//! state to lift out and nothing to restore. The cost is that a hidden tab
+//! still reacts: a plot whose parent chain contains a gate the autogater moves
+//! will re-filter and re-render while nobody is looking at it. If that becomes
+//! noticeable, the render is the part worth skipping - the data pipeline is
+//! cheap to keep warm, the image is not.
+
 use crate::file_load::FcsFiles;
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
@@ -8,30 +24,35 @@ use crate::omiq::metadata::MetaDataStore;
 use dioxus::prelude::*;
 use dioxus::stores::use_store_sync;
 
-#[derive(Routable, Clone, PartialEq)]
-pub enum Route {
-    #[layout(NavBar)]
-    #[route("/")]
-    MainWindow,
-    #[route("/rules")]
-    GateRulesWindow,
-    // #[route("/scale")]
-    // ScaleWindow,
-
-    // #[route("/comp")]
-    // CompWindow,
-
-    // #[route("/options")]
-    // OptionsWindow,
-
-    // #[route("/:..segments")]
-    // PageNotFound { segments: Vec<String> },
+/// Which tab is in front. Every tab is mounted whatever this says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tab {
+    Editor,
+    Rules,
 }
 
+impl Tab {
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::Editor => "🏠",
+            Tab::Rules => "📐",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Tab::Editor => "Gate editor",
+            Tab::Rules => "Gate rules",
+        }
+    }
+}
+
+const TABS: [Tab; 2] = [Tab::Editor, Tab::Rules];
+
 #[component]
-pub fn NavBar() -> Element {
-    // The document lives on the layout rather than on one screen, so the gate
-    // rules tab and the editor see the same gates and the same rules.
+pub fn Shell() -> Element {
+    // The document, shared by every tab. A store here is the document; a signal
+    // inside a component is that component's own business.
     let gate_store = use_store_sync(GateState::default);
     use_context_provider(|| gate_store);
 
@@ -47,113 +68,43 @@ pub fn NavBar() -> Element {
     let filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
     use_context_provider(|| filehandler);
 
+    let mut active = use_signal(|| Tab::Editor);
+    // Offered to the tabs themselves, so an expensive one can tell whether it
+    // is worth drawing.
+    use_context_provider(|| active);
+
     rsx! {
-        div { class: "route-outlet", Outlet::<Route> {} }
+        // `display: none` rather than a conditional: the difference between
+        // hiding a tab and unmounting it is the whole point.
+        div {
+            class: "tab-panel",
+            style: if active() == Tab::Editor { "" } else { "display: none;" },
+            MainWindow {}
+        }
+        div {
+            class: "tab-panel",
+            style: if active() == Tab::Rules { "" } else { "display: none;" },
+            GateRulesWindow {}
+        }
+
         div { class: "route-nav_bar",
             nav { aria_label: "main navigation", role: "navigation",
                 div { class: "nav_bar-items",
-
-                    div {
-                        Link { to: Route::MainWindow,
-                            div { class: "nav_bar-item", "🏠" }
+                    for (at , tab) in TABS.iter().enumerate() {
+                        if at > 0 {
+                            div { class: "nav_bar-spacer", "|" }
+                        }
+                        div {
+                            class: if active() == *tab { "nav_bar-item selected" } else { "nav_bar-item" },
+                            title: "{tab.title()}",
+                            onclick: {
+                                let tab = *tab;
+                                move |_| active.set(tab)
+                            },
+                            "{tab.icon()}"
                         }
                     }
-
-                    div { class: "nav_bar-spacer", "|" }
-
-                    div {
-                        Link { to: Route::GateRulesWindow,
-                            div { class: "nav_bar-item", title: "Gate rules", "📐" }
-                        }
-                    }
-
-                    div { class: "nav_bar-spacer", "|" }
-
-                // div {
-                //     if geolocation::check_geolocation_permission() == PermissionResult::GRANTED {
-                //         Link { to: route::Route::LocationMap,
-                //             div { class: "nav_bar-item", "📍" }
-                //         }
-                //     } else {
-                //         div {
-                //             class: "nav_bar-item",
-                //             onclick: move |_| {
-                //                 geolocation::request_geolocation_permissions();
-                //             },
-                //             "📍"
-                //         }
-                //     }
-                // }
-
-                // div {
-                //     div { class: "nav_bar-item", "|" }
-                // }
-
-                // div {
-                //     Link { to: route::Route::LoginScreen,
-                //         div { class: "nav_bar-item", "🔐" }
-                //     }
-                // }
-
-                // div {
-                //     div { class: "nav_bar-item", "|" }
-                // }
-
-                // div {
-                //     Link { to: route::Route::ContactScreen,
-                //         div { class: "nav_bar-item", "👥" }
-                //     }
-                // }
-                // a {
-                //     aria_expanded: "false",
-                //     aria_label: "menu",
-                //     class: "navbar-burger {nav_burger_menu_open}",
-                //     "data-target": "navbarBasicExample",
-                //     role: "button",
-                //     onclick: move |_| {
-                //         let current = nav_burger_menu_open();
-                //         if current == "".to_string() {
-                //             nav_burger_menu_open.set("is-active".to_string());
-                //         } else {
-                //             nav_burger_menu_open.set("".to_string());
-                //         }
-                //     },
-                //     span { aria_hidden: "true" }
-                //     span { aria_hidden: "true" }
-                //     span { aria_hidden: "true" }
-                //     span { aria_hidden: "true" }
-                // }
                 }
-                        // div {
-            //     class: "navbar-menu {nav_burger_menu_open}",
-            //     id: "navbarBasicExample",
-            //     div { class: "navbar-start",
-            //         a { class: "navbar-item", "Home" }
-            //         a { class: "navbar-item", "Documentation" }
-
-            //         div { class: "navbar-item has-dropdown is-hoverable",
-            //             a { class: "navbar-link", "More" }
-
-            //             div { class: "navbar-dropdown",
-            //                 a { class: "navbar-item", "About" }
-            //                 a { class: "navbar-item", "Jobs" }
-            //                 a { class: "navbar-item", "Contact" }
-            //                 hr { class: "navbar-divider" }
-            //                 a { class: "navbar-item", "Report an issue" }
-            //             }
-            //         }
-            //     }
-            //     div { class: "navbar-end",
-            //         div { class: "navbar-item",
-            //             div { class: "buttons",
-            //                 a { class: "button is-primary",
-            //                     strong { "Sign up" }
-            //                 }
-            //                 a { class: "button is-light", "Log in" }
-            //             }
-            //         }
-            //     }
-            // }
             }
         }
     }

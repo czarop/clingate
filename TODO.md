@@ -169,25 +169,23 @@ axis, and nothing should.
       and 97% fall within one such adjustment. The 15 it held back were mostly
       flagged on event count, with parent populations of 38 to 368.
 
-- [ ] **State is lost when a tab changes.** The router unmounts a route, so
-      leaving the editor discards everything `MainWindow` owns: the selected
-      sample, the axis markers, the selected parent gate, and - worse -
-      `upload_succeded`, the flag that stops the gating file being re-imported.
-      Coming back re-imports it, which rebuilds `GateState` and throws away any
-      positioning the autogater did.
+- [x] **State is lost when a tab changes.** A router unmounts the route it
+      leaves, which discarded everything `MainWindow` owned: the selected
+      sample, the axis markers, the selected parent gate, and `upload_succeded`,
+      the flag that stops the gating file being re-imported. Coming back
+      re-imported it, rebuilding `GateState` and throwing away any positioning
+      the autogater had done.
 
-      Two shapes to fix it. Lift what a screen owns onto the `NavBar` layout as
-      context, the way the gate, metadata, axis and file stores already are -
-      small, and makes the split explicit: a store on the layout is the
-      document, a signal in a component is that component's own business. Or
-      keep every tab mounted and hide the inactive one, which preserves
-      in-flight resources too but pays to keep a second plot window loading
-      and rendering FCS files nobody is looking at.
+      Every tab is now mounted once and hidden with `display: none`. Hiding
+      keeps every signal, resource and in-flight task alive, so there is no
+      state to lift out and nothing to restore - the class of bug goes away
+      rather than being managed. `route.rs` holds the shell; the router is gone,
+      which costs nothing in a desktop app with no deep links.
 
-      The first is the better trade here: what is expensive is not the widget
-      state but re-reading a 150MB file, and that is keyed off the selections.
-      Lift those and returning is cheap; a frame cache would then make it
-      instant.
+      The cost accepted: a hidden tab still reacts. A plot whose parent chain
+      holds a gate the autogater moves will re-filter and re-render unseen. If
+      that becomes noticeable the render is the part worth skipping, and the
+      active tab is already in context for a component to check.
 
 - [ ] **Decide what a large move means for this panel.** A placement's
       confidence scores displacement as `|moved| / interquartile spread`
