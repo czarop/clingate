@@ -209,7 +209,11 @@ pub fn place_for_specimen(
 // ── measuring what is there now ───────────────────────────────────────────
 
 use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
+use crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
 use crate::gate_editor::gates::gate_store::{GroupId, NodeId};
+use crate::gate_editor::gates::gate_types::GateStatValue;
+use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+use crate::gate_editor::plots::plot_store::EventIndexMapped;
 use crate::gate_rules::rule_store::{GateRule, RuleStore};
 use crate::omiq::metadata::MetaDataParameter;
 use polars::prelude::*;
@@ -234,10 +238,11 @@ pub struct Measurement {
     pub current: f64,
     /// The parent population's values on `parameter`, for the solver.
     pub values: Vec<f64>,
-    /// The same population as plotted points, for asking what a moved gate
-    /// actually admits rather than assuming the answer.
-    pub parent_xy: Vec<(f32, f32)>,
-    /// The plot's axes, in order, so `parent_xy` can be read back.
+    /// The parent population indexed exactly as the plot indexes it, so what a
+    /// gate admits can be asked through the very function that draws the
+    /// percentage on screen.
+    pub index: EventIndexMapped,
+    /// The plot's axes, in order.
     pub params: (Arc<str>, Arc<str>),
 }
 
@@ -319,31 +324,26 @@ pub fn measure_file(
         }
 
         let chain = state.gate_chain_for_node(&parent);
-        let parent_xy = match parent_points(df, &chain, &resolver, &params) {
-            Ok(p) => p,
-            Err(e) => {
-                unmeasured.push(Unmeasured {
-                    gate_id: gate_id.clone(),
-                    gate: name,
-                    reason: e.to_string(),
-                });
-                continue;
-            }
-        };
-        if parent_xy.len() < 2 {
+        let (values, index) =
+            match parent_population(df, &chain, &resolver, &params, &rule.parameter) {
+                Ok(p) => p,
+                Err(e) => {
+                    unmeasured.push(Unmeasured {
+                        gate_id: gate_id.clone(),
+                        gate: name,
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+        if values.len() < 2 {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
-                reason: format!("its parent population holds {} events", parent_xy.len()),
+                reason: format!("its parent population holds {} events", values.len()),
             });
             continue;
         }
-
-        let on_x = *rule.parameter == *params.0;
-        let values: Vec<f64> = parent_xy
-            .iter()
-            .map(|(x, y)| if on_x { *x as f64 } else { *y as f64 })
-            .collect();
 
         out.push(Measurement {
             file: file.clone(),
@@ -354,7 +354,7 @@ pub fn measure_file(
             bound: rule.bound,
             current,
             values,
-            parent_xy,
+            index,
             params,
         });
     }
@@ -368,47 +368,65 @@ fn parent_name(state: &GateState, parent: &NodeId) -> Option<Arc<str>> {
         .map(|g| Arc::from(g.get_name()))
 }
 
-/// The parent population as plotted points.
-fn parent_points(
+/// The parent population, filtered and indexed exactly as the plot does it.
+///
+/// The same call `data_helpers` makes for the frame behind every plot, and the
+/// same index the on-screen statistics are counted from. Sharing the code path
+/// is the point: a second implementation could disagree with what a person
+/// reads off the screen, and then the two numbers are both defensible and the
+/// gate is still wrong.
+fn parent_population(
     df: &DataFrame,
     chain: &[GateId],
     resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
     params: &(Arc<str>, Arc<str>),
-) -> anyhow::Result<Vec<(f32, f32)>> {
+    parameter: &str,
+) -> anyhow::Result<(Vec<f64>, EventIndexMapped)> {
     let frame = if chain.is_empty() {
         df.clone()
     } else {
         let mask = filter_events_by_hierarchy_to_mask(df, chain, resolver)?;
         df.filter(&mask)?
     };
-    let xs = frame.column(params.0.as_ref())?.f32()?;
-    let ys = frame.column(params.1.as_ref())?.f32()?;
-    Ok(xs.into_no_null_iter().zip(ys.into_no_null_iter()).collect())
+    let frame = Arc::new(frame);
+
+    let values: Vec<f64> = frame
+        .column(parameter)?
+        .f32()?
+        .into_no_null_iter()
+        .map(|v| v as f64)
+        .collect();
+
+    let event_index =
+        get_event_mask_from_scaled_df(frame.clone(), params.0.clone(), params.1.clone())?;
+    let index_map: Vec<usize> = (0..frame.height()).collect();
+
+    Ok((
+        values,
+        EventIndexMapped {
+            event_index,
+            index_map: Arc::new(index_map),
+        },
+    ))
 }
 
-/// What a gate actually admits from a population.
+/// What fraction of a population a gate admits.
 ///
-/// Asked of the gate itself rather than counted off a one-dimensional
-/// threshold. A rule positions one line, but the gate is a shape: its other
-/// sides can exclude events the line lets through, and then the fraction a
-/// solver reports is not the fraction a person reads off the plot.
-pub fn admitted_by(
-    gate: &Arc<dyn DrawableGate>,
-    points: &[(f32, f32)],
-    params: &(Arc<str>, Arc<str>),
-) -> Option<f64> {
-    let inner = gate.get_gate_ref(None)?;
-    let mut inside = 0usize;
-    for (x, y) in points {
-        if inner
-            .geometry
-            .contains_point(*x, *y, &params.0, &params.1)
-            .ok()?
-        {
-            inside += 1;
-        }
+/// Delegates to [`get_percent_and_counts_gate`] - the function that draws the
+/// percentage beside the gate on screen - so the figure a run reports is the
+/// figure a person reads back, by construction rather than by agreement.
+pub fn admitted_by(gate: &Arc<dyn DrawableGate>, index: &EventIndexMapped) -> Option<f64> {
+    let parent_events = index.event_index.len() as f32;
+    if parent_events == 0.0 {
+        return None;
     }
-    Some(inside as f64 / points.len().max(1) as f64)
+    let stats = get_percent_and_counts_gate(gate.clone(), index, parent_events).ok()?;
+    match stats.percent_parent {
+        GateStatValue::Single(percent) => Some(percent as f64 / 100.0),
+        // A composite reports one figure per corner; a rule positions a single
+        // gate, so there is no one number to compare against a band.
+        GateStatValue::Composite(_) => None,
+    }
 }
 
 // ── solving and placing ──────────────────────────────────────────────────
@@ -580,8 +598,7 @@ fn position_one(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    let population = &reference.measurement.parent_xy;
-    let params = &reference.measurement.params;
+    let population = &reference.measurement.index;
 
     // What the gate on the reference file admits from the reference population,
     // as the gate - not as a line. Its other sides can exclude events the line
@@ -590,7 +607,7 @@ fn position_one(
     let current_gate = state
         .gate_for_file(&measured.gate_id, &reference.id, metadata)
         .ok_or_else(|| "the gate no longer resolves".to_string())?;
-    let already = admitted_by(&current_gate, population, params);
+    let already = admitted_by(&current_gate, population);
 
     if let (Some((lo, hi)), Some(already)) = (rule.rule.accepted_band(), already)
         && (lo..=hi).contains(&already)
@@ -617,8 +634,7 @@ fn position_one(
 
     // Ask the moved gate what it admits, rather than trusting the line's own
     // arithmetic. This is the number a person will read back.
-    let achieved =
-        admitted_by(&moved, population, params).unwrap_or(solved.threshold.fraction_admitted);
+    let achieved = admitted_by(&moved, population).unwrap_or(solved.threshold.fraction_admitted);
     let in_band = match rule.rule.accepted_band() {
         Some((lo, hi)) => (lo..=hi).contains(&achieved),
         None => true,
@@ -636,7 +652,7 @@ fn position_one(
         confidence: solved.confidence.score,
         weakest: solved.confidence.weakest().map(|c| c.name),
         achieved,
-        reference_events: population.len(),
+        reference_events: population.event_index.len(),
         in_band,
     }))
 }

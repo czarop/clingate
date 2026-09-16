@@ -883,26 +883,35 @@ fn a_gate_that_bounds_both_axes_is_still_positioned() {
 }
 
 #[test]
-fn what_a_gate_captures_is_asked_of_the_gate_not_of_the_line() {
-    // The number that matters is what the shape admits. Counting past the line
-    // ignores the gate's other sides, so a gate whose sides exclude events
-    // would report a fraction nobody can reproduce from the plot.
+fn what_a_gate_captures_is_asked_through_the_screens_own_statistic() {
+    // The number a run reports has to be the number a person reads off the
+    // plot. Rather than count events past the line - which ignores the gate's
+    // other sides - this delegates to the same function that draws the
+    // percentage beside the gate, so the two agree by construction.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
     use crate::gate_rules::autogate::admitted_by;
+    use polars::prelude::*;
 
-    let points: Vec<(f32, f32)> = (1..=1000).map(|i| (i as f32, 0.0)).collect();
-    let params = (Arc::from(X) as Arc<str>, Arc::from(Y) as Arc<str>);
+    let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    let ys: Vec<f32> = vec![0.0; 1000];
+    let frame = Arc::new(df![X => xs, Y => ys].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
+            .unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
 
-    // Open above 995 on x and unbounded on y. Six events, not five: a gate
-    // includes its boundary, where the solver counts strictly past the line.
-    // That one event is the difference between 0.5% and 0.6% here, and at the
-    // counts a 0.2-0.5% band deals in it is the difference between meeting the
-    // band and missing it - which is exactly why the fraction is now measured
-    // from the gate rather than from the line.
+    // Open above 995 on x, spanning y: the gate includes its boundary, so
+    // 995..=1000 is six events.
     let open = rect(995.0, -1e16, 1e16, 1e16);
-    assert_eq!(admitted_by(&open, &points, &params), Some(0.006));
+    // Compared loosely: the on-screen statistic is computed in f32, and taking
+    // it as it is - rounding included - is the whole point.
+    assert!((admitted_by(&open, &index).unwrap() - 0.006).abs() < 1e-6);
 
-    // The same line, but capped on y above the data: admits nothing, and
-    // counting past the x line alone would still have claimed 0.5%.
+    // The same line, capped on y above the data. Counting past the x line
+    // alone would still claim 0.6%; the gate admits nothing, and that is what
+    // the plot shows.
     let capped = rect(995.0, 10.0, 1e16, 20.0);
-    assert_eq!(admitted_by(&capped, &points, &params), Some(0.0));
+    assert_eq!(admitted_by(&capped, &index), Some(0.0));
 }
