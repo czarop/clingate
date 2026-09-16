@@ -915,3 +915,81 @@ fn what_a_gate_captures_is_asked_through_the_screens_own_statistic() {
     let capped = rect(995.0, 10.0, 1e16, 20.0);
     assert_eq!(admitted_by(&capped, &index), Some(0.0));
 }
+
+#[test]
+fn a_slanted_gate_is_positioned_by_what_it_holds_not_by_its_corner() {
+    // The CD185 case. The gate's boundary slopes, so the population crosses it
+    // nowhere near its leftmost vertex. Anchoring that vertex to a
+    // one-dimensional threshold moves the gate far too far - a gate meant to
+    // hold 0.35% held 0.010%. Sliding it until it holds the band instead works
+    // whatever the boundary does.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::admitted_by;
+    use polars::prelude::*;
+
+    // A population spread over y as well as x, so a slope actually matters.
+    let mut xs: Vec<f32> = Vec::new();
+    let mut ys: Vec<f32> = Vec::new();
+    for i in 0..1000 {
+        xs.push((i % 100) as f32);
+        ys.push((i / 100) as f32 * 10.0);
+    }
+    let frame = Arc::new(df![X => xs, Y => ys].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
+            .unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
+
+    // Open to the right, with a left edge leaning from x=40 at the bottom to
+    // x=90 at the top - its extreme vertex is nowhere near its typical boundary.
+    let geometry = create_polygon_geometry(
+        vec![(40.0, -10.0), (1e6, -10.0), (1e6, 200.0), (90.0, 200.0)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let mut inner = gate("slanted", geometry);
+    inner.name = "CD185+".to_string();
+    let slanted: Arc<dyn DrawableGate> = Arc::new(
+        crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate::try_new(inner, true)
+            .unwrap(),
+    );
+
+    let before = admitted_by(&slanted, &index).unwrap();
+    assert!(
+        before > 0.05,
+        "the fixture should start well outside the band, got {before}"
+    );
+
+    // Slide it until it holds 0.2-0.5%.
+    let values: Vec<f64> = (0..1000).map(|i| (i % 100) as f64).collect();
+    let moved = slide_into_band(&slanted, &index, &values, 40.0);
+    let after = admitted_by(&moved, &index).unwrap();
+    assert!(
+        (0.002..=0.005).contains(&after),
+        "sliding should land it in the band, got {after}"
+    );
+}
+
+/// Drive the same search the autogater uses, for a gate keeping the bright side.
+fn slide_into_band(
+    gate: &Arc<dyn DrawableGate>,
+    index: &crate::gate_editor::plots::plot_store::EventIndexMapped,
+    values: &[f64],
+    current: f64,
+) -> Arc<dyn DrawableGate> {
+    use crate::gate_rules::autogate::position_by_capture;
+    position_by_capture(
+        gate,
+        X,
+        Bound::Above,
+        index,
+        (0.002, 0.005),
+        values,
+        current,
+    )
+    .expect("a position holding the band exists")
+    .0
+}

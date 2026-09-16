@@ -159,6 +159,20 @@ impl Rule {
         }
     }
 
+    /// Score a result this rule's own way, for a threshold arrived at by some
+    /// other means than [`Rule::solve`] - sliding the gate until it captures
+    /// the right fraction, say.
+    pub fn assess(
+        &self,
+        threshold: &Threshold,
+        reference_x: Option<f64>,
+    ) -> crate::gate_rules::confidence::Confidence {
+        match self {
+            Rule::TailFraction(r) => r.confidence_model().assess(threshold, reference_x),
+            Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
+        }
+    }
+
     pub fn solve(&self, values: &[f64]) -> Result<Threshold, SolveError> {
         match self {
             Rule::TailFraction(r) => r.solve(values),

@@ -157,17 +157,25 @@ pub fn translate_edge_to(
     let mut moved = inner.clone();
     moved.geometry = moved_geometry;
 
-    let rebuilt: Arc<dyn DrawableGate> = match &moved.geometry {
-        GateGeometry::Polygon { .. } => Arc::new(
-            PolygonGate::try_new(moved, gate.is_primary())
+    rebuild(moved, gate.is_primary(), &id)
+}
+
+fn rebuild(
+    moved: flow_gates::Gate,
+    is_primary: bool,
+    id: &GateId,
+) -> Result<Arc<dyn DrawableGate>, ApplyError> {
+    let _ = id;
+    match &moved.geometry {
+        GateGeometry::Polygon { .. } => Ok(Arc::new(
+            PolygonGate::try_new(moved, is_primary)
                 .map_err(|e| ApplyError::Rebuild(e.to_string()))?,
-        ),
-        _ => Arc::new(
-            RectangleGate::try_new(moved, gate.is_primary())
+        )),
+        _ => Ok(Arc::new(
+            RectangleGate::try_new(moved, is_primary)
                 .map_err(|e| ApplyError::Rebuild(e.to_string()))?,
-        ),
-    };
-    Ok(rebuilt)
+        )),
+    }
 }
 
 /// The specimen a file belongs to, as a key into the group override tier.
@@ -429,6 +437,123 @@ pub fn admitted_by(gate: &Arc<dyn DrawableGate>, index: &EventIndexMapped) -> Op
     }
 }
 
+/// Slide a gate along one parameter until it captures what the rule asks for.
+///
+/// This replaces solving a line and anchoring a corner to it, which only ever
+/// worked for a gate whose boundary *is* that line. A real gate's boundary can
+/// be slanted - a compensation artefact tilts it, and the population then
+/// crosses it nowhere near the gate's extreme vertex. Anchoring the leftmost
+/// corner of such a shape to a one-dimensional threshold moves it far too far,
+/// which is how a gate meant to hold 0.35% came to hold 0.010%.
+///
+/// So nothing is inferred about where the boundary "is". The gate is moved and
+/// asked what it now holds, through the same statistic the screen shows, and
+/// the move is searched for. That works for any shape, slanted or not, and
+/// needs no notion of an edge at all.
+///
+/// Monotone by construction: for a gate keeping the bright side, sliding it up
+/// the parameter can only admit fewer events. Bisection is therefore exact to
+/// the width of the bracket, and the step-like nature of a count is why the
+/// result is still checked against the band afterwards rather than assumed.
+fn slide_to_capture(
+    gate: &Arc<dyn DrawableGate>,
+    parameter: &str,
+    bound: Bound,
+    index: &EventIndexMapped,
+    band: (f64, f64),
+    bracket: (f64, f64),
+) -> Option<(f64, f64)> {
+    let (lo, hi) = band;
+    let target = (lo + hi) / 2.0;
+    let at = |delta: f64| -> Option<f64> {
+        let moved = translate_by(gate, parameter, delta).ok()?;
+        admitted_by(&moved, index)
+    };
+
+    // Sliding up the parameter admits fewer for an `Above` gate and more for a
+    // `Below` one; normalise so `more_negative` always means "admits more".
+    let sign = match bound {
+        Bound::Above => 1.0,
+        Bound::Below => -1.0,
+    };
+
+    let (mut low, mut high) = bracket;
+    let mut best: Option<(f64, f64)> = None;
+    let mut consider = |delta: f64, got: f64, best: &mut Option<(f64, f64)>| {
+        let better = match best {
+            None => true,
+            Some((_, prev)) => {
+                let d_new = if (lo..=hi).contains(&got) {
+                    0.0
+                } else {
+                    (got - target).abs()
+                };
+                let d_old = if (lo..=hi).contains(prev) {
+                    0.0
+                } else {
+                    (*prev - target).abs()
+                };
+                d_new < d_old
+            }
+        };
+        if better {
+            *best = Some((delta, got));
+        }
+    };
+
+    for _ in 0..48 {
+        let mid = (low + high) / 2.0;
+        let Some(got) = at(mid) else { return best };
+        consider(mid, got, &mut best);
+        if (lo..=hi).contains(&got) {
+            return best;
+        }
+        // Too many admitted means the gate must move further along the
+        // parameter; too few, further back.
+        if (got > hi) == (sign > 0.0) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    best
+}
+
+/// Slide a gate until it holds the band, returning the moved gate, where its
+/// leading extent ended up, and what it now holds.
+///
+/// The operation the autogater performs, exposed so it can be exercised
+/// directly on a shape.
+pub fn position_by_capture(
+    gate: &Arc<dyn DrawableGate>,
+    parameter: &str,
+    bound: Bound,
+    index: &EventIndexMapped,
+    band: (f64, f64),
+    values: &[f64],
+    current: f64,
+) -> Option<(Arc<dyn DrawableGate>, f64, f64)> {
+    let bracket = bracket_for(values, current);
+    let (delta, got) = slide_to_capture(gate, parameter, bound, index, band, bracket)?;
+    let moved = translate_by(gate, parameter, delta).ok()?;
+    Some((moved, current + delta, got))
+}
+
+/// The same gate, moved `delta` along `parameter`.
+fn translate_by(
+    gate: &Arc<dyn DrawableGate>,
+    parameter: &str,
+    delta: f64,
+) -> Result<Arc<dyn DrawableGate>, ApplyError> {
+    let id = gate.get_id();
+    let inner = gate
+        .get_gate_ref(None)
+        .ok_or_else(|| ApplyError::UnsupportedShape(id.clone()))?;
+    let mut moved = inner.clone();
+    moved.geometry = slide(&inner.geometry, parameter, delta as f32);
+    rebuild(moved, gate.is_primary(), &id)
+}
+
 // ── solving and placing ──────────────────────────────────────────────────
 
 /// One gate that was positioned, and what it took to do it.
@@ -620,25 +745,77 @@ fn position_one(
         }));
     }
 
-    let solved = rule
-        .solve(&reference.measurement.values, Some(measured.current))
-        .map_err(|e| e.to_string())?;
+    // A rule with a band names a fraction, not a place, so the gate is slid
+    // until it holds that fraction - measured from the gate itself. A rule that
+    // names a position is solved and the leading edge anchored to it, which is
+    // what such a rule means.
+    let (moved, to, achieved) = match rule.rule.accepted_band() {
+        Some(band) => {
+            let bracket = bracket_for(&reference.measurement.values, measured.current);
+            let (delta, got) = slide_to_capture(
+                &current_gate,
+                &measured.parameter,
+                measured.bound,
+                population,
+                band,
+                bracket,
+            )
+            .ok_or_else(|| "no position along this axis holds the band".to_string())?;
+            let moved = translate_by(&current_gate, &measured.parameter, delta)
+                .map_err(|e| e.to_string())?;
+            (moved, measured.current + delta, got)
+        }
+        None => {
+            let solved = rule
+                .solve(&reference.measurement.values, Some(measured.current))
+                .map_err(|e| e.to_string())?;
+            let moved = translate_edge_to(
+                &current_gate,
+                &measured.parameter,
+                measured.bound,
+                solved.threshold.x,
+            )
+            .map_err(|e| e.to_string())?;
+            let got = admitted_by(&moved, population).unwrap_or(solved.threshold.fraction_admitted);
+            (moved, solved.threshold.x, got)
+        }
+    };
 
-    let moved = translate_edge_to(
-        &current_gate,
-        &measured.parameter,
-        measured.bound,
-        solved.threshold.x,
-    )
-    .map_err(|e| e.to_string())?;
-
-    // Ask the moved gate what it admits, rather than trusting the line's own
-    // arithmetic. This is the number a person will read back.
-    let achieved = admitted_by(&moved, population).unwrap_or(solved.threshold.fraction_admitted);
     let in_band = match rule.rule.accepted_band() {
         Some((lo, hi)) => (lo..=hi).contains(&achieved),
         None => true,
     };
+
+    // Scored from what the gate actually did, not from the line that used to
+    // stand in for it.
+    let parent_events = population.event_index.len();
+    let mut sorted = reference.measurement.values.clone();
+    sorted.sort_by(|a, b| b.total_cmp(a));
+    let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
+    let nudge = (spread * crate::gate_rules::threshold::STABILITY_WINDOW).max(f64::EPSILON);
+    let swing = translate_by(&moved, &measured.parameter, nudge)
+        .ok()
+        .and_then(|nudged| admitted_by(&nudged, population))
+        .map(|other| (other - achieved).abs() * parent_events as f64)
+        .unwrap_or(0.0);
+
+    let threshold = crate::gate_rules::threshold::Threshold {
+        x: to,
+        events_admitted: (achieved * parent_events as f64).round() as usize,
+        fraction_admitted: achieved,
+        parent_events,
+        count_swing: swing,
+        parent_spread: spread,
+        status: if in_band {
+            crate::gate_rules::threshold::Status::InBand
+        } else {
+            match rule.rule.accepted_band() {
+                Some(band) => crate::gate_rules::threshold::Status::OutOfBand { band },
+                None => crate::gate_rules::threshold::Status::NoBand,
+            }
+        },
+    };
+    let confidence = rule.rule.assess(&threshold, Some(measured.current));
 
     place_for_specimen(state, &measured.gate_id, specimen, &moved);
 
@@ -648,11 +825,29 @@ fn position_one(
         specimen: specimen.group.clone(),
         measured_on: reference.id.clone(),
         from: measured.current,
-        to: solved.threshold.x,
-        confidence: solved.confidence.score,
-        weakest: solved.confidence.weakest().map(|c| c.name),
+        to,
+        confidence: confidence.score,
+        weakest: confidence.weakest().map(|c| c.name),
         achieved,
-        reference_events: population.event_index.len(),
+        reference_events: parent_events,
         in_band,
     }))
+}
+
+/// The range of moves worth trying, as deltas.
+///
+/// Wide enough to carry the gate from one end of the population to the other,
+/// *and* to reach it in the first place: a gate can start well outside the data
+/// - drawn on a different sample, or simply pushed aside - and a bracket only
+/// as wide as the population would then never touch it.
+fn bracket_for(values: &[f64], current: f64) -> (f64, f64) {
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !lo.is_finite() || !hi.is_finite() {
+        return (-1.0, 1.0);
+    }
+    // A margin either side so the gate can sit clear of the population at
+    // both ends, which is what admitting none or all of it takes.
+    let margin = (hi - lo).abs().max(1.0);
+    (lo - current - margin, hi - current + margin)
 }
