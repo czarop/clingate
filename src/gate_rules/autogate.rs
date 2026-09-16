@@ -210,44 +210,44 @@ pub fn place_for_specimen(
 
 use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
 use crate::gate_editor::gates::gate_store::{GroupId, NodeId};
-use crate::gate_rules::rule_store::RuleStore;
+use crate::gate_rules::rule_store::{GateRule, RuleStore};
 use crate::omiq::metadata::MetaDataParameter;
 use polars::prelude::*;
 use rustc_hash::FxHashMap;
 
 /// One gate on one file, as it stands before any rule is applied.
 ///
-/// The parent population travels with it because solving needs the values, and
-/// reading them costs a filtered pass over the frame that is not worth doing
-/// twice - the rule measures the FMO's population and applies the answer to the
-/// full stain's gate, so both files' measurements are needed at once.
+/// Only gates a rule actually names are measured. Everything here costs a
+/// filtered pass over the frame and holds the population afterwards, and a
+/// workflow has two hundred gates of which a handful carry rules.
 #[derive(Clone)]
 pub struct Measurement {
     pub file: FileId,
     pub gate_id: GateId,
     pub gate: Arc<str>,
     pub parent_gate: Option<Arc<str>>,
-    /// The parameter the bounding edge lies on - read off the gate, never
-    /// inferred from which axis it happens to be drawn on.
+    /// The parameter the rule positions - taken from the rule, never guessed
+    /// from which edge of the gate happens to look like a threshold.
     pub parameter: Arc<str>,
     pub bound: Bound,
-    /// Where the edge sits now.
+    /// Where the gate's leading extent on that parameter sits now.
     pub current: f64,
-    /// The parent population's values on `parameter`.
+    /// The parent population's values on `parameter`, for the solver.
     pub values: Vec<f64>,
+    /// The same population as plotted points, for asking what a moved gate
+    /// actually admits rather than assuming the answer.
+    pub parent_xy: Vec<(f32, f32)>,
+    /// The plot's axes, in order, so `parent_xy` can be read back.
+    pub params: (Arc<str>, Arc<str>),
 }
 
-/// Every gate on one file, with the population each one cuts.
-///
-/// A gate contributes a measurement only when exactly one of its four edges
-/// lies inside the data. None means it thresholds nothing; more than one is a
-/// window or a genuinely two-dimensional gate, and neither is a single line for
-/// a rule to solve.
+/// Every gate on one file that a rule names, with the population it cuts.
 pub fn measure_file(
     state: &GateState,
     file: &FileId,
     df: &DataFrame,
     metadata: &MetaDataFileMap,
+    rules: &RuleStore,
 ) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
     let mut unmeasured: Vec<Unmeasured> = Vec::new();
     let groups: FxHashMap<MetaDataParameter, GroupId> = metadata
@@ -263,6 +263,19 @@ pub fn measure_file(
             continue;
         };
         let name: Arc<str> = Arc::from(gate.get_name());
+        let Some(parent) = state.parent_node(node) else {
+            continue;
+        };
+        let parent_gate = parent_name(state, &parent);
+
+        // The rule decides what is measured. Working the other way round -
+        // looking at a gate and guessing which of its edges is "the" threshold -
+        // is what made a rectangle bounding both axes look like a window with
+        // nothing to solve, and rejected it outright.
+        let Some(rule) = rules.rule_for(&name, parent_gate.as_deref()) else {
+            continue;
+        };
+
         let Some(inner) = gate.get_gate_ref(None) else {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
@@ -271,24 +284,19 @@ pub fn measure_file(
             });
             continue;
         };
-        let Some(parent) = state.parent_node(node) else {
+        let params = gate.get_params();
+        if *rule.parameter != *params.0 && *rule.parameter != *params.1 {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
-                reason: "this gate sits at the root, so it has no parent population".to_string(),
+                reason: format!(
+                    "the rule positions {} but this gate is drawn on {} and {}",
+                    rule.parameter, params.0, params.1
+                ),
             });
             continue;
-        };
-        let chain = state.gate_chain_for_node(&parent);
-        let (x_param, y_param) = gate.get_params();
-
-        // Every bounding extent, each carrying the parameter it bounds. Read off
-        // the shape rather than assumed from the axis: the same marker appears
-        // on x in one plot and y in another within a single workflow. Polygons
-        // are as ordinary here as rectangles - in one real export, 41 of 211.
-        let (x_low, x_high) = extent_on(&inner.geometry, &x_param).unzip();
-        let (y_low, y_high) = extent_on(&inner.geometry, &y_param).unzip();
-        if x_low.is_none() && y_low.is_none() {
+        }
+        let Some((low, high)) = extent_on(&inner.geometry, &rule.parameter) else {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
@@ -296,73 +304,58 @@ pub fn measure_file(
                     .to_string(),
             });
             continue;
-        }
-        let edges: [(Bound, Arc<str>, Option<f32>); 4] = [
-            (Bound::Above, x_param.clone(), x_low),
-            (Bound::Below, x_param.clone(), x_high),
-            (Bound::Above, y_param.clone(), y_low),
-            (Bound::Below, y_param.clone(), y_high),
-        ];
-
-        let mut candidates: Vec<(Bound, Arc<str>, f64, Vec<f64>)> = Vec::new();
-        let mut cache: FxHashMap<Arc<str>, Vec<f64>> = FxHashMap::default();
-        for (bound, param, value) in edges {
-            let Some(value) = value else { continue };
-            let value = value as f64;
-            if !value.is_finite() || value.abs() > UNBOUNDED as f64 {
-                continue;
-            }
-            if df.column(param.as_ref()).is_err() {
-                continue;
-            }
-            let values = match cache.get(&param) {
-                Some(v) => v.clone(),
-                None => {
-                    let v = parent_population(df, &chain, &resolver, &param)?;
-                    cache.insert(param.clone(), v.clone());
-                    v
-                }
-            };
-            if values.len() < 2 {
-                continue;
-            }
-            let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-            let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let inside = match bound {
-                Bound::Above => value > lo,
-                Bound::Below => value < hi,
-            };
-            if inside {
-                candidates.push((bound, param, value, values));
-            }
-        }
-        if candidates.len() != 1 {
+        };
+        let current = match rule.bound {
+            Bound::Above => low,
+            Bound::Below => high,
+        } as f64;
+        if !current.is_finite() || current.abs() > UNBOUNDED as f64 {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
-                gate: Arc::from(gate.get_name()),
-                reason: if candidates.is_empty() {
-                    "no edge of this gate lies inside the data, so it thresholds nothing"
-                        .to_string()
-                } else {
-                    format!(
-                        "{} edges lie inside the data - a rule positions one line, not a window",
-                        candidates.len()
-                    )
-                },
+                gate: name,
+                reason: "the side of this gate the rule positions is unbounded".to_string(),
             });
             continue;
         }
-        let (bound, parameter, current, values) = candidates.pop().expect("one candidate");
+
+        let chain = state.gate_chain_for_node(&parent);
+        let parent_xy = match parent_points(df, &chain, &resolver, &params) {
+            Ok(p) => p,
+            Err(e) => {
+                unmeasured.push(Unmeasured {
+                    gate_id: gate_id.clone(),
+                    gate: name,
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        };
+        if parent_xy.len() < 2 {
+            unmeasured.push(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: name,
+                reason: format!("its parent population holds {} events", parent_xy.len()),
+            });
+            continue;
+        }
+
+        let on_x = *rule.parameter == *params.0;
+        let values: Vec<f64> = parent_xy
+            .iter()
+            .map(|(x, y)| if on_x { *x as f64 } else { *y as f64 })
+            .collect();
 
         out.push(Measurement {
             file: file.clone(),
             gate_id: gate_id.clone(),
-            gate: Arc::from(gate.get_name()),
-            parent_gate: parent_name(state, &parent),
-            parameter,
-            bound,
+            gate: name,
+            parent_gate,
+            parameter: rule.parameter.clone(),
+            bound: rule.bound,
             current,
             values,
+            parent_xy,
+            params,
         });
     }
     Ok((out, unmeasured))
@@ -375,24 +368,47 @@ fn parent_name(state: &GateState, parent: &NodeId) -> Option<Arc<str>> {
         .map(|g| Arc::from(g.get_name()))
 }
 
-fn parent_population(
+/// The parent population as plotted points.
+fn parent_points(
     df: &DataFrame,
     chain: &[GateId],
     resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
-    channel: &str,
-) -> anyhow::Result<Vec<f64>> {
+    params: &(Arc<str>, Arc<str>),
+) -> anyhow::Result<Vec<(f32, f32)>> {
     let frame = if chain.is_empty() {
         df.clone()
     } else {
         let mask = filter_events_by_hierarchy_to_mask(df, chain, resolver)?;
         df.filter(&mask)?
     };
-    Ok(frame
-        .column(channel)?
-        .f32()?
-        .into_no_null_iter()
-        .map(|v| v as f64)
-        .collect())
+    let xs = frame.column(params.0.as_ref())?.f32()?;
+    let ys = frame.column(params.1.as_ref())?.f32()?;
+    Ok(xs.into_no_null_iter().zip(ys.into_no_null_iter()).collect())
+}
+
+/// What a gate actually admits from a population.
+///
+/// Asked of the gate itself rather than counted off a one-dimensional
+/// threshold. A rule positions one line, but the gate is a shape: its other
+/// sides can exclude events the line lets through, and then the fraction a
+/// solver reports is not the fraction a person reads off the plot.
+pub fn admitted_by(
+    gate: &Arc<dyn DrawableGate>,
+    points: &[(f32, f32)],
+    params: &(Arc<str>, Arc<str>),
+) -> Option<f64> {
+    let inner = gate.get_gate_ref(None)?;
+    let mut inside = 0usize;
+    for (x, y) in points {
+        if inner
+            .geometry
+            .contains_point(*x, *y, &params.0, &params.1)
+            .ok()?
+        {
+            inside += 1;
+        }
+    }
+    Some(inside as f64 / points.len().max(1) as f64)
 }
 
 // ── solving and placing ──────────────────────────────────────────────────
@@ -410,34 +426,17 @@ pub struct Positioned {
     /// The measure holding the confidence down, for a person deciding what to
     /// review first.
     pub weakest: Option<&'static str>,
-    /// What the gate actually captures on the sample it was measured against,
-    /// and how many events that was out of.
+    /// What the moved gate actually admits from the reference population -
+    /// measured by asking the gate, not by counting past a line.
     pub achieved: f64,
     pub reference_events: usize,
     /// Whether that landed inside the band the rule asked for.
-    ///
-    /// It can miss even when the solver did its best. A gate admits a whole
-    /// number of events, so a narrow band over a small population may contain
-    /// no achievable fraction at all, and ties in the data can block the ones
-    /// it does contain. The threshold is then the nearest achievable - worth
-    /// having, but not worth trusting silently.
     pub in_band: bool,
 }
 
 /// A gate no rule could even be tried against, and why.
-///
-/// Worth carrying rather than dropping: a gate a rule names but which never
-/// produces a measurement would otherwise vanish without a word, and "nothing
-/// happened" is the least useful thing an autogater can say.
 pub struct Unmeasured {
     pub gate_id: GateId,
-    pub gate: Arc<str>,
-    pub reason: String,
-}
-
-/// One gate that was not positioned, and why.
-pub struct Skipped {
-    pub file: FileId,
     pub gate: Arc<str>,
     pub reason: String,
 }
@@ -447,8 +446,14 @@ pub struct Unchanged {
     pub file: FileId,
     pub gate: Arc<str>,
     pub specimen: Arc<str>,
-    /// What it already captures on the file the rule measures.
     pub achieved: f64,
+}
+
+/// One gate that was not positioned, and why.
+pub struct Skipped {
+    pub file: FileId,
+    pub gate: Arc<str>,
+    pub reason: String,
 }
 
 #[derive(Default)]
@@ -459,9 +464,8 @@ pub struct Report {
 }
 
 impl Report {
-    /// Gates whose confidence falls below `floor`, which is the list worth
-    /// opening by hand. On the hand-gated export everything at 0.30 or above
-    /// landed within a typical manual adjustment.
+    /// Gates worth opening by hand: a weak placement, or one that could not be
+    /// brought inside the band at all.
     pub fn needs_review(&self, floor: f64) -> impl Iterator<Item = &Positioned> {
         self.positioned
             .iter()
@@ -469,11 +473,17 @@ impl Report {
     }
 }
 
+/// What the rule reads, and the gate it reads it through, for one specimen.
+struct Reference<'a> {
+    id: FileId,
+    measurement: &'a Measurement,
+}
+
 /// Solve every rule that matches, and give each specimen its own gate.
 ///
-/// `measurements` must span every file the rules might measure, not just the
-/// ones being gated: a rule that reads the FMO needs the FMO's population, and
-/// that lives on a different file from the gate it positions.
+/// Work is done once per specimen and gate, not once per file: a specimen's
+/// files share one position, so solving for each of them in turn repeats the
+/// same answer and reports it twice.
 pub fn position_all(
     state: &mut GateState,
     store: &RuleStore,
@@ -483,17 +493,8 @@ pub fn position_all(
 ) -> Report {
     let mut report = Report::default();
 
-    // A gate a rule names but which never yielded a measurement is the one case
-    // that used to pass in silence - nothing positioned, nothing skipped, and
-    // no clue why. Reported once per gate rather than once per file, since the
-    // reason is a property of how the gate is drawn.
     let mut told: FxHashMap<GateId, ()> = FxHashMap::default();
     for miss in unmeasured {
-        if store.rule_for(&miss.gate, None).is_none()
-            && !store.entries().iter().any(|e| e.target.gate == miss.gate)
-        {
-            continue;
-        }
         if told.insert(miss.gate_id.clone(), ()).is_some() {
             continue;
         }
@@ -504,110 +505,138 @@ pub fn position_all(
         });
     }
 
+    let mut done: FxHashMap<(Arc<str>, GateId), ()> = FxHashMap::default();
+
     for measured in measurements {
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
             continue;
         };
-        // A rule names the parameter it positions. A gate bounding a different
-        // one is not what this rule is about, however it is named.
-        if rule.parameter != measured.parameter {
-            continue;
-        }
-
-        let mut skip = |reason: String| {
+        let Some(specimen) = specimen_of(&store.pairing, &measured.file, metadata) else {
             report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
-                reason,
+                reason: format!(
+                    "no {} for this file, so there is no specimen to position",
+                    store.pairing.sample_id_column
+                ),
             });
-        };
-
-        let Some(specimen) = specimen_of(&store.pairing, &measured.file, metadata) else {
-            skip(format!(
-                "no {} for this file, so there is no specimen to position",
-                store.pairing.sample_id_column
-            ));
             continue;
         };
-        let Some(reference_id) = store.reference_file(&measured.file, &rule.measured_on, metadata)
-        else {
-            skip("no reference sample to measure".to_string());
+        // One answer per specimen: its files share a position.
+        if done
+            .insert((specimen.group.clone(), measured.gate_id.clone()), ())
+            .is_some()
+        {
             continue;
-        };
-        // The rule reads its population from the reference file at this same
-        // gate - the FMO's events inside the same parent.
-        let Some(reference) = measurements
-            .iter()
-            .find(|m| m.file == reference_id && m.gate_id == measured.gate_id)
-        else {
-            skip(format!("{reference_id} was not measured"));
-            continue;
-        };
-
-        // A gate already capturing what the rule asks for is already right, and
-        // the best thing to do with it is nothing. Solving anyway costs a pass
-        // over the population for no gain, and can make things actively worse:
-        // a band narrow enough to allow only one or two whole events can be
-        // missed by the solver even where the current position hits it, so a
-        // gate sitting at 0.38% gets "corrected" to 0.19%.
-        if let Some((lo, hi)) = rule.rule.accepted_band() {
-            let already = rule.admitted(&reference.values, measured.current) as f64
-                / reference.values.len().max(1) as f64;
-            if (lo..=hi).contains(&already) {
-                report.unchanged.push(Unchanged {
-                    file: measured.file.clone(),
-                    gate: measured.gate.clone(),
-                    specimen: specimen.group.clone(),
-                    achieved: already,
-                });
-                continue;
-            }
         }
 
-        let solved = match rule.solve(&reference.values, Some(measured.current)) {
-            Ok(s) => s,
-            Err(e) => {
-                skip(e.to_string());
-                continue;
-            }
-        };
-
-        let Some(current) = state.gate_for_file(&measured.gate_id, &measured.file, metadata) else {
-            skip("the gate no longer resolves".to_string());
+        let Some(reference) = resolve_reference(store, measured, measurements, metadata) else {
+            report.skipped.push(Skipped {
+                file: measured.file.clone(),
+                gate: measured.gate.clone(),
+                reason: "no reference sample to measure".to_string(),
+            });
             continue;
         };
-        let moved = match translate_edge_to(
-            &current,
-            &measured.parameter,
-            measured.bound,
-            solved.threshold.x,
-        ) {
-            Ok(g) => g,
-            Err(e) => {
-                skip(e.to_string());
-                continue;
-            }
-        };
-        place_for_specimen(state, &measured.gate_id, &specimen, &moved);
 
-        report.positioned.push(Positioned {
-            file: measured.file.clone(),
-            gate: measured.gate.clone(),
-            specimen: specimen.group.clone(),
-            measured_on: reference_id,
-            from: measured.current,
-            to: solved.threshold.x,
-            confidence: solved.confidence.score,
-            weakest: solved.confidence.weakest().map(|c| c.name),
-            achieved: solved.threshold.fraction_admitted,
-            reference_events: solved.threshold.parent_events,
-            in_band: matches!(
-                solved.threshold.status,
-                crate::gate_rules::threshold::Status::InBand
-                    | crate::gate_rules::threshold::Status::NoBand
-            ),
-        });
+        match position_one(state, rule, measured, &reference, &specimen, metadata) {
+            Ok(Outcome::Moved(p)) => report.positioned.push(p),
+            Ok(Outcome::Kept(u)) => report.unchanged.push(u),
+            Err(reason) => report.skipped.push(Skipped {
+                file: measured.file.clone(),
+                gate: measured.gate.clone(),
+                reason,
+            }),
+        }
     }
 
     report
+}
+
+fn resolve_reference<'a>(
+    store: &RuleStore,
+    measured: &Measurement,
+    measurements: &'a [Measurement],
+    metadata: &MetaDataFileMap,
+) -> Option<Reference<'a>> {
+    let rule = store.rule_for(&measured.gate, measured.parent_gate.as_deref())?;
+    let id = store.reference_file(&measured.file, &rule.measured_on, metadata)?;
+    let measurement = measurements
+        .iter()
+        .find(|m| m.file == id && m.gate_id == measured.gate_id)?;
+    Some(Reference { id, measurement })
+}
+
+enum Outcome {
+    Moved(Positioned),
+    Kept(Unchanged),
+}
+
+fn position_one(
+    state: &mut GateState,
+    rule: &GateRule,
+    measured: &Measurement,
+    reference: &Reference<'_>,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+) -> Result<Outcome, String> {
+    let population = &reference.measurement.parent_xy;
+    let params = &reference.measurement.params;
+
+    // What the gate on the reference file admits from the reference population,
+    // as the gate - not as a line. Its other sides can exclude events the line
+    // lets through, and a fraction counted past the line is then not the
+    // fraction anyone reads off the plot.
+    let current_gate = state
+        .gate_for_file(&measured.gate_id, &reference.id, metadata)
+        .ok_or_else(|| "the gate no longer resolves".to_string())?;
+    let already = admitted_by(&current_gate, population, params);
+
+    if let (Some((lo, hi)), Some(already)) = (rule.rule.accepted_band(), already)
+        && (lo..=hi).contains(&already)
+    {
+        return Ok(Outcome::Kept(Unchanged {
+            file: measured.file.clone(),
+            gate: measured.gate.clone(),
+            specimen: specimen.group.clone(),
+            achieved: already,
+        }));
+    }
+
+    let solved = rule
+        .solve(&reference.measurement.values, Some(measured.current))
+        .map_err(|e| e.to_string())?;
+
+    let moved = translate_edge_to(
+        &current_gate,
+        &measured.parameter,
+        measured.bound,
+        solved.threshold.x,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Ask the moved gate what it admits, rather than trusting the line's own
+    // arithmetic. This is the number a person will read back.
+    let achieved =
+        admitted_by(&moved, population, params).unwrap_or(solved.threshold.fraction_admitted);
+    let in_band = match rule.rule.accepted_band() {
+        Some((lo, hi)) => (lo..=hi).contains(&achieved),
+        None => true,
+    };
+
+    place_for_specimen(state, &measured.gate_id, specimen, &moved);
+
+    Ok(Outcome::Moved(Positioned {
+        file: measured.file.clone(),
+        gate: measured.gate.clone(),
+        specimen: specimen.group.clone(),
+        measured_on: reference.id.clone(),
+        from: measured.current,
+        to: solved.threshold.x,
+        confidence: solved.confidence.score,
+        weakest: solved.confidence.weakest().map(|c| c.name),
+        achieved,
+        reference_events: population.len(),
+        in_band,
+    }))
 }

@@ -477,7 +477,7 @@ fn sweep(
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
     for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(state, &Arc::from(file), &frame, map).unwrap();
+        let (m, u) = measure_file(state, &Arc::from(file), &frame, map, store).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
@@ -608,7 +608,8 @@ fn a_missing_partner_is_reported_rather_than_guessed() {
     map.insert(Arc::from("fs_a") as Arc<str>, columns);
 
     let frame = ramp(1000);
-    let (measured, unmeasured) = measure_file(&state, &Arc::from("fs_a"), &frame, &map).unwrap();
+    let (measured, unmeasured) =
+        measure_file(&state, &Arc::from("fs_a"), &frame, &map, &fmx_rule()).unwrap();
     let report = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
 
     assert!(report.positioned.is_empty());
@@ -649,21 +650,30 @@ fn a_gate_a_rule_names_but_cannot_measure_says_so() {
 }
 
 #[test]
-fn an_unmeasurable_gate_no_rule_names_stays_quiet() {
-    // Most gates in a workflow have no rule. Reporting every one of them would
-    // bury the handful that matter.
-    use crate::gate_rules::autogate::{Unmeasured, position_all};
+fn a_gate_no_rule_names_is_never_measured_at_all() {
+    // Most gates in a workflow have no rule. Measuring them would cost a
+    // filtered pass over the frame each and bury the handful that matter, so
+    // they are passed over before any of that - and never reported.
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::rule_store::RuleStore;
 
-    let (mut state, _) = one_positive_gate();
+    let (state, _) = one_positive_gate();
     let map = fs_and_fmx();
-    let unmeasured = vec![Unmeasured {
-        gate_id: Arc::from("whatever"),
-        gate: Arc::from("Singlets"),
-        reason: "no edge inside the data".to_string(),
-    }];
-    let report = position_all(&mut state, &fmx_rule(), &[], &unmeasured, &map);
+    let frame = ramp(1000);
 
-    assert!(report.skipped.is_empty());
+    let (measured, unmeasured) = measure_file(
+        &state,
+        &Arc::from("fs_a"),
+        &frame,
+        &map,
+        &RuleStore::default(),
+    )
+    .unwrap();
+    assert!(measured.is_empty());
+    assert!(
+        unmeasured.is_empty(),
+        "a gate with no rule is not a problem"
+    );
 }
 
 #[test]
@@ -684,7 +694,7 @@ fn a_band_too_narrow_for_the_population_is_flagged_not_hidden() {
     let mut unmeasured = Vec::new();
     let frame = ramp(600);
     for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map, &fmx_rule()).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
@@ -704,7 +714,7 @@ fn a_band_too_narrow_for_the_population_is_flagged_not_hidden() {
     let mut unmeasured = Vec::new();
     let frame = ramp(200);
     for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map, &fmx_rule()).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
@@ -737,15 +747,15 @@ fn a_gate_already_in_band_is_left_exactly_where_it_is() {
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
     for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map, &fmx_rule()).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
     let first = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
     assert_eq!(
         first.positioned.len(),
-        2,
-        "both files get placed the first time"
+        1,
+        "one answer per specimen, however many of its files were measured"
     );
     let after_first = edges(
         &state
@@ -757,7 +767,7 @@ fn a_gate_already_in_band_is_left_exactly_where_it_is() {
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
     for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map, &fmx_rule()).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
@@ -767,11 +777,7 @@ fn a_gate_already_in_band_is_left_exactly_where_it_is() {
         second.positioned.is_empty(),
         "nothing should move on a second run"
     );
-    assert_eq!(
-        second.unchanged.len(),
-        2,
-        "both are reported as already right"
-    );
+    assert_eq!(second.unchanged.len(), 1, "reported once as already right");
     assert_eq!(
         edges(
             &state
@@ -802,4 +808,101 @@ fn a_rule_with_no_band_always_re_solves() {
         .accepted_band(),
         Some((0.002, 0.005))
     );
+}
+
+/// A gate that also bounds y, so its sides exclude events its x line admits.
+fn two_dimensional_gate() -> (crate::gate_editor::gates::GateState, Arc<str>) {
+    use crate::gate_editor::gates::GateState;
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::gate_editor::gates::gate_types::PrimaryGateType;
+    use crate::gate_editor::plots::axis_store::PlotMapper;
+    use flow_fcs::TransformType;
+
+    let mapper = PlotMapper::new(
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &mapper,
+            300.0,
+            300.0,
+            Arc::from(X),
+            Arc::from(Y),
+            None,
+            None,
+            PrimaryGateType::Rectangle,
+            Some("CD134+".to_string()),
+        )
+        .unwrap();
+    let gate_id = state
+        .placements()
+        .next()
+        .map(|(_, p)| p.gate_id.clone())
+        .unwrap();
+
+    // Open above 500 on x, but capped at y <= 0 - and the ramp's y is all 0.0,
+    // so the cap admits everything. Narrowing it is what the test varies.
+    let geometry = create_rectangle_geometry(
+        vec![(500.0, -1.0), (1e16, -1.0), (1e16, 1.0), (500.0, 1.0)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let mut inner = gate("r2", geometry);
+    inner.name = "CD134+".to_string();
+    let g: Arc<dyn DrawableGate> = Arc::new(RectangleGate::try_new(inner, true).unwrap());
+    state.place_gate(&[gate_id.clone()], &g, &GateSource::Global);
+    (state, gate_id)
+}
+
+#[test]
+fn a_gate_that_bounds_both_axes_is_still_positioned() {
+    // The old rule was "exactly one edge may lie inside the data", which read a
+    // gate bounding both axes as a window with no line to solve and refused it
+    // outright. The rule names its parameter; there is nothing to infer.
+    use crate::gate_rules::autogate::measure_file;
+
+    let (state, _) = two_dimensional_gate();
+    let map = fs_and_fmx();
+    let frame = ramp(1000);
+
+    let (measured, unmeasured) =
+        measure_file(&state, &Arc::from("fmx_a"), &frame, &map, &fmx_rule()).unwrap();
+    assert_eq!(measured.len(), 1, "it should be measured, not refused");
+    assert!(unmeasured.is_empty());
+    assert_eq!(&*measured[0].parameter, X);
+    assert_eq!(measured[0].current, 500.0);
+}
+
+#[test]
+fn what_a_gate_captures_is_asked_of_the_gate_not_of_the_line() {
+    // The number that matters is what the shape admits. Counting past the line
+    // ignores the gate's other sides, so a gate whose sides exclude events
+    // would report a fraction nobody can reproduce from the plot.
+    use crate::gate_rules::autogate::admitted_by;
+
+    let points: Vec<(f32, f32)> = (1..=1000).map(|i| (i as f32, 0.0)).collect();
+    let params = (Arc::from(X) as Arc<str>, Arc::from(Y) as Arc<str>);
+
+    // Open above 995 on x and unbounded on y. Six events, not five: a gate
+    // includes its boundary, where the solver counts strictly past the line.
+    // That one event is the difference between 0.5% and 0.6% here, and at the
+    // counts a 0.2-0.5% band deals in it is the difference between meeting the
+    // band and missing it - which is exactly why the fraction is now measured
+    // from the gate rather than from the line.
+    let open = rect(995.0, -1e16, 1e16, 1e16);
+    assert_eq!(admitted_by(&open, &points, &params), Some(0.006));
+
+    // The same line, but capped on y above the data: admits nothing, and
+    // counting past the x line alone would still have claimed 0.5%.
+    let capped = rect(995.0, 10.0, 1e16, 20.0);
+    assert_eq!(admitted_by(&capped, &points, &params), Some(0.0));
 }

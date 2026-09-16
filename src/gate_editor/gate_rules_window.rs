@@ -544,7 +544,7 @@ pub fn GateRulesWindow() -> Element {
                         let mut measured = Vec::new();
                         let mut unmeasured = Vec::new();
                         for (id, df) in &frames {
-                            match measure_file(&state, id, df, &metadata) {
+                            match measure_file(&state, id, df, &metadata, &rules_now) {
                                 Ok((mut m, mut u)) => {
                                     measured.append(&mut m);
                                     unmeasured.append(&mut u);
