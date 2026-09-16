@@ -569,8 +569,9 @@ pub fn GateRulesWindow() -> Element {
                             });
                         }
                         message.set(Some(format!(
-                            "Positioned {} gates; {} need review",
+                            "Moved {} gates, left {} already in band; {} need review",
                             run.positioned.len(),
+                            run.unchanged.len(),
                             run.needs_review(REVIEW_FLOOR).count()
                         )));
                         report.set(Some(run));
@@ -616,6 +617,27 @@ pub fn GateRulesWindow() -> Element {
                                         }
                                         td { "{placed.confidence:.2}" }
                                         td { "{placed.weakest.unwrap_or(\"-\")}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !run.unchanged.is_empty() {
+                        h3 { "Already in band - left alone" }
+                        table { class: "gate_rules-table",
+                            thead {
+                                tr {
+                                    th { "Specimen" }
+                                    th { "Gate" }
+                                    th { "Captures" }
+                                }
+                            }
+                            tbody {
+                                for kept in run.unchanged.iter() {
+                                    tr {
+                                        td { "{kept.specimen}" }
+                                        td { "{kept.gate}" }
+                                        td { "{kept.achieved * 100.0:.3}%" }
                                     }
                                 }
                             }

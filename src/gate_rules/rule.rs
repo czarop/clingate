@@ -173,6 +173,24 @@ impl Rule {
         }
     }
 
+    /// The fractions of the parent this rule will accept, when it is the kind
+    /// of rule that accepts a range at all.
+    ///
+    /// What it is for: a gate already capturing a fraction inside the band
+    /// satisfies the rule, and the best thing to do with it is nothing. Solving
+    /// anyway is work for no gain, and can actively make things worse - a band
+    /// narrow enough to allow only one or two whole events can be missed by the
+    /// solver even where the current position hits it.
+    ///
+    /// `None` for a rule that names a position rather than a range: there is no
+    /// "already correct" to test against, so it is always re-solved.
+    pub fn accepted_band(&self) -> Option<(f64, f64)> {
+        match self {
+            Rule::TailFraction(r) => Some(r.band),
+            Rule::PercentileOffset(_) => None,
+        }
+    }
+
     /// The name of the kind, for the Gate Rules tab's list.
     pub fn kind(&self) -> &'static str {
         match self {

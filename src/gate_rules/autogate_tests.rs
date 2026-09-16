@@ -721,3 +721,85 @@ fn a_band_too_narrow_for_the_population_is_flagged_not_hidden() {
         assert_eq!(report.needs_review(0.0).count(), 1);
     }
 }
+
+#[test]
+fn a_gate_already_in_band_is_left_exactly_where_it_is() {
+    // Re-running must be safe. A gate capturing what the rule asks for is
+    // already right, and moving it is at best wasted work - at worst it lands
+    // outside the band the gate was already inside.
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    let frame = ramp(1000);
+
+    // Solve once, then solve again from the result.
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let first = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
+    assert_eq!(
+        first.positioned.len(),
+        2,
+        "both files get placed the first time"
+    );
+    let after_first = edges(
+        &state
+            .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+            .unwrap(),
+        X,
+    );
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let second = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
+
+    assert!(
+        second.positioned.is_empty(),
+        "nothing should move on a second run"
+    );
+    assert_eq!(
+        second.unchanged.len(),
+        2,
+        "both are reported as already right"
+    );
+    assert_eq!(
+        edges(
+            &state
+                .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+                .unwrap(),
+            X
+        ),
+        after_first,
+        "the gate must not drift"
+    );
+}
+
+#[test]
+fn a_rule_with_no_band_always_re_solves() {
+    // A percentile-offset rule names a position rather than a range, so there
+    // is no "already correct" to test - it is solved every time.
+    use crate::gate_rules::rule::{PercentileOffsetRule, Rule};
+
+    assert!(
+        Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.5))
+            .accepted_band()
+            .is_none()
+    );
+    assert_eq!(
+        Rule::TailFraction(crate::gate_rules::rule::TailFractionRule::new((
+            0.002, 0.005
+        )))
+        .accepted_band(),
+        Some((0.002, 0.005))
+    );
+}

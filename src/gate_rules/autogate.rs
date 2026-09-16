@@ -442,9 +442,19 @@ pub struct Skipped {
     pub reason: String,
 }
 
+/// A gate that already satisfied its rule and was left alone.
+pub struct Unchanged {
+    pub file: FileId,
+    pub gate: Arc<str>,
+    pub specimen: Arc<str>,
+    /// What it already captures on the file the rule measures.
+    pub achieved: f64,
+}
+
 #[derive(Default)]
 pub struct Report {
     pub positioned: Vec<Positioned>,
+    pub unchanged: Vec<Unchanged>,
     pub skipped: Vec<Skipped>,
 }
 
@@ -533,6 +543,26 @@ pub fn position_all(
             skip(format!("{reference_id} was not measured"));
             continue;
         };
+
+        // A gate already capturing what the rule asks for is already right, and
+        // the best thing to do with it is nothing. Solving anyway costs a pass
+        // over the population for no gain, and can make things actively worse:
+        // a band narrow enough to allow only one or two whole events can be
+        // missed by the solver even where the current position hits it, so a
+        // gate sitting at 0.38% gets "corrected" to 0.19%.
+        if let Some((lo, hi)) = rule.rule.accepted_band() {
+            let already = rule.admitted(&reference.values, measured.current) as f64
+                / reference.values.len().max(1) as f64;
+            if (lo..=hi).contains(&already) {
+                report.unchanged.push(Unchanged {
+                    file: measured.file.clone(),
+                    gate: measured.gate.clone(),
+                    specimen: specimen.group.clone(),
+                    achieved: already,
+                });
+                continue;
+            }
+        }
 
         let solved = match rule.solve(&reference.values, Some(measured.current)) {
             Ok(s) => s,
