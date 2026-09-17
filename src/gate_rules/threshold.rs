@@ -318,6 +318,10 @@ pub struct NegativePeak {
     pub centre: f64,
     /// Its width, as a one-sigma equivalent.
     pub spread: f64,
+    /// How many events the width was measured from - the ones below the
+    /// centre. Reported because a width read off a handful of events is not
+    /// worth the gate it places, and nothing else in the report would say so.
+    pub flank_events: usize,
 }
 
 /// Where one sigma falls *within the left flank*.
@@ -336,7 +340,7 @@ const ONE_SIGMA_IN_LEFT_FLANK: f64 = 0.1587 / 0.5;
 /// many positives that sample happens to have - precisely the variation this
 /// rule exists to see past, so measuring it into the answer would defeat the
 /// point. The left flank is uncontaminated.
-fn left_flank_sigma(values: &[f64], centre: f64) -> Option<f64> {
+fn left_flank_sigma(values: &[f64], centre: f64) -> Option<(f64, usize)> {
     let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= centre).collect();
     if below.len() < 2 {
         return None;
@@ -344,7 +348,7 @@ fn left_flank_sigma(values: &[f64], centre: f64) -> Option<f64> {
     below.sort_by(f64::total_cmp);
     let at = ((below.len() as f64) * ONE_SIGMA_IN_LEFT_FLANK) as usize;
     let sigma = centre - below[at.min(below.len() - 1)];
-    (sigma > 0.0).then_some(sigma)
+    (sigma > 0.0).then_some((sigma, below.len()))
 }
 
 fn median_of(sorted: &[f64]) -> f64 {
@@ -381,9 +385,11 @@ pub fn negative_below(shadow: &[(f64, f64)], at: f64) -> Option<NegativePeak> {
     }
     below.sort_by(f64::total_cmp);
     let centre = median_of(&below);
+    let (spread, flank_events) = left_flank_sigma(&below, centre)?;
     Some(NegativePeak {
         centre,
-        spread: left_flank_sigma(&below, centre)?,
+        spread,
+        flank_events,
     })
 }
 
@@ -471,10 +477,12 @@ pub fn negative_peak(values: &[f64]) -> Option<NegativePeak> {
 
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
     let centre = leftmost_prominent_mode(&xs, &density)?;
+    let (spread, flank_events) = left_flank_sigma(values, centre)?;
 
     Some(NegativePeak {
         centre,
-        spread: left_flank_sigma(values, centre)?,
+        spread,
+        flank_events,
     })
 }
 

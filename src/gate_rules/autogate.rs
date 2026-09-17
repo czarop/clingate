@@ -25,6 +25,7 @@ use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
+use crate::gate_rules::rule::NegativeRead;
 use crate::gate_rules::rule_store::{Bound, MeasuredOn, SamplePairing};
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey};
 use flow_gates::GateGeometry;
@@ -698,6 +699,11 @@ pub struct Positioned {
     pub reference_events: usize,
     /// Whether that landed inside the band the rule asked for.
     pub in_band: bool,
+    /// For a rule that places against the negative: what it read on the
+    /// reference, and what it read on this sample. The two side by side are
+    /// the only way to tell a gate that moved because the negative moved from
+    /// one that moved because the negative was measured differently.
+    pub negative: Option<(NegativeRead, NegativeRead)>,
 }
 
 /// A gate no rule could even be tried against, and why.
@@ -921,12 +927,17 @@ fn position_one(
     // until it holds that fraction - measured from the gate itself. A rule that
     // names a position is solved and the leading edge anchored to it, which is
     // what such a rule means.
+    // Filled in only by the above-the-negative rule, which is the one whose
+    // answer is otherwise impossible to check by eye: the reading it made on
+    // the reference, and the reading it made on this sample.
+    let mut reading: Option<(NegativeRead, NegativeRead)> = None;
+
     let (moved, to, achieved) = match &rule.rule {
         // Calibrated against the reference, then applied to this sample's own
         // negative. The reference supplies the distance; the sample supplies
         // the place to measure it from.
         crate::gate_rules::rule::Rule::AboveTheNegative(above) => {
-            let widths = above
+            let from_reference = above
                 .calibrate(
                     &reference.measurement.values,
                     &reference.measurement.shadow,
@@ -938,16 +949,23 @@ fn position_one(
                         reference.id
                     )
                 })?;
-            let to = above
+            let here = above
                 // The gate's current position on this sample - inherited from
                 // the reference, so a good place for the refining finder to
                 // start from.
-                .place(&measured.values, &measured.shadow, widths, measured.current)
+                .place(
+                    &measured.values,
+                    &measured.shadow,
+                    from_reference.widths,
+                    measured.current,
+                )
                 .ok_or_else(|| "this sample has no negative peak to place against".to_string())?;
-            let moved = translate_edge_to(&current_gate, &measured.parameter, measured.bound, to)
-                .map_err(|e| e.to_string())?;
+            let moved =
+                translate_edge_to(&current_gate, &measured.parameter, measured.bound, here.at)
+                    .map_err(|e| e.to_string())?;
             let got = admitted_by(&moved, population).unwrap_or(0.0);
-            (moved, to, got)
+            reading = Some((from_reference, here));
+            (moved, here.at, got)
         }
         _ => match rule.rule.accepted_band() {
             Some(band) => {
@@ -1042,6 +1060,7 @@ fn position_one(
         achieved,
         reference_events: parent_events,
         in_band,
+        negative: reading,
     }))
 }
 

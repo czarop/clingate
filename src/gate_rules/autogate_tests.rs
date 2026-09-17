@@ -1362,3 +1362,68 @@ fn a_rule_measured_on_the_partner_still_positions_its_own_specimen() {
         "a partner rule positions the specimen it measured"
     );
 }
+
+// ─── the reading reaches the report ──────────────────────────────────────────
+
+/// An above-the-negative rule calibrated on one named file.
+fn above_the_negative_rule(file: &str) -> crate::gate_rules::rule_store::RuleStore {
+    use crate::gate_rules::rule::{AboveTheNegativeRule, Rule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("CD134+"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from(file)),
+            rule: Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+        },
+    );
+    store
+}
+
+#[test]
+fn an_above_the_negative_placement_reports_what_it_read() {
+    // Without this the report says a gate moved and gives no way to tell
+    // whether the negative moved or was simply measured differently.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let report = sweep_over(
+        &mut state,
+        &above_the_negative_rule("fs_qc"),
+        &map,
+        &["fs_qc", "fs_b"],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("the other specimen is positioned");
+    let (reference, here) = placed.negative.expect("the reading is reported");
+
+    assert!(reference.spread > 0.0 && here.spread > 0.0);
+    assert_eq!(
+        reference.at, 500.0,
+        "the reference's reading is anchored to the gate as drawn"
+    );
+    // The figures shown have to be the ones the placement came from.
+    assert!(
+        (here.centre + here.widths * here.spread - here.at).abs() < 1e-6,
+        "the reported reading does not reproduce the gate it placed"
+    );
+    assert!((here.at - placed.to).abs() < 1e-6);
+}
+
+#[test]
+fn a_band_rule_reports_no_negative_because_it_reads_none() {
+    // Only the above-the-negative rule has a negative to report. A band rule
+    // slides the gate until it holds the fraction and never looks at one, so an
+    // empty column there is the truth rather than a gap.
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    assert!(report.positioned.iter().all(|p| p.negative.is_none()));
+}

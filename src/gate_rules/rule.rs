@@ -227,6 +227,28 @@ impl Default for AboveTheNegativeRule {
     }
 }
 
+/// What a finder read off one sample, and the gate position that follows.
+///
+/// Returned rather than the bare number both `calibrate` and `place` used to
+/// give back, so a report can show the reading the placement was actually made
+/// from. Computing it a second time for display would let the two drift, and
+/// then the figure on screen would no longer explain the gate on the plot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NegativeRead {
+    /// The centre of this sample's negative, in the axis's display space.
+    pub centre: f64,
+    /// Its width, as a one-sigma equivalent measured on the left flank.
+    pub spread: f64,
+    /// How many events that width was measured from.
+    pub flank_events: usize,
+    /// How many widths above `centre` the gate sits - read from the reference
+    /// when calibrating, applied as given when placing.
+    pub widths: f64,
+    /// Where that puts the gate on the axis. For a calibration this is the
+    /// position a person drew, by definition.
+    pub at: f64,
+}
+
 impl AboveTheNegativeRule {
     /// How far above the reference's negative its gate sits, in widths.
     ///
@@ -240,7 +262,7 @@ impl AboveTheNegativeRule {
         values: &[f64],
         shadow: &[(f64, f64)],
         reference_x: f64,
-    ) -> Option<f64> {
+    ) -> Option<NegativeRead> {
         use crate::gate_rules::threshold as t;
         // Nothing to iterate here: the gate is already where a person put it,
         // so one look at its shadow is the whole answer - offset 0.0.
@@ -248,7 +270,13 @@ impl AboveTheNegativeRule {
             NegativeFinder::DensityPeak => t::negative_peak(values)?,
             NegativeFinder::RefineFromGate => t::negative_below(shadow, 0.0)?,
         };
-        Some((reference_x - peak.centre) / peak.spread)
+        Some(NegativeRead {
+            centre: peak.centre,
+            spread: peak.spread,
+            flank_events: peak.flank_events,
+            widths: (reference_x - peak.centre) / peak.spread,
+            at: reference_x,
+        })
     }
 
     /// Where the gate belongs on a sample, given that calibration.
@@ -262,7 +290,7 @@ impl AboveTheNegativeRule {
         shadow: &[(f64, f64)],
         widths: f64,
         start: f64,
-    ) -> Option<f64> {
+    ) -> Option<NegativeRead> {
         use crate::gate_rules::threshold as t;
         let at =
             |peak: t::NegativePeak| peak.centre + widths * self.scale * peak.spread + self.nudge;
@@ -273,7 +301,13 @@ impl AboveTheNegativeRule {
             // on the axis. `at` then reads back onto the axis as usual.
             NegativeFinder::RefineFromGate => t::refine_from(shadow, 0.0, |peak| at(peak) - start)?,
         };
-        Some(at(peak))
+        Some(NegativeRead {
+            centre: peak.centre,
+            spread: peak.spread,
+            flank_events: peak.flank_events,
+            widths,
+            at: at(peak),
+        })
     }
 
     pub fn describe(&self) -> String {
