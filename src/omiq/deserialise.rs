@@ -310,6 +310,24 @@ impl GateSerialized {
             GateSerialized::Unknown => None,
         }
     }
+    /// Where Omiq put this gate's label, whatever shape it is.
+    ///
+    /// Read back out at export time for a gate the editor rebuilt from parts -
+    /// a skewed quadrant's corners, say - which carry no label of their own and
+    /// would otherwise lose the one they came in with.
+    pub fn label_position(&self) -> Option<Point> {
+        match self {
+            GateSerialized::Rectangle { label_position, .. }
+            | GateSerialized::Polygon { label_position, .. }
+            | GateSerialized::Ellipse { label_position, .. }
+            | GateSerialized::Line { label_position, .. }
+            | GateSerialized::Angle { label_position, .. } => *label_position,
+            // A shape this build does not model. It is passed through verbatim
+            // elsewhere, so there is nothing here to fall back to.
+            GateSerialized::Unknown => None,
+        }
+    }
+
     pub fn to_drawable(
         &self,
         id: Arc<str>,

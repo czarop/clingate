@@ -641,6 +641,7 @@ fn a_gate_a_rule_names_but_cannot_measure_says_so() {
     let unmeasured = vec![Unmeasured {
         gate_id: Arc::from("whatever"),
         gate: Arc::from("CD134+"),
+        parent_gate: Some(Arc::from("CD4+")),
         reason: "drawn as a shape a rule cannot slide".to_string(),
     }];
     let report = position_all(&mut state, &fmx_rule(), &[], &unmeasured, &map);

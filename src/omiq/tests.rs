@@ -1612,7 +1612,7 @@ fn round_trip(state: &GateState, id: &str) -> GateSerialized {
         .omiq_rebuild()
         .get(&gate_id)
         .and_then(|r| r.source_type);
-    gate_to_serialized(&gate, &gate_id, source_type, &fixture_axes())
+    gate_to_serialized(&gate, &gate_id, source_type, &fixture_axes(), None)
         .unwrap_or_else(|e| panic!("{id} should serialise, got: {e}"))
 }
 
@@ -1845,7 +1845,7 @@ fn every_gate_in_both_fixtures_round_trips() {
                 continue; // written per corner, covered above
             }
             let source_type = state.omiq_rebuild().get(id).and_then(|r| r.source_type);
-            let written = gate_to_serialized(&gate, id, source_type, &fixture_axes())
+            let written = gate_to_serialized(&gate, id, source_type, &fixture_axes(), None)
                 .unwrap_or_else(|e| panic!("{name}/{id}: {e}"));
 
             assert_eq!(
@@ -1872,7 +1872,7 @@ fn a_boolean_gate_is_not_written_as_a_filter() {
     let gate = state.registered_gate(&id).unwrap();
 
     assert!(
-        gate_to_serialized(&gate, &id, None, &fixture_axes()).is_err(),
+        gate_to_serialized(&gate, &id, None, &fixture_axes(), None).is_err(),
         "a boolean is a compound container, not a filter"
     );
 }
@@ -4429,5 +4429,34 @@ fn the_container_type_is_the_one_that_was_read() {
             Some(was),
             "container {id} changed the type it came in with"
         );
+    }
+}
+
+/// A gate the editor rebuilds from parts keeps the label Omiq gave it.
+///
+/// A skewed quadrant's four corners are built from the composite and carry no
+/// label of their own, so they lost theirs on the way back out - 24 of them in
+/// a real workflow. The label captured at import is the fallback.
+#[test]
+fn every_gate_keeps_the_label_it_came_in_with() {
+    for name in [BEFORE, AFTER] {
+        let source = original(name);
+        let written = export_with_metadata(name);
+        let from = objects(&source, &["tree", "filterContainers"]);
+        let to = objects(&written, &["tree", "filterContainers"]);
+
+        for (id, container) in from.iter() {
+            let Some(was) = container
+                .get("defaultFilter")
+                .and_then(|f| f.get("labelLoc"))
+            else {
+                continue;
+            };
+            let now = to[id].get("defaultFilter").and_then(|f| f.get("labelLoc"));
+            assert!(
+                now.is_some(),
+                "{name}: container {id} lost the label it came in with ({was})"
+            );
+        }
     }
 }

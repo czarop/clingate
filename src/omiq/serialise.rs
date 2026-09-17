@@ -154,13 +154,17 @@ pub fn gate_to_serialized(
     container_id: &GateId,
     source_type: Option<OmiqGateType>,
     axes: &AxisSettings,
+    captured_label: Option<crate::omiq::deserialise::Point>,
 ) -> anyhow::Result<GateSerialized> {
     let inner = gate
         .get_gate_ref(Some(container_id))
         .ok_or_else(|| anyhow!("gate {container_id} has no geometry to write"))?;
 
     let (x_param, y_param) = inner.parameters.clone();
-    let label_position = label(&inner.label_position);
+    // The gate's own label, or the one it came in with. A gate the editor
+    // rebuilds from parts - a skewed quadrant's corners - carries none of its
+    // own, so without the fallback 24 of them lost the label Omiq gave them.
+    let label_position = label(&inner.label_position).or(captured_label);
     let bounds = (
         axis_unbounded(&x_param, axes),
         axis_unbounded(&y_param, axes),
@@ -359,7 +363,8 @@ fn container_for(
     let source_type = rebuild
         .and_then(|r| r.source_type)
         .or(synthesised.as_ref().map(|(_, written_as)| *written_as));
-    let default_filter = gate_to_serialized(gate, container_id, source_type, axes)?;
+    let captured_label = rebuild.and_then(|r| r.label_position);
+    let default_filter = gate_to_serialized(gate, container_id, source_type, axes, captured_label)?;
 
     // Omiq stores one entry per file, even when a metadata column is what
     // actually drives the position. So write the files this container already
@@ -385,7 +390,8 @@ fn container_for(
         let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
             continue;
         };
-        let filter = gate_to_serialized(&for_file, container_id, source_type, axes)?;
+        let filter =
+            gate_to_serialized(&for_file, container_id, source_type, axes, captured_label)?;
         per_file_filters.insert(file_id.clone(), filter);
     }
 

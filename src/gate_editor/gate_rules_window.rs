@@ -5,9 +5,12 @@
 //! occupied twenty-five containers; four rules covered the whole panel.
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
+use crate::gate_editor::gates::gate_store::GateId;
+use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
-use crate::gate_rules::autogate::{Report, measure_file, position_all};
+use crate::gate_rules::autogate::{Report, describe, measure_file, position_all};
 use crate::gate_rules::rule::{PercentileOffsetRule, Rule, TailFractionRule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
@@ -19,24 +22,30 @@ use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/gate_rules.css");
 
-/// Any gate that appears in the document: its name, the parents it is drawn
-/// under, and the parameters its plots use.
+/// The gates a rule can be written against, arranged the way a person names
+/// them: pick the population first, then the gate drawn on it.
+///
+/// Booleans and ghosts are left out. A boolean has no geometry to slide - it is
+/// a statement about other gates - and a ghost has no position in the tree at
+/// all, only an id some boolean still refers to. Neither can be positioned, so
+/// offering them would only invite a rule that can never run.
 #[derive(Clone, PartialEq, Default)]
 struct GateChoices {
-    names: Vec<Arc<str>>,
-    /// Parent names seen for a given gate name, for "Ki67+ of CD4+".
-    parents: Vec<(Arc<str>, Vec<Arc<str>>)>,
+    /// Parents holding at least one gate a rule could position.
+    parents: Vec<Arc<str>>,
+    /// The gates drawn on each parent.
+    children: Vec<(Arc<str>, Vec<Arc<str>>)>,
     /// Parameters seen for a given gate name. A gate is usually drawn on the
     /// same pair everywhere, but not always, so every one seen is offered.
     parameters: Vec<(Arc<str>, Vec<Arc<str>>)>,
 }
 
 impl GateChoices {
-    fn parents_of(&self, gate: &str) -> &[Arc<str>] {
-        self.parents
+    fn children_of(&self, parent: &str) -> &[Arc<str>] {
+        self.children
             .iter()
-            .find(|(g, _)| &**g == gate)
-            .map(|(_, p)| p.as_slice())
+            .find(|(p, _)| &**p == parent)
+            .map(|(_, c)| c.as_slice())
             .unwrap_or(&[])
     }
     fn parameters_of(&self, gate: &str) -> &[Arc<str>] {
@@ -62,6 +71,15 @@ fn entry<'a>(map: &'a mut Vec<(Arc<str>, Vec<Arc<str>>)>, key: &Arc<str>) -> &'a
     &mut map.last_mut().expect("just pushed").1
 }
 
+/// Whether a rule could ever position this gate.
+///
+/// Shape is not checked here - an ellipse is a real gate in a real place, and a
+/// rule naming one should fail out loud when it runs rather than vanish from a
+/// list with no explanation.
+fn positionable(state: &GateState, gate_id: &GateId, gate: &Arc<dyn DrawableGate>) -> bool {
+    !state.is_ghost(gate_id) && gate.as_any().downcast_ref::<BooleanGate>().is_none()
+}
+
 /// Walk the tree once for everything the form needs to offer.
 fn choices(state: &GateState) -> GateChoices {
     let mut out = GateChoices::default();
@@ -69,28 +87,35 @@ fn choices(state: &GateState) -> GateChoices {
         let Some(gate) = state.registered_gate(&placement.gate_id) else {
             continue;
         };
+        if !positionable(state, &placement.gate_id, &gate) {
+            continue;
+        }
         let name: Arc<str> = Arc::from(gate.get_name());
-        push_unique(&mut out.names, name.clone());
 
         let (x, y) = gate.get_params();
         let params = entry(&mut out.parameters, &name);
         push_unique(params, x);
         push_unique(params, y);
 
-        if let Some(parent_name) = state
+        // A gate with no parent sits at the root and has no population to be
+        // a fraction of, so there is nothing for a rule to measure it against.
+        let Some(parent_name) = state
             .parent_node(node)
             .and_then(|p| state.gate_for_node(&p).cloned())
             .and_then(|id| state.registered_gate(&id))
             .map(|g| Arc::from(g.get_name()) as Arc<str>)
-        {
-            push_unique(entry(&mut out.parents, &name), parent_name);
-        }
+        else {
+            continue;
+        };
+        push_unique(&mut out.parents, parent_name.clone());
+        push_unique(entry(&mut out.children, &parent_name), name);
     }
-    out.names.sort();
+    out.parents.sort();
+    for (_, children) in out.children.iter_mut() {
+        children.sort();
+    }
     out
 }
-
-const ANY_PARENT: &str = "__any__";
 
 /// Below this, a placement is worth opening by hand. Measured against the
 /// hand-gated export: everything at or above it landed within 0.18 arcsinh
@@ -134,7 +159,7 @@ pub fn GateRulesWindow() -> Element {
 
     // The form.
     let mut gate = use_signal(String::new);
-    let mut parent = use_signal(|| ANY_PARENT.to_string());
+    let mut parent = use_signal(String::new);
     let mut parameter = use_signal(String::new);
     let mut bound = use_signal(|| "Above".to_string());
     let mut measured_on = use_signal(|| "FMX".to_string());
@@ -154,7 +179,9 @@ pub fn GateRulesWindow() -> Element {
 
     // Picking a gate offers only the parents and parameters that gate is drawn
     // with, so the form cannot name a combination the document does not have.
-    let selected_parents = use_memo(move || choices.read().parents_of(&gate()).to_vec());
+    // Picking a parent narrows the gates, and picking a gate narrows the
+    // parameters, so the form cannot name a combination the document lacks.
+    let selected_children = use_memo(move || choices.read().children_of(&parent()).to_vec());
     let selected_parameters = use_memo(move || choices.read().parameters_of(&gate()).to_vec());
 
     let mut add = move || {
@@ -190,7 +217,7 @@ pub fn GateRulesWindow() -> Element {
             }
         };
         let target = match parent().as_str() {
-            ANY_PARENT => RuleTarget::named(name.as_str()),
+            "" => RuleTarget::named(name.as_str()),
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
@@ -279,26 +306,32 @@ pub fn GateRulesWindow() -> Element {
             fieldset { class: "gate_rules-form",
                 legend { "Add a rule" }
 
+                // Population first, then the gate drawn on it - the order a
+                // person says it in, and the order that makes the second list
+                // short enough to read.
+                label { "Population" }
+                select {
+                    value: "{parent}",
+                    onchange: move |e| {
+                        parent.set(e.value());
+                        gate.set(String::new());
+                        parameter.set(String::new());
+                    },
+                    option { value: "", "choose a population" }
+                    for name in choices.read().parents.clone() {
+                        option { value: "{name}", "{name}" }
+                    }
+                }
+
                 label { "Gate" }
                 select {
                     value: "{gate}",
                     onchange: move |e| {
                         gate.set(e.value());
-                        parent.set(ANY_PARENT.to_string());
                         parameter.set(String::new());
                     },
                     option { value: "", "choose a gate" }
-                    for name in choices.read().names.clone() {
-                        option { value: "{name}", "{name}" }
-                    }
-                }
-
-                label { "Of parent" }
-                select {
-                    value: "{parent}",
-                    onchange: move |e| parent.set(e.value()),
-                    option { value: ANY_PARENT, "any" }
-                    for name in selected_parents.read().clone() {
+                    for name in selected_children.read().clone() {
                         option { value: "{name}", "{name}" }
                     }
                 }
@@ -565,6 +598,7 @@ pub fn GateRulesWindow() -> Element {
                             run.skipped.push(crate::gate_rules::autogate::Skipped {
                                 file: Arc::from(""),
                                 gate: Arc::from(""),
+                                parent_gate: None,
                                 reason: problem,
                             });
                         }
@@ -604,7 +638,7 @@ pub fn GateRulesWindow() -> Element {
                                     tr {
                                         class: if placed.confidence < REVIEW_FLOOR || !placed.in_band { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
-                                        td { "{placed.gate}" }
+                                        td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
                                         td { "{name_of(&files.read(), &placed.measured_on)}" }
                                         td { "{placed.from:.3}" }
                                         td { "{placed.to:.3}" }
@@ -636,7 +670,7 @@ pub fn GateRulesWindow() -> Element {
                                 for kept in run.unchanged.iter() {
                                     tr {
                                         td { "{kept.specimen}" }
-                                        td { "{kept.gate}" }
+                                        td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }
                                         td { "{kept.achieved * 100.0:.3}%" }
                                     }
                                 }
@@ -647,7 +681,9 @@ pub fn GateRulesWindow() -> Element {
                         h3 { "Not positioned" }
                         ul { class: "gate_rules-skipped",
                             for missed in run.skipped.iter() {
-                                li { "{missed.gate} {missed.file}: {missed.reason}" }
+                                li {
+                                    "{describe(&missed.gate, missed.parent_gate.as_deref())} {missed.file}: {missed.reason}"
+                                }
                             }
                         }
                     }

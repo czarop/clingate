@@ -293,6 +293,7 @@ pub fn measure_file(
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
+                parent_gate: parent_gate.clone(),
                 reason: "this gate has no geometry of its own".to_string(),
             });
             continue;
@@ -302,6 +303,7 @@ pub fn measure_file(
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
+                parent_gate: parent_gate.clone(),
                 reason: format!(
                     "the rule positions {} but this gate is drawn on {} and {}",
                     rule.parameter, params.0, params.1
@@ -313,6 +315,7 @@ pub fn measure_file(
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
+                parent_gate: parent_gate.clone(),
                 reason: "this gate is drawn as a shape a rule cannot slide along one axis"
                     .to_string(),
             });
@@ -326,6 +329,7 @@ pub fn measure_file(
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
+                parent_gate: parent_gate.clone(),
                 reason: "the side of this gate the rule positions is unbounded".to_string(),
             });
             continue;
@@ -339,6 +343,7 @@ pub fn measure_file(
                     unmeasured.push(Unmeasured {
                         gate_id: gate_id.clone(),
                         gate: name,
+                        parent_gate: parent_gate.clone(),
                         reason: e.to_string(),
                     });
                     continue;
@@ -348,6 +353,7 @@ pub fn measure_file(
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
+                parent_gate: parent_gate.clone(),
                 reason: format!("its parent population holds {} events", values.len()),
             });
             continue;
@@ -560,6 +566,10 @@ fn translate_by(
 pub struct Positioned {
     pub file: FileId,
     pub gate: Arc<str>,
+    /// The population it is drawn on. Without it a report naming "a4b7+" five
+    /// times says nothing: the same marker gated on five parents is five
+    /// different gates, and only the parent tells them apart.
+    pub parent_gate: Option<Arc<str>>,
     pub specimen: Arc<str>,
     /// The file whose population the rule read.
     pub measured_on: FileId,
@@ -581,6 +591,7 @@ pub struct Positioned {
 pub struct Unmeasured {
     pub gate_id: GateId,
     pub gate: Arc<str>,
+    pub parent_gate: Option<Arc<str>>,
     pub reason: String,
 }
 
@@ -588,6 +599,10 @@ pub struct Unmeasured {
 pub struct Unchanged {
     pub file: FileId,
     pub gate: Arc<str>,
+    /// The population it is drawn on. Without it a report naming "a4b7+" five
+    /// times says nothing: the same marker gated on five parents is five
+    /// different gates, and only the parent tells them apart.
+    pub parent_gate: Option<Arc<str>>,
     pub specimen: Arc<str>,
     pub achieved: f64,
 }
@@ -596,7 +611,19 @@ pub struct Unchanged {
 pub struct Skipped {
     pub file: FileId,
     pub gate: Arc<str>,
+    /// The population it is drawn on. Without it a report naming "a4b7+" five
+    /// times says nothing: the same marker gated on five parents is five
+    /// different gates, and only the parent tells them apart.
+    pub parent_gate: Option<Arc<str>>,
     pub reason: String,
+}
+
+/// "a4b7+ of CD4+", or just the gate where it has no parent.
+pub fn describe(gate: &str, parent: Option<&str>) -> String {
+    match parent {
+        Some(parent) => format!("{gate} of {parent}"),
+        None => gate.to_string(),
+    }
 }
 
 #[derive(Default)]
@@ -644,6 +671,7 @@ pub fn position_all(
         report.skipped.push(Skipped {
             file: Arc::from(""),
             gate: miss.gate.clone(),
+            parent_gate: miss.parent_gate.clone(),
             reason: miss.reason.clone(),
         });
     }
@@ -658,6 +686,7 @@ pub fn position_all(
             report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
                 reason: format!(
                     "no {} for this file, so there is no specimen to position",
                     store.pairing.sample_id_column
@@ -677,6 +706,7 @@ pub fn position_all(
             report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
                 reason: "no reference sample to measure".to_string(),
             });
             continue;
@@ -688,6 +718,7 @@ pub fn position_all(
             Err(reason) => report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
                 reason,
             }),
         }
@@ -740,6 +771,7 @@ fn position_one(
         return Ok(Outcome::Kept(Unchanged {
             file: measured.file.clone(),
             gate: measured.gate.clone(),
+            parent_gate: measured.parent_gate.clone(),
             specimen: specimen.group.clone(),
             achieved: already,
         }));
@@ -830,6 +862,7 @@ fn position_one(
     Ok(Outcome::Moved(Positioned {
         file: measured.file.clone(),
         gate: measured.gate.clone(),
+        parent_gate: measured.parent_gate.clone(),
         specimen: specimen.group.clone(),
         measured_on: reference.id.clone(),
         from: measured.current,
