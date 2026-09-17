@@ -795,7 +795,10 @@ fn position_one(
                     )
                 })?;
             let to = above
-                .place(&measured.values, widths)
+                // The gate's current position on this sample - inherited from
+                // the reference, so a good place for the refining finder to
+                // start from.
+                .place(&measured.values, widths, measured.current)
                 .ok_or_else(|| "this sample has no negative peak to place against".to_string())?;
             let moved = translate_edge_to(&current_gate, &measured.parameter, measured.bound, to)
                 .map_err(|e| e.to_string())?;

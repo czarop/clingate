@@ -217,6 +217,26 @@ axis, and nothing should.
       `scale` and `nudge` adjust the result without touching the calibration.
       No FMO needed: the negative is read from the sample being gated.
 
+- [ ] **Decide which way of finding the negative to keep.** Two are offered and
+      they trade off against each other, measured on synthetic populations:
+
+      *From the events below the gate* is about five times the sharper while a
+      negative has not moved more than the calibrated distance - roughly three
+      widths - landing within 0.16 of a width. Past that it sticks low: a cut
+      sitting under the negative's centre sees a narrow slice, reads a narrow
+      width from it, and puts the gate back at the cut. Self-consistent and
+      wrong. It needs no bandwidth and no notion of a peak being tall enough.
+
+      *From the density's leftmost peak* has no such limit and tracks a drift of
+      any size, but disagrees with itself between two draws of one population by
+      about 0.8 of a width. It needs a bandwidth and a prominence threshold,
+      neither of which comes from the data.
+
+      The real test is hand gating, not synthetic draws. If below-the-gate holds
+      up on real samples it is the better default and the density finder is the
+      fallback for a badly drifted one; a hybrid - refine from the gate, fall
+      back when it sticks - is the obvious end state but wants evidence first.
+
 - [x] **A rule store.** `rule_store.rs`. A rule is attached to a *population* -
       a gate name and optionally the parent it sits under, "Ki67+ of CD4+" -
       rather than to a container. Container-keyed rules meant 52 rules for what

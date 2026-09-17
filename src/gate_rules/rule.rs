@@ -166,6 +166,35 @@ pub enum Rule {
 /// from run to run - carries the gate with it.
 ///
 /// Nothing here needs an FMO: the negative is read from the sample being gated.
+/// How the negative population is found.
+///
+/// The two differ only here - the calibration, the scale and the nudge are
+/// identical - so a difference in where they put a gate is a difference between
+/// the estimators and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NegativeFinder {
+    /// From the shape of the density: the leftmost bump tall enough to count.
+    ///
+    /// Needs a bandwidth and a prominence threshold, neither of which comes
+    /// from the data.
+    DensityPeak,
+    /// From the events below the line, improving on where the line already is.
+    ///
+    /// No bandwidth and no threshold. Assumes instead that the gate starts
+    /// roughly right, which it does: it came from a sample gated by hand.
+    #[default]
+    RefineFromGate,
+}
+
+impl NegativeFinder {
+    pub fn label(self) -> &'static str {
+        match self {
+            NegativeFinder::DensityPeak => "the density's leftmost peak",
+            NegativeFinder::RefineFromGate => "the events below the gate",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AboveTheNegativeRule {
     /// Multiplies the calibrated distance. 1.0 places the gate exactly where
@@ -176,6 +205,9 @@ pub struct AboveTheNegativeRule {
     /// to do with how wide the negative is.
     #[serde(default)]
     pub nudge: f64,
+    /// How the negative is found.
+    #[serde(default)]
+    pub find: NegativeFinder,
     #[serde(default)]
     pub confidence: CountAndSeparation,
 }
@@ -189,6 +221,7 @@ impl Default for AboveTheNegativeRule {
         Self {
             scale: 1.0,
             nudge: 0.0,
+            find: NegativeFinder::default(),
             confidence: CountAndSeparation::default(),
         }
     }
@@ -201,18 +234,37 @@ impl AboveTheNegativeRule {
     /// rather than a zero: a gate placed off an unreadable peak is worse than
     /// one left alone.
     pub fn calibrate(&self, reference: &[f64], reference_x: f64) -> Option<f64> {
-        let peak = crate::gate_rules::threshold::negative_peak(reference)?;
+        use crate::gate_rules::threshold as t;
+        // Nothing to iterate here: the line is already where a person put it,
+        // so one look below it is the whole answer.
+        let peak = match self.find {
+            NegativeFinder::DensityPeak => t::negative_peak(reference)?,
+            NegativeFinder::RefineFromGate => t::negative_below(reference, reference_x)?,
+        };
         Some((reference_x - peak.centre) / peak.spread)
     }
 
     /// Where the gate belongs on a sample, given that calibration.
-    pub fn place(&self, values: &[f64], widths: f64) -> Option<f64> {
-        let peak = crate::gate_rules::threshold::negative_peak(values)?;
-        Some(peak.centre + widths * self.scale * peak.spread + self.nudge)
+    ///
+    /// `start` is where the gate sits on this sample now - inherited from the
+    /// reference, so roughly right. The density finder ignores it; the refining
+    /// one improves on it.
+    pub fn place(&self, values: &[f64], widths: f64, start: f64) -> Option<f64> {
+        use crate::gate_rules::threshold as t;
+        let at =
+            |peak: t::NegativePeak| peak.centre + widths * self.scale * peak.spread + self.nudge;
+        let peak = match self.find {
+            NegativeFinder::DensityPeak => t::negative_peak(values)?,
+            NegativeFinder::RefineFromGate => t::refine_from(values, start, at)?,
+        };
+        Some(at(peak))
     }
 
     pub fn describe(&self) -> String {
-        let mut how = format!("as far above the negative as the reference sits");
+        let mut how = format!(
+            "as far above the negative as the reference sits, found from {}",
+            self.find.label()
+        );
         if self.scale != 1.0 {
             how.push_str(&format!(", times {:.2}", self.scale));
         }

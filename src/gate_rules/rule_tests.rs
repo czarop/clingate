@@ -198,7 +198,7 @@ fn a_rule_names_its_kind_for_the_tab() {
 
 // ─── Above the negative ──────────────────────────────────────────────────────
 
-use crate::gate_rules::rule::AboveTheNegativeRule;
+use crate::gate_rules::rule::{AboveTheNegativeRule, NegativeFinder};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, Normal};
@@ -221,12 +221,16 @@ fn the_gate_follows_a_negative_that_has_drifted() {
         .expect("calibrates");
     assert!((widths - 3.0).abs() < 0.4, "read {widths} widths");
 
-    let drifted = gaussian(2, 4000, 2.0, 0.2);
-    let placed = rule.place(&drifted, widths).expect("places");
+    // Drifted by two widths, and starting from where the reference's gate sits
+    // - which is what a sample inherits before it is corrected.
+    let drifted = gaussian(2, 4000, 1.4, 0.2);
+    let placed = rule
+        .place(&drifted, widths, 1.0 + 3.0 * 0.2)
+        .expect("places");
     assert!(
-        (placed - (2.0 + 3.0 * 0.2)).abs() < 0.15,
+        (placed - (1.4 + 3.0 * 0.2)).abs() < 0.1,
         "placed at {placed}, expected about {}",
-        2.0 + 3.0 * 0.2
+        1.4 + 3.0 * 0.2
     );
 }
 
@@ -240,7 +244,7 @@ fn a_negative_that_has_broadened_widens_the_gap_too() {
     let widths = rule.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
 
     let broad = gaussian(4, 4000, 1.0, 0.4);
-    let placed = rule.place(&broad, widths).expect("places");
+    let placed = rule.place(&broad, widths, 1.0 + 3.0 * 0.2).expect("places");
     assert!(
         placed > 1.0 + 3.0 * 0.3,
         "a twice-as-wide negative should push the gate further out, got {placed}"
@@ -252,23 +256,33 @@ fn the_scale_and_nudge_adjust_the_result() {
     let reference = gaussian(5, 4000, 1.0, 0.2);
     let plain = AboveTheNegativeRule::default();
     let widths = plain.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
-    let base = plain.place(&reference, widths).unwrap();
+    let gate_at = 1.0 + 3.0 * 0.2;
+    let base = plain.place(&reference, widths, gate_at).unwrap();
 
     let scaled = AboveTheNegativeRule {
         scale: 1.5,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        scaled.place(&reference, widths).unwrap() > base,
+        scaled.place(&reference, widths, gate_at).unwrap() > base,
         "a larger scale should sit further above the negative"
     );
 
+    // Exact for the single-pass finder. The refining one re-cuts at the nudged
+    // position, so the nudge moves it and the move changes what it then sees -
+    // it lands near, not exactly on, base + nudge.
+    let single_pass = AboveTheNegativeRule {
+        find: NegativeFinder::DensityPeak,
+        ..AboveTheNegativeRule::default()
+    };
+    let plain_base = single_pass.place(&reference, widths, gate_at).unwrap();
     let nudged = AboveTheNegativeRule {
         nudge: 0.25,
+        find: NegativeFinder::DensityPeak,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        (nudged.place(&reference, widths).unwrap() - base - 0.25).abs() < 1e-9,
+        (nudged.place(&reference, widths, gate_at).unwrap() - plain_base - 0.25).abs() < 1e-9,
         "the nudge is added in the axis's own units"
     );
 }
@@ -278,7 +292,7 @@ fn an_unreadable_negative_refuses_rather_than_guessing() {
     // A gate placed off a peak that is not there is worse than one left alone.
     let rule = AboveTheNegativeRule::default();
     assert!(rule.calibrate(&[], 1.0).is_none());
-    assert!(rule.place(&[2.0; 500], 3.0).is_none());
+    assert!(rule.place(&[2.0; 500], 3.0, 2.0).is_none());
 }
 
 #[test]
@@ -288,9 +302,59 @@ fn calibration_round_trips_on_the_sample_it_came_from() {
     let reference = gaussian(6, 4000, 1.4, 0.25);
     let gate_at = 1.4 + 2.5 * 0.25;
     let widths = rule.calibrate(&reference, gate_at).unwrap();
-    let back = rule.place(&reference, widths).unwrap();
+    let back = rule.place(&reference, widths, gate_at).unwrap();
     assert!(
         (back - gate_at).abs() < 1e-9,
         "expected {gate_at}, got {back}"
     );
+}
+
+#[test]
+fn the_two_finders_have_different_strengths() {
+    // Measured, not assumed, and the reason both are offered.
+    //
+    // Refining from the gate is far the more accurate while the negative has
+    // not moved more than the calibrated distance - about three widths - and
+    // sticks below the truth beyond that, because a cut sitting under the
+    // negative's centre sees a narrow slice, reads a narrow width from it, and
+    // places the gate right back at the cut. A self-consistent answer that is
+    // nonetheless wrong.
+    //
+    // The density finder has no such limit - it tracks a drift of any size -
+    // but disagrees between two draws of the same population by rather more.
+    let sd = 0.2;
+    let reference = gaussian(1, 4000, 1.0, sd);
+    let gate_at = 1.0 + 3.0 * sd;
+
+    let refine = AboveTheNegativeRule::default();
+    let density = AboveTheNegativeRule {
+        find: NegativeFinder::DensityPeak,
+        ..AboveTheNegativeRule::default()
+    };
+    let k_refine = refine.calibrate(&reference, gate_at).unwrap();
+    let k_density = density.calibrate(&reference, gate_at).unwrap();
+
+    let err = |rule: &AboveTheNegativeRule, k: f64, drift: f64| {
+        let centre = 1.0 + drift * sd;
+        let sample = gaussian(9, 4000, centre, sd);
+        rule.place(&sample, k, gate_at).unwrap() - (centre + 3.0 * sd)
+    };
+
+    // Within range, refining is the sharper of the two.
+    for drift in [0.0, 1.0, 2.0] {
+        assert!(
+            err(&refine, k_refine, drift).abs() < err(&density, k_density, drift).abs(),
+            "refining should be closer at a drift of {drift} widths"
+        );
+        assert!(err(&refine, k_refine, drift).abs() < 0.25 * sd);
+    }
+
+    // Past the calibrated distance it falls short, and says so here rather than
+    // in someone's data.
+    assert!(
+        err(&refine, k_refine, 5.0) < -sd,
+        "a drift beyond the calibrated distance is known to stick low"
+    );
+    // The density finder holds its accuracy however far the negative has moved.
+    assert!(err(&density, k_density, 5.0).abs() < sd);
 }

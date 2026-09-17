@@ -11,7 +11,9 @@ use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, describe, measure_file, position_all};
-use crate::gate_rules::rule::{AboveTheNegativeRule, PercentileOffsetRule, Rule, TailFractionRule};
+use crate::gate_rules::rule::{
+    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule,
+};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
@@ -169,6 +171,7 @@ pub fn GateRulesWindow() -> Element {
     let mut percentile = use_signal(|| "99".to_string());
     let mut offset = use_signal(|| "0.5".to_string());
     let mut calibrate_on = use_signal(String::new);
+    let mut finder = use_signal(|| "RefineFromGate".to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut nudge = use_signal(|| "0.0".to_string());
     let mut gated_file = use_signal(String::new);
@@ -207,6 +210,10 @@ pub fn GateRulesWindow() -> Element {
                 Rule::AboveTheNegative(AboveTheNegativeRule {
                     scale: s,
                     nudge: n,
+                    find: match finder().as_str() {
+                        "DensityPeak" => NegativeFinder::DensityPeak,
+                        _ => NegativeFinder::RefineFromGate,
+                    },
                     ..AboveTheNegativeRule::default()
                 })
             }
@@ -408,6 +415,17 @@ pub fn GateRulesWindow() -> Element {
                     }
                     p { class: "gate_rules-hint gate_rules-span",
                         "Reads how far above that sample's negative its gate sits, in widths of that negative, and puts every other gate the same number of widths above its own. No FMO needed - the negative is read from the sample being gated."
+                    }
+
+                    label { "Find the negative" }
+                    select {
+                        value: "{finder}",
+                        onchange: move |e| finder.set(e.value()),
+                        option { value: "RefineFromGate", "from the events below the gate" }
+                        option { value: "DensityPeak", "from the density's leftmost peak" }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Below-the-gate is the sharper of the two while a negative has not moved more than the calibrated distance, and sticks low beyond that. The density peak tracks any drift but disagrees with itself more between samples. Worth running both and comparing against your own gating."
                     }
 
                     label { "Scale" }

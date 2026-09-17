@@ -329,6 +329,105 @@ pub struct NegativePeak {
 /// tail and reads the peak as half again as wide as it is.
 const ONE_SIGMA_IN_LEFT_FLANK: f64 = 0.1587 / 0.5;
 
+/// How wide the negative is, given where its centre sits.
+///
+/// Measured on the left flank and mirrored. The right flank runs into the
+/// positives, so anything measured across the whole peak is inflated by however
+/// many positives that sample happens to have - precisely the variation this
+/// rule exists to see past, so measuring it into the answer would defeat the
+/// point. The left flank is uncontaminated.
+fn left_flank_sigma(values: &[f64], centre: f64) -> Option<f64> {
+    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= centre).collect();
+    if below.len() < 2 {
+        return None;
+    }
+    below.sort_by(f64::total_cmp);
+    let at = ((below.len() as f64) * ONE_SIGMA_IN_LEFT_FLANK) as usize;
+    let sigma = centre - below[at.min(below.len() - 1)];
+    (sigma > 0.0).then_some(sigma)
+}
+
+fn median_of(sorted: &[f64]) -> f64 {
+    sorted[sorted.len() / 2]
+}
+
+/// The negative, read from the events below a line that already roughly
+/// separates it.
+///
+/// No peak finding and no density estimate: the line does the separating, so
+/// the events below it are the negative and a plain median is its centre. That
+/// removes both of the assumptions [`negative_peak`] depends on - a bandwidth,
+/// and a bump being tall enough to count - and replaces them with one that is
+/// true by construction: the gate starts roughly right, because it came from a
+/// sample someone gated by hand.
+///
+/// `at` is where the line sits now. A single pass is enough when the line is
+/// already where it belongs, which is the calibration case; [`refine_from`]
+/// iterates for the case where it is not.
+pub fn negative_below(values: &[f64], at: f64) -> Option<NegativePeak> {
+    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= at).collect();
+    if below.len() < 2 {
+        return None;
+    }
+    below.sort_by(f64::total_cmp);
+    let centre = median_of(&below);
+    Some(NegativePeak {
+        centre,
+        spread: left_flank_sigma(values, centre)?,
+    })
+}
+
+/// How many passes before the answer is taken as settled.
+const REFINE_PASSES: usize = 12;
+/// The furthest a single pass may move the line, in widths of the negative.
+///
+/// Without it, a line that started far too low sees only the bottom of the
+/// negative, reads a centre that is too low, moves down, and walks off the
+/// axis. The cap makes that failure stop rather than run away.
+const MAX_STEP_IN_WIDTHS: f64 = 1.0;
+
+/// Find the negative by improving on where the line already is.
+///
+/// Each pass sees more of the negative than the last, so each correction is
+/// smaller than the one before and the line closes on its place rather than
+/// swinging past it. It stops early when a pass stops moving it, and gives up
+/// the moment a pass moves it further than the pass before - a line that is
+/// getting worse rather than better is one this cannot rescue.
+///
+/// `place` turns a centre and a width into the line's next position.
+pub fn refine_from(
+    values: &[f64],
+    start: f64,
+    place: impl Fn(NegativePeak) -> f64,
+) -> Option<NegativePeak> {
+    let mut at = start;
+    let mut found = negative_below(values, at)?;
+    let mut last_step = f64::INFINITY;
+
+    for _ in 0..REFINE_PASSES {
+        let wanted = place(found);
+        let step = wanted - at;
+        if step.abs() < f64::EPSILON {
+            break;
+        }
+        if step.abs() > last_step {
+            // Moving further than last time means it is diverging, not settling.
+            break;
+        }
+        let capped = step.clamp(
+            -MAX_STEP_IN_WIDTHS * found.spread,
+            MAX_STEP_IN_WIDTHS * found.spread,
+        );
+        at += capped;
+        last_step = step.abs();
+        let Some(next) = negative_below(values, at) else {
+            break;
+        };
+        found = next;
+    }
+    Some(found)
+}
+
 /// Find the negative population: its centre, and how wide it is.
 ///
 /// Two things here are deliberate and neither is the obvious choice.
@@ -363,17 +462,9 @@ pub fn negative_peak(values: &[f64]) -> Option<NegativePeak> {
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
     let centre = leftmost_prominent_mode(&xs, &density)?;
 
-    // The left flank, mirrored.
-    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= centre).collect();
-    if below.len() < 2 {
-        return None;
-    }
-    below.sort_by(f64::total_cmp);
-    let at = ((below.len() as f64) * ONE_SIGMA_IN_LEFT_FLANK) as usize;
-    let sigma = centre - below[at.min(below.len() - 1)];
-    (sigma > 0.0).then_some(NegativePeak {
+    Some(NegativePeak {
         centre,
-        spread: sigma,
+        spread: left_flank_sigma(values, centre)?,
     })
 }
 
