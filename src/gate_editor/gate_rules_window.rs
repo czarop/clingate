@@ -32,25 +32,25 @@ static CSS_STYLE: Asset = asset!("assets/gate_rules.css");
 /// all, only an id some boolean still refers to. Neither can be positioned, so
 /// offering them would only invite a rule that can never run.
 #[derive(Clone, PartialEq, Default)]
-struct GateChoices {
+pub struct GateChoices {
     /// Parents holding at least one gate a rule could position.
-    parents: Vec<Arc<str>>,
+    pub parents: Vec<Arc<str>>,
     /// The gates drawn on each parent.
-    children: Vec<(Arc<str>, Vec<Arc<str>>)>,
+    pub children: Vec<(Arc<str>, Vec<Arc<str>>)>,
     /// Parameters seen for a given gate name. A gate is usually drawn on the
     /// same pair everywhere, but not always, so every one seen is offered.
-    parameters: Vec<(Arc<str>, Vec<Arc<str>>)>,
+    pub parameters: Vec<(Arc<str>, Vec<Arc<str>>)>,
 }
 
 impl GateChoices {
-    fn children_of(&self, parent: &str) -> &[Arc<str>] {
+    pub fn children_of(&self, parent: &str) -> &[Arc<str>] {
         self.children
             .iter()
             .find(|(p, _)| &**p == parent)
             .map(|(_, c)| c.as_slice())
             .unwrap_or(&[])
     }
-    fn parameters_of(&self, gate: &str) -> &[Arc<str>] {
+    pub fn parameters_of(&self, gate: &str) -> &[Arc<str>] {
         self.parameters
             .iter()
             .find(|(g, _)| &**g == gate)
@@ -75,15 +75,25 @@ fn entry<'a>(map: &'a mut Vec<(Arc<str>, Vec<Arc<str>>)>, key: &Arc<str>) -> &'a
 
 /// Whether a rule could ever position this gate.
 ///
-/// Shape is not checked here - an ellipse is a real gate in a real place, and a
-/// rule naming one should fail out loud when it runs rather than vanish from a
-/// list with no explanation.
+/// Three kinds are left out. A boolean has no geometry to slide - it is a
+/// statement about other gates. A ghost has no position in the tree at all,
+/// only an id some boolean still refers to. And a composite is the container
+/// holding a quadrant's corners rather than a gate anyone drew: it carries the
+/// group's id as its name, so it appears in a list as something like `Mzk4`,
+/// and a rule positioning one line has nothing to say about two crossing ones.
+/// Its corners are separate gates with real names and stay on offer.
+///
+/// Shape is deliberately not checked. An ellipse is a real gate in a real
+/// place, and a rule naming one should fail out loud when it runs rather than
+/// vanish from a list with no explanation.
 fn positionable(state: &GateState, gate_id: &GateId, gate: &Arc<dyn DrawableGate>) -> bool {
-    !state.is_ghost(gate_id) && gate.as_any().downcast_ref::<BooleanGate>().is_none()
+    !state.is_ghost(gate_id)
+        && !gate.is_composite()
+        && gate.as_any().downcast_ref::<BooleanGate>().is_none()
 }
 
 /// Walk the tree once for everything the form needs to offer.
-fn choices(state: &GateState) -> GateChoices {
+pub fn choices(state: &GateState) -> GateChoices {
     let mut out = GateChoices::default();
     // Named by path where a bare name would name two populations at once.
     let names = crate::gate_editor::gates::gate_paths::unique_names(state);
