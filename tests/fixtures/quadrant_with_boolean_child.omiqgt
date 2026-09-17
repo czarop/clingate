@@ -1,0 +1,568 @@
+{
+ "date": "2020-01-01T00:00:00.000Z",
+ "datasetId": 2,
+ "inverted": false,
+ "taskId": 1,
+ "tree": {
+  "nodes": {
+   "3JDj": {
+    "id": "3JDj",
+    "parentId": "HWIv",
+    "filterContainerId": "QCVn",
+    "ord": 1775297369203,
+    "collapsed": false
+   },
+   "7yVQ": {
+    "id": "7yVQ",
+    "parentId": "fn1o",
+    "filterContainerId": "hu4H",
+    "ord": 1775297303496,
+    "collapsed": false
+   },
+   "HW7V": {
+    "id": "HW7V",
+    "parentId": "vqmL",
+    "filterContainerId": "XdrW",
+    "ord": 1775297441968,
+    "collapsed": false
+   },
+   "HWIv": {
+    "id": "HWIv",
+    "parentId": "7yVQ",
+    "filterContainerId": "4RZa",
+    "ord": 1775297318657,
+    "collapsed": true
+   },
+   "URsE": {
+    "id": "URsE",
+    "parentId": "fn1o",
+    "filterContainerId": "4ECA",
+    "ord": 1775297289466,
+    "collapsed": false
+   },
+   "WhvK": {
+    "id": "WhvK",
+    "parentId": "7yVQ",
+    "filterContainerId": "2y0f",
+    "ord": 1775297318656,
+    "collapsed": false
+   },
+   "eEx9": {
+    "id": "eEx9",
+    "parentId": "7yVQ",
+    "filterContainerId": "uevU",
+    "ord": 1775297318654,
+    "collapsed": false
+   },
+   "fn1o": {
+    "id": "fn1o",
+    "parentId": "",
+    "filterContainerId": "uN8Y",
+    "ord": 1775160483454,
+    "collapsed": false
+   },
+   "hJ2g": {
+    "id": "hJ2g",
+    "parentId": "HWIv",
+    "filterContainerId": "2PJQ",
+    "ord": 1775297348140,
+    "collapsed": false
+   },
+   "kCAW": {
+    "id": "kCAW",
+    "parentId": "HWIv",
+    "filterContainerId": "0lmI",
+    "ord": 1775297360804,
+    "collapsed": false
+   },
+   "mSxe": {
+    "id": "mSxe",
+    "parentId": "7yVQ",
+    "filterContainerId": "2gGu",
+    "ord": 1775297318655,
+    "collapsed": false
+   },
+   "vqmL": {
+    "id": "vqmL",
+    "parentId": "",
+    "filterContainerId": "Z2Ti",
+    "ord": 1775160487699,
+    "collapsed": false
+   },
+   "iWlM": {
+    "id": "iWlM",
+    "parentId": "7yVQ",
+    "filterContainerId": "WE82",
+    "ord": 1789295317882,
+    "collapsed": false
+   },
+   "hTvr": {
+    "filterContainerId": "PvRn",
+    "parentId": "7yVQ",
+    "id": "hTvr",
+    "ord": 1789295330048,
+    "collapsed": false
+   }
+  },
+  "filterContainers": {
+   "0lmI": {
+    "id": "0lmI",
+    "name": "IFNy+Il-2+",
+    "type": "DEFAULT",
+    "md": "test",
+    "defaultFilter": {
+     "f1": "Alexa Fluor 700-A",
+     "f2": "BUV737-A",
+     "min": {
+      "f1Val": 0.5645255,
+      "f2Val": 0.6055692
+     },
+     "max": {
+      "f1Val": 4.656016,
+      "f2Val": 5.7699304
+     },
+     "labelLoc": {
+      "f1Val": 51.0513,
+      "f2Val": -1.4999962
+     },
+     "type": "RectangleGate"
+    },
+    "perFileFilters": {
+     "sample1": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": 0.81181335,
+       "f2Val": 0.71969867
+      },
+      "max": {
+       "f1Val": 4.9033036,
+       "f2Val": 5.88406
+      },
+      "labelLoc": {
+       "f1Val": 51.0513,
+       "f2Val": -1.4999962
+      },
+      "type": "RectangleGate"
+     },
+     "sample2": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": 0.81181335,
+       "f2Val": 0.71969867
+      },
+      "max": {
+       "f1Val": 4.9033036,
+       "f2Val": 5.88406
+      },
+      "labelLoc": {
+       "f1Val": 51.0513,
+       "f2Val": -1.4999962
+      },
+      "type": "RectangleGate"
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "2PJQ": {
+    "id": "2PJQ",
+    "name": "IFny+",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "f1": "Alexa Fluor 700-A",
+     "f2": "BUV737-A",
+     "min": {
+      "f1Val": 0.65444833,
+      "f2Val": -1.2775681
+     },
+     "max": {
+      "f1Val": 4.498651,
+      "f2Val": 0.5770368
+     },
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "type": "RectangleGate"
+    },
+    "perFileFilters": {
+     "sample1": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": 0.65444833,
+       "f2Val": -1.2775681
+      },
+      "max": {
+       "f1Val": 4.498651,
+       "f2Val": 0.5770368
+      },
+      "labelLoc": {
+       "f1Val": 0,
+       "f2Val": 0
+      },
+      "type": "RectangleGate"
+     },
+     "sample2": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": 1.1939856,
+       "f2Val": -1.2837956
+      },
+      "max": {
+       "f1Val": 5.038188,
+       "f2Val": 0.57080925
+      },
+      "labelLoc": {
+       "f1Val": 0,
+       "f2Val": 0
+      },
+      "type": "RectangleGate"
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "2gGu": {
+    "id": "2gGu",
+    "name": "Q2 IL-22+ / IL-17A+",
+    "type": "DEFAULT",
+    "groupId": "IinB_QUAD1",
+    "defaultFilter": {
+     "type": "RectangleGate",
+     "f1": "BUV661-A",
+     "f2": "BV785-A",
+     "labelLoc": {
+      "f1Val": -1.2837956,
+      "f2Val": -1.2837956
+     },
+     "min": {
+      "f1Val": 0.11853554333845784,
+      "f2Val": 0.452367819452965
+     },
+     "max": {
+      "f1Val": 10000000000000000,
+      "f2Val": 10000000000000000
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "2y0f": {
+    "id": "2y0f",
+    "name": "Q3 IL-22+ / IL-17A-",
+    "type": "DEFAULT",
+    "groupId": "IinB_QUAD2",
+    "defaultFilter": {
+     "type": "RectangleGate",
+     "f1": "BUV661-A",
+     "f2": "BV785-A",
+     "labelLoc": {
+      "f1Val": -1.2837956,
+      "f2Val": -1.2837956
+     },
+     "min": {
+      "f1Val": 0.11853554333845784,
+      "f2Val": -10000000000000000
+     },
+     "max": {
+      "f1Val": 10000000000000000,
+      "f2Val": 0.452367819452965
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "4ECA": {
+    "id": "4ECA",
+    "name": "Tmem",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "f1": "BUV805-A",
+     "f2": "BUV563-A",
+     "vertices": [
+      {
+       "f1Val": 1.4187927,
+       "f2Val": 5.1547546
+      },
+      {
+       "f1Val": 3.21725,
+       "f2Val": 3.6173613
+      },
+      {
+       "f1Val": 4.858342,
+       "f2Val": 5.122044
+      },
+      {
+       "f1Val": 4.2288823,
+       "f2Val": 6.3323326
+      },
+      {
+       "f1Val": 2.4753864,
+       "f2Val": 6.953832
+      }
+     ],
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "type": "PolygonGate"
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "4RZa": {
+    "id": "4RZa",
+    "name": "Q4 IL-22- / IL-17A-",
+    "type": "DEFAULT",
+    "groupId": "IinB_QUAD3",
+    "defaultFilter": {
+     "type": "RectangleGate",
+     "f1": "BUV661-A",
+     "f2": "BV785-A",
+     "labelLoc": {
+      "f1Val": -1.2837956,
+      "f2Val": -1.2837956
+     },
+     "min": {
+      "f1Val": -10000000000000000,
+      "f2Val": -10000000000000000
+     },
+     "max": {
+      "f1Val": 0.11853554333845784,
+      "f2Val": 0.452367819452965
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "QCVn": {
+    "id": "QCVn",
+    "name": "IL-2+",
+    "type": "DEFAULT",
+    "md": "Type",
+    "defaultFilter": {
+     "f1": "Alexa Fluor 700-A",
+     "f2": "BUV737-A",
+     "min": {
+      "f1Val": -1.3463355,
+      "f2Val": 0.32024533
+     },
+     "max": {
+      "f1Val": 0.54204476,
+      "f2Val": 6.654434
+     },
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "type": "RectangleGate"
+    },
+    "perFileFilters": {
+     "sample1": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": -1.2114512,
+       "f2Val": 0.3140178
+      },
+      "max": {
+       "f1Val": 0.6319676,
+       "f2Val": 3.3161454
+      },
+      "labelLoc": {
+       "f1Val": 0,
+       "f2Val": 0
+      },
+      "type": "RectangleGate"
+     },
+     "sample2": {
+      "f1": "Alexa Fluor 700-A",
+      "f2": "BUV737-A",
+      "min": {
+       "f1Val": -1.2114512,
+       "f2Val": 0.63410157
+      },
+      "max": {
+       "f1Val": 0.67692906,
+       "f2Val": 6.9682903
+      },
+      "labelLoc": {
+       "f1Val": 0,
+       "f2Val": 0
+      },
+      "type": "RectangleGate"
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "XdrW": {
+    "id": "XdrW",
+    "name": "a4",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "f1": "Alexa Fluor 647-A",
+     "f2": "Vio Bright 423-A",
+     "left": {
+      "f1Val": 6.0547314,
+      "f2Val": 0.08246697
+     },
+     "top": {
+      "f1Val": 3.3135495,
+      "f2Val": 0.7448936
+     },
+     "right": {
+      "f1Val": 0.5399227,
+      "f2Val": 0.14618887
+     },
+     "bottom": {
+      "f1Val": 3.2811046,
+      "f2Val": -0.5162378
+     },
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "v": 1,
+     "type": "EllipseGate"
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "Z2Ti": {
+    "id": "Z2Ti",
+    "name": "1 NOT",
+    "type": "NOT",
+    "filterContainerIds": [
+     "uN8Y"
+    ],
+    "containerType": "CompoundFilterContainer"
+   },
+   "hu4H": {
+    "id": "hu4H",
+    "name": "teff_naive",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "f1": "BUV805-A",
+     "f2": "BUV563-A",
+     "vertices": [
+      {
+       "f1Val": 0.94669765,
+       "f2Val": 5.122044
+      },
+      {
+       "f1Val": 1.0141398,
+       "f2Val": 5.0893335
+      },
+      {
+       "f1Val": 1.0141398,
+       "f2Val": 5.0893335
+      },
+      {
+       "f1Val": 3.5094993,
+       "f2Val": 3.2248354
+      },
+      {
+       "f1Val": 2.9474814,
+       "f2Val": -0.14434591
+      },
+      {
+       "f1Val": 1.0591012,
+       "f2Val": -1.0929503
+      },
+      {
+       "f1Val": -0.31222248,
+       "f2Val": 1.033232
+      },
+      {
+       "f1Val": 0.3172376,
+       "f2Val": 3.7154927
+      }
+     ],
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "type": "PolygonGate"
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "uN8Y": {
+    "id": "uN8Y",
+    "name": "1",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "f1": "FSC-A",
+     "f2": "SSC-A",
+     "min": {
+      "f1Val": 1059770.1,
+      "f2Val": 126767.84
+     },
+     "max": {
+      "f1Val": 2225644.5,
+      "f2Val": 910621.4
+     },
+     "labelLoc": {
+      "f1Val": 0,
+      "f2Val": 0
+     },
+     "type": "RectangleGate"
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "uevU": {
+    "id": "uevU",
+    "name": "Q1 IL-22- / IL-17A+",
+    "type": "DEFAULT",
+    "groupId": "IinB_QUAD0",
+    "defaultFilter": {
+     "type": "RectangleGate",
+     "f1": "BUV661-A",
+     "f2": "BV785-A",
+     "labelLoc": {
+      "f1Val": -1.2837956,
+      "f2Val": -1.2837956
+     },
+     "min": {
+      "f1Val": -10000000000000000,
+      "f2Val": 0.452367819452965
+     },
+     "max": {
+      "f1Val": 0.11853554333845784,
+      "f2Val": 10000000000000000
+     }
+    },
+    "containerType": "AtomicFilterContainer"
+   },
+   "WE82": {
+    "id": "WE82",
+    "name": "IL18a",
+    "containerType": "AtomicFilterContainer",
+    "type": "DEFAULT",
+    "defaultFilter": {
+     "type": "RectangleGate",
+     "f1": "Vio Bright 423-A",
+     "f2": "BUV563-A",
+     "min": {
+      "f1Val": 0.3250326152028642,
+      "f2Val": -1.744625617268347
+     },
+     "max": {
+      "f1Val": 7.404932221982525,
+      "f2Val": 3.961850841748047
+     },
+     "labelLoc": {}
+    },
+    "perFileFilters": {}
+   },
+   "PvRn": {
+    "containerType": "CompoundFilterContainer",
+    "type": "AND",
+    "name": "IL18a AND Q4 IL-22- / IL-17A-",
+    "id": "PvRn",
+    "filterContainerIds": [
+     "WE82",
+     "4RZa"
+    ]
+   }
+  }
+ },
+ "url": "https://example.invalid/workflows/workflow/1/analysis/gating?taskId=1&parentId=0&taskType=GatingTask",
+ "workflowId": 1
+}

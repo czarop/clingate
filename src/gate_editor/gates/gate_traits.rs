@@ -104,10 +104,31 @@ pub trait DrawableGate: Send + Sync {
         mouse_position: (f32, f32),
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>>;
 
+    /// The point a point-drag must hold still, read off this gate when the drag
+    /// starts. See [`PointDragData::anchor`].
+    ///
+    /// `None` by default, which is right for every geometry whose point indices
+    /// survive a rebuild: a polygon vertex keeps its place in the ring, an
+    /// ellipse handle is derived from the centre, and a composite is positioned
+    /// by its centre rather than by a corner. Only the geometries stored as a
+    /// normalised `min`/`max` rectangle need one.
+    fn drag_anchor(&self, _point_index: usize) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// Move one point of this gate to `new_point`.
+    ///
+    /// `anchor` is the point that must not move, where this gate supplied one
+    /// from [`drag_anchor`](Self::drag_anchor). When it is `Some`, build the new
+    /// geometry from it rather than from `point_index`'s neighbours - that is
+    /// what lets a drag carry a corner through its opposite. `None` means either
+    /// a geometry that does not need one or a single call outside a drag, and
+    /// the index-based path is used.
     fn replace_point(
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        anchor: Option<(f32, f32)>,
         plot_map: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>>;
 
@@ -117,6 +138,28 @@ pub trait DrawableGate: Send + Sync {
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>>;
 
     fn clone_box(&self) -> Box<dyn DrawableGate>;
+
+    /// A copy of this gate under a new id, for unlinking one placement of a
+    /// linked gate: the node needs a gate of its own with the same geometry.
+    ///
+    /// `None` by default, which composites keep. A composite is registered under
+    /// its own id *and* each corner's, and Omiq treats it as all-or-nothing, so
+    /// a copy would have to mint a fresh id for every corner and rewrite the
+    /// group id that ties them together. Linking is refused for composites
+    /// rather than half-supported.
+    fn with_new_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        None
+    }
+
+    /// A copy of a composite under a new id, with a fresh id for every corner.
+    ///
+    /// Separate from [`with_new_id`](Self::with_new_id) because a composite is
+    /// not one gate: unlinking it has to mint an id for the group *and* one per
+    /// corner, since the corners are what the tree and the file hold. `None`
+    /// for everything that is not a composite.
+    fn with_new_group_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        None
+    }
 }
 
 impl Clone for Box<dyn DrawableGate> {

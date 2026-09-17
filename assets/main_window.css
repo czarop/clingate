@@ -49,10 +49,64 @@ button:hover {
 /* Layout Container */
 .gate-window {
     display: flex;
+    /* Column so the sample name can sit above its own plot rather than
+       beside it. */
+    flex-direction: column;
+    justify-content: start;
+    align-items: flex-start;
+    width: 100%;
+    gap: 4px;
+}
+
+/* The top bar: axis controls on the left, sample selection on the right. */
+.controls-row {
+    display: flex;
+    flex-direction: row;
     justify-content: start;
     align-items: flex-start;
     width: 100%;
     gap: 20px;
+}
+
+.pairing-columns {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    align-items: center;
+    font-size: 0.8rem;
+}
+.pairing-columns label { justify-self: start; opacity: 0.75; }
+/* Left, not centred: these are names to read, and a centred one is hard to
+   compare against the column list it came from. */
+.pairing-columns select {
+    min-width: 9rem;
+    padding: 1px 3px;
+    text-align: left;
+    text-align-last: left;
+}
+.pairing-columns_note {
+    grid-column: 1 / -1;
+    opacity: 0.7;
+    font-size: 0.75rem;
+}
+.pairing-columns_warn { color: hsl(35, 90%, 45%); opacity: 1; font-weight: 600; }
+
+.gate-window_title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    opacity: 0.85;
+    /* Width and offset come from the plot's own drawing area, set inline. */
+    box-sizing: border-box;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Room to breathe around the gate tools, between the controls above and the
+   plots below. */
+.new-gate-pane {
+    padding: 10px 0 12px;
 }
 
 .gate-window-container{
@@ -125,3 +179,24 @@ button:hover {
 .combobox-container {
     width: 100% !important;
 }
+/* Writing the gates back out as an Omiq file. */
+.export-gating {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    align-items: center;
+    font-size: 0.8rem;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #e2e8f0;
+}
+.export-gating label { justify-self: start; opacity: 0.75; }
+.export-gating input { min-width: 9rem; padding: 1px 3px; }
+.export-gating_go { grid-column: 1 / -1; padding: 0.25rem 0.75rem; }
+.export-gating_note {
+    grid-column: 1 / -1;
+    font-size: 0.75rem;
+    opacity: 0.8;
+    word-break: break-all;
+}
+.export-gating_warn { color: hsl(0, 70%, 45%); opacity: 1; }

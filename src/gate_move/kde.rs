@@ -12,8 +12,19 @@ pub fn kde_1d(
     n_points: usize,
     bandwidth: f64,
 ) -> (Vec<f64>, Vec<f64>) {
+    // n_points of 0 would underflow the step divisor, and 1 would make it infinite.
+    let n_points = n_points.max(2);
     let step = (range.1 - range.0) / (n_points - 1) as f64;
     let xs: Vec<f64> = (0..n_points).map(|i| range.0 + i as f64 * step).collect();
+
+    // A degenerate bandwidth - a constant population, or a caller-supplied zero -
+    // divides by zero and fills the grid with NaN, which then propagates silently
+    // into every peak, shift and drift classification downstream. An empty input
+    // does the same via the sum/len at the end.
+    if points.is_empty() || !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return (xs, vec![0.0; n_points]);
+    }
+
     let norm = 1.0 / (bandwidth * (2.0 * std::f64::consts::PI).sqrt());
 
     let density: Vec<f64> = xs
@@ -34,13 +45,23 @@ pub fn kde_1d(
 }
 
 /// Finds the x position of the highest density peak in a KDE output.
+///
+/// Returns `NaN` for an empty grid. Non-finite densities are ignored rather than
+/// compared - `partial_cmp().unwrap()` panics on NaN, and the midpoint fallback
+/// indexed an empty slice because `unwrap_or` evaluates its argument eagerly.
 pub fn kde_peak(xs: &[f64], density: &[f64]) -> f64 {
+    if xs.is_empty() {
+        return f64::NAN;
+    }
+
     density
         .iter()
+        .take(xs.len())
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .filter(|(_, d)| d.is_finite())
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| xs[i])
-        .unwrap_or(xs[xs.len() / 2])
+        .unwrap_or_else(|| xs[xs.len() / 2])
 }
 
 /// Silverman's rule of thumb for bandwidth selection.
@@ -57,13 +78,26 @@ pub fn silverman_bandwidth(values: &[f64]) -> f64 {
 
     // IQR-based robust std estimate (avoids inflation from outliers/tail)
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let q1 = sorted[(n * 0.25) as usize];
     let q3 = sorted[(n * 0.75) as usize];
     let iqr_std = (q3 - q1) / 1.34;
 
     let s = std.min(iqr_std);
-    0.9 * s * n.powf(-0.2)
+    let bandwidth = 0.9 * s * n.powf(-0.2);
+    if bandwidth.is_finite() && bandwidth > 0.0 {
+        return bandwidth;
+    }
+
+    // A population whose middle 50% is identical gives an IQR of 0 and so a
+    // bandwidth of 0, which would make kde_1d degenerate. Fall back to the
+    // non-robust estimate, then to a small positive width.
+    let unrobust = 0.9 * std * n.powf(-0.2);
+    if unrobust.is_finite() && unrobust > 0.0 {
+        return unrobust;
+    }
+
+    f64::EPSILON.sqrt()
 }
 
 // ─── Result types ─────────────────────────────────────────────────────────────

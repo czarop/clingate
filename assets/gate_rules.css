@@ -1,0 +1,39 @@
+.gate_rules {
+    padding: 1rem 1.25rem 4rem;
+    overflow-y: auto;
+    height: 100%;
+    font-size: 0.85rem;
+}
+.gate_rules h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+.gate_rules-hint { margin: 0 0 1rem; opacity: 0.75; }
+.gate_rules-empty { opacity: 0.6; font-style: italic; }
+.gate_rules-table { border-collapse: collapse; width: 100%; margin-bottom: 1.25rem; }
+.gate_rules-table th,
+.gate_rules-table td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #3a3a3a; }
+.gate_rules-table th { font-weight: 600; opacity: 0.7; }
+.gate_rules-form {
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 0.75rem 1rem 1rem;
+    margin-bottom: 1rem;
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    gap: 0.4rem 0.75rem;
+    align-items: center;
+}
+.gate_rules-form legend { padding: 0 0.4rem; opacity: 0.7; }
+.gate_rules-form label { justify-self: end; opacity: 0.8; }
+.gate_rules-form select,
+.gate_rules-form input { padding: 0.2rem 0.35rem; min-width: 12rem; }
+.gate_rules-band { display: flex; align-items: center; gap: 0.5rem; }
+.gate_rules-band input { min-width: 6rem; }
+.gate_rules-add { grid-column: 2; justify-self: start; margin-top: 0.5rem; padding: 0.3rem 1rem; }
+.gate_rules-remove { padding: 0.1rem 0.5rem; opacity: 0.8; }
+.gate_rules-message { margin-top: 0.75rem; opacity: 0.85; }
+.gate_rules-span { grid-column: 1 / -1; margin: 0 0 0.25rem; }
+.gate_rules-span .gate_rules-table { margin-bottom: 0.5rem; }
+.gate_rules-report { margin-top: 1.25rem; }
+.gate_rules-report h3 { font-size: 0.95rem; margin: 0.75rem 0 0.35rem; opacity: 0.8; }
+.gate_rules-weak { color: hsl(35, 90%, 62%); }
+.gate_rules-skipped { margin: 0; padding-left: 1.1rem; opacity: 0.75; }
+.gate_rules-skipped li { margin-bottom: 0.15rem; }

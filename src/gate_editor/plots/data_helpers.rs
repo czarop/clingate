@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateOverrideResolver, GateStateStoreExt, ROOTGATE};
+use crate::gate_editor::gates::gate_store::{GateOverrideResolver, NodeId};
 
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
@@ -29,14 +29,15 @@ pub async fn get_filtered_dataframe(
     let gate_store = use_context::<SyncStore<GateState>>();
 
     task::spawn_blocking(move || -> Result<Arc<DataFrame>, anyhow::Error> {
+        // `parental_gate_id` is a tree position, not a gate. Resolving the chain
+        // through the node is what makes a linked gate's statistics right: the
+        // same gate at two points in the tree sits under different ancestors, so
+        // a chain taken from the gate alone was whichever placement won the
+        // import.
         let gate_chain: Option<Vec<Arc<str>>> = if let Some(parent) = parental_gate_id {
-            let arcs: Vec<Arc<str>> = gate_store
-                .hierarchy()
+            let arcs = gate_store
                 .peek()
-                .get_chain_to_root(&parent)
-                .into_iter()
-                .filter(|v| *v != *ROOTGATE)
-                .collect();
+                .gate_chain_for_node(&NodeId::from(parent));
 
             if arcs.is_empty() { None } else { Some(arcs) }
         } else {

@@ -181,8 +181,10 @@ pub fn filter_events_to_mask(
             operands,
         } => match operation {
             flow_gates::BooleanOperation::And => {
-                if operands.len() < 2 {
-                    return Err(anyhow::anyhow!("AND gates must have > 1 operand"));
+                // A single operand folds to that operand's own mask. Gates are created
+                // with one operand and gain the rest later, so this must not be fatal.
+                if operands.is_empty() {
+                    return Err(anyhow::anyhow!("AND gates must have at least 1 operand"));
                 }
                 let mut final_mask: Option<BooleanChunked> = None;
                 for gate in operands {
@@ -204,8 +206,8 @@ pub fn filter_events_to_mask(
                 }
             }
             flow_gates::BooleanOperation::Or => {
-                if operands.len() < 2 {
-                    return Err(anyhow::anyhow!("OR gates must have > 1 operand"));
+                if operands.is_empty() {
+                    return Err(anyhow::anyhow!("OR gates must have at least 1 operand"));
                 }
                 let mut final_mask: Option<BooleanChunked> = None;
                 for gate in operands {

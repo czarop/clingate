@@ -14,14 +14,129 @@ use crate::gate_editor::{
     plots::axis_store::PlotMapper,
 };
 
+/// The four control points Omiq stores for an ellipse.
+///
+/// An ellipse as a *locus* has five degrees of freedom, and the canonical
+/// centre/radii/angle form captures all five - the import maths is exact. What
+/// the canonical form cannot carry is *which* pair of conjugate diameters Omiq
+/// chose to put its handles on: the eigen-decomposition normalises any pair onto
+/// the principal axes, which can swap the major and minor assignment, flip a
+/// direction by 180 degrees, or resolve to an arbitrary angle for a circle.
+///
+/// Keeping the original four points means an imported gate that was never
+/// edited exports byte-identically instead of "the same ellipse, drawn with
+/// different handles".
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct EllipseHandles {
+    pub left: (f32, f32),
+    pub top: (f32, f32),
+    pub right: (f32, f32),
+    pub bottom: (f32, f32),
+}
+
+impl EllipseHandles {
+    /// Derive handles from the canonical form, for a gate with no stored pair.
+    ///
+    /// `right` lies along the rotation angle and `top` a quarter turn from it,
+    /// with the opposite handles reflected through the centre - so the result is
+    /// always a consistent, principal-axis pair.
+    pub fn from_canonical(centre: (f32, f32), radius_x: f32, radius_y: f32, angle: f32) -> Self {
+        let (sin_a, cos_a) = angle.sin_cos();
+        let (cx, cy) = centre;
+
+        let right = (cx + radius_x * cos_a, cy + radius_x * sin_a);
+        let top = (cx - radius_y * sin_a, cy + radius_y * cos_a);
+
+        Self {
+            right,
+            top,
+            left: (2.0 * cx - right.0, 2.0 * cy - right.1),
+            bottom: (2.0 * cx - top.0, 2.0 * cy - top.1),
+        }
+    }
+
+    /// Move every handle by the same offset. A translation cannot change which
+    /// conjugate pair the handles sit on, so the convention survives a drag.
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |p: (f32, f32)| (p.0 + dx, p.1 + dy);
+        Self {
+            left: shift(self.left),
+            top: shift(self.top),
+            right: shift(self.right),
+            bottom: shift(self.bottom),
+        }
+    }
+
+    /// The centre implied by the handles: the midpoint of either diameter.
+    pub fn centre(&self) -> (f32, f32) {
+        (
+            (self.left.0 + self.right.0) / 2.0,
+            (self.left.1 + self.right.1) / 2.0,
+        )
+    }
+}
+
 #[derive(PartialEq, Clone)]
 pub struct EllipseGate {
     pub inner: flow_gates::Gate,
     points: Vec<(f32, f32)>,
     is_primary: bool,
+    /// The handles this gate was imported with, if any. `None` once the gate has
+    /// been edited in a way that invalidates them, in which case they are
+    /// re-derived from the canonical form.
+    source_handles: Option<EllipseHandles>,
 }
 
 impl EllipseGate {
+    /// The four points to write back to Omiq: the imported pair when the gate
+    /// still carries one, otherwise a principal-axis pair derived from the
+    /// current geometry.
+    pub fn omiq_handles(&self) -> anyhow::Result<EllipseHandles> {
+        if let Some(handles) = self.source_handles {
+            return Ok(handles);
+        }
+
+        let GateGeometry::Ellipse {
+            center,
+            radius_x,
+            radius_y,
+            angle,
+        } = &self.inner.geometry
+        else {
+            return Err(anyhow!("Invalid geometry for Ellipse Gate"));
+        };
+
+        let (Some(cx), Some(cy)) = (
+            center.get_coordinate(&self.inner.parameters.0),
+            center.get_coordinate(&self.inner.parameters.1),
+        ) else {
+            return Err(anyhow!("Invalid points for Ellipse Gate"));
+        };
+
+        Ok(EllipseHandles::from_canonical(
+            (cx, cy),
+            *radius_x,
+            *radius_y,
+            *angle,
+        ))
+    }
+
+    /// True while the gate still carries the exact handles it was imported with.
+    pub fn has_source_handles(&self) -> bool {
+        self.source_handles.is_some()
+    }
+
+    /// Build a gate that remembers the handles Omiq stored for it.
+    pub fn try_new_with_handles(
+        gate: flow_gates::Gate,
+        is_primary: bool,
+        handles: EllipseHandles,
+    ) -> anyhow::Result<Self> {
+        let mut built = Self::try_new(gate, is_primary)?;
+        built.source_handles = Some(handles);
+        Ok(built)
+    }
+
     pub fn try_new(gate: flow_gates::Gate, is_primary: bool) -> anyhow::Result<Self> {
         let p = {
             if let GateGeometry::Ellipse {
@@ -46,6 +161,10 @@ impl EllipseGate {
             inner: gate,
             points: p,
             is_primary,
+            // Any edit routes back through here, so handles are dropped unless
+            // the caller re-attaches them. Only a move can keep them, because
+            // only a move leaves the conjugate pair intact.
+            source_handles: None,
         })
     }
 
@@ -70,6 +189,12 @@ impl EllipseGate {
 impl DrawableGate for EllipseGate {
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
+    }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
     }
 
     fn get_id(&self) -> Arc<str> {
@@ -156,6 +281,7 @@ impl DrawableGate for EllipseGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         let new_geometry;
@@ -213,10 +339,15 @@ impl DrawableGate for EllipseGate {
             name: self.inner.name.clone(),
             mode: self.inner.mode.clone(),
         };
-        Ok(Some(Box::new(EllipseGate::try_new(
-            new_gate,
-            self.is_primary,
-        )?)))
+        // A translation moves every handle by the same offset, so the imported
+        // conjugate pair is still the right one - carry it across rather than
+        // re-deriving and silently canonicalising the gate.
+        let mut moved = EllipseGate::try_new(new_gate, self.is_primary)?;
+        moved.source_handles = self
+            .source_handles
+            .map(|handles| handles.translated(-x_offset, -y_offset));
+
+        Ok(Some(Box::new(moved)))
     }
 
     fn rotate_gate(&self, mouse_pos: (f32, f32)) -> anyhow::Result<Option<Box<dyn DrawableGate>>> {
@@ -513,6 +644,19 @@ pub fn is_point_on_ellipse_perimeter(
     }
 }
 
+/// The five handle points of an ellipse, with the minor-axis pair ordered
+/// screen-top first.
+///
+/// Note the minor-axis pair is the other way round from
+/// [`calculate_ellipse_nodes_y_up`], which orders it data-top first: index 2
+/// here is index 4 there. The two are mirror images in the minor axis, and
+/// since that pair is symmetric about the centre both describe the same
+/// ellipse - only the labels differ. Nothing depends on the order: the four
+/// handles are drawn at all four points either way, and
+/// `calculate_projected_radii` takes `abs()` of the projection, so a resize
+/// gives the same radius whichever of the pair is grabbed.
+///
+/// Used for the drawn points. The geometry is built from the `_y_up` form.
 pub fn calculate_ellipse_nodes(
     cx: f32,
     cy: f32,
@@ -525,9 +669,9 @@ pub fn calculate_ellipse_nodes(
     vec![
         (cx, cy),                           // 0. Center
         (cx + rx * cos_a, cy + rx * sin_a), // 1. Right (Local X+)
-        (cx + ry * sin_a, cy - ry * cos_a), // 2. Top (Local Y-)
+        (cx + ry * sin_a, cy - ry * cos_a), // 2. Local Y-, screen top
         (cx - rx * cos_a, cy - rx * sin_a), // 3. Left (Local X-)
-        (cx - ry * sin_a, cy + ry * cos_a), // 4. Bottom (Local Y+)
+        (cx - ry * sin_a, cy + ry * cos_a), // 4. Local Y+, screen bottom
     ]
 }
 
@@ -710,12 +854,16 @@ pub fn calculate_ellipse_nodes_y_up(
 
     let (sin_a, cos_a) = angle_rad.sin_cos();
 
+    // Minor-axis pair ordered data-top first, the opposite way round from
+    // `calculate_ellipse_nodes` - see the note there. `create_ellipse_geometry`
+    // reads index 1 for the angle and radius_x and index 2 for radius_y, so
+    // this is the order the canonical form round-trips through.
     vec![
-        (cx, cy),
-        (cx + rx * cos_a, cy + rx * sin_a),
-        (cx - ry * sin_a, cy + ry * cos_a),
-        (cx - rx * cos_a, cy - rx * sin_a),
-        (cx + ry * sin_a, cy - ry * cos_a),
+        (cx, cy),                           // 0. Center
+        (cx + rx * cos_a, cy + rx * sin_a), // 1. Local X+, sets the angle
+        (cx - ry * sin_a, cy + ry * cos_a), // 2. Local Y+, sets radius_y
+        (cx - rx * cos_a, cy - rx * sin_a), // 3. Local X-
+        (cx + ry * sin_a, cy - ry * cos_a), // 4. Local Y-
     ]
 }
 

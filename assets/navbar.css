@@ -1,16 +1,49 @@
+/* A tab is about three emoji wide - enough to be an easy target and to hold a
+   label later, without one tab claiming half the window. */
 .nav_bar-item {
     font-size: 2rem;
+    line-height: 1;
     text-align: center;
+    width: 6rem;
+    padding: 0.25rem 0;
+    border-radius: 6px;
     color: hsla(101, 79%, 44%, 0.905);
     background-color: var(--color-background-body);
 }
+
+.nav_bar-item {
+    cursor: pointer;
+}
+
+.nav_bar-item:hover {
+    background-color: rgba(127, 127, 127, 0.15);
+}
+
+/* The tab in front. */
+.nav_bar-item.selected {
+    background-color: rgba(127, 127, 127, 0.22);
+    box-shadow: inset 0 -3px 0 hsla(101, 79%, 44%, 0.905);
+}
+
+/* Between tabs, not spread across the bar. */
+.nav_bar-spacer {
+    font-size: 1.5rem;
+    opacity: 0.35;
+    align-self: center;
+    user-select: none;
+}
+
 .nav_bar-items {
     background-color: var(--color-background-body);
     display: flex;
     flex-direction: row;
-    justify-content: space-between;
-    padding-left: 2rem;
-    padding-right: 2rem;
+    /* Tabs sized and grouped at the left, rather than stretched apart - with
+       two of them, space-between put one at each end of the window. */
+    justify-content: flex-start;
+    align-items: center;
+    gap: 0.5rem;
+    padding-left: 1rem;
+    padding-right: 1rem;
 }
     
 /* .route-outlet {
@@ -55,20 +88,24 @@ html, body {
     box-sizing: border-box;
 }
 
-.route-outlet {
+/* One per tab. All of them are mounted; the inactive ones take
+   `tab-panel_hidden`, which drops them out of the layout without unmounting
+   them - their signals, resources and in-flight work all carry on. */
+.tab-panel {
     flex-grow: 1;          /* This is the magic: it eats all free space */
     display: flex;
     flex-direction: column;
     overflow-y: auto;      /* Only the content scrolls */
     min-height: 0;         /* Critical for flex-grow + overflow to work */
     padding: 1rem;
-    /* Remove 'height: 100%' - it can conflict with flex-grow */
-    border: 1px solid red;
+}
+
+.tab-panel_hidden {
+    display: none;
 }
 
 .route-nav_bar {
     height: 4rem;
-    flex-shrink: 0;        /* Don't let the outlet squish the nav */
-    border-top: 1px solid #eee; /* Optional visual separation */
-    border: 1px solid black;
+    flex-shrink: 0;        /* Don't let the panels squish the nav */
+    border-top: 1px solid #e2e8f0;
 }

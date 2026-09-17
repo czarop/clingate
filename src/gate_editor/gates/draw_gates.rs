@@ -75,6 +75,11 @@ pub fn GateLayer(
     use_effect(move || {
         println!("matching gates to plot");
         let (x, y, parent) = (x_channel(), y_channel(), parental_gate_id());
+        // Peeked deliberately. This re-matches gates to the plot's axes, which
+        // depends on their parameters, not their positions - so a gate moving
+        // is not a reason to run it again, and tracking the resolver here would
+        // re-run it on every drag. Contrast the filtered frame in plot_window,
+        // which does have to track the resolver.
         let Some(resolver) = resolver.peek().clone() else {
             return;
         };
@@ -346,24 +351,24 @@ pub fn GateLayer(
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
                         let current_resolver_move = current_resolver_move.clone();
                         let data_coords = map.pixel_to_data(px as f32, py as f32, None, None);
-                        let new_data = data.clone_with_point(data_coords);
+                        let mut new_data = data.clone_with_point(data_coords);
                         if let Some(selected_gate_id) = selected_gate_op {
-                            match &new_data {
+                            match &mut new_data {
                                 GateDragType::Point(point_drag_data) => {
                                     gate_store
                                         .move_gate_point(
                                             selected_gate_id.clone(),
-                                            point_drag_data.point_index(),
+                                            point_drag_data,
                                             data_coords,
                                             &map,
                                             &current_resolver_move,
                                         )
-                                        .expect("Gate Move Failed");
+                                        .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Gate(gate_drag_data) => {
                                     gate_store
                                         .move_gate(gate_drag_data.clone(), &current_resolver_move)
-                                        .expect("Gate Move Failed");
+                                        .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Rotation(rotation_data) => {
                                     gate_store
@@ -372,7 +377,7 @@ pub fn GateLayer(
                                             rotation_data.current_loc(),
                                             &current_resolver_move,
                                         )
-                                        .expect("Gate Move Failed");
+                                        .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                             }
                         }
@@ -387,10 +392,10 @@ pub fn GateLayer(
                         let px = local_coords.x as f32;
                         let py = local_coords.y as f32;
                         let mapper = &*plot_map.peek();
-                        let data_coords = mapper
-                            .as_ref()
-                            .unwrap()
-                            .pixel_to_data(px, py, None, None);
+                        let Some(mapper_ref) = mapper.as_ref() else {
+                            return;
+                        };
+                        let data_coords = mapper_ref.pixel_to_data(px, py, None, None);
 
                         let new_data = data.clone_with_point(data_coords);
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
@@ -399,24 +404,24 @@ pub fn GateLayer(
                         }
                         let selected_gate_id = selected_gate_op.unwrap();
                         match new_data {
-                            GateDragType::Point(point_drag_data) => {
+                            GateDragType::Point(mut point_drag_data) => {
                                 if let Some(mapper) = mapper {
                                     gate_store
                                         .move_gate_point(
                                             selected_gate_id.clone(),
-                                            point_drag_data.point_index(),
+                                            &mut point_drag_data,
                                             data_coords,
                                             mapper,
                                             &current_resolver_up,
                                         )
-                                        .expect("Gate Move Failed");
+                                        .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
 
                             }
                             GateDragType::Gate(gate_drag_data) => {
                                 gate_store
                                     .move_gate(gate_drag_data, &current_resolver_up)
-                                    .expect("Gate Move Failed");
+                                    .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }
                             GateDragType::Rotation(rotation_data) => {
                                 gate_store
@@ -425,7 +430,7 @@ pub fn GateLayer(
                                         rotation_data.current_loc(),
                                         &current_resolver_up,
                                     )
-                                    .expect("Gate Move Failed");
+                                    .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }
                         }
                     }

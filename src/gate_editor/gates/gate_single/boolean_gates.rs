@@ -129,6 +129,7 @@ impl DrawableGate for BooleanGate {
         &self,
         _new_point: (f32, f32),
         _point_index: usize,
+        _anchor: Option<(f32, f32)>,
         _plot_map: &crate::gate_editor::plots::axis_store::PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(self.clone_box())
@@ -143,6 +144,12 @@ impl DrawableGate for BooleanGate {
 
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
+    }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
     }
 
     fn is_primary(&self) -> bool {

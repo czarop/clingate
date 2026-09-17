@@ -46,7 +46,7 @@ use crate::gate_editor::gates::gate_store::GateId;
 //     }
 // }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum GateText {
     Name(String),
     Percent(String),
@@ -80,14 +80,14 @@ impl PrimaryGateType {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum Direction {
     X,
     Y,
     Both,
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum ShapeType {
     Gate(GateId),
     CompositeGate(GateId, bool),
@@ -103,7 +103,7 @@ pub enum ShapeType {
     UndraggableText(Direction),
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum GateRenderShape {
     PolyLine {
         points: Vec<(f32, f32)>,
@@ -422,7 +422,7 @@ impl GateRenderShape {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct DrawingStyle {
     pub stroke: &'static str,
     pub fill: &'static str,

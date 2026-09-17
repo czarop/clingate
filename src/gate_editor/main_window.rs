@@ -1,12 +1,17 @@
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
+use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::axis_store::ScalingInfoSource;
+use crate::gate_editor::plots::axis_store::{default_axis_params, index_of_fluoro};
 use crate::gate_editor::plots::plot_window::PlotWindow;
+use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of};
+use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataImplExt;
 use crate::omiq::metadata::MetaDataOrigin;
 use crate::omiq::metadata::MetaDataStore;
+use crate::omiq::serialise::to_omiq_document;
 
 use crate::omiq::metadata::MetaDataStoreStoreExt;
 use crate::searchable_select::SearchableSelectSet;
@@ -25,20 +30,96 @@ use crate::{
     searchable_select::SearchableSelectList,
 };
 use dioxus::prelude::*;
-use dioxus::stores::use_store_sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/main_window.css");
 
+/// The plot is 600x600, and the drawing area inside it is inset by the axis
+/// labels. Taken from the same helper the gate geometry uses, so the two agree.
+const PLOT_SIZE: u32 = 600;
+static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| {
+    let (x, _) = flow_gates::transforms::get_plotting_area(PLOT_SIZE, PLOT_SIZE);
+    (x.start, x.end - x.start)
+});
+
+/// Write the current gates back out as an Omiq gating file.
+///
+/// Everything the document needs is already held: the geometry comes from the
+/// gates as they stand - per-specimen and per-sample positions included, since
+/// the exporter resolves each file through `gate_for_file` - and the dataset,
+/// workflow and task ids from the header captured on import. A session that
+/// never imported a file has no header, and the error says so rather than
+/// writing a document Omiq would reject.
+#[component]
+fn ExportGatingFile() -> Element {
+    let gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+
+    let mut path = use_signal(|| "gating_export.omiqgt".to_string());
+    let mut result = use_signal(|| None::<Result<String, String>>);
+
+    rsx! {
+        div { class: "export-gating",
+            label { "Export to" }
+            input {
+                value: "{path}",
+                oninput: move |e| path.set(e.value()),
+            }
+            button {
+                class: "export-gating_go",
+                onclick: move |_| {
+                    let target = PathBuf::from(path());
+                    let written = (|| -> anyhow::Result<String> {
+                        let document = to_omiq_document(
+                            &gate_store.read(),
+                            &metadata_store.metadata().read(),
+                            &axis_store.settings().read(),
+                        )?;
+                        // Pretty-printed: the first thing anyone does with a
+                        // file Omiq rejects is open it and look.
+                        std::fs::write(&target, serde_json::to_string_pretty(&document)?)?;
+                        Ok(target.display().to_string())
+                    })();
+                    result
+                        .set(
+                            Some(match written {
+                                Ok(where_to) => Ok(where_to),
+                                Err(e) => Err(e.to_string()),
+                            }),
+                        );
+                },
+                "Write gating file"
+            }
+            if let Some(outcome) = result() {
+                match outcome {
+                    Ok(where_to) => rsx! {
+                        span { class: "export-gating_note", "Written to {where_to}" }
+                    },
+                    Err(why) => rsx! {
+                        span { class: "export-gating_note export-gating_warn", "{why}" }
+                    },
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn MainWindow() -> Element {
-    let mut filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
+    // Created by the NavBar layout: which files are open describes the
+    // document, and the gate rules tab counts them to say whether the pairing
+    // column actually reaches them.
+    let mut filehandler = use_context::<Signal<Option<FcsFiles>>>();
     let mut message = use_signal(|| None::<String>);
 
-    let mut metadata_store = use_store_sync(MetaDataStore::default);
-    use_context_provider(|| metadata_store);
+    // Also created by the NavBar layout: the loaded metadata describes the
+    // document, and the gate rules tab reads the same file list.
+    let mut metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
 
     let meta_result = use_resource(move || async move {
         let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
@@ -59,17 +140,17 @@ pub fn MainWindow() -> Element {
         }
     });
 
-    
-
-    let mut gate_store: Store<GateState, CopyValue<GateState, SyncStorage>> =
-        use_store_sync(GateState::default);
-    use_context_provider(|| gate_store);
+    // Created by the NavBar layout and shared with every route under it: the
+    // gates are the document, not a property of one screen.
+    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
 
     let mut current_gate_type = use_signal(|| PrimaryGateType::Polygon);
     use_context_provider(|| current_gate_type);
 
-    let mut axis_store: Store<AxisStore, CopyValue<AxisStore, SyncStorage>> = use_store_sync(AxisStore::default);
-    use_context_provider(|| axis_store);
+    // On the NavBar layout with the others: the scaling belongs to the loaded
+    // document, and the gate rules tab has to read events the same way the
+    // plots do or the coordinates would not agree.
+    let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
     let axis_result = use_resource(move || async move {
         let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
@@ -86,7 +167,10 @@ pub fn MainWindow() -> Element {
 
         match result {
             Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("Failed to load axis settings from file {}", e)),
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to load axis settings from file {}",
+                e
+            )),
         }
     });
 
@@ -121,6 +205,50 @@ pub fn MainWindow() -> Element {
 
     let mut sample_index = use_signal(|| 0);
 
+    // The folder grouped into the pairs a person actually compares - the FMO
+    // beside its full stain - rather than whatever order the files happen to
+    // sit in. `sample_index` stays a file index so picking one off the list
+    // still works; the buttons below step a specimen at a time.
+    let rules = use_context::<Signal<RuleStore>>();
+    let pairs = use_memo(move || {
+        let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
+            return Vec::<Pair>::new();
+        };
+        // The name plot_window looks a file up by, so the two agree.
+        let keys: Vec<Arc<str>> = files
+            .iter()
+            .map(|f| {
+                Arc::from(
+                    f.get_filepath()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        pair_files(
+            &keys,
+            &metadata_store.file_name_to_gating_id().read(),
+            &metadata_store.metadata().read(),
+            &rules.read().pairing,
+        )
+    });
+
+    // Move `steps` specimens along, landing on the first file of the one
+    // arrived at. Stepping by file would show the same pair twice.
+    let mut step_specimen = move |steps: isize| {
+        let pairs = pairs.read();
+        if pairs.is_empty() {
+            return;
+        }
+        let at = pair_of(&pairs, sample_index()).unwrap_or(0) as isize;
+        let count = pairs.len() as isize;
+        let next = (at + steps).rem_euclid(count) as usize;
+        if let Some(first) = pairs[next].left() {
+            sample_index.set(first);
+        }
+    };
+
     let mut x_axis_marker: Signal<Param> = use_signal(|| {
         let p: Arc<str> = Arc::from("FSC-A");
         Param {
@@ -153,21 +281,40 @@ pub fn MainWindow() -> Element {
         }
     });
 
+    // The scaling export arrives asynchronously, so on the first render the
+    // store is still empty. These memos must therefore *subscribe* to it:
+    // `peek` does not, so the index stayed pinned at its first value - 0 - and
+    // both selectors displayed whichever channel happened to be listed first,
+    // whatever the axes were actually set to.
+    //
+    // Matched on the channel, not the whole `Param`: `Param` compares on marker
+    // and channel both, and the marker name comes from the scaling export, so a
+    // key built from the channel alone can never match by equality.
     let x_axis_selected_index = use_memo(move || {
-        let curr = &*x_axis_marker.read();
-        axis_store
-            .sorted_settings()
-            .peek()
-            .get_index_of(curr)
-            .unwrap_or(0)
+        let curr = x_axis_marker.read().fluoro.clone();
+        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
     });
     let y_axis_selected_index = use_memo(move || {
-        let curr = &*y_axis_marker.read();
-        axis_store
-            .sorted_settings()
-            .peek()
-            .get_index_of(curr)
-            .unwrap_or(0)
+        let curr = y_axis_marker.read().fluoro.clone();
+        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
+    });
+
+    // Pick the opening axes once, when the scaling export lands. Only while the
+    // user has not chosen any: switching files must keep the axes and the
+    // selected gate where they are, so this deliberately never runs again.
+    let mut axes_initialised = use_signal(|| false);
+    use_effect(move || {
+        // `peek` on the latch deliberately: this must not re-fire on its own
+        // write, only when the channel list changes.
+        if *axes_initialised.peek() {
+            return;
+        }
+        let Some((x, y)) = default_axis_params(&axis_store.sorted_settings().read()) else {
+            return;
+        };
+        x_axis_marker.set(x);
+        y_axis_marker.set(y);
+        axes_initialised.set(true);
     });
 
     let mut upload_succeded = use_signal(|| false);
@@ -187,18 +334,20 @@ pub fn MainWindow() -> Element {
             let result = tokio::task::spawn_blocking(move || {
                 let content = std::fs::read_to_string("file_paths.txt")
                     .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-                
-                let path_str = content.lines()
+
+                let path_str = content
+                    .lines()
                     .filter(|l| !l.trim().is_empty())
                     .nth(2)
                     .ok_or_else(|| anyhow::anyhow!("File does not have a third line"))?;
-                
+
                 let path = PathBuf::from(path_str);
 
-                gate_store.upload_gates_from_file(path, &metadata, axis_settings)
+                gate_store
+                    .upload_gates_from_file(path, &metadata, axis_settings)
                     .map_err(|e| anyhow::anyhow!("Upload failed: {}", e))
-
-            }).await;
+            })
+            .await;
 
             // 5. Handle the thread result and update UI signals
             match result {
@@ -209,7 +358,7 @@ pub fn MainWindow() -> Element {
                 Ok(Err(e)) => {
                     println!("{e}");
                     Err(e)
-                },
+                }
                 Err(e) => Err(anyhow::anyhow!("Thread joined with error: {}", e)),
             }
         }
@@ -253,7 +402,10 @@ pub fn MainWindow() -> Element {
 
             main { class: "main-content",
 
-                div { class: "gate-window",
+                // The top bar: axis controls on the left, sample selection on
+                // the right. Its own class - `gate-window` stacks a plot under
+                // its title, which is the opposite of what this row wants.
+                div { class: "controls-row",
 
                     div { class: "axis-controls-grid", style: "width: 600px;",
                         div { class: "grid-label", "X-Axis" }
@@ -463,28 +615,11 @@ pub fn MainWindow() -> Element {
                         }
                     }
                     div { class: "file-info",
+                        PairingColumns {}
+                        ExportGatingFile {}
                         div { class: "file-info_button-panel",
-                            button {
-                                onclick: move |_| {
-                                    if let Some(fcsfiles) = &*filehandler.read() {
-                                        let count = fcsfiles.sample_count();
-                                        let prev_index = (*sample_index.read() + count - 1) % count;
-                                        sample_index.set(prev_index);
-                                    }
-
-                                },
-                                "Prev"
-                            }
-                            button {
-                                onclick: move |_| {
-                                    if let Some(fcsfiles) = &*filehandler.read() {
-                                        let next_index = (*sample_index.read() + 1) % fcsfiles.sample_count();
-                                        sample_index.set(next_index);
-                                    }
-
-                                },
-                                "Next"
-                            }
+                            button { onclick: move |_| step_specimen(-1), "Prev" }
+                            button { onclick: move |_| step_specimen(1), "Next" }
                         }
                         match &*filehandler.read() {
                             Some(fh) => {
@@ -500,49 +635,76 @@ pub fn MainWindow() -> Element {
                             }
                             None => rsx! {},
                         }
-                    
+
                     }
                 }
 
                 div {
-                    NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                    div { class: "new-gate-pane",
+                        NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                    }
                     {
-                        let maybe_stubs = filehandler
+                        // The specimen holding the selected file, so both plots
+                        // show the same donor and timepoint.
+                        let shown = filehandler
                             .read()
                             .as_ref()
                             .map(|files| {
                                 let list = files.file_list();
-                                let idx = sample_index();
-                                let idx2 = (idx + 1) % list.len();
-                                (list[idx].clone(), list[idx2].clone())
+                                let pairs = pairs.read();
+                                let indices = pair_of(&pairs, sample_index())
+                                    .map(|at| pairs[at].files.clone())
+                                    .unwrap_or_else(|| vec![sample_index()]);
+                                indices
+                                    .into_iter()
+                                    .take(2)
+                                    .filter_map(|i| {
+                                        list.get(i)
+                                            .map(|stub| {
+                                                let name = stub
+                                                    .get_filepath()
+                                                    .file_name()
+                                                    .and_then(|n| n.to_str())
+                                                    .unwrap_or_default()
+                                                    .trim_end_matches(".fcs")
+                                                    .to_string();
+                                                (name, stub.clone())
+                                            })
+                                    })
+                                    .collect::<Vec<_>>()
                             });
-                        if let Some((sample_stub, sample_stub2)) = maybe_stubs {
-                            rsx! {
+                        match shown {
+                            Some(shown) if !shown.is_empty() => rsx! {
                                 div { class: "gate-window-container",
-                                    div { class: "gate-window",
-                                        PlotWindow {
-                                            sample_stub,
-                                            x_axis_marker,
-                                            y_axis_marker,
-                                            parental_gate,
-                                        }
-                                    }
-                                    div { class: "gate-window",
-                                        PlotWindow {
-                                            sample_stub: sample_stub2,
-                                            x_axis_marker,
-                                            y_axis_marker,
-                                            parental_gate,
+                                    for (name , sample_stub) in shown {
+                                        div { class: "gate-window", key: "{name}",
+                                            // Centred over the data area rather
+                                            // than the image: the plot carries
+                                            // a label gutter down its left
+                                            // side, so centring on the whole
+                                            // width would sit the name visibly
+                                            // right of the cloud it names.
+                                            div {
+                                                class: "gate-window_title",
+                                                style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
+                                                title: "{name}",
+                                                "{name}"
+                                            }
+                                            PlotWindow {
+                                                sample_stub,
+                                                x_axis_marker,
+                                                y_axis_marker,
+                                                parental_gate,
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        } else {
-                            rsx! { "No directory selected" }
+                            },
+                            _ => rsx! { "No directory selected" },
                         }
                     }
                 }
-            
+
             }
         }
     }

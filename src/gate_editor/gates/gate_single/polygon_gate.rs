@@ -142,6 +142,16 @@ impl PolygonGate {
     }
 }
 
+impl PolygonGate {
+    /// A copy under a different id, for rebuilding a composite whose corners
+    /// all need fresh ids.
+    pub fn with_id(&self, id: Arc<str>) -> Self {
+        let mut copy = self.clone();
+        copy.inner.id = id;
+        copy
+    }
+}
+
 impl DrawableGate for PolygonGate {
     fn get_gate_ref(&self, _id: Option<&str>) -> Option<&flow_gates::Gate> {
         Some(&self.inner)
@@ -151,6 +161,12 @@ impl DrawableGate for PolygonGate {
     }
     fn clone_box(&self) -> Box<dyn DrawableGate> {
         Box::new(self.clone())
+    }
+
+    fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.id = new_id;
+        Some(Box::new(copy))
     }
     fn get_id(&self) -> Arc<str> {
         self.inner.id.clone()
@@ -188,6 +204,7 @@ impl DrawableGate for PolygonGate {
         &self,
         new_point: (f32, f32),
         point_index: usize,
+        _anchor: Option<(f32, f32)>,
         mapper: &PlotMapper,
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         Ok(Box::new(self.clone_polygon_for_new_point(

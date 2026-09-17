@@ -31,9 +31,18 @@ pub fn PseudoColourPlot(
             let y_axis_info = y_axis_info();
             let (width, height) = size();
 
+            // No points is not a failure. The frame can legitimately be empty -
+            // the file is still opening, or a parent gate selects nothing - and
+            // showing a person the words "could not get bounds" for either is
+            // just a rendering step's internals leaking into the plot.
+            if data_final.points.is_empty() {
+                return Ok(None);
+            }
+
             let result = tokio::task::spawn_blocking(
                 move || -> Result<(String, Arc<PlotMapper>), anyhow::Error> {
-                    let bounds = get_bounds(&data_final.points).ok_or_else(|| anyhow::anyhow!("Could not get bounds"))?;
+                    let bounds = get_bounds(&data_final.points)
+                        .ok_or_else(|| anyhow::anyhow!("Could not get bounds"))?;
                     let plot = DensityPlot::new();
                     let base_options = BasePlotOptions::new()
                         .width(width)
@@ -96,7 +105,7 @@ pub fn PseudoColourPlot(
             .await;
 
             match result {
-                Ok(r) => r,
+                Ok(r) => r.map(Some),
                 Err(e) => Err(anyhow::anyhow!("Failed to generate plot {}", e)),
             }
         }
@@ -104,7 +113,7 @@ pub fn PseudoColourPlot(
 
     rsx! {
         match &*render_result.read() {
-            Some(Ok((data, map))) => {
+            Some(Ok(Some((data, map)))) => {
                 plot_map.set(Some(map.clone()));
                 let size = size();
                 rsx! {
@@ -130,7 +139,9 @@ pub fn PseudoColourPlot(
                     {e.to_string()}
                 }
             }
-            None => {
+            // Nothing to draw yet, which looks the same to a person as a plot
+            // still being rendered.
+            Some(Ok(None)) | None => {
                 let size = size();
                 let style = format!("width: {}px; height: {}px;", size.0, size.1);
                 rsx! {
