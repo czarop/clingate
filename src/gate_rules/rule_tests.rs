@@ -195,3 +195,102 @@ fn a_rule_names_its_kind_for_the_tab() {
         "Percentile offset"
     );
 }
+
+// ─── Above the negative ──────────────────────────────────────────────────────
+
+use crate::gate_rules::rule::AboveTheNegativeRule;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand_distr::{Distribution, Normal};
+
+fn gaussian(seed: u64, n: usize, mean: f64, sd: f64) -> Vec<f64> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let d = Normal::new(mean, sd).unwrap();
+    (0..n).map(|_| d.sample(&mut rng)).collect()
+}
+
+#[test]
+fn the_gate_follows_a_negative_that_has_drifted() {
+    // The point of the rule. The reference's gate sits three widths above its
+    // negative; a sample whose negative has shifted up by a whole unit should
+    // have its gate shifted with it, not left behind.
+    let rule = AboveTheNegativeRule::default();
+    let reference = gaussian(1, 4000, 1.0, 0.2);
+    let widths = rule
+        .calibrate(&reference, 1.0 + 3.0 * 0.2)
+        .expect("calibrates");
+    assert!((widths - 3.0).abs() < 0.4, "read {widths} widths");
+
+    let drifted = gaussian(2, 4000, 2.0, 0.2);
+    let placed = rule.place(&drifted, widths).expect("places");
+    assert!(
+        (placed - (2.0 + 3.0 * 0.2)).abs() < 0.15,
+        "placed at {placed}, expected about {}",
+        2.0 + 3.0 * 0.2
+    );
+}
+
+#[test]
+fn a_negative_that_has_broadened_widens_the_gap_too() {
+    // Measured in widths, not units - so a sample whose negative has spread out
+    // gets its gate further out in absolute terms, which is the behaviour that
+    // difficult unmixing needs.
+    let rule = AboveTheNegativeRule::default();
+    let reference = gaussian(3, 4000, 1.0, 0.2);
+    let widths = rule.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
+
+    let broad = gaussian(4, 4000, 1.0, 0.4);
+    let placed = rule.place(&broad, widths).expect("places");
+    assert!(
+        placed > 1.0 + 3.0 * 0.3,
+        "a twice-as-wide negative should push the gate further out, got {placed}"
+    );
+}
+
+#[test]
+fn the_scale_and_nudge_adjust_the_result() {
+    let reference = gaussian(5, 4000, 1.0, 0.2);
+    let plain = AboveTheNegativeRule::default();
+    let widths = plain.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
+    let base = plain.place(&reference, widths).unwrap();
+
+    let scaled = AboveTheNegativeRule {
+        scale: 1.5,
+        ..AboveTheNegativeRule::default()
+    };
+    assert!(
+        scaled.place(&reference, widths).unwrap() > base,
+        "a larger scale should sit further above the negative"
+    );
+
+    let nudged = AboveTheNegativeRule {
+        nudge: 0.25,
+        ..AboveTheNegativeRule::default()
+    };
+    assert!(
+        (nudged.place(&reference, widths).unwrap() - base - 0.25).abs() < 1e-9,
+        "the nudge is added in the axis's own units"
+    );
+}
+
+#[test]
+fn an_unreadable_negative_refuses_rather_than_guessing() {
+    // A gate placed off a peak that is not there is worse than one left alone.
+    let rule = AboveTheNegativeRule::default();
+    assert!(rule.calibrate(&[], 1.0).is_none());
+    assert!(rule.place(&[2.0; 500], 3.0).is_none());
+}
+
+#[test]
+fn calibration_round_trips_on_the_sample_it_came_from() {
+    // Applied back to its own reference, the rule reproduces the gate it read.
+    let rule = AboveTheNegativeRule::default();
+    let reference = gaussian(6, 4000, 1.4, 0.25);
+    let gate_at = 1.4 + 2.5 * 0.25;
+    let widths = rule.calibrate(&reference, gate_at).unwrap();
+    let back = rule.place(&reference, widths).unwrap();
+    assert!(
+        (back - gate_at).abs() < 1e-9,
+        "expected {gate_at}, got {back}"
+    );
+}

@@ -11,7 +11,7 @@ use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, describe, measure_file, position_all};
-use crate::gate_rules::rule::{PercentileOffsetRule, Rule, TailFractionRule};
+use crate::gate_rules::rule::{AboveTheNegativeRule, PercentileOffsetRule, Rule, TailFractionRule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
@@ -168,6 +168,9 @@ pub fn GateRulesWindow() -> Element {
     let mut high = use_signal(|| "0.5".to_string());
     let mut percentile = use_signal(|| "99".to_string());
     let mut offset = use_signal(|| "0.5".to_string());
+    let mut calibrate_on = use_signal(String::new);
+    let mut scale = use_signal(|| "1.0".to_string());
+    let mut nudge = use_signal(|| "0.0".to_string());
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
@@ -196,6 +199,17 @@ pub fn GateRulesWindow() -> Element {
             return;
         }
         let rule = match kind().as_str() {
+            "AboveTheNegative" => {
+                let (Ok(s), Ok(n)) = (scale().parse::<f64>(), nudge().parse::<f64>()) else {
+                    message.set(Some("The scale and nudge must be numbers".into()));
+                    return;
+                };
+                Rule::AboveTheNegative(AboveTheNegativeRule {
+                    scale: s,
+                    nudge: n,
+                    ..AboveTheNegativeRule::default()
+                })
+            }
             "PercentileOffset" => {
                 let (Ok(p), Ok(o)) = (percentile().parse::<f64>(), offset().parse::<f64>()) else {
                     message.set(Some("The percentile and offset must be numbers".into()));
@@ -216,6 +230,10 @@ pub fn GateRulesWindow() -> Element {
                 Rule::TailFraction(TailFractionRule::new((l / 100.0, h / 100.0)))
             }
         };
+        if kind() == "AboveTheNegative" && calibrate_on().is_empty() {
+            message.set(Some("Choose the sample to calibrate against".into()));
+            return;
+        }
         let target = match parent().as_str() {
             "" => RuleTarget::named(name.as_str()),
             p => RuleTarget::under(name.as_str(), p),
@@ -230,9 +248,15 @@ pub fn GateRulesWindow() -> Element {
                 } else {
                     Bound::Above
                 },
-                measured_on: match measured_on().as_str() {
-                    "" | "Itself" => MeasuredOn::Itself,
-                    t => MeasuredOn::Partner(Arc::from(t)),
+                measured_on: if kind() == "AboveTheNegative" {
+                    // This rule calibrates against one named sample - the QC -
+                    // rather than a partner of each specimen.
+                    MeasuredOn::File(Arc::from(calibrate_on().as_str()))
+                } else {
+                    match measured_on().as_str() {
+                        "" | "Itself" => MeasuredOn::Itself,
+                        t => MeasuredOn::Partner(Arc::from(t)),
+                    }
                 },
                 rule,
             },
@@ -354,11 +378,13 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "Below", "below the line" }
                 }
 
-                label { "Measured on" }
-                input {
-                    value: "{measured_on}",
-                    oninput: move |e| measured_on.set(e.value()),
-                    placeholder: "FMX, or Itself",
+                if kind() != "AboveTheNegative" {
+                    label { "Measured on" }
+                    input {
+                        value: "{measured_on}",
+                        oninput: move |e| measured_on.set(e.value()),
+                        placeholder: "FMX, or Itself",
+                    }
                 }
 
                 label { "Rule" }
@@ -367,9 +393,38 @@ pub fn GateRulesWindow() -> Element {
                     onchange: move |e| kind.set(e.value()),
                     option { value: "TailFraction", "capture a percentage of the parent" }
                     option { value: "PercentileOffset", "step above a percentile" }
+                    option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
                 }
 
-                if kind() == "PercentileOffset" {
+                if kind() == "AboveTheNegative" {
+                    label { "Calibrate on" }
+                    select {
+                        value: "{calibrate_on}",
+                        onchange: move |e| calibrate_on.set(e.value()),
+                        option { value: "", "choose the reference sample" }
+                        for (name , id) in files.read().clone() {
+                            option { value: "{id}", "{name}" }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Reads how far above that sample's negative its gate sits, in widths of that negative, and puts every other gate the same number of widths above its own. No FMO needed - the negative is read from the sample being gated."
+                    }
+
+                    label { "Scale" }
+                    input {
+                        r#type: "number",
+                        step: "0.05",
+                        value: "{scale}",
+                        oninput: move |e| scale.set(e.value()),
+                    }
+                    label { "Nudge" }
+                    input {
+                        r#type: "number",
+                        step: "0.01",
+                        value: "{nudge}",
+                        oninput: move |e| nudge.set(e.value()),
+                    }
+                } else if kind() == "PercentileOffset" {
                     label { "Percentile" }
                     input {
                         r#type: "number",

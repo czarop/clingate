@@ -200,15 +200,22 @@ axis, and nothing should.
       is per-rule in the sidecar already, so it can differ by marker - it wants
       calibrating against runs known to be good and bad, not guessing.
 
-- [ ] **A third rule: the edge of the negative peak.** GranzymeB and Ki67 in
-      this panel are gated by finding where the negative population ends and
-      sitting just above it - no FMO involved, and no fraction to aim at. It is
-      why both came out 0.46 arcsinh units from hand placement under a tail
-      fraction rule, which is the right answer to the wrong question.
+- [x] **A third rule: above the negative.** `AboveTheNegativeRule`. Unlike the
+      others it is not a complete specification - "a bit above the negative"
+      does not say how much - so it is calibrated before it is applied: read how
+      far above the reference sample's negative its gate sits, in widths of that
+      negative, then place every other gate the same number of widths above its
+      own. Measuring in widths rather than units is what carries the gate when a
+      negative drifts or broadens between runs.
 
-      Distinct from `percentile_offset`, which steps a *fixed* distance above a
-      percentile: this has to find the edge, so it needs the density rather than
-      an order statistic. The KDE in `gate_move` is the obvious starting point.
+      The negative is the leftmost prominent mode, not the tallest - on a marker
+      where positives outnumber negatives the tallest peak is the wrong one. Its
+      width is measured on the left flank and mirrored, because the right flank
+      runs into the positives and would otherwise feed the very variation the
+      rule exists to see past back into the answer.
+
+      `scale` and `nudge` adjust the result without touching the calibration.
+      No FMO needed: the negative is read from the sample being gated.
 
 - [x] **A rule store.** `rule_store.rs`. A rule is attached to a *population* -
       a gate name and optionally the parent it sits under, "Ki67+ of CD4+" -

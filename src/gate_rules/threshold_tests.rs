@@ -316,3 +316,80 @@ fn an_event_exactly_on_the_edge_is_outside_the_gate() {
     assert_eq!(t.x, 3.0);
     assert_eq!(t.events_admitted, 0, "3.0 is not strictly greater than 3.0");
 }
+
+// ─── Finding the negative ────────────────────────────────────────────────────
+
+use crate::gate_rules::threshold::negative_peak;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand_distr::{Distribution, Normal};
+
+/// `n` events around `mean` with width `sd`, reproducibly.
+fn cluster(seed: u64, n: usize, mean: f64, sd: f64) -> Vec<f64> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let d = Normal::new(mean, sd).unwrap();
+    (0..n).map(|_| d.sample(&mut rng)).collect()
+}
+
+#[test]
+fn the_negative_peak_is_found_where_the_population_is() {
+    let found = negative_peak(&cluster(1, 4000, 1.75, 0.15)).expect("one clean population");
+    assert!(
+        (found.centre - 1.75).abs() < 0.06,
+        "centre landed at {}",
+        found.centre
+    );
+    assert!(
+        (found.spread - 0.15).abs() < 0.05,
+        "spread read as {}",
+        found.spread
+    );
+}
+
+#[test]
+fn a_positive_tail_does_not_widen_the_negative() {
+    // The whole point of measuring the left flank. A standard deviation taken
+    // across the peak grows with however many positives the sample has, which
+    // is exactly the variation this rule exists to see past.
+    let clean = negative_peak(&cluster(2, 4000, 1.0, 0.2)).unwrap();
+
+    let mut with_tail = cluster(2, 4000, 1.0, 0.2);
+    with_tail.extend(cluster(3, 800, 3.0, 0.4));
+    let contaminated = negative_peak(&with_tail).unwrap();
+
+    assert!(
+        (contaminated.spread - clean.spread).abs() < 0.05,
+        "the tail moved the spread from {} to {}",
+        clean.spread,
+        contaminated.spread
+    );
+    assert!(
+        (contaminated.centre - clean.centre).abs() < 0.06,
+        "the tail moved the centre from {} to {}",
+        clean.centre,
+        contaminated.centre
+    );
+}
+
+#[test]
+fn the_negative_is_taken_even_when_the_positives_outnumber_it() {
+    // The tallest peak is not always the negative. Taking it would put the gate
+    // above the population it is meant to separate.
+    let mut values = cluster(4, 1000, 0.5, 0.15);
+    values.extend(cluster(5, 4000, 2.5, 0.2));
+    let found = negative_peak(&values).expect("two populations");
+
+    assert!(
+        (found.centre - 0.5).abs() < 0.1,
+        "took the wrong peak: {}",
+        found.centre
+    );
+}
+
+#[test]
+fn a_population_too_small_to_read_is_declined() {
+    assert!(negative_peak(&[]).is_none());
+    assert!(negative_peak(&[1.0]).is_none());
+    // Every event identical: no width to measure, so no spread to scale by.
+    assert!(negative_peak(&[2.0; 500]).is_none());
+}

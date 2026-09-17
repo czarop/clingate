@@ -148,6 +148,79 @@ impl PositioningRule for PercentileOffsetRule {
 pub enum Rule {
     TailFraction(TailFractionRule),
     PercentileOffset(PercentileOffsetRule),
+    AboveTheNegative(AboveTheNegativeRule),
+}
+
+/// "Where I put it on the QC, relative to that sample's negative."
+///
+/// The other rules are complete specifications - "0.2% to 0.5% of the parent"
+/// can be handed to any sample and it knows what to do. This one is not. "A bit
+/// above the negative" does not say how much, and the only place that number
+/// exists is in where the gate was placed on the reference sample. So it is
+/// calibrated before it is applied: read how far above that sample's negative
+/// the gate sits, in units of that negative's own width, then put the gate the
+/// same number of widths above every other sample's negative.
+///
+/// Because the distance is measured in widths rather than units, a sample whose
+/// negative has drifted or broadened - which is what difficult unmixing does
+/// from run to run - carries the gate with it.
+///
+/// Nothing here needs an FMO: the negative is read from the sample being gated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AboveTheNegativeRule {
+    /// Multiplies the calibrated distance. 1.0 places the gate exactly where
+    /// the reference says; 1.1 sits a tenth further out.
+    #[serde(default = "one")]
+    pub scale: f64,
+    /// Added afterwards, in the axis's own units, for a nudge that has nothing
+    /// to do with how wide the negative is.
+    #[serde(default)]
+    pub nudge: f64,
+    #[serde(default)]
+    pub confidence: CountAndSeparation,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+impl Default for AboveTheNegativeRule {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            nudge: 0.0,
+            confidence: CountAndSeparation::default(),
+        }
+    }
+}
+
+impl AboveTheNegativeRule {
+    /// How far above the reference's negative its gate sits, in widths.
+    ///
+    /// `None` when the reference has no readable negative, which is a refusal
+    /// rather than a zero: a gate placed off an unreadable peak is worse than
+    /// one left alone.
+    pub fn calibrate(&self, reference: &[f64], reference_x: f64) -> Option<f64> {
+        let peak = crate::gate_rules::threshold::negative_peak(reference)?;
+        Some((reference_x - peak.centre) / peak.spread)
+    }
+
+    /// Where the gate belongs on a sample, given that calibration.
+    pub fn place(&self, values: &[f64], widths: f64) -> Option<f64> {
+        let peak = crate::gate_rules::threshold::negative_peak(values)?;
+        Some(peak.centre + widths * self.scale * peak.spread + self.nudge)
+    }
+
+    pub fn describe(&self) -> String {
+        let mut how = format!("as far above the negative as the reference sits");
+        if self.scale != 1.0 {
+            how.push_str(&format!(", times {:.2}", self.scale));
+        }
+        if self.nudge != 0.0 {
+            how.push_str(&format!(", {:+.3} on the axis", self.nudge));
+        }
+        how
+    }
 }
 
 impl Rule {
@@ -156,6 +229,9 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.apply(values, reference_x),
             Rule::PercentileOffset(r) => r.apply(values, reference_x),
+            // Calibrated against another sample, so it cannot be solved from
+            // one population alone - see `AboveTheNegativeRule`.
+            Rule::AboveTheNegative(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -170,6 +246,7 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
+            Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
         }
     }
 
@@ -177,6 +254,7 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.solve(values),
             Rule::PercentileOffset(r) => r.solve(values),
+            Rule::AboveTheNegative(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -184,6 +262,7 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.describe(),
             Rule::PercentileOffset(r) => r.describe(),
+            Rule::AboveTheNegative(r) => r.describe(),
         }
     }
 
@@ -201,7 +280,7 @@ impl Rule {
     pub fn accepted_band(&self) -> Option<(f64, f64)> {
         match self {
             Rule::TailFraction(r) => Some(r.band),
-            Rule::PercentileOffset(_) => None,
+            Rule::PercentileOffset(_) | Rule::AboveTheNegative(_) => None,
         }
     }
 
@@ -210,6 +289,7 @@ impl Rule {
         match self {
             Rule::TailFraction(_) => "Tail fraction",
             Rule::PercentileOffset(_) => "Percentile offset",
+            Rule::AboveTheNegative(_) => "Above the negative",
         }
     }
 }

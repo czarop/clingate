@@ -781,36 +781,59 @@ fn position_one(
     // until it holds that fraction - measured from the gate itself. A rule that
     // names a position is solved and the leading edge anchored to it, which is
     // what such a rule means.
-    let (moved, to, achieved) = match rule.rule.accepted_band() {
-        Some(band) => {
-            let bracket = bracket_for(&reference.measurement.values, measured.current);
-            let (delta, got) = slide_to_capture(
-                &current_gate,
-                &measured.parameter,
-                measured.bound,
-                population,
-                band,
-                bracket,
-            )
-            .ok_or_else(|| "no position along this axis holds the band".to_string())?;
-            let moved = translate_by(&current_gate, &measured.parameter, delta)
+    let (moved, to, achieved) = match &rule.rule {
+        // Calibrated against the reference, then applied to this sample's own
+        // negative. The reference supplies the distance; the sample supplies
+        // the place to measure it from.
+        crate::gate_rules::rule::Rule::AboveTheNegative(above) => {
+            let widths = above
+                .calibrate(&reference.measurement.values, reference.measurement.current)
+                .ok_or_else(|| {
+                    format!(
+                        "{} has no negative peak clear enough to calibrate against",
+                        reference.id
+                    )
+                })?;
+            let to = above
+                .place(&measured.values, widths)
+                .ok_or_else(|| "this sample has no negative peak to place against".to_string())?;
+            let moved = translate_edge_to(&current_gate, &measured.parameter, measured.bound, to)
                 .map_err(|e| e.to_string())?;
-            (moved, measured.current + delta, got)
+            let got = admitted_by(&moved, population).unwrap_or(0.0);
+            (moved, to, got)
         }
-        None => {
-            let solved = rule
-                .solve(&reference.measurement.values, Some(measured.current))
+        _ => match rule.rule.accepted_band() {
+            Some(band) => {
+                let bracket = bracket_for(&reference.measurement.values, measured.current);
+                let (delta, got) = slide_to_capture(
+                    &current_gate,
+                    &measured.parameter,
+                    measured.bound,
+                    population,
+                    band,
+                    bracket,
+                )
+                .ok_or_else(|| "no position along this axis holds the band".to_string())?;
+                let moved = translate_by(&current_gate, &measured.parameter, delta)
+                    .map_err(|e| e.to_string())?;
+                (moved, measured.current + delta, got)
+            }
+            None => {
+                let solved = rule
+                    .solve(&reference.measurement.values, Some(measured.current))
+                    .map_err(|e| e.to_string())?;
+                let moved = translate_edge_to(
+                    &current_gate,
+                    &measured.parameter,
+                    measured.bound,
+                    solved.threshold.x,
+                )
                 .map_err(|e| e.to_string())?;
-            let moved = translate_edge_to(
-                &current_gate,
-                &measured.parameter,
-                measured.bound,
-                solved.threshold.x,
-            )
-            .map_err(|e| e.to_string())?;
-            let got = admitted_by(&moved, population).unwrap_or(solved.threshold.fraction_admitted);
-            (moved, solved.threshold.x, got)
-        }
+                let got =
+                    admitted_by(&moved, population).unwrap_or(solved.threshold.fraction_admitted);
+                (moved, solved.threshold.x, got)
+            }
+        },
     };
 
     let in_band = match rule.rule.accepted_band() {

@@ -310,3 +310,98 @@ pub fn percentile_of_descending(sorted_desc: &[f64], percentile: f64) -> f64 {
     let weight = rank - lo as f64;
     ascending(lo) * (1.0 - weight) + ascending(hi) * weight
 }
+
+/// Where a population's negative sits, and how wide it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NegativePeak {
+    /// The centre of the negative population.
+    pub centre: f64,
+    /// Its width, as a one-sigma equivalent.
+    pub spread: f64,
+}
+
+/// Where one sigma falls *within the left flank*.
+///
+/// One standard deviation below a Gaussian's centre is its 15.87th percentile,
+/// but only the events below the centre are being looked at - half the
+/// distribution - so the same point sits at 0.1587/0.5 of that slice. Using the
+/// whole-distribution figure against half the events reaches further down the
+/// tail and reads the peak as half again as wide as it is.
+const ONE_SIGMA_IN_LEFT_FLANK: f64 = 0.1587 / 0.5;
+
+/// Find the negative population: its centre, and how wide it is.
+///
+/// Two things here are deliberate and neither is the obvious choice.
+///
+/// **The centre is the leftmost prominent mode, not the tallest.** On a marker
+/// where the positives outnumber the negatives the tallest peak *is* the
+/// positive one, and a gate placed off it would sit above the population it was
+/// meant to separate.
+///
+/// **The width is measured on the left flank and mirrored.** The right flank
+/// runs into the positives, so anything measured across the whole peak - a
+/// standard deviation most of all - is inflated by however many positives that
+/// sample happens to have. That is precisely the variation this rule exists to
+/// see past, so measuring it into the answer would defeat the point. The left
+/// flank is uncontaminated: the distance from the centre down to the 16th
+/// percentile of the events below it is a one-sigma width that does not care
+/// what the positives are doing.
+pub fn negative_peak(values: &[f64]) -> Option<NegativePeak> {
+    if values.len() < 2 {
+        return None;
+    }
+    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values);
+    if !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return None;
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+        return None;
+    }
+
+    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    let centre = leftmost_prominent_mode(&xs, &density)?;
+
+    // The left flank, mirrored.
+    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= centre).collect();
+    if below.len() < 2 {
+        return None;
+    }
+    below.sort_by(f64::total_cmp);
+    let at = ((below.len() as f64) * ONE_SIGMA_IN_LEFT_FLANK) as usize;
+    let sigma = centre - below[at.min(below.len() - 1)];
+    (sigma > 0.0).then_some(NegativePeak {
+        centre,
+        spread: sigma,
+    })
+}
+
+/// The first mode worth calling a population.
+///
+/// A local maximum counts only if it rises to a real fraction of the tallest
+/// one; without that, noise on the shoulder of the negative reads as a peak and
+/// the answer lands wherever the grid happened to wobble.
+fn leftmost_prominent_mode(xs: &[f64], density: &[f64]) -> Option<f64> {
+    /// How tall a bump must be, against the tallest, to count.
+    const PROMINENCE: f64 = 0.25;
+
+    let tallest = density
+        .iter()
+        .copied()
+        .filter(|d| d.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !tallest.is_finite() || tallest <= 0.0 {
+        return None;
+    }
+    let floor = tallest * PROMINENCE;
+
+    for i in 1..density.len().saturating_sub(1).min(xs.len()) {
+        if density[i] >= floor && density[i] >= density[i - 1] && density[i] > density[i + 1] {
+            return Some(xs[i]);
+        }
+    }
+    // No interior peak clears the bar - a single smooth rise, say. Fall back to
+    // the tallest point rather than refusing outright.
+    Some(crate::gate_move::kde::kde_peak(xs, density))
+}
