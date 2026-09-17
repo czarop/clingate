@@ -85,6 +85,8 @@ fn positionable(state: &GateState, gate_id: &GateId, gate: &Arc<dyn DrawableGate
 /// Walk the tree once for everything the form needs to offer.
 fn choices(state: &GateState) -> GateChoices {
     let mut out = GateChoices::default();
+    // Named by path where a bare name would name two populations at once.
+    let names = crate::gate_editor::gates::gate_paths::unique_names(state);
     for (node, placement) in state.placements() {
         let Some(gate) = state.registered_gate(&placement.gate_id) else {
             continue;
@@ -101,12 +103,7 @@ fn choices(state: &GateState) -> GateChoices {
 
         // A gate with no parent sits at the root and has no population to be
         // a fraction of, so there is nothing for a rule to measure it against.
-        let Some(parent_name) = state
-            .parent_node(node)
-            .and_then(|p| state.gate_for_node(&p).cloned())
-            .and_then(|id| state.registered_gate(&id))
-            .map(|g| Arc::from(g.get_name()) as Arc<str>)
-        else {
+        let Some(parent_name) = state.parent_node(node).and_then(|p| names.get(&p).cloned()) else {
             continue;
         };
         push_unique(&mut out.parents, parent_name.clone());

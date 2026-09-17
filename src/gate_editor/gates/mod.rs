@@ -20,3 +20,6 @@ mod gate_drag_tests;
 mod gate_types_tests;
 #[cfg(test)]
 mod gate_stats_tests;
+pub mod gate_paths;
+#[cfg(test)]
+mod gate_paths_tests;

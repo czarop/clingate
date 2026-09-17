@@ -20,6 +20,7 @@
 //! app to write one.
 
 use crate::gate_editor::gates::GateState;
+use crate::gate_editor::gates::gate_single::line_gate::LineGate;
 use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
@@ -157,15 +158,26 @@ pub fn translate_edge_to(
     let mut moved = inner.clone();
     moved.geometry = moved_geometry;
 
-    rebuild(moved, gate.is_primary(), &id)
+    rebuild(gate, moved)
 }
 
+/// Rebuild a moved gate as the kind it was.
+///
+/// Geometry alone cannot say: a line gate holds a rectangle - it is a threshold
+/// drawn as one edge with a height - so rebuilding from the geometry turned
+/// every line into a box, which draws differently and exports as a different
+/// Omiq type. The gate it came from is what knows.
 fn rebuild(
+    was: &Arc<dyn DrawableGate>,
     moved: flow_gates::Gate,
-    is_primary: bool,
-    id: &GateId,
 ) -> Result<Arc<dyn DrawableGate>, ApplyError> {
-    let _ = id;
+    let is_primary = was.is_primary();
+    if let Some(line) = was.as_any().downcast_ref::<LineGate>() {
+        return Ok(Arc::new(
+            LineGate::try_new(moved, line.height, is_primary)
+                .map_err(|e| ApplyError::Rebuild(e.to_string()))?,
+        ));
+    }
     match &moved.geometry {
         GateGeometry::Polygon { .. } => Ok(Arc::new(
             PolygonGate::try_new(moved, is_primary)
@@ -268,6 +280,9 @@ pub fn measure_file(
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("no metadata for {file}"))?;
     let resolver = state.get_current_sample(file.clone(), &groups);
+    // A parent's bare name is not unique - CD4+CD8- can be drawn under two
+    // different populations - so a rule naming one by name would name both.
+    let names = crate::gate_editor::gates::gate_paths::unique_names(state);
 
     let mut out = Vec::new();
     for (node, placement) in state.placements() {
@@ -279,7 +294,7 @@ pub fn measure_file(
         let Some(parent) = state.parent_node(node) else {
             continue;
         };
-        let parent_gate = parent_name(state, &parent);
+        let parent_gate = names.get(&parent).cloned();
 
         // The rule decides what is measured. Working the other way round -
         // looking at a gate and guessing which of its edges is "the" threshold -
@@ -373,13 +388,6 @@ pub fn measure_file(
         });
     }
     Ok((out, unmeasured))
-}
-
-fn parent_name(state: &GateState, parent: &NodeId) -> Option<Arc<str>> {
-    state
-        .gate_for_node(parent)
-        .and_then(|id| state.registered_gate(id))
-        .map(|g| Arc::from(g.get_name()))
 }
 
 /// The parent population, filtered and indexed exactly as the plot does it.
@@ -557,7 +565,7 @@ fn translate_by(
         .ok_or_else(|| ApplyError::UnsupportedShape(id.clone()))?;
     let mut moved = inner.clone();
     moved.geometry = slide(&inner.geometry, parameter, delta as f32);
-    rebuild(moved, gate.is_primary(), &id)
+    rebuild(gate, moved)
 }
 
 // ── solving and placing ──────────────────────────────────────────────────

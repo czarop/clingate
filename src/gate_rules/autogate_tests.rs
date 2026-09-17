@@ -1072,3 +1072,112 @@ fn a_gate_holding_too_little_moves_the_other_way_again() {
     assert!((0.002..=0.005).contains(&held), "got {held}");
     assert!(to < 2000.0, "it has to come down to reach the data");
 }
+
+#[test]
+fn a_line_gate_stays_a_line_when_it_moves() {
+    // A line holds a rectangle - it is a threshold drawn as one edge with a
+    // height - so rebuilding from the geometry alone turned every line into a
+    // box, which draws differently and exports as a different Omiq type.
+    use crate::gate_editor::gates::gate_single::line_gate::LineGate;
+
+    let geometry = create_rectangle_geometry(
+        vec![(100.0, 0.0), (300.0, 0.0), (300.0, 50.0), (100.0, 50.0)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let line: Arc<dyn DrawableGate> =
+        Arc::new(LineGate::try_new(gate("l", geometry), 50.0, true).unwrap());
+
+    let moved = translate_edge_to(&line, X, Bound::Above, 150.0).expect("a line can be moved");
+
+    assert!(
+        moved.as_any().downcast_ref::<LineGate>().is_some(),
+        "it came back as something other than a line"
+    );
+    assert_eq!(edges(&moved, X).0, 150.0, "and it moved");
+    assert_eq!(
+        moved.as_any().downcast_ref::<LineGate>().unwrap().height,
+        50.0,
+        "keeping its height"
+    );
+}
+
+#[test]
+fn a_rectangle_is_still_rebuilt_as_a_rectangle() {
+    use crate::gate_editor::gates::gate_single::line_gate::LineGate;
+    let moved =
+        translate_edge_to(&rect(100.0, 100.0, 300.0, 300.0), X, Bound::Above, 150.0).unwrap();
+    assert!(moved.as_any().downcast_ref::<LineGate>().is_none());
+}
+
+#[test]
+fn positioning_a_linked_gate_moves_it_everywhere_it_is_applied() {
+    // A linked gate is one gate at two points in the tree, and an override is
+    // keyed by gate - so positioning it under one parent moves it under the
+    // other too. That is what linking means, and the rule cannot break it:
+    // there is only ever one position to write.
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::gate_rules::autogate::place_for_specimen;
+    use crate::omiq::metadata::MetaDataKey;
+
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    let specimen = MetaDataKey {
+        parameter: Arc::from("SampleID"),
+        group: Arc::from("QC-A"),
+    };
+
+    let global = state.registered_gate(&gate_id).unwrap();
+    let moved = translate_edge_to(&global, X, Bound::Above, 750.0).unwrap();
+    place_for_specimen(&mut state, &gate_id, &specimen, &moved);
+
+    // Whichever placement asks, the gate resolves to the moved position: the
+    // override is on the gate, and a linked gate is the same gate.
+    for file in ["fs_a", "fmx_a"] {
+        assert_eq!(
+            edges(
+                &state
+                    .gate_for_file(&gate_id, &Arc::from(file), &map)
+                    .unwrap(),
+                X
+            )
+            .0,
+            750.0
+        );
+    }
+    assert!(matches!(
+        state
+            .get_current_sample(Arc::from("fs_a"), &map[&Arc::from("fs_a") as &Arc<str>])
+            .gate_origins
+            .get(&gate_id),
+        Some(GateSource::Group(_))
+    ));
+}
+
+#[test]
+fn a_specimen_is_positioned_once_however_many_files_it_has() {
+    // The solve is keyed on (specimen, gate), so a linked gate measured at two
+    // placements, or a specimen with several files, still yields one answer -
+    // not one per file that then overwrite each other.
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let frame = ramp(1000);
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), &frame, &map, &fmx_rule()).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    assert_eq!(measured.len(), 2, "both files are measured");
+
+    let report = position_all(&mut state, &fmx_rule(), &measured, &unmeasured, &map);
+    assert_eq!(
+        report.positioned.len(),
+        1,
+        "but the specimen is positioned once"
+    );
+}
