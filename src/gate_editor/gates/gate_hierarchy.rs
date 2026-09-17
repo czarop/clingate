@@ -984,8 +984,14 @@ mod gate_hierarchy_tests {
         let mut h = GateHierarchy::new();
         assert!(h.add_child("parent", "child", 0));
 
-        assert_eq!(h.get_parent("child").map(|p| p.to_string()), Some("parent".to_string()));
-        assert_eq!(ids(h.get_children("parent").into_iter().cloned().collect()), vec!["child"]);
+        assert_eq!(
+            h.get_parent("child").map(|p| p.to_string()),
+            Some("parent".to_string())
+        );
+        assert_eq!(
+            ids(h.get_children("parent").into_iter().cloned().collect()),
+            vec!["child"]
+        );
     }
 
     #[test]
@@ -1090,7 +1096,10 @@ mod gate_hierarchy_tests {
     fn add_gate_child_defaults_the_order_when_none_given() {
         let mut h = GateHierarchy::new();
         h.add_gate_child("p", "a", None).unwrap();
-        assert_eq!(h.get_parent("a").map(|p| p.to_string()), Some("p".to_string()));
+        assert_eq!(
+            h.get_parent("a").map(|p| p.to_string()),
+            Some("p".to_string())
+        );
     }
 
     // ── Cycle prevention ──────────────────────────────────────────────────────
@@ -1100,7 +1109,10 @@ mod gate_hierarchy_tests {
         let mut h = GateHierarchy::new();
         h.add_child("a", "b", 0);
         assert!(!h.add_child("b", "a", 0));
-        assert_eq!(h.get_parent("b").map(|p| p.to_string()), Some("a".to_string()));
+        assert_eq!(
+            h.get_parent("b").map(|p| p.to_string()),
+            Some("a".to_string())
+        );
     }
 
     #[test]
@@ -1126,9 +1138,18 @@ mod gate_hierarchy_tests {
         h.add_child("p1", "child", 0);
         h.add_child("p2", "child", 0);
 
-        assert_eq!(h.get_parent("child").map(|p| p.to_string()), Some("p2".to_string()));
-        assert!(h.get_children("p1").is_empty(), "stale child left on the old parent");
-        assert_eq!(ids(h.get_children("p2").into_iter().cloned().collect()), vec!["child"]);
+        assert_eq!(
+            h.get_parent("child").map(|p| p.to_string()),
+            Some("p2".to_string())
+        );
+        assert!(
+            h.get_children("p1").is_empty(),
+            "stale child left on the old parent"
+        );
+        assert_eq!(
+            ids(h.get_children("p2").into_iter().cloned().collect()),
+            vec!["child"]
+        );
     }
 
     #[test]
@@ -1136,7 +1157,10 @@ mod gate_hierarchy_tests {
         let mut h = linear_tree();
         h.reparent("c", "x").unwrap();
 
-        assert_eq!(h.get_parent("c").map(|p| p.to_string()), Some("x".to_string()));
+        assert_eq!(
+            h.get_parent("c").map(|p| p.to_string()),
+            Some("x".to_string())
+        );
         assert!(h.get_children("b").is_empty());
         h.validate().unwrap();
     }
@@ -1152,9 +1176,15 @@ mod gate_hierarchy_tests {
         let mut h = linear_tree();
         h.reparent_subtree("a", "x").unwrap();
 
-        assert_eq!(h.get_parent("a").map(|p| p.to_string()), Some("x".to_string()));
+        assert_eq!(
+            h.get_parent("a").map(|p| p.to_string()),
+            Some("x".to_string())
+        );
         // b and c must still hang off a.
-        assert_eq!(ids(h.get_chain_to_root("c")), vec!["root", "x", "a", "b", "c"]);
+        assert_eq!(
+            ids(h.get_chain_to_root("c")),
+            vec!["root", "x", "a", "b", "c"]
+        );
         h.validate().unwrap();
     }
 
@@ -1185,7 +1215,10 @@ mod gate_hierarchy_tests {
     #[test]
     fn delete_subtree_unlinks_parents_so_they_must_be_read_first() {
         let mut h = linear_tree();
-        assert_eq!(h.get_parent("b").map(|p| p.to_string()), Some("a".to_string()));
+        assert_eq!(
+            h.get_parent("b").map(|p| p.to_string()),
+            Some("a".to_string())
+        );
 
         h.delete_subtree("a");
 
@@ -1198,10 +1231,15 @@ mod gate_hierarchy_tests {
     #[test]
     fn delete_node_keep_children_reparents_to_the_grandparent() {
         let mut h = linear_tree();
-        let moved = h.delete_node_keep_children("b", Some(Arc::from("a"))).unwrap();
+        let moved = h
+            .delete_node_keep_children("b", Some(Arc::from("a")))
+            .unwrap();
 
         assert_eq!(ids(moved), vec!["c"]);
-        assert_eq!(h.get_parent("c").map(|p| p.to_string()), Some("a".to_string()));
+        assert_eq!(
+            h.get_parent("c").map(|p| p.to_string()),
+            Some("a".to_string())
+        );
         assert!(h.get_parent("b").is_none());
         h.validate().unwrap();
     }
@@ -1233,7 +1271,10 @@ mod gate_hierarchy_tests {
         assert!(h.get_children("a").is_empty());
         assert!(h.get_parent("b").is_none());
         // c is still attached to b.
-        assert_eq!(ids(h.get_children("b").into_iter().cloned().collect()), vec!["c"]);
+        assert_eq!(
+            ids(h.get_children("b").into_iter().cloned().collect()),
+            vec!["c"]
+        );
     }
 
     #[test]
@@ -1262,7 +1303,10 @@ mod gate_hierarchy_tests {
     #[test]
     fn iter_topological_agrees_with_topological_sort() {
         let h = linear_tree();
-        assert_eq!(ids(h.iter_topological().collect()), ids(h.topological_sort().unwrap()));
+        assert_eq!(
+            ids(h.iter_topological().collect()),
+            ids(h.topological_sort().unwrap())
+        );
     }
 
     #[test]
@@ -1326,7 +1370,10 @@ mod gate_hierarchy_tests {
             ids(h.get_children("cd4").into_iter().cloned().collect()),
             vec!["q_bl", "q_br", "q_tr", "q_tl"]
         );
-        assert_eq!(sorted_ids(h.get_leaves()), vec!["cd8", "q_bl", "q_br", "q_tl", "q_tr"]);
+        assert_eq!(
+            sorted_ids(h.get_leaves()),
+            vec!["cd8", "q_bl", "q_br", "q_tl", "q_tr"]
+        );
         h.validate().unwrap();
 
         // Deleting the quadrant's parent takes all four subgates with it.

@@ -1,17 +1,20 @@
 use anyhow::anyhow;
-use polars::{frame::DataFrame, prelude::{CsvReadOptions, DataType, Field, Schema}};
 use core::f32;
 use dioxus::prelude::*;
 use flow_fcs::{TransformType, Transformable};
 use flow_gates::transforms::{
-    Axis, get_plotting_area, pixel_to_raw, pixel_to_raw_y, raw_to_pixel, raw_to_pixel_y
+    Axis, get_plotting_area, pixel_to_raw, pixel_to_raw_y, raw_to_pixel, raw_to_pixel_y,
+};
+use polars::{
+    frame::DataFrame,
+    prelude::{CsvReadOptions, DataType, Field, Schema},
 };
 use rustc_hash::FxBuildHasher;
 use std::{ops::RangeInclusive, path::PathBuf, sync::Arc};
 
-use polars::prelude::*;
-use itertools::izip;
 use crate::gate_editor::{AxisInfo, gates::GateId};
+use itertools::izip;
+use polars::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlotMapper {
@@ -172,7 +175,7 @@ pub struct AxisStore {
 impl<Lens> Store<AxisStore, Lens> {
     fn add_new_default_axis_settings(&mut self, p: &Param, fcs_file: &flow_fcs::Fcs) {
         if self.settings().peek().contains_key(&p.fluoro) {
-            return
+            return;
         }
         self.settings()
             .write()
@@ -198,12 +201,7 @@ impl<Lens> Store<AxisStore, Lens> {
                     -10000.0
                 };
 
-                AxisInfo::new_from_raw(
-                    p.clone(),
-                    lower,
-                    4194304.0,
-                    transform,
-                )
+                AxisInfo::new_from_raw(p.clone(), lower, 4194304.0, transform)
             });
     }
 
@@ -289,7 +287,11 @@ impl<Lens> Store<AxisStore, Lens> {
         }
     }
 
-    fn set_axes_from_file(&mut self, path: PathBuf, source: ScalingInfoSource) -> anyhow::Result<()> {
+    fn set_axes_from_file(
+        &mut self,
+        path: PathBuf,
+        source: ScalingInfoSource,
+    ) -> anyhow::Result<()> {
         let configs = read_axis_configs(path, source)?;
         self.with_mut(|s| s.apply_axis_configs(configs));
         Ok(())
@@ -329,7 +331,6 @@ impl AxisStore {
     pub fn default_axis_params(&self) -> Option<(Param, Param)> {
         default_axis_params(&self.sorted_settings)
     }
-
 }
 
 /// Display order of a channel, matched on the channel alone.
@@ -439,12 +440,11 @@ pub fn read_axis_configs(
     Ok(configs)
 }
 
-pub enum ScalingInfoSource{
-    Omiq
+pub enum ScalingInfoSource {
+    Omiq,
 }
 
-fn fetch_axes_from_omiq_csv(path: PathBuf,) -> anyhow::Result<DataFrame> {
-
+fn fetch_axes_from_omiq_csv(path: PathBuf) -> anyhow::Result<DataFrame> {
     let schema = Schema::from_iter(vec![
         Field::new("Feature Name (Primary)".into(), DataType::String),
         Field::new("Feature Name (Secondary)".into(), DataType::String),

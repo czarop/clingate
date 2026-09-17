@@ -683,9 +683,10 @@ pub fn GateRulesWindow() -> Element {
                             });
                         }
                         message.set(Some(format!(
-                            "Moved {} gates, left {} already in band; {} need review",
+                            "Moved {} gates, left {} already in band and {} reference; {} need review",
                             run.positioned.len(),
                             run.unchanged.len(),
+                            run.reference.len(),
                             run.needs_review(REVIEW_FLOOR).count()
                         )));
                         report.set(Some(run));
@@ -748,6 +749,27 @@ pub fn GateRulesWindow() -> Element {
                             }
                             tbody {
                                 for kept in run.unchanged.iter() {
+                                    tr {
+                                        td { "{kept.specimen}" }
+                                        td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }
+                                        td { "{kept.achieved * 100.0:.3}%" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !run.reference.is_empty() {
+                        h3 { "Reference - left as drawn" }
+                        table { class: "gate_rules-table",
+                            thead {
+                                tr {
+                                    th { "Specimen" }
+                                    th { "Gate" }
+                                    th { "Captures" }
+                                }
+                            }
+                            tbody {
+                                for kept in run.reference.iter() {
                                     tr {
                                         td { "{kept.specimen}" }
                                         td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }

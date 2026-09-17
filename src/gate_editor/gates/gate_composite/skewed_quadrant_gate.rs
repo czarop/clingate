@@ -129,7 +129,7 @@ pub struct SkewedQuadrantGate {
     points: DataPoints,
     axis_matched: bool,
     parameters: (Arc<str>, Arc<str>),
-    infs: (f32, f32)
+    infs: (f32, f32),
 }
 
 impl SkewedQuadrantGate {
@@ -159,7 +159,7 @@ impl SkewedQuadrantGate {
             true,
             None,
             None,
-            infs
+            infs,
         )
     }
 
@@ -172,11 +172,17 @@ impl SkewedQuadrantGate {
         axis_matched: bool,
         subgate_ids: Option<Vec<Arc<str>>>,
         subgate_names: Option<(String, String, String, String)>,
-        infs: (f32, f32)
+        infs: (f32, f32),
     ) -> anyhow::Result<Self> {
         let mut gate_map = FxIndexMap::default();
         let parameters = (x_axis_param.clone(), y_axis_param.clone());
-        let geos = create_skewed_quadrant_geos(data_points.clone(), &x_axis_param, &y_axis_param, infs.0, infs.1)?;
+        let geos = create_skewed_quadrant_geos(
+            data_points.clone(),
+            &x_axis_param,
+            &y_axis_param,
+            infs.0,
+            infs.1,
+        )?;
 
         let sub_ids = if let Some(ids) = subgate_ids {
             ids
@@ -226,7 +232,7 @@ impl SkewedQuadrantGate {
             points: data_points,
             axis_matched,
             parameters,
-            infs
+            infs,
         })
     }
 
@@ -246,7 +252,7 @@ impl SkewedQuadrantGate {
                 points: new_points,
                 axis_matched: !self.axis_matched,
                 parameters: new_parameters,
-                infs
+                infs,
             })
         } else {
             Box::new(Self {
@@ -256,12 +262,16 @@ impl SkewedQuadrantGate {
                 points: self.points.clone(),
                 axis_matched: self.axis_matched,
                 parameters: self.parameters.clone(),
-                infs: self.infs
+                infs: self.infs,
             })
         }
     }
 
-    fn clone_with_point(&self, data_points: DataPoints, infs: Option<(f32, f32)>) -> anyhow::Result<Self> {
+    fn clone_with_point(
+        &self,
+        data_points: DataPoints,
+        infs: Option<(f32, f32)>,
+    ) -> anyhow::Result<Self> {
         let (x_axis_param, y_axis_param) = self.parameters.clone();
         let subgate_bl_id = self.gates.index(0).get_id();
         let subgate_br_id = self.gates.index(1).get_id();
@@ -285,7 +295,11 @@ impl SkewedQuadrantGate {
             self.axis_matched,
             Some(gate_ids),
             Some(gate_names),
-            if infs.is_some() {infs.unwrap()} else {self.infs}
+            if infs.is_some() {
+                infs.unwrap()
+            } else {
+                self.infs
+            },
         )
     }
 
@@ -723,15 +737,13 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
             top: t,
         };
         let infs = {
-            
             let new_inf = get_infinite_bounds(&new_transform);
             if is_x {
                 (new_inf, self.infs.1)
             } else {
                 (self.infs.0, new_inf)
             }
-    };
-
+        };
 
         Ok(Box::new(self.clone_with_point(new, Some(infs))?))
     }
@@ -973,7 +985,6 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
 //     let y_limit_min = data_points.y_data_range.start().min(y_min).min(c.1);
 //     let y_limit_max = data_points.y_data_range.end().max(y_max).max(c.1);
 
-
 //     // Projected points (Spoke Ends)
 //     let p_t = project_to_boundary(
 //         c,
@@ -1034,9 +1045,7 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
 //     Ok((bl, br, tr, tl))
 // }
 
-
-
-// const INF: f32 = 1e10; 
+// const INF: f32 = 1e10;
 // const NEG_INF: f32 = -1e10;
 // pub fn create_skewed_quadrant_geos(
 //     datapoints: DataPoints,
@@ -1082,23 +1091,27 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
 //     ))
 // }
 
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(usize)]
-enum Wall { 
-    Top = 0, 
-    Right = 1, 
-    Bottom = 2, 
-    Left = 3 
+enum Wall {
+    Top = 0,
+    Right = 1,
+    Bottom = 2,
+    Left = 3,
 }
 
 fn get_wall(p: (f32, f32), x_inf: f32, y_inf: f32) -> Wall {
-    let epsilon = 1.0; 
+    let epsilon = 1.0;
     // Check Y boundaries first for Top/Bottom, then X for Right/Left
-    if (p.1 - y_inf).abs() < epsilon { Wall::Top }
-    else if (p.0 - x_inf).abs() < epsilon { Wall::Right }
-    else if (p.1 + y_inf).abs() < epsilon { Wall::Bottom }
-    else { Wall::Left }
+    if (p.1 - y_inf).abs() < epsilon {
+        Wall::Top
+    } else if (p.0 - x_inf).abs() < epsilon {
+        Wall::Right
+    } else if (p.1 + y_inf).abs() < epsilon {
+        Wall::Bottom
+    } else {
+        Wall::Left
+    }
 }
 
 // Corners ordered Clockwise: TR, BR, BL, TL
@@ -1112,24 +1125,24 @@ fn get_corners(x_inf: f32, y_inf: f32) -> [(f32, f32); 4] {
 }
 
 fn build_poly(
-    center: (f32, f32), 
-    start: (f32, f32), 
-    end: (f32, f32), 
-    x_inf: f32, 
-    y_inf: f32
+    center: (f32, f32),
+    start: (f32, f32),
+    end: (f32, f32),
+    x_inf: f32,
+    y_inf: f32,
 ) -> Vec<(f32, f32)> {
     let mut poly = vec![center, start];
-    
+
     let corners = get_corners(x_inf, y_inf);
     let start_wall_idx = get_wall(start, x_inf, y_inf) as usize;
     let end_wall_idx = get_wall(end, x_inf, y_inf) as usize;
 
     let mut current_wall = start_wall_idx;
-    
+
     // Walk corners clockwise until we reach the wall of the 'end' spoke
     while current_wall != end_wall_idx {
         poly.push(corners[current_wall]);
-        current_wall = (current_wall + 1) % 4; 
+        current_wall = (current_wall + 1) % 4;
     }
 
     poly.push(end);
@@ -1142,7 +1155,7 @@ pub fn create_skewed_quadrant_geos(
     x_channel: &str,
     y_channel: &str,
     x_inf: f32,
-    y_inf: f32
+    y_inf: f32,
 ) -> anyhow::Result<(GateGeometry, GateGeometry, GateGeometry, GateGeometry)> {
     let c = datapoints.center;
 
@@ -1166,8 +1179,6 @@ pub fn create_skewed_quadrant_geos(
         flow_gates::geometry::create_polygon_geometry(tl_poly, x_channel, y_channel)?,
     ))
 }
-
-
 
 pub fn project_to_boundary(
     center: (f32, f32),
@@ -1223,15 +1234,12 @@ fn nice_bounds(min: f32, max: f32) -> (f32, f32) {
     (nice_min, nice_max)
 }
 
-
 pub fn get_infinite_bounds(transform: &TransformType) -> f32 {
     let physical_max = 100_000_000.0; // 10^8: safely beyond any detector limit
 
-    match transform{
+    match transform {
         TransformType::Linear => physical_max,
         TransformType::Arcsinh { cofactor } => (physical_max / cofactor).asinh() + 5.0,
         TransformType::Biexponential { .. } => todo!(),
     }
-
-
 }

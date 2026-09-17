@@ -25,7 +25,7 @@ use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_rules::rule_store::{Bound, SamplePairing};
+use crate::gate_rules::rule_store::{Bound, MeasuredOn, SamplePairing};
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey};
 use flow_gates::GateGeometry;
 use std::sync::Arc;
@@ -190,6 +190,73 @@ fn rebuild(
     }
 }
 
+/// Where the gate's leading boundary sits on `parameter`, at one position on
+/// the other axis - or `None` where the gate does not reach that far.
+///
+/// A gate's boundary is not a single number. A slanted polygon crosses the
+/// marker axis at a different place for every height, and a gate boxed in its
+/// other axis makes no statement at all outside that box. Reading one number
+/// off the shape - its extreme vertex - put the cut well to the left of the
+/// real boundary and read the negative from a sliver.
+pub fn boundary_at(
+    geometry: &GateGeometry,
+    parameter: &str,
+    other_parameter: &str,
+    bound: Bound,
+    other: f32,
+) -> Option<f32> {
+    match geometry {
+        GateGeometry::Rectangle { min, max } => {
+            let (lo, hi) = (
+                min.get_coordinate(other_parameter)?,
+                max.get_coordinate(other_parameter)?,
+            );
+            // Outside the box's own span the gate says nothing.
+            if other < lo.min(hi) || other > lo.max(hi) {
+                return None;
+            }
+            match bound {
+                Bound::Above => min.get_coordinate(parameter),
+                Bound::Below => max.get_coordinate(parameter),
+            }
+        }
+        GateGeometry::Polygon { nodes, .. } => {
+            // Every edge crossing this height gives one crossing point; the
+            // leading boundary is the first of them from the side the gate
+            // keeps events from.
+            let pts: Vec<(f32, f32)> = nodes
+                .iter()
+                .filter_map(|n| {
+                    Some((
+                        n.get_coordinate(parameter)?,
+                        n.get_coordinate(other_parameter)?,
+                    ))
+                })
+                .collect();
+            if pts.len() < 3 {
+                return None;
+            }
+            let mut crossings: Vec<f32> = Vec::new();
+            for i in 0..pts.len() {
+                let (p1, q1) = pts[i];
+                let (p2, q2) = pts[(i + 1) % pts.len()];
+                if (q1 <= other && q2 > other) || (q2 <= other && q1 > other) {
+                    let t = (other - q1) / (q2 - q1);
+                    crossings.push(p1 + t * (p2 - p1));
+                }
+            }
+            if crossings.is_empty() {
+                return None;
+            }
+            Some(match bound {
+                Bound::Above => crossings.iter().copied().fold(f32::INFINITY, f32::min),
+                Bound::Below => crossings.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The specimen a file belongs to, as a key into the group override tier.
 ///
 /// Named by the pairing rather than hardcoded, because the column that groups a
@@ -258,6 +325,16 @@ pub struct Measurement {
     pub current: f64,
     /// The parent population's values on `parameter`, for the solver.
     pub values: Vec<f64>,
+    /// The same events, paired with how far each sits from the gate's leading
+    /// boundary *at that event's own height* - negative inside the gate's
+    /// shadow, positive inside the gate.
+    ///
+    /// Carrying the offset rather than a cut value is what lets the gate move:
+    /// the shape translates rigidly, so a gate slid by `d` has the events with
+    /// offset below `d` in its shadow. Events the gate does not reach at all -
+    /// above or below a gate boxed in its other axis - are not here, because
+    /// the gate makes no statement about them.
+    pub shadow: Vec<(f64, f64)>,
     /// The parent population indexed exactly as the plot indexes it, so what a
     /// gate admits can be asked through the very function that draws the
     /// percentage on screen.
@@ -351,7 +428,7 @@ pub fn measure_file(
         }
 
         let chain = state.gate_chain_for_node(&parent);
-        let (values, index) =
+        let (values, points, index) =
             match parent_population(df, &chain, &resolver, &params, &rule.parameter) {
                 Ok(p) => p,
                 Err(e) => {
@@ -374,6 +451,28 @@ pub fn measure_file(
             continue;
         }
 
+        // Each event's distance from the gate's boundary at its own height.
+        let other_parameter = if *rule.parameter == *params.0 {
+            params.1.clone()
+        } else {
+            params.0.clone()
+        };
+        let on_x = *rule.parameter == *params.0;
+        let shadow: Vec<(f64, f64)> = points
+            .iter()
+            .filter_map(|(x, y)| {
+                let (value, other) = if on_x { (*x, *y) } else { (*y, *x) };
+                let edge = boundary_at(
+                    &inner.geometry,
+                    &rule.parameter,
+                    &other_parameter,
+                    rule.bound,
+                    other,
+                )?;
+                Some((value as f64, (value - edge) as f64))
+            })
+            .collect();
+
         out.push(Measurement {
             file: file.clone(),
             gate_id: gate_id.clone(),
@@ -383,6 +482,7 @@ pub fn measure_file(
             bound: rule.bound,
             current,
             values,
+            shadow,
             index,
             params,
         });
@@ -403,7 +503,7 @@ fn parent_population(
     resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
     params: &(Arc<str>, Arc<str>),
     parameter: &str,
-) -> anyhow::Result<(Vec<f64>, EventIndexMapped)> {
+) -> anyhow::Result<(Vec<f64>, Vec<(f32, f32)>, EventIndexMapped)> {
     let frame = if chain.is_empty() {
         df.clone()
     } else {
@@ -419,12 +519,17 @@ fn parent_population(
         .map(|v| v as f64)
         .collect();
 
+    let xs = frame.column(params.0.as_ref())?.f32()?;
+    let ys = frame.column(params.1.as_ref())?.f32()?;
+    let points: Vec<(f32, f32)> = xs.into_no_null_iter().zip(ys.into_no_null_iter()).collect();
+
     let event_index =
         get_event_mask_from_scaled_df(frame.clone(), params.0.clone(), params.1.clone())?;
     let index_map: Vec<usize> = (0..frame.height()).collect();
 
     Ok((
         values,
+        points,
         EventIndexMapped {
             event_index,
             index_map: Arc::new(index_map),
@@ -638,6 +743,10 @@ pub fn describe(gate: &str, parent: Option<&str>) -> String {
 pub struct Report {
     pub positioned: Vec<Positioned>,
     pub unchanged: Vec<Unchanged>,
+    /// Specimens left alone because the rule calibrates from them. Reported
+    /// separately from `unchanged`: those met the rule, these were never
+    /// candidates.
+    pub reference: Vec<Unchanged>,
     pub skipped: Vec<Skipped>,
 }
 
@@ -707,6 +816,29 @@ pub fn position_all(
             .insert((specimen.group.clone(), measured.gate_id.clone()), ())
             .is_some()
         {
+            continue;
+        }
+
+        // The reference is ground truth: its gate is where a person put it, and
+        // everything else is calibrated from that. Positioning it would
+        // overwrite the hand placement, and worse, the next run would calibrate
+        // from the moved gate and the drift would compound every time. Only a
+        // rule naming one sample is affected - a partner rule's reference is
+        // inside the specimen it is positioning, which is the point of it.
+        if let MeasuredOn::File(named) = &rule.measured_on
+            && specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen)
+        {
+            let holds = state
+                .gate_for_file(&measured.gate_id, &measured.file, metadata)
+                .and_then(|gate| admitted_by(&gate, &measured.index))
+                .unwrap_or(f64::NAN);
+            report.reference.push(Unchanged {
+                file: measured.file.clone(),
+                gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
+                specimen: specimen.group.clone(),
+                achieved: holds,
+            });
             continue;
         }
 
@@ -795,7 +927,11 @@ fn position_one(
         // the place to measure it from.
         crate::gate_rules::rule::Rule::AboveTheNegative(above) => {
             let widths = above
-                .calibrate(&reference.measurement.values, reference.measurement.current)
+                .calibrate(
+                    &reference.measurement.values,
+                    &reference.measurement.shadow,
+                    reference.measurement.current,
+                )
                 .ok_or_else(|| {
                     format!(
                         "{} has no negative peak clear enough to calibrate against",
@@ -806,7 +942,7 @@ fn position_one(
                 // The gate's current position on this sample - inherited from
                 // the reference, so a good place for the refining finder to
                 // start from.
-                .place(&measured.values, widths, measured.current)
+                .place(&measured.values, &measured.shadow, widths, measured.current)
                 .ok_or_else(|| "this sample has no negative peak to place against".to_string())?;
             let moved = translate_edge_to(&current_gate, &measured.parameter, measured.bound, to)
                 .map_err(|e| e.to_string())?;

@@ -35,9 +35,7 @@ pub async fn get_filtered_dataframe(
         // a chain taken from the gate alone was whichever placement won the
         // import.
         let gate_chain: Option<Vec<Arc<str>>> = if let Some(parent) = parental_gate_id {
-            let arcs = gate_store
-                .peek()
-                .gate_chain_for_node(&NodeId::from(parent));
+            let arcs = gate_store.peek().gate_chain_for_node(&NodeId::from(parent));
 
             if arcs.is_empty() { None } else { Some(arcs) }
         } else {

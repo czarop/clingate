@@ -361,11 +361,21 @@ fn median_of(sorted: &[f64]) -> f64 {
 /// true by construction: the gate starts roughly right, because it came from a
 /// sample someone gated by hand.
 ///
-/// `at` is where the line sits now. A single pass is enough when the line is
+/// `at` is how far the gate has been slid from where it sits now, so `0.0`
+/// means the gate as it stands. A single pass is enough when the gate is
 /// already where it belongs, which is the calibration case; [`refine_from`]
 /// iterates for the case where it is not.
-pub fn negative_below(values: &[f64], at: f64) -> Option<NegativePeak> {
-    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= at).collect();
+pub fn negative_below(shadow: &[(f64, f64)], at: f64) -> Option<NegativePeak> {
+    // `shadow` pairs each event's value with its distance from the gate's
+    // boundary at that event's own height. The gate translates rigidly, so a
+    // gate slid by `at` has exactly the events with a smaller offset in its
+    // shadow - true whether the boundary is a straight edge or a slanted one,
+    // and silent about events the gate never reached.
+    let mut below: Vec<f64> = shadow
+        .iter()
+        .filter(|(_, offset)| *offset <= at)
+        .map(|(value, _)| *value)
+        .collect();
     if below.len() < 2 {
         return None;
     }
@@ -373,7 +383,7 @@ pub fn negative_below(values: &[f64], at: f64) -> Option<NegativePeak> {
     let centre = median_of(&below);
     Some(NegativePeak {
         centre,
-        spread: left_flank_sigma(values, centre)?,
+        spread: left_flank_sigma(&below, centre)?,
     })
 }
 
@@ -396,12 +406,12 @@ const MAX_STEP_IN_WIDTHS: f64 = 1.0;
 ///
 /// `place` turns a centre and a width into the line's next position.
 pub fn refine_from(
-    values: &[f64],
+    shadow: &[(f64, f64)],
     start: f64,
     place: impl Fn(NegativePeak) -> f64,
 ) -> Option<NegativePeak> {
     let mut at = start;
-    let mut found = negative_below(values, at)?;
+    let mut found = negative_below(shadow, at)?;
     let mut last_step = f64::INFINITY;
 
     for _ in 0..REFINE_PASSES {
@@ -420,7 +430,7 @@ pub fn refine_from(
         );
         at += capped;
         last_step = step.abs();
-        let Some(next) = negative_below(values, at) else {
+        let Some(next) = negative_below(shadow, at) else {
             break;
         };
         found = next;

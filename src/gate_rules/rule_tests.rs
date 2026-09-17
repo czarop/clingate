@@ -209,6 +209,15 @@ fn gaussian(seed: u64, n: usize, mean: f64, sd: f64) -> Vec<f64> {
     (0..n).map(|_| d.sample(&mut rng)).collect()
 }
 
+/// The shadow a full-height gate whose lower edge sits at `gate_at` casts over
+/// these events: each one paired with how far it sits from that edge. A
+/// rectangle spanning the whole plot has one boundary at every height, so the
+/// offset is just the distance along the axis - which is what these tests want
+/// to reason in.
+fn shadow_at(values: &[f64], gate_at: f64) -> Vec<(f64, f64)> {
+    values.iter().map(|v| (*v, v - gate_at)).collect()
+}
+
 #[test]
 fn the_gate_follows_a_negative_that_has_drifted() {
     // The point of the rule. The reference's gate sits three widths above its
@@ -217,7 +226,11 @@ fn the_gate_follows_a_negative_that_has_drifted() {
     let rule = AboveTheNegativeRule::default();
     let reference = gaussian(1, 4000, 1.0, 0.2);
     let widths = rule
-        .calibrate(&reference, 1.0 + 3.0 * 0.2)
+        .calibrate(
+            &reference,
+            &shadow_at(&reference, 1.0 + 3.0 * 0.2),
+            1.0 + 3.0 * 0.2,
+        )
         .expect("calibrates");
     assert!((widths - 3.0).abs() < 0.4, "read {widths} widths");
 
@@ -225,7 +238,12 @@ fn the_gate_follows_a_negative_that_has_drifted() {
     // - which is what a sample inherits before it is corrected.
     let drifted = gaussian(2, 4000, 1.4, 0.2);
     let placed = rule
-        .place(&drifted, widths, 1.0 + 3.0 * 0.2)
+        .place(
+            &drifted,
+            &shadow_at(&drifted, 1.0 + 3.0 * 0.2),
+            widths,
+            1.0 + 3.0 * 0.2,
+        )
         .expect("places");
     assert!(
         (placed - (1.4 + 3.0 * 0.2)).abs() < 0.1,
@@ -241,10 +259,23 @@ fn a_negative_that_has_broadened_widens_the_gap_too() {
     // difficult unmixing needs.
     let rule = AboveTheNegativeRule::default();
     let reference = gaussian(3, 4000, 1.0, 0.2);
-    let widths = rule.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
+    let widths = rule
+        .calibrate(
+            &reference,
+            &shadow_at(&reference, 1.0 + 3.0 * 0.2),
+            1.0 + 3.0 * 0.2,
+        )
+        .unwrap();
 
     let broad = gaussian(4, 4000, 1.0, 0.4);
-    let placed = rule.place(&broad, widths, 1.0 + 3.0 * 0.2).expect("places");
+    let placed = rule
+        .place(
+            &broad,
+            &shadow_at(&broad, 1.0 + 3.0 * 0.2),
+            widths,
+            1.0 + 3.0 * 0.2,
+        )
+        .expect("places");
     assert!(
         placed > 1.0 + 3.0 * 0.3,
         "a twice-as-wide negative should push the gate further out, got {placed}"
@@ -255,16 +286,17 @@ fn a_negative_that_has_broadened_widens_the_gap_too() {
 fn the_scale_and_nudge_adjust_the_result() {
     let reference = gaussian(5, 4000, 1.0, 0.2);
     let plain = AboveTheNegativeRule::default();
-    let widths = plain.calibrate(&reference, 1.0 + 3.0 * 0.2).unwrap();
     let gate_at = 1.0 + 3.0 * 0.2;
-    let base = plain.place(&reference, widths, gate_at).unwrap();
+    let shadow = shadow_at(&reference, gate_at);
+    let widths = plain.calibrate(&reference, &shadow, gate_at).unwrap();
+    let base = plain.place(&reference, &shadow, widths, gate_at).unwrap();
 
     let scaled = AboveTheNegativeRule {
         scale: 1.5,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        scaled.place(&reference, widths, gate_at).unwrap() > base,
+        scaled.place(&reference, &shadow, widths, gate_at).unwrap() > base,
         "a larger scale should sit further above the negative"
     );
 
@@ -275,14 +307,17 @@ fn the_scale_and_nudge_adjust_the_result() {
         find: NegativeFinder::DensityPeak,
         ..AboveTheNegativeRule::default()
     };
-    let plain_base = single_pass.place(&reference, widths, gate_at).unwrap();
+    let plain_base = single_pass
+        .place(&reference, &shadow, widths, gate_at)
+        .unwrap();
     let nudged = AboveTheNegativeRule {
         nudge: 0.25,
         find: NegativeFinder::DensityPeak,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        (nudged.place(&reference, widths, gate_at).unwrap() - plain_base - 0.25).abs() < 1e-9,
+        (nudged.place(&reference, &shadow, widths, gate_at).unwrap() - plain_base - 0.25).abs()
+            < 1e-9,
         "the nudge is added in the axis's own units"
     );
 }
@@ -291,8 +326,12 @@ fn the_scale_and_nudge_adjust_the_result() {
 fn an_unreadable_negative_refuses_rather_than_guessing() {
     // A gate placed off a peak that is not there is worse than one left alone.
     let rule = AboveTheNegativeRule::default();
-    assert!(rule.calibrate(&[], 1.0).is_none());
-    assert!(rule.place(&[2.0; 500], 3.0, 2.0).is_none());
+    assert!(rule.calibrate(&[], &[], 1.0).is_none());
+    let flat = [2.0; 500];
+    assert!(
+        rule.place(&flat, &shadow_at(&flat, 2.0), 3.0, 2.0)
+            .is_none()
+    );
 }
 
 #[test]
@@ -301,8 +340,9 @@ fn calibration_round_trips_on_the_sample_it_came_from() {
     let rule = AboveTheNegativeRule::default();
     let reference = gaussian(6, 4000, 1.4, 0.25);
     let gate_at = 1.4 + 2.5 * 0.25;
-    let widths = rule.calibrate(&reference, gate_at).unwrap();
-    let back = rule.place(&reference, widths, gate_at).unwrap();
+    let shadow = shadow_at(&reference, gate_at);
+    let widths = rule.calibrate(&reference, &shadow, gate_at).unwrap();
+    let back = rule.place(&reference, &shadow, widths, gate_at).unwrap();
     assert!(
         (back - gate_at).abs() < 1e-9,
         "expected {gate_at}, got {back}"
@@ -331,13 +371,16 @@ fn the_two_finders_have_different_strengths() {
         find: NegativeFinder::DensityPeak,
         ..AboveTheNegativeRule::default()
     };
-    let k_refine = refine.calibrate(&reference, gate_at).unwrap();
-    let k_density = density.calibrate(&reference, gate_at).unwrap();
+    let shadow = shadow_at(&reference, gate_at);
+    let k_refine = refine.calibrate(&reference, &shadow, gate_at).unwrap();
+    let k_density = density.calibrate(&reference, &shadow, gate_at).unwrap();
 
     let err = |rule: &AboveTheNegativeRule, k: f64, drift: f64| {
         let centre = 1.0 + drift * sd;
         let sample = gaussian(9, 4000, centre, sd);
-        rule.place(&sample, k, gate_at).unwrap() - (centre + 3.0 * sd)
+        rule.place(&sample, &shadow_at(&sample, gate_at), k, gate_at)
+            .unwrap()
+            - (centre + 3.0 * sd)
     };
 
     // Within range, refining is the sharper of the two.

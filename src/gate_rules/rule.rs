@@ -233,29 +233,45 @@ impl AboveTheNegativeRule {
     /// `None` when the reference has no readable negative, which is a refusal
     /// rather than a zero: a gate placed off an unreadable peak is worse than
     /// one left alone.
-    pub fn calibrate(&self, reference: &[f64], reference_x: f64) -> Option<f64> {
+    /// `values` is the whole parent population; `shadow` pairs each event with
+    /// its distance from the gate's boundary at that event's own height.
+    pub fn calibrate(
+        &self,
+        values: &[f64],
+        shadow: &[(f64, f64)],
+        reference_x: f64,
+    ) -> Option<f64> {
         use crate::gate_rules::threshold as t;
-        // Nothing to iterate here: the line is already where a person put it,
-        // so one look below it is the whole answer.
+        // Nothing to iterate here: the gate is already where a person put it,
+        // so one look at its shadow is the whole answer - offset 0.0.
         let peak = match self.find {
-            NegativeFinder::DensityPeak => t::negative_peak(reference)?,
-            NegativeFinder::RefineFromGate => t::negative_below(reference, reference_x)?,
+            NegativeFinder::DensityPeak => t::negative_peak(values)?,
+            NegativeFinder::RefineFromGate => t::negative_below(shadow, 0.0)?,
         };
         Some((reference_x - peak.centre) / peak.spread)
     }
 
     /// Where the gate belongs on a sample, given that calibration.
     ///
-    /// `start` is where the gate sits on this sample now - inherited from the
-    /// reference, so roughly right. The density finder ignores it; the refining
-    /// one improves on it.
-    pub fn place(&self, values: &[f64], widths: f64, start: f64) -> Option<f64> {
+    /// `start` is where the gate's leading extent sits now, used to turn a slide
+    /// distance back into a position on the axis. The density finder ignores
+    /// the gate entirely; the refining one improves on it.
+    pub fn place(
+        &self,
+        values: &[f64],
+        shadow: &[(f64, f64)],
+        widths: f64,
+        start: f64,
+    ) -> Option<f64> {
         use crate::gate_rules::threshold as t;
         let at =
             |peak: t::NegativePeak| peak.centre + widths * self.scale * peak.spread + self.nudge;
         let peak = match self.find {
             NegativeFinder::DensityPeak => t::negative_peak(values)?,
-            NegativeFinder::RefineFromGate => t::refine_from(values, start, at)?,
+            // The refining finder works in slide distances, so it searches from
+            // the gate where it stands - offset zero - rather than from a value
+            // on the axis. `at` then reads back onto the axis as usual.
+            NegativeFinder::RefineFromGate => t::refine_from(shadow, 0.0, |peak| at(peak) - start)?,
         };
         Some(at(peak))
     }

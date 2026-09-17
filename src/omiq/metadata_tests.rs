@@ -9,7 +9,9 @@
 
 #![cfg(test)]
 
-use crate::gate_editor::plots::axis_store::{AxisStore, Param, ScalingInfoSource, read_axis_configs};
+use crate::gate_editor::plots::axis_store::{
+    AxisStore, Param, ScalingInfoSource, read_axis_configs,
+};
 use crate::omiq::metadata::{MetaDataOrigin, parse_metadata_csv};
 use flow_fcs::TransformType;
 use std::io::Write;
@@ -58,11 +60,17 @@ fn the_omiq_file_prefix_is_stripped_from_the_gating_id() {
     let parsed = parse_metadata(METADATA, "meta-prefix");
 
     assert!(
-        parsed.metadata.contains_key(&Arc::from("12345") as &Arc<str>),
+        parsed
+            .metadata
+            .contains_key(&Arc::from("12345") as &Arc<str>),
         "expected the unprefixed id, got {:?}",
         parsed.metadata.keys().collect::<Vec<_>>()
     );
-    assert!(!parsed.metadata.contains_key(&Arc::from("F12345") as &Arc<str>));
+    assert!(
+        !parsed
+            .metadata
+            .contains_key(&Arc::from("F12345") as &Arc<str>)
+    );
 }
 
 /// The export path has to put the prefix back, so the reverse mapping is kept.
@@ -71,11 +79,15 @@ fn the_original_omiq_id_is_recoverable_for_export() {
     let parsed = parse_metadata(METADATA, "meta-reverse");
 
     assert_eq!(
-        parsed.gating_id_to_actual_id.get(&Arc::from("12345") as &Arc<str>),
+        parsed
+            .gating_id_to_actual_id
+            .get(&Arc::from("12345") as &Arc<str>),
         Some(&"F12345".to_string())
     );
     assert_eq!(
-        parsed.gating_id_to_actual_id.get(&Arc::from("67890") as &Arc<str>),
+        parsed
+            .gating_id_to_actual_id
+            .get(&Arc::from("67890") as &Arc<str>),
         Some(&"F67890".to_string())
     );
 }
@@ -102,11 +114,15 @@ fn each_sample_carries_its_metadata_columns() {
         .expect("sample present");
 
     assert_eq!(
-        sample_a.get(&Arc::from("$VOL") as &Arc<str>).map(|g| g.to_string()),
+        sample_a
+            .get(&Arc::from("$VOL") as &Arc<str>)
+            .map(|g| g.to_string()),
         Some("high".to_string())
     );
     assert_eq!(
-        sample_a.get(&Arc::from("Panel") as &Arc<str>).map(|g| g.to_string()),
+        sample_a
+            .get(&Arc::from("Panel") as &Arc<str>)
+            .map(|g| g.to_string()),
         Some("MyPanel".to_string())
     );
 }
@@ -116,7 +132,10 @@ fn each_sample_carries_its_metadata_columns() {
 #[test]
 fn the_id_and_name_columns_are_not_treated_as_metadata() {
     let parsed = parse_metadata(METADATA, "meta-exclude");
-    let sample_a = parsed.metadata.get(&Arc::from("12345") as &Arc<str>).unwrap();
+    let sample_a = parsed
+        .metadata
+        .get(&Arc::from("12345") as &Arc<str>)
+        .unwrap();
 
     assert!(!sample_a.contains_key(&Arc::from("OmiqID") as &Arc<str>));
     assert!(!sample_a.contains_key(&Arc::from("Filename") as &Arc<str>));
@@ -127,8 +146,14 @@ fn the_id_and_name_columns_are_not_treated_as_metadata() {
 fn samples_in_different_groups_are_kept_apart() {
     let parsed = parse_metadata(METADATA, "meta-groups");
 
-    let a = parsed.metadata.get(&Arc::from("12345") as &Arc<str>).unwrap();
-    let b = parsed.metadata.get(&Arc::from("67890") as &Arc<str>).unwrap();
+    let a = parsed
+        .metadata
+        .get(&Arc::from("12345") as &Arc<str>)
+        .unwrap();
+    let b = parsed
+        .metadata
+        .get(&Arc::from("67890") as &Arc<str>)
+        .unwrap();
 
     assert_ne!(
         a.get(&Arc::from("$VOL") as &Arc<str>),
@@ -210,11 +235,20 @@ fn an_arcsinh_channel_stores_transformed_bounds() {
 #[test]
 fn a_channel_with_no_marker_names_itself() {
     let configs = parse_scaling(SCALING, "scale-marker");
-    let fsc = configs.iter().find(|a| &*a.param.fluoro == "FSC-A").unwrap();
-    let cd3 = configs.iter().find(|a| &*a.param.fluoro == "BV421-A").unwrap();
+    let fsc = configs
+        .iter()
+        .find(|a| &*a.param.fluoro == "FSC-A")
+        .unwrap();
+    let cd3 = configs
+        .iter()
+        .find(|a| &*a.param.fluoro == "BV421-A")
+        .unwrap();
 
     assert_eq!(&*fsc.param.marker, "FSC-A");
-    assert_eq!(&*cd3.param.marker, "CD3", "the marker comes from the secondary column");
+    assert_eq!(
+        &*cd3.param.marker, "CD3",
+        "the marker comes from the secondary column"
+    );
 }
 
 /// Regression: an unrecognised scaling type was `unreachable!()`, so a single
@@ -250,7 +284,11 @@ fn applying_configs_registers_them_by_channel() {
     store.apply_axis_configs(parse_scaling(SCALING, "scale-apply"));
 
     assert_eq!(store.settings.len(), 2);
-    assert!(store.settings.contains_key(&Arc::from("FSC-A") as &Arc<str>));
+    assert!(
+        store
+            .settings
+            .contains_key(&Arc::from("FSC-A") as &Arc<str>)
+    );
     assert_eq!(store.sorted_settings.len(), 2, "display order is recorded");
 }
 
@@ -274,8 +312,15 @@ fn a_later_config_wins_for_the_same_channel() {
         "scale-second",
     ));
 
-    let cd3 = store.settings.get(&Arc::from("BV421-A") as &Arc<str>).unwrap();
-    assert_eq!(cd3.get_cofactor(), Some(250.0), "the newer cofactor applies");
+    let cd3 = store
+        .settings
+        .get(&Arc::from("BV421-A") as &Arc<str>)
+        .unwrap();
+    assert_eq!(
+        cd3.get_cofactor(),
+        Some(250.0),
+        "the newer cofactor applies"
+    );
     assert!(matches!(cd3.transform, TransformType::Arcsinh { .. }));
 }
 

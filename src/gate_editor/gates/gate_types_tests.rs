@@ -115,7 +115,10 @@ fn a_text_shape_is_never_composite_and_always_axis_matched() {
 
     assert!(!text.is_composite());
     assert!(!text.is_undraggable());
-    assert!(text.is_axis_matched(), "labels are drawn regardless of axes");
+    assert!(
+        text.is_axis_matched(),
+        "labels are drawn regardless of axes"
+    );
 }
 
 // ─── clone_with_type ──────────────────────────────────────────────────────────
@@ -126,10 +129,18 @@ fn cloning_with_a_new_type_keeps_the_geometry() {
     let restyled = original.clone_with_type(&SELECTED_LINE, ShapeType::Point(7));
 
     match restyled {
-        GateRenderShape::Circle { center, radius, shape_type, .. } => {
+        GateRenderShape::Circle {
+            center,
+            radius,
+            shape_type,
+            ..
+        } => {
             assert_eq!(center, (1.0, 2.0));
             assert_eq!(radius, 3.0);
-            assert!(matches!(shape_type, ShapeType::Point(7)), "the tag is replaced");
+            assert!(
+                matches!(shape_type, ShapeType::Point(7)),
+                "the tag is replaced"
+            );
         }
         _ => panic!("variant changed"),
     }
@@ -163,7 +174,10 @@ fn cloning_a_text_shape_with_a_new_type_leaves_it_untouched() {
         shape_type: ShapeType::Text,
     };
 
-    assert_eq!(text.clone_with_type(&SELECTED_LINE, ShapeType::Point(1)), text);
+    assert_eq!(
+        text.clone_with_type(&SELECTED_LINE, ShapeType::Point(1)),
+        text
+    );
 }
 
 // ─── clone_with_offset ────────────────────────────────────────────────────────
@@ -207,7 +221,13 @@ fn an_ellipse_subtracts_the_offset_and_keeps_its_radii() {
     };
 
     match ellipse.clone_with_offset((1.0, 2.0), &DEFAULT_LINE) {
-        GateRenderShape::Ellipse { center, radius_x, radius_y, degrees_rotation, .. } => {
+        GateRenderShape::Ellipse {
+            center,
+            radius_x,
+            radius_y,
+            degrees_rotation,
+            ..
+        } => {
             assert_eq!(center, (9.0, 8.0));
             assert_eq!((radius_x, radius_y), (4.0, 2.0), "a move must not resize");
             assert_eq!(degrees_rotation, 30.0, "a move must not rotate");
@@ -228,7 +248,13 @@ fn a_rectangle_moves_without_resizing() {
     };
 
     match rect.clone_with_offset((5.0, 5.0), &DEFAULT_LINE) {
-        GateRenderShape::Rectangle { x, y, width, height, .. } => {
+        GateRenderShape::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => {
             assert_eq!((x, y), (6.0, 7.0));
             assert_eq!((width, height), (10.0, 20.0));
         }
@@ -266,7 +292,12 @@ fn a_handle_moves_but_keeps_the_shape_centre_it_orbits() {
     };
 
     match handle.clone_with_offset((1.0, 1.0), &DEFAULT_LINE) {
-        GateRenderShape::Handle { center, shape_center, size, .. } => {
+        GateRenderShape::Handle {
+            center,
+            shape_center,
+            size,
+            ..
+        } => {
             assert_eq!(center, (6.0, 6.0));
             assert_eq!(shape_center, (0.0, 0.0), "the pivot is not offset");
             assert_eq!(size, 4.0);
@@ -278,7 +309,10 @@ fn a_handle_moves_but_keeps_the_shape_centre_it_orbits() {
 #[test]
 fn a_zero_offset_leaves_a_shape_where_it_was() {
     let original = circle(ShapeType::Point(0));
-    assert_eq!(original.clone_with_offset((0.0, 0.0), &DEFAULT_LINE), original);
+    assert_eq!(
+        original.clone_with_offset((0.0, 0.0), &DEFAULT_LINE),
+        original
+    );
 }
 
 // ─── GateStats ────────────────────────────────────────────────────────────────

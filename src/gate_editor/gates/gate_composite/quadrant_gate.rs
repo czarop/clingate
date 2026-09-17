@@ -2,7 +2,9 @@ use flow_fcs::TransformType;
 
 use crate::gate_editor::{
     gates::{
-        gate_composite::skewed_quadrant_gate::{DataPoints, create_skewed_quadrant_geos, get_infinite_bounds},
+        gate_composite::skewed_quadrant_gate::{
+            DataPoints, create_skewed_quadrant_geos, get_infinite_bounds,
+        },
         gate_drag::{GateDragData, PointDragData},
         gate_single::{polygon_gate::PolygonGate, rescale_helper_point},
         gate_traits::DrawableGate,
@@ -15,7 +17,7 @@ use flow_gates::Gate;
 
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
-use std::{sync::Arc};
+use std::sync::Arc;
 type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
 #[derive(PartialEq, Clone)]
@@ -26,7 +28,7 @@ pub struct QuadrantGate {
     points: DataPoints,
     axis_matched: bool,
     parameters: (Arc<str>, Arc<str>),
-    infs: (f32, f32)
+    infs: (f32, f32),
 }
 
 impl QuadrantGate {
@@ -56,7 +58,7 @@ impl QuadrantGate {
             true,
             None,
             None,
-            infs
+            infs,
         )
     }
 
@@ -69,7 +71,7 @@ impl QuadrantGate {
         axis_matched: bool,
         subgate_ids: Option<Vec<Arc<str>>>,
         subgate_names: Option<(String, String, String, String)>,
-        infs: (f32, f32)
+        infs: (f32, f32),
     ) -> Result<Self> {
         // FORCE ORTHOGONALITY: Overwrite any skew with center alignment
         data_points.left.1 = data_points.center.1;
@@ -81,7 +83,13 @@ impl QuadrantGate {
         let parameters = (x_axis_param.clone(), y_axis_param.clone());
 
         // Reuse the skewed geometry generator (orthogonal is just 0 skew)
-        let geos = create_skewed_quadrant_geos(data_points.clone(), &x_axis_param, &y_axis_param, infs.0, infs.1)?;
+        let geos = create_skewed_quadrant_geos(
+            data_points.clone(),
+            &x_axis_param,
+            &y_axis_param,
+            infs.0,
+            infs.1,
+        )?;
 
         let sub_ids = if let Some(ids) = subgate_ids {
             ids
@@ -131,7 +139,7 @@ impl QuadrantGate {
             points: data_points,
             axis_matched,
             parameters,
-            infs
+            infs,
         })
     }
 
@@ -154,7 +162,11 @@ impl QuadrantGate {
             self.axis_matched,
             Some(gate_ids),
             Some(gate_names),
-            if infs.is_some() {infs.unwrap()} else {self.infs}
+            if infs.is_some() {
+                infs.unwrap()
+            } else {
+                self.infs
+            },
         )
     }
 
@@ -174,7 +186,7 @@ impl QuadrantGate {
                 points: new_points,
                 axis_matched: !self.axis_matched,
                 parameters: new_parameters,
-                infs
+                infs,
             })
         } else {
             Box::new(Self {
@@ -184,7 +196,7 @@ impl QuadrantGate {
                 points: self.points.clone(),
                 axis_matched: self.axis_matched,
                 parameters: self.parameters.clone(),
-                infs: self.infs.clone()
+                infs: self.infs.clone(),
             })
         }
     }
@@ -527,17 +539,15 @@ impl DrawableGate for QuadrantGate {
                 },
             ),
             top: (c.0, if !is_x { new_upper } else { self.points.top.1 }),
-            
         };
         let infs = {
-            
             let new_inf = get_infinite_bounds(&new_transform);
             if is_x {
                 (new_inf, self.infs.1)
             } else {
                 (self.infs.0, new_inf)
             }
-    };
+        };
         Ok(Box::new(self.clone_with_point(new_pts, Some(infs))?))
     }
 

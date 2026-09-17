@@ -6,7 +6,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use dioxus::prelude::*;
 
 use flow_plots::{
-    BasePlotOptions, ColorMaps, DensityPlot, DensityPlotOptions, Plot, ScatterPlotData, render::RenderConfig
+    BasePlotOptions, ColorMaps, DensityPlot, DensityPlotOptions, Plot, ScatterPlotData,
+    render::RenderConfig,
 };
 
 use crate::gate_editor::{AxisInfo, gates::draw_gates::GateLayer, plots::axis_store::PlotMapper};
@@ -24,8 +25,11 @@ pub fn PseudoColourPlot(
     use_context_provider::<Signal<Option<Arc<PlotMapper>>>>(|| plot_map);
 
     let render_result = use_resource(move || {
-        
-        let data_final: flow_plots::ScatterPlotData = ScatterPlotData{ points: data(), gate_ids: None, z_values: None };
+        let data_final: flow_plots::ScatterPlotData = ScatterPlotData {
+            points: data(),
+            gate_ids: None,
+            z_values: None,
+        };
         async move {
             let x_axis_info = x_axis_info();
             let y_axis_info = y_axis_info();
@@ -69,9 +73,6 @@ pub fn PseudoColourPlot(
                         )
                     };
 
-                    
-                    
-
                     let mapper = PlotMapper::new(
                         width as f32,
                         height as f32,
@@ -92,7 +93,7 @@ pub fn PseudoColourPlot(
                         .build()?;
 
                     let mut render_config = RenderConfig::default();
-                    
+
                     let plot_data = plot.render(data_final, &options, &mut render_config)?;
 
                     let base64_str = BASE64_STANDARD.encode(&plot_data);
@@ -154,16 +155,16 @@ pub fn PseudoColourPlot(
         }
 
     }
-
 }
 
-
 fn get_bounds(data: &[(f32, f32)]) -> Option<((f32, f32), (f32, f32))> {
-    if data.is_empty() { return None; }
+    if data.is_empty() {
+        return None;
+    }
 
     let initial = (
         (data[0].0, data[0].0), // (min_x, max_x)
-        (data[0].1, data[0].1)  // (min_y, max_y)
+        (data[0].1, data[0].1), // (min_y, max_y)
     );
 
     let bounds = data.iter().skip(1).fold(initial, |mut acc, &(x, y)| {

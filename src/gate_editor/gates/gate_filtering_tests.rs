@@ -16,9 +16,7 @@ use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
 use crate::gate_editor::gates::gate_single::ellipse_gate::EllipseGate;
 use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
-use crate::gate_editor::gates::gate_store::{
-    ComparableGate, GateOverrideResolver, GateSource,
-};
+use crate::gate_editor::gates::gate_store::{ComparableGate, GateOverrideResolver, GateSource};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use flow_gates::{BooleanOperation, create_polygon_geometry, create_rectangle_geometry};
 use polars::prelude::*;
@@ -56,36 +54,27 @@ fn gate(id: &str, geometry: flow_gates::GateGeometry) -> flow_gates::Gate {
 
 /// A rectangle spanning x and y in 4.0..=6.0 - selects only the centre event.
 fn centre_rectangle(id: &str) -> Arc<dyn DrawableGate> {
-    let geometry = create_rectangle_geometry(
-        vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)],
-        X,
-        Y,
-    )
-    .unwrap();
+    let geometry =
+        create_rectangle_geometry(vec![(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)], X, Y)
+            .unwrap();
     Arc::new(RectangleGate::try_new(gate(id, geometry), true).unwrap())
 }
 
 /// A tall rectangle spanning the full y range at x in 4.0..=6.0 - selects the
 /// three events on the centre column.
 fn centre_column(id: &str) -> Arc<dyn DrawableGate> {
-    let geometry = create_rectangle_geometry(
-        vec![(4.0, 0.0), (6.0, 0.0), (6.0, 10.0), (4.0, 10.0)],
-        X,
-        Y,
-    )
-    .unwrap();
+    let geometry =
+        create_rectangle_geometry(vec![(4.0, 0.0), (6.0, 0.0), (6.0, 10.0), (4.0, 10.0)], X, Y)
+            .unwrap();
     Arc::new(RectangleGate::try_new(gate(id, geometry), true).unwrap())
 }
 
 /// A wide rectangle spanning the full x range at y in 4.0..=6.0 - selects only
 /// the centre event of the three on the centre row.
 fn centre_row(id: &str) -> Arc<dyn DrawableGate> {
-    let geometry = create_rectangle_geometry(
-        vec![(0.0, 4.0), (10.0, 4.0), (10.0, 6.0), (0.0, 6.0)],
-        X,
-        Y,
-    )
-    .unwrap();
+    let geometry =
+        create_rectangle_geometry(vec![(0.0, 4.0), (10.0, 4.0), (10.0, 6.0), (0.0, 6.0)], X, Y)
+            .unwrap();
     Arc::new(RectangleGate::try_new(gate(id, geometry), true).unwrap())
 }
 
@@ -152,7 +141,12 @@ fn a_rectangle_excludes_events_exactly_on_its_boundary() {
 #[test]
 fn a_rectangle_selecting_nothing_yields_an_empty_mask() {
     let geometry = create_rectangle_geometry(
-        vec![(100.0, 100.0), (200.0, 100.0), (200.0, 200.0), (100.0, 200.0)],
+        vec![
+            (100.0, 100.0),
+            (200.0, 100.0),
+            (200.0, 200.0),
+            (100.0, 200.0),
+        ],
         X,
         Y,
     )
@@ -200,7 +194,13 @@ fn a_polygon_enclosing_everything_selects_every_event() {
 fn a_concave_polygon_excludes_its_notch() {
     // An arrowhead whose notch swallows the centre point.
     let geometry = create_polygon_geometry(
-        vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (5.0, 2.0), (0.0, 10.0)],
+        vec![
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (5.0, 2.0),
+            (0.0, 10.0),
+        ],
         X,
         Y,
     )

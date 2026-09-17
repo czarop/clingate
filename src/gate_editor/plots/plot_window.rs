@@ -109,13 +109,19 @@ pub fn PlotWindow(
             }
         }
 
-        if fcs_file.read().is_none() {return Err(anyhow::anyhow!("No data to scale"))};
+        if fcs_file.read().is_none() {
+            return Err(anyhow::anyhow!("No data to scale"));
+        };
 
         let result =
             tokio::task::spawn_blocking(move || -> Result<Arc<DataFrame>, anyhow::Error> {
                 let param_refs: Vec<(&str, f32)> =
                     params.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-                let scaled_df = &*fcs_file.read().as_ref().unwrap().apply_arcsinh_transforms(param_refs.as_slice())?;
+                let scaled_df = &*fcs_file
+                    .read()
+                    .as_ref()
+                    .unwrap()
+                    .apply_arcsinh_transforms(param_refs.as_slice())?;
                 let df_with_index = scaled_df.with_row_index("original_index".into(), None)?;
 
                 Ok(Arc::new(df_with_index))
@@ -126,7 +132,6 @@ pub fn PlotWindow(
             Ok(d) => d,
             Err(_) => Err(anyhow::anyhow!("error scaling data")),
         }
-        
     });
 
     // fetch the axis limits from the settings dict when axis changed
@@ -234,27 +239,25 @@ pub fn PlotWindow(
                     return Err(anyhow::anyhow!("No resolver"));
                 };
 
-                let Some(d) = current_data else { 
+                let Some(d) = current_data else {
                     plot_data_signal.set(vec![]);
-                    return Err(anyhow::anyhow!("No data yet"))
+                    return Err(anyhow::anyhow!("No data yet"));
                 };
-                    let filtered_data =
-                        match get_filtered_dataframe(d.clone(), parental, resolver).await {
-                            Ok(d) => d.clone(),
-                            Err(e) => {
-                                plot_data_signal.set(vec![]);
-                                return Err(anyhow::anyhow!("No data to display {}", e));
-                            }
-                        };
-
-                    match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await
-                    {
-                        Ok(d) => plot_data_signal.set(d),
-                        Err(_) => plot_data_signal.set(vec![]),
+                let filtered_data =
+                    match get_filtered_dataframe(d.clone(), parental, resolver).await {
+                        Ok(d) => d.clone(),
+                        Err(e) => {
+                            plot_data_signal.set(vec![]);
+                            return Err(anyhow::anyhow!("No data to display {}", e));
+                        }
                     };
 
-                    Ok(filtered_data)
-                
+                match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await {
+                    Ok(d) => plot_data_signal.set(d),
+                    Err(_) => plot_data_signal.set(vec![]),
+                };
+
+                Ok(filtered_data)
             }
         });
 
@@ -367,8 +370,7 @@ pub fn PlotWindow(
                     rsx! {}
                 }
             }
-        
+
         }
     }
-
 }

@@ -219,7 +219,10 @@ fn the_pairing_columns_are_configurable() {
 #[test]
 fn a_store_round_trips_through_its_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.insert(
         RuleTarget::under("CD38+", "CD19+CD33-"),
         GateRule {
@@ -420,7 +423,10 @@ fn a_rule_measured_on_a_named_file_always_reads_it() {
 #[test]
 fn hand_set_references_survive_the_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
 
     let back: RuleStore = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
@@ -569,7 +575,10 @@ fn one_rule_covers_every_gate_of_that_name() {
     // The case this exists for: "CD279+" occupied twenty-five containers in a
     // real export, and a rule per container is both miserable and wrong.
     let mut s = store();
-    s.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    s.insert(
+        RuleTarget::named("CD279+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
 
     assert_eq!(s.len(), 1);
     for parent in [Some("CD4+"), Some("CD8+"), Some("anything at all"), None] {
@@ -583,7 +592,10 @@ fn one_rule_covers_every_gate_of_that_name() {
 #[test]
 fn a_rule_naming_a_parent_wins_over_one_that_does_not() {
     let mut s = store();
-    s.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    s.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     s.insert(
         RuleTarget::under("Ki67+", "CD4+"),
         gate_rule(Bound::Above, (0.05, 0.06)),
@@ -600,7 +612,10 @@ fn a_rule_naming_a_parent_wins_over_one_that_does_not() {
 fn the_specific_rule_wins_whichever_order_it_was_added() {
     for specific_first in [true, false] {
         let mut s = store();
-        let general = (RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+        let general = (
+            RuleTarget::named("Ki67+"),
+            gate_rule(Bound::Above, (0.002, 0.005)),
+        );
         let specific = (
             RuleTarget::under("Ki67+", "CD4+"),
             gate_rule(Bound::Below, (0.002, 0.005)),
@@ -637,14 +652,20 @@ fn a_rule_for_one_parent_does_not_reach_another() {
 
 #[test]
 fn a_target_reads_the_way_a_gate_is_spoken_about() {
-    assert_eq!(RuleTarget::under("Ki67+", "CD4+").describe(), "Ki67+ of CD4+");
+    assert_eq!(
+        RuleTarget::under("Ki67+", "CD4+").describe(),
+        "Ki67+ of CD4+"
+    );
     assert_eq!(RuleTarget::named("Ki67+").describe(), "Ki67+");
 }
 
 #[test]
 fn targets_survive_the_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("CD279+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.insert(
         RuleTarget::under("Ki67+", "CD4+"),
         gate_rule(Bound::Below, (0.01, 0.02)),

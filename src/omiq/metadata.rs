@@ -72,90 +72,90 @@ pub fn parse_metadata_csv(
     file_name_column: &str,
     metadata_origin: MetaDataOrigin,
 ) -> anyhow::Result<ParsedMetaData> {
-        let df = fetch_metadata_from_csv(path)?;
+    let df = fetch_metadata_from_csv(path)?;
 
-        let mut master_map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
-        let mut file_id_overrides: HashMap<FileId, String, FxBuildHasher> =
-            HashMap::with_hasher(FxBuildHasher);
+    let mut master_map: MetaDataFileMap = im::HashMap::with_hasher(FxBuildHasher);
+    let mut file_id_overrides: HashMap<FileId, String, FxBuildHasher> =
+        HashMap::with_hasher(FxBuildHasher);
 
-        // Pre-process IDs to handle the 'f' prefix in omiq and build a map
-        let raw_ids = df.column(file_id_column)?.str()?;
-        let file_names = df.column(file_name_column)?.str()?;
-        let len = raw_ids.len();
-        let mut processed_ids = Vec::with_capacity(len);
-        let mut name_to_id: HashMap<Arc<str>, FileId, FxBuildHasher> =
-            HashMap::with_hasher(FxBuildHasher);
+    // Pre-process IDs to handle the 'f' prefix in omiq and build a map
+    let raw_ids = df.column(file_id_column)?.str()?;
+    let file_names = df.column(file_name_column)?.str()?;
+    let len = raw_ids.len();
+    let mut processed_ids = Vec::with_capacity(len);
+    let mut name_to_id: HashMap<Arc<str>, FileId, FxBuildHasher> =
+        HashMap::with_hasher(FxBuildHasher);
 
-        for (raw_id_opt, name_opt) in raw_ids.into_iter().zip(file_names.into_iter()) {
-            if let (Some(raw_id), Some(name)) = (raw_id_opt, name_opt) {
-                // Handle the Omiq 'f' prefix
-                let gating_id: Arc<str> = match metadata_origin {
-                    MetaDataOrigin::Omiq if raw_id.starts_with('F') => Arc::from(&raw_id[1..]),
-                    _ => Arc::from(raw_id),
-                };
+    for (raw_id_opt, name_opt) in raw_ids.into_iter().zip(file_names.into_iter()) {
+        if let (Some(raw_id), Some(name)) = (raw_id_opt, name_opt) {
+            // Handle the Omiq 'f' prefix
+            let gating_id: Arc<str> = match metadata_origin {
+                MetaDataOrigin::Omiq if raw_id.starts_with('F') => Arc::from(&raw_id[1..]),
+                _ => Arc::from(raw_id),
+            };
 
-                // Store the Omiq Override (e.g., "123" -> "f123")
-                file_id_overrides.insert(gating_id.clone(), raw_id.to_string());
+            // Store the Omiq Override (e.g., "123" -> "f123")
+            file_id_overrides.insert(gating_id.clone(), raw_id.to_string());
 
-                // Store the Name mapping (e.g., "Sample_A.fcs" -> "123")
-                name_to_id.insert(Arc::from(name), gating_id.clone());
+            // Store the Name mapping (e.g., "Sample_A.fcs" -> "123")
+            name_to_id.insert(Arc::from(name), gating_id.clone());
 
-                // Keep the ID for the metadata column loops later
-                processed_ids.push(gating_id);
+            // Keep the ID for the metadata column loops later
+            processed_ids.push(gating_id);
+        }
+    }
+
+    // // Iterate through metadata columns
+    // for col_name in df.get_column_names() {
+    //     if col_name == file_id_column || col_name == file_name_column {
+    //         continue;
+    //     }
+
+    //     let mut current_column_map = FxHashMap::default();
+    //     let metadata_vals = df.column(col_name)?.str()?;
+
+    //     // Zip the pre-processed IDs with these values
+    //     for (actual_id, val_opt) in processed_ids.iter().zip(metadata_vals.into_iter()) {
+    //         if let Some(val) = val_opt {
+    //             current_column_map.insert(actual_id.clone(), Arc::from(val));
+    //         }
+    //     }
+
+    //     master_map.insert(Arc::from(col_name.as_str()), current_column_map);
+    // }
+
+    // 2. Prepare the metadata columns we actually want to process
+    // We filter out the ID and Name columns once to save cycles in the row loop
+    let metadata_column_names: Vec<&PlSmallStr> = df
+        .get_column_names()
+        .into_iter()
+        .filter(|&name| name != file_id_column && name != file_name_column)
+        .collect();
+
+    // 3. Iterate through every pre-processed FileId
+    for (row_idx, actual_id) in processed_ids.iter().enumerate() {
+        let mut file_metadata = FxHashMap::default();
+
+        for col_name in &metadata_column_names {
+            // Get the value for this specific row in this specific column
+            let col = df.column(col_name.as_str())?.str()?;
+
+            if let Some(val) = col.get(row_idx) {
+                // Clean the parameter name (drop '$' if needed)
+                let param_name = Arc::from(col_name.as_str());
+                file_metadata.insert(param_name, Arc::from(val));
             }
         }
 
-        // // Iterate through metadata columns
-        // for col_name in df.get_column_names() {
-        //     if col_name == file_id_column || col_name == file_name_column {
-        //         continue;
-        //     }
+        // Insert the complete metadata bundle for this file
+        master_map.insert(actual_id.clone(), file_metadata);
+    }
 
-        //     let mut current_column_map = FxHashMap::default();
-        //     let metadata_vals = df.column(col_name)?.str()?;
-
-        //     // Zip the pre-processed IDs with these values
-        //     for (actual_id, val_opt) in processed_ids.iter().zip(metadata_vals.into_iter()) {
-        //         if let Some(val) = val_opt {
-        //             current_column_map.insert(actual_id.clone(), Arc::from(val));
-        //         }
-        //     }
-
-        //     master_map.insert(Arc::from(col_name.as_str()), current_column_map);
-        // }
-
-        // 2. Prepare the metadata columns we actually want to process
-        // We filter out the ID and Name columns once to save cycles in the row loop
-        let metadata_column_names: Vec<&PlSmallStr> = df
-            .get_column_names()
-            .into_iter()
-            .filter(|&name| name != file_id_column && name != file_name_column)
-            .collect();
-
-        // 3. Iterate through every pre-processed FileId
-        for (row_idx, actual_id) in processed_ids.iter().enumerate() {
-            let mut file_metadata = FxHashMap::default();
-
-            for col_name in &metadata_column_names {
-                // Get the value for this specific row in this specific column
-                let col = df.column(col_name.as_str())?.str()?;
-
-                if let Some(val) = col.get(row_idx) {
-                    // Clean the parameter name (drop '$' if needed)
-                    let param_name = Arc::from(col_name.as_str());
-                    file_metadata.insert(param_name, Arc::from(val));
-                }
-            }
-
-            // Insert the complete metadata bundle for this file
-            master_map.insert(actual_id.clone(), file_metadata);
-        }
-
-        Ok(ParsedMetaData {
-            metadata: master_map,
-            file_name_to_gating_id: name_to_id,
-            gating_id_to_actual_id: file_id_overrides,
-        })
+    Ok(ParsedMetaData {
+        metadata: master_map,
+        file_name_to_gating_id: name_to_id,
+        gating_id_to_actual_id: file_id_overrides,
+    })
 }
 
 fn fetch_metadata_from_csv(path: PathBuf) -> anyhow::Result<DataFrame> {

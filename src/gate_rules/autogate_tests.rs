@@ -9,7 +9,7 @@
 
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_rules::autogate::{ApplyError, specimen_of, translate_edge_to};
+use crate::gate_rules::autogate::{ApplyError, boundary_at, specimen_of, translate_edge_to};
 use crate::gate_rules::rule_store::{Bound, SamplePairing};
 use flow_gates::{GateGeometry, create_polygon_geometry, create_rectangle_geometry};
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -473,11 +473,23 @@ fn sweep(
 ) -> crate::gate_rules::autogate::Report {
     use crate::gate_rules::autogate::{measure_file, position_all};
 
+    sweep_over(state, store, map, &["fs_a", "fmx_a"])
+}
+
+/// The same, over whichever files the test has metadata for.
+fn sweep_over(
+    state: &mut crate::gate_editor::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+    files: &[&str],
+) -> crate::gate_rules::autogate::Report {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
     let frame = ramp(1000);
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
-    for file in ["fs_a", "fmx_a"] {
-        let (m, u) = measure_file(state, &Arc::from(file), &frame, map, store).unwrap();
+    for file in files {
+        let (m, u) = measure_file(state, &Arc::from(*file), &frame, map, store).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
@@ -1179,5 +1191,174 @@ fn a_specimen_is_positioned_once_however_many_files_it_has() {
         report.positioned.len(),
         1,
         "but the specimen is positioned once"
+    );
+}
+
+// ─── the boundary at a height ────────────────────────────────────────────────
+
+/// A gate's geometry, for the boundary tests.
+fn geometry_of(gate: &Arc<dyn DrawableGate>) -> GateGeometry {
+    gate.get_gate_ref(None).unwrap().geometry.clone()
+}
+
+#[test]
+fn a_full_height_rectangle_has_the_same_boundary_everywhere() {
+    let g = geometry_of(&rect(200.0, -1e16, 400.0, 1e16));
+    for height in [-5000.0, 0.0, 250.0, 5000.0] {
+        assert_eq!(
+            boundary_at(&g, X, Y, Bound::Above, height),
+            Some(200.0),
+            "at height {height}"
+        );
+    }
+}
+
+#[test]
+fn a_rectangle_says_nothing_outside_its_own_span() {
+    // A gate boxed in its other axis makes no statement about events above or
+    // below it, and inventing one would read the negative from events the gate
+    // never reached.
+    let g = geometry_of(&rect(200.0, 100.0, 400.0, 300.0));
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 200.0), Some(200.0));
+    assert_eq!(boundary_at(&g, X, Y, Bound::Below, 200.0), Some(400.0));
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 50.0), None);
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 400.0), None);
+}
+
+#[test]
+fn a_slanted_polygon_has_a_different_boundary_at_every_height() {
+    // The triangle spans x 100..300 at its base and narrows to a point at
+    // (200, 300). Half way up, its left edge has moved in to 150 - so an event
+    // at that height is 50 units from the boundary, not from the leftmost
+    // vertex at 100. Reading the extreme vertex instead put the cut well below
+    // the real edge and read the negative from a sliver.
+    let g = geometry_of(&triangle());
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 200.0), Some(150.0));
+    assert_eq!(boundary_at(&g, X, Y, Bound::Below, 200.0), Some(250.0));
+    // At the base it is the full width.
+    let low = boundary_at(&g, X, Y, Bound::Above, 101.0).unwrap();
+    assert!(
+        (low - 100.5).abs() < 1.0,
+        "at the base it opens out, got {low}"
+    );
+}
+
+#[test]
+fn a_polygon_says_nothing_below_itself() {
+    let g = geometry_of(&triangle());
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 50.0), None);
+    assert_eq!(boundary_at(&g, X, Y, Bound::Above, 400.0), None);
+}
+
+// ─── the reference is left as it was drawn ───────────────────────────────────
+
+fn two_specimens() -> crate::omiq::metadata::MetaDataFileMap {
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, id) in [("fs_qc", "QC-A"), ("fs_b", "DONOR-B")] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("SampleID"), Arc::from(id));
+        columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    map
+}
+
+/// A rule calibrated from one named file, which is how the reference-sample
+/// rules are written.
+fn rule_measured_on(file: &str) -> crate::gate_rules::rule_store::RuleStore {
+    use crate::gate_rules::rule::{Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("CD134+"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from(file)),
+            rule: Rule::TailFraction(TailFractionRule::new((0.002, 0.005))),
+        },
+    );
+    store
+}
+
+#[test]
+fn the_reference_sample_keeps_the_gate_a_person_drew() {
+    // Everything else is calibrated from where this gate sits, so moving it
+    // overwrites the hand placement - and the next run would calibrate from the
+    // moved gate, so the drift would compound every time it was run.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = two_specimens();
+    let report = sweep_over(
+        &mut state,
+        &rule_measured_on("fs_qc"),
+        &map,
+        &["fs_qc", "fs_b"],
+    );
+
+    assert!(
+        report.positioned.iter().all(|p| &*p.specimen != "QC-A"),
+        "the specimen the rule calibrates from should not be positioned"
+    );
+    assert_eq!(
+        report.reference.len(),
+        1,
+        "and it should be reported as the reference rather than silently dropped"
+    );
+    assert_eq!(&*report.reference[0].specimen, "QC-A");
+
+    let on_qc = state
+        .gate_for_file(&gate_id, &Arc::from("fs_qc"), &map)
+        .unwrap();
+    assert_eq!(
+        edges(&on_qc, X).0,
+        500.0,
+        "the reference gate should still be where it was drawn"
+    );
+}
+
+#[test]
+fn the_other_specimens_are_still_positioned_from_it() {
+    // The other half of the same rule: leaving the reference alone must not
+    // stop anything else being placed against it.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = two_specimens();
+    let report = sweep_over(
+        &mut state,
+        &rule_measured_on("fs_qc"),
+        &map,
+        &["fs_qc", "fs_b"],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("the other specimen should be positioned");
+    assert_eq!(&*placed.measured_on, "fs_qc");
+
+    let on_b = state
+        .gate_for_file(&gate_id, &Arc::from("fs_b"), &map)
+        .unwrap();
+    assert!(
+        edges(&on_b, X).0 > 994.0,
+        "it should have moved into the band, got {}",
+        edges(&on_b, X).0
+    );
+}
+
+#[test]
+fn a_rule_measured_on_the_partner_still_positions_its_own_specimen() {
+    // The skip is only for a rule naming one sample. A partner rule's reference
+    // sits inside the specimen it is positioning - the FMO measures, the full
+    // stain is gated - so skipping that would skip everything.
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    assert!(report.reference.is_empty());
+    assert!(
+        report.positioned.iter().any(|p| &*p.specimen == "QC-A"),
+        "a partner rule positions the specimen it measured"
     );
 }

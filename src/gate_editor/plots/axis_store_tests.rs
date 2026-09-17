@@ -32,7 +32,16 @@ fn linear() -> PlotMapper {
 /// An arcsinh mapper over the range a typical fluorescence channel occupies.
 fn arcsinh() -> PlotMapper {
     let t = TransformType::Arcsinh { cofactor: 6000.0 };
-    PlotMapper::new(W, H, -1.0..=4.5, -1.0..=4.5, -1.0..=4.5, -1.0..=4.5, t.clone(), t)
+    PlotMapper::new(
+        W,
+        H,
+        -1.0..=4.5,
+        -1.0..=4.5,
+        -1.0..=4.5,
+        -1.0..=4.5,
+        t.clone(),
+        t,
+    )
 }
 
 // ─── Construction ─────────────────────────────────────────────────────────────
@@ -81,7 +90,12 @@ fn a_mapper_reports_its_transforms() {
 fn pixel_to_data_and_back_is_a_round_trip() {
     let m = linear();
 
-    for (px, py) in [(100.0, 100.0), (300.0, 300.0), (450.0, 200.0), (250.0, 500.0)] {
+    for (px, py) in [
+        (100.0, 100.0),
+        (300.0, 300.0),
+        (450.0, 200.0),
+        (250.0, 500.0),
+    ] {
         let (dx, dy) = m.pixel_to_data(px, py, None, None);
         let (rx, ry) = m.data_to_pixel(dx, dy, None, None);
 
@@ -168,12 +182,24 @@ fn the_data_tolerance_scales_with_the_pixel_slop() {
 #[test]
 fn a_wider_axis_range_gives_a_coarser_tolerance() {
     let narrow = PlotMapper::new(
-        W, H, 0.0..=10.0, 0.0..=10.0, 0.0..=10.0, 0.0..=10.0,
-        TransformType::Linear, TransformType::Linear,
+        W,
+        H,
+        0.0..=10.0,
+        0.0..=10.0,
+        0.0..=10.0,
+        0.0..=10.0,
+        TransformType::Linear,
+        TransformType::Linear,
     );
     let wide = PlotMapper::new(
-        W, H, 0.0..=10_000.0, 0.0..=10_000.0, 0.0..=10_000.0, 0.0..=10_000.0,
-        TransformType::Linear, TransformType::Linear,
+        W,
+        H,
+        0.0..=10_000.0,
+        0.0..=10_000.0,
+        0.0..=10_000.0,
+        0.0..=10_000.0,
+        TransformType::Linear,
+        TransformType::Linear,
     );
 
     assert!(wide.get_data_tolerance(5.0).0 > narrow.get_data_tolerance(5.0).0);
@@ -188,10 +214,22 @@ fn zero_slop_gives_zero_tolerance() {
 
 #[test]
 fn params_compare_by_both_marker_and_channel() {
-    let a = Param { marker: Arc::from("CD3"), fluoro: Arc::from("BV421-A") };
-    let b = Param { marker: Arc::from("CD3"), fluoro: Arc::from("BV421-A") };
-    let c = Param { marker: Arc::from("CD3"), fluoro: Arc::from("APC-A") };
+    let a = Param {
+        marker: Arc::from("CD3"),
+        fluoro: Arc::from("BV421-A"),
+    };
+    let b = Param {
+        marker: Arc::from("CD3"),
+        fluoro: Arc::from("BV421-A"),
+    };
+    let c = Param {
+        marker: Arc::from("CD3"),
+        fluoro: Arc::from("APC-A"),
+    };
 
     assert_eq!(a, b);
-    assert_ne!(a, c, "the same marker on a different channel is a different param");
+    assert_ne!(
+        a, c,
+        "the same marker on a different channel is a different param"
+    );
 }

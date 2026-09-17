@@ -9,9 +9,7 @@
 
 #![cfg(test)]
 
-use crate::gate_move::density_grid::{
-    DensityGrid, GateRules, apply_constraints, cross_correlate,
-};
+use crate::gate_move::density_grid::{DensityGrid, GateRules, apply_constraints, cross_correlate};
 use crate::gate_move::kde::{kde_1d, kde_peak, silverman_bandwidth, std_dev};
 use crate::gate_move::kde_shift::{
     DriftType, GateBoundary, analyse_population_shift, compute_smear_score,
@@ -62,18 +60,21 @@ fn gate() -> GateBoundary {
     }
 }
 
-fn analyse(qc: &DataFrame, test: &DataFrame) -> Result<crate::gate_move::kde_shift::PopulationShiftResult, String> {
+fn analyse(
+    qc: &DataFrame,
+    test: &DataFrame,
+) -> Result<crate::gate_move::kde_shift::PopulationShiftResult, String> {
     analyse_population_shift(
         cols(qc),
         cols(test),
         AXIS,
         AXIS,
         &gate(),
-        0.1,  // negative_margin
-        512,  // n_kde_points
-        50,   // min_events
-        0.1,  // significant_shift
-        1.5,  // significant_width_ratio
+        0.1, // negative_margin
+        512, // n_kde_points
+        50,  // min_events
+        0.1, // significant_shift
+        1.5, // significant_width_ratio
     )
 }
 
@@ -85,8 +86,14 @@ fn kde_1d_returns_a_grid_spanning_the_requested_range() {
 
     assert_eq!(xs.len(), 64);
     assert_eq!(density.len(), 64);
-    assert!((xs[0] - -2.0).abs() < 1e-12, "grid must start at the range start");
-    assert!((xs[63] - 3.0).abs() < 1e-12, "grid must end at the range end");
+    assert!(
+        (xs[0] - -2.0).abs() < 1e-12,
+        "grid must start at the range start"
+    );
+    assert!(
+        (xs[63] - 3.0).abs() < 1e-12,
+        "grid must end at the range end"
+    );
 }
 
 #[test]
@@ -114,7 +121,10 @@ fn kde_1d_integrates_to_approximately_one() {
     let step = xs[1] - xs[0];
     let mass: f64 = density.iter().sum::<f64>() * step;
 
-    assert!((mass - 1.0).abs() < 0.02, "density integrated to {mass}, expected ~1");
+    assert!(
+        (mass - 1.0).abs() < 0.02,
+        "density integrated to {mass}, expected ~1"
+    );
 }
 
 #[test]
@@ -130,7 +140,10 @@ fn kde_1d_returns_zeros_for_an_empty_population() {
     let (xs, density) = kde_1d(&[], (0.0, 1.0), 32, 0.1);
 
     assert_eq!(xs.len(), 32);
-    assert!(density.iter().all(|d| *d == 0.0), "expected zeros, got {density:?}");
+    assert!(
+        density.iter().all(|d| *d == 0.0),
+        "expected zeros, got {density:?}"
+    );
 }
 
 // Regression: a constant population yields a zero bandwidth, which divided by
@@ -203,8 +216,12 @@ fn silverman_bandwidth_is_positive_and_finite_for_normal_data() {
 #[test]
 fn silverman_bandwidth_shrinks_as_the_population_tightens() {
     let mut rng = StdRng::seed_from_u64(4);
-    let wide: Vec<f64> = (0..1000).map(|_| Normal::new(0.0, 1.0).unwrap().sample(&mut rng)).collect();
-    let tight: Vec<f64> = (0..1000).map(|_| Normal::new(0.0, 0.1).unwrap().sample(&mut rng)).collect();
+    let wide: Vec<f64> = (0..1000)
+        .map(|_| Normal::new(0.0, 1.0).unwrap().sample(&mut rng))
+        .collect();
+    let tight: Vec<f64> = (0..1000)
+        .map(|_| Normal::new(0.0, 0.1).unwrap().sample(&mut rng))
+        .collect();
 
     assert!(silverman_bandwidth(&tight) < silverman_bandwidth(&wide));
 }
@@ -256,8 +273,16 @@ fn identical_samples_report_no_shift_and_read_as_clean() {
     let qc = sample(10, 0.0, 0.0);
     let result = analyse(&qc, &qc).expect("identical samples should analyse");
 
-    assert!(result.negative_dx.abs() < 0.05, "dx was {}", result.negative_dx);
-    assert!(result.negative_dy.abs() < 0.05, "dy was {}", result.negative_dy);
+    assert!(
+        result.negative_dx.abs() < 0.05,
+        "dx was {}",
+        result.negative_dx
+    );
+    assert!(
+        result.negative_dy.abs() < 0.05,
+        "dy was {}",
+        result.negative_dy
+    );
     assert!((result.width_ratio_x - 1.0).abs() < 0.01);
     assert!(matches!(result.drift_type, DriftType::Clean));
 }
@@ -286,7 +311,10 @@ fn the_shift_sign_follows_the_direction_of_travel() {
     let right = analyse(&qc, &sample(14, 0.25, 0.0)).unwrap();
     let left = analyse(&qc, &sample(15, -0.25, 0.0)).unwrap();
 
-    assert!(right.negative_dx > 0.1, "rightward shift should be positive");
+    assert!(
+        right.negative_dx > 0.1,
+        "rightward shift should be positive"
+    );
     assert!(left.negative_dx < -0.1, "leftward shift should be negative");
 }
 
@@ -333,8 +361,14 @@ fn too_few_negative_events_is_an_error_not_a_guess() {
     let sparse = frame(blob(3.0, 3.0, 0.1, 0.1, 500, &mut rng));
     let qc = sample(20, 0.0, 0.0);
 
-    assert!(analyse(&qc, &sparse).is_err(), "an empty test negative must error");
-    assert!(analyse(&sparse, &qc).is_err(), "an empty QC negative must error");
+    assert!(
+        analyse(&qc, &sparse).is_err(),
+        "an empty test negative must error"
+    );
+    assert!(
+        analyse(&sparse, &qc).is_err(),
+        "an empty QC negative must error"
+    );
 }
 
 #[test]
@@ -344,7 +378,10 @@ fn a_missing_positive_population_degrades_gracefully() {
     let neg_only = frame(blob(0.4, 0.4, 0.12, 0.12, 3000, &mut rng));
     let result = analyse(&neg_only, &neg_only).expect("negative-only should still analyse");
 
-    assert!(result.positive_dx.is_none(), "no positive events to measure");
+    assert!(
+        result.positive_dx.is_none(),
+        "no positive events to measure"
+    );
     assert!(result.positive_dy.is_none());
     // The negative is still measurable.
     assert!(result.negative_dx.is_finite());
@@ -440,7 +477,11 @@ fn density_grid_discards_events_outside_the_range() {
     let (xs, ys) = cols(&df);
     let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0));
 
-    assert_eq!(grid.counts.iter().sum::<f32>(), 1.0, "only the in-range event counts");
+    assert_eq!(
+        grid.counts.iter().sum::<f32>(),
+        1.0,
+        "only the in-range event counts"
+    );
 }
 
 #[test]
