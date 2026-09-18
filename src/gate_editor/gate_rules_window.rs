@@ -956,54 +956,117 @@ impl Progress {
 /// experiment in memory for no gain - nothing here ever needs two files at
 /// once - and it also meant no progress could be reported until every one had
 /// been read.
-fn for_each_scaled(
+/// The FCS files in `dir`, paired with the gating id the metadata gives them.
+fn files_to_read(
     dir: &str,
     names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
-    arcsinh: &[(Arc<str>, f32)],
-    cancel: &std::sync::atomic::AtomicBool,
-    mut visit: impl FnMut(usize, usize, &Arc<str>, polars::prelude::DataFrame),
-) -> Vec<String> {
-    use polars::prelude::*;
-    use std::sync::atomic::Ordering;
-
-    let mut problems = Vec::new();
-
+) -> (Vec<(PathBuf, Arc<str>)>, Vec<String>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) => return vec![format!("{dir}: {e}")],
+        Err(e) => return (Vec::new(), vec![format!("{dir}: {e}")]),
     };
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcs")))
         .collect();
     paths.sort();
-    let total = paths.len();
 
-    for (i, path) in paths.into_iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
+    let mut problems = Vec::new();
+    let mut found = Vec::new();
+    for path in paths {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
         // The metadata export's name, exactly. Matching on a stem instead is
         // how one donor's gates came to be scored against another's population.
-        let Some(id) = names.get(name) else {
-            problems.push(format!("{name}: no metadata row with this name"));
-            continue;
-        };
-        let frame = (|| -> anyhow::Result<DataFrame> {
-            let fcs = flow_fcs::Fcs::open(path.to_str().unwrap_or_default())?;
-            let params: Vec<(&str, f32)> = arcsinh.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-            let scaled = (*fcs.apply_arcsinh_transforms(&params)?).clone();
-            Ok(scaled.with_row_index("original_index".into(), None)?)
-        })();
-        match frame {
-            Ok(df) => visit(i + 1, total, id, df),
-            Err(e) => problems.push(format!("{name}: {e}")),
+        match names.get(name) {
+            Some(id) => found.push((path.clone(), id.clone())),
+            None => problems.push(format!("{name}: no metadata row with this name")),
         }
     }
-    problems
+    (found, problems)
+}
+
+/// Read and measure every file, several at a time.
+///
+/// Each file is independent: reading is I/O and parsing, measuring builds an
+/// R-tree over that file's events alone, and the gate state is only read. The
+/// frame is dropped as soon as its measurements are taken, so what is alive at
+/// once is one frame per worker rather than the whole experiment.
+///
+/// Results are collected **in path order**, not completion order: `collect` on
+/// an indexed parallel iterator returns elements in the iterator's order, and
+/// the flattening below preserves it. That is what keeps the answer the same
+/// whichever thread finishes first - `position_all` answers once per specimen
+/// and takes the first file of each, so an order that varied with scheduling
+/// would make two identical runs disagree. `files_to_read` sorts, so the
+/// iterator's order is the sorted one.
+#[allow(clippy::too_many_arguments)]
+fn measure_all(
+    snapshot: &GateState,
+    dir: &str,
+    names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    arcsinh: &[(Arc<str>, f32)],
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+    rules: &RuleStore,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: impl Fn(usize, usize) + Sync,
+) -> (
+    Vec<crate::gate_rules::autogate::Measurement>,
+    Vec<crate::gate_rules::autogate::Unmeasured>,
+    Vec<String>,
+) {
+    use polars::prelude::*;
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (files, mut problems) = files_to_read(dir, names);
+    let total = files.len();
+    let done = AtomicUsize::new(0);
+
+    type Measured = (
+        Vec<crate::gate_rules::autogate::Measurement>,
+        Vec<crate::gate_rules::autogate::Unmeasured>,
+        Vec<String>,
+    );
+
+    let per_file: Vec<Measured> = files
+        .par_iter()
+        .map(|(path, id)| {
+            let mut out: Measured = (Vec::new(), Vec::new(), Vec::new());
+            if cancel.load(Ordering::Relaxed) {
+                return out;
+            }
+            let frame = (|| -> anyhow::Result<DataFrame> {
+                let fcs = flow_fcs::Fcs::open(path.to_str().unwrap_or_default())?;
+                let params: Vec<(&str, f32)> =
+                    arcsinh.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
+                let scaled = (*fcs.apply_arcsinh_transforms(&params)?).clone();
+                Ok(scaled.with_row_index("original_index".into(), None)?)
+            })();
+            match frame {
+                Ok(df) => match measure_file(snapshot, id, &df, metadata, rules) {
+                    Ok((m, u)) => {
+                        out.0 = m;
+                        out.1 = u;
+                    }
+                    Err(e) => out.2.push(format!("{id}: {e}")),
+                },
+                Err(e) => out.2.push(format!("{}: {e}", path.display())),
+            }
+            progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+            out
+        })
+        .collect();
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (m, u, p) in per_file {
+        measured.extend(m);
+        unmeasured.extend(u);
+        problems.extend(p);
+    }
+    (measured, unmeasured, problems)
 }
 
 /// Everything a run produces, handed back from the worker in one piece.
@@ -1031,22 +1094,18 @@ fn run_solve(
 ) -> RunOutcome {
     use std::sync::atomic::Ordering;
 
-    let mut measured = Vec::new();
-    let mut unmeasured = Vec::new();
-    // The closure's own problems, kept apart from the reader's: it cannot
-    // borrow the vec `for_each_scaled` is building and returning.
-    let mut measure_problems: Vec<String> = Vec::new();
-    let mut problems = for_each_scaled(&dir, &names, &arcsinh, &cancel, |done, total, id, df| {
-        let _ = progress.send(Progress::Measuring { done, total });
-        match measure_file(&snapshot, id, &df, &metadata, &rules) {
-            Ok((mut m, mut u)) => {
-                measured.append(&mut m);
-                unmeasured.append(&mut u);
-            }
-            Err(e) => measure_problems.push(format!("{id}: {e}")),
-        }
-    });
-    problems.append(&mut measure_problems);
+    let (measured, unmeasured, mut problems) = measure_all(
+        &snapshot,
+        &dir,
+        &names,
+        &arcsinh,
+        &metadata,
+        &rules,
+        &cancel,
+        |done, total| {
+            let _ = progress.send(Progress::Measuring { done, total });
+        },
+    );
 
     if cancel.load(Ordering::Relaxed) {
         return RunOutcome {
@@ -1078,5 +1137,77 @@ fn run_solve(
         report,
         placements,
         cancelled: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory of empty files with these names, cleaned up on drop.
+    struct Dir(PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn dir_of(tag: &str, names: &[&str]) -> Dir {
+        let path = std::env::temp_dir().join(format!("clingate_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        for name in names {
+            std::fs::write(path.join(name), b"").unwrap();
+        }
+        Dir(path)
+    }
+
+    fn named(pairs: &[(&str, &str)]) -> HashMap<Arc<str>, Arc<str>, FxBuildHasher> {
+        let mut map = HashMap::with_hasher(FxBuildHasher);
+        for (file, id) in pairs {
+            map.insert(Arc::from(*file), Arc::from(*id));
+        }
+        map
+    }
+
+    #[test]
+    fn files_are_read_in_sorted_order() {
+        // Measuring runs in parallel and the results are flattened in this
+        // order, so two identical runs agree only if this order is fixed.
+        let dir = dir_of("sorted", &["c.fcs", "a.fcs", "b.fcs"]);
+        let names = named(&[("a.fcs", "A"), ("b.fcs", "B"), ("c.fcs", "C")]);
+        let (found, problems) = files_to_read(dir.0.to_str().unwrap(), &names);
+
+        let ids: Vec<&str> = found.iter().map(|(_, id)| id.as_ref()).collect();
+        assert_eq!(ids, ["A", "B", "C"]);
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_file_with_no_metadata_row_is_reported_not_guessed() {
+        // Matching on a stem rather than the exact name is how one donor's
+        // gates came to be scored against another's population.
+        let dir = dir_of("unmatched", &["known.fcs", "stranger.fcs"]);
+        let names = named(&[("known.fcs", "A")]);
+        let (found, problems) = files_to_read(dir.0.to_str().unwrap(), &names);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("stranger.fcs"), "{:?}", problems);
+    }
+
+    #[test]
+    fn only_fcs_files_are_read() {
+        let dir = dir_of("exts", &["a.fcs", "notes.txt", "b.FCS"]);
+        let names = named(&[("a.fcs", "A"), ("b.FCS", "B"), ("notes.txt", "N")]);
+        let (found, _) = files_to_read(dir.0.to_str().unwrap(), &names);
+        let ids: Vec<&str> = found.iter().map(|(_, id)| id.as_ref()).collect();
+        assert_eq!(ids, ["A", "B"], "the .txt should not be opened as an FCS");
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_is_a_problem_not_a_panic() {
+        let (found, problems) = files_to_read("/no/such/directory", &named(&[]));
+        assert!(found.is_empty());
+        assert_eq!(problems.len(), 1);
     }
 }
