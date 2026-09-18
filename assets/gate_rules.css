@@ -37,3 +37,4 @@
 .gate_rules-weak { color: hsl(35, 90%, 62%); }
 .gate_rules-skipped { margin: 0; padding-left: 1.1rem; opacity: 0.75; }
 .gate_rules-skipped li { margin-bottom: 0.15rem; }
+.gate_rules-note { font-size: 0.8rem; opacity: 0.6; margin: 0 0 0.5rem; max-width: 70ch; }

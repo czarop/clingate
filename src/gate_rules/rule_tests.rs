@@ -231,7 +231,8 @@ fn the_gate_follows_a_negative_that_has_drifted() {
             &shadow_at(&reference, 1.0 + 3.0 * 0.2),
             1.0 + 3.0 * 0.2,
         )
-        .expect("calibrates");
+        .expect("calibrates")
+        .widths;
     assert!((widths - 3.0).abs() < 0.4, "read {widths} widths");
 
     // Drifted by two widths, and starting from where the reference's gate sits
@@ -244,7 +245,8 @@ fn the_gate_follows_a_negative_that_has_drifted() {
             widths,
             1.0 + 3.0 * 0.2,
         )
-        .expect("places");
+        .expect("places")
+        .at;
     assert!(
         (placed - (1.4 + 3.0 * 0.2)).abs() < 0.1,
         "placed at {placed}, expected about {}",
@@ -265,7 +267,8 @@ fn a_negative_that_has_broadened_widens_the_gap_too() {
             &shadow_at(&reference, 1.0 + 3.0 * 0.2),
             1.0 + 3.0 * 0.2,
         )
-        .unwrap();
+        .unwrap()
+        .widths;
 
     let broad = gaussian(4, 4000, 1.0, 0.4);
     let placed = rule
@@ -275,7 +278,8 @@ fn a_negative_that_has_broadened_widens_the_gap_too() {
             widths,
             1.0 + 3.0 * 0.2,
         )
-        .expect("places");
+        .expect("places")
+        .at;
     assert!(
         placed > 1.0 + 3.0 * 0.3,
         "a twice-as-wide negative should push the gate further out, got {placed}"
@@ -288,15 +292,25 @@ fn the_scale_and_nudge_adjust_the_result() {
     let plain = AboveTheNegativeRule::default();
     let gate_at = 1.0 + 3.0 * 0.2;
     let shadow = shadow_at(&reference, gate_at);
-    let widths = plain.calibrate(&reference, &shadow, gate_at).unwrap();
-    let base = plain.place(&reference, &shadow, widths, gate_at).unwrap();
+    let widths = plain
+        .calibrate(&reference, &shadow, gate_at)
+        .unwrap()
+        .widths;
+    let base = plain
+        .place(&reference, &shadow, widths, gate_at)
+        .unwrap()
+        .at;
 
     let scaled = AboveTheNegativeRule {
         scale: 1.5,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        scaled.place(&reference, &shadow, widths, gate_at).unwrap() > base,
+        scaled
+            .place(&reference, &shadow, widths, gate_at)
+            .unwrap()
+            .at
+            > base,
         "a larger scale should sit further above the negative"
     );
 
@@ -309,14 +323,21 @@ fn the_scale_and_nudge_adjust_the_result() {
     };
     let plain_base = single_pass
         .place(&reference, &shadow, widths, gate_at)
-        .unwrap();
+        .unwrap()
+        .at;
     let nudged = AboveTheNegativeRule {
         nudge: 0.25,
         find: NegativeFinder::DensityPeak,
         ..AboveTheNegativeRule::default()
     };
     assert!(
-        (nudged.place(&reference, &shadow, widths, gate_at).unwrap() - plain_base - 0.25).abs()
+        (nudged
+            .place(&reference, &shadow, widths, gate_at)
+            .unwrap()
+            .at
+            - plain_base
+            - 0.25)
+            .abs()
             < 1e-9,
         "the nudge is added in the axis's own units"
     );
@@ -341,8 +362,8 @@ fn calibration_round_trips_on_the_sample_it_came_from() {
     let reference = gaussian(6, 4000, 1.4, 0.25);
     let gate_at = 1.4 + 2.5 * 0.25;
     let shadow = shadow_at(&reference, gate_at);
-    let widths = rule.calibrate(&reference, &shadow, gate_at).unwrap();
-    let back = rule.place(&reference, &shadow, widths, gate_at).unwrap();
+    let widths = rule.calibrate(&reference, &shadow, gate_at).unwrap().widths;
+    let back = rule.place(&reference, &shadow, widths, gate_at).unwrap().at;
     assert!(
         (back - gate_at).abs() < 1e-9,
         "expected {gate_at}, got {back}"
@@ -372,14 +393,21 @@ fn the_two_finders_have_different_strengths() {
         ..AboveTheNegativeRule::default()
     };
     let shadow = shadow_at(&reference, gate_at);
-    let k_refine = refine.calibrate(&reference, &shadow, gate_at).unwrap();
-    let k_density = density.calibrate(&reference, &shadow, gate_at).unwrap();
+    let k_refine = refine
+        .calibrate(&reference, &shadow, gate_at)
+        .unwrap()
+        .widths;
+    let k_density = density
+        .calibrate(&reference, &shadow, gate_at)
+        .unwrap()
+        .widths;
 
     let err = |rule: &AboveTheNegativeRule, k: f64, drift: f64| {
         let centre = 1.0 + drift * sd;
         let sample = gaussian(9, 4000, centre, sd);
         rule.place(&sample, &shadow_at(&sample, gate_at), k, gate_at)
             .unwrap()
+            .at
             - (centre + 3.0 * sd)
     };
 
@@ -400,4 +428,96 @@ fn the_two_finders_have_different_strengths() {
     );
     // The density finder holds its accuracy however far the negative has moved.
     assert!(err(&density, k_density, 5.0).abs() < sd);
+}
+
+// ─── the reading the report shows ────────────────────────────────────────────
+
+#[test]
+fn the_reported_reading_reproduces_the_placement_it_made() {
+    // The whole point of returning the reading rather than recomputing one for
+    // display: the figures on screen have to explain the gate on the plot. If
+    // these two could drift, a person checking the report would be reading a
+    // number that had nothing to do with where the gate went.
+    let rule = AboveTheNegativeRule {
+        scale: 1.2,
+        nudge: 0.05,
+        ..AboveTheNegativeRule::default()
+    };
+    let reference = gaussian(11, 4000, 1.0, 0.2);
+    let gate_at = 1.0 + 3.0 * 0.2;
+    let cal = rule
+        .calibrate(&reference, &shadow_at(&reference, gate_at), gate_at)
+        .unwrap();
+
+    let sample = gaussian(12, 4000, 1.25, 0.15);
+    let read = rule
+        .place(&sample, &shadow_at(&sample, gate_at), cal.widths, gate_at)
+        .unwrap();
+
+    let rebuilt = read.centre + read.widths * rule.scale * read.spread + rule.nudge;
+    assert!(
+        (rebuilt - read.at).abs() < 1e-9,
+        "the reported centre, width and widths give {rebuilt}, but the gate went to {}",
+        read.at
+    );
+}
+
+#[test]
+fn a_calibration_reports_the_position_a_person_drew() {
+    // The reference row's "placed at" is the hand placement by definition -
+    // nothing was solved for it.
+    let rule = AboveTheNegativeRule::default();
+    let reference = gaussian(13, 4000, 0.8, 0.3);
+    let gate_at = 1.9;
+    let cal = rule
+        .calibrate(&reference, &shadow_at(&reference, gate_at), gate_at)
+        .unwrap();
+    assert_eq!(cal.at, gate_at);
+    assert!((cal.centre + cal.widths * cal.spread - gate_at).abs() < 1e-9);
+}
+
+#[test]
+fn a_tighter_negative_reads_as_a_smaller_width() {
+    // The diagnostic that answers "why did this sample's gate come out lower" -
+    // the width ratio is the comparison, so it has to track the truth.
+    let rule = AboveTheNegativeRule::default();
+    let gate_at = 1.6;
+    let wide = gaussian(14, 6000, 0.0, 0.40);
+    let tight = gaussian(15, 6000, 0.0, 0.25);
+
+    let a = rule
+        .calibrate(&wide, &shadow_at(&wide, gate_at), gate_at)
+        .unwrap();
+    let b = rule
+        .calibrate(&tight, &shadow_at(&tight, gate_at), gate_at)
+        .unwrap();
+
+    let ratio = b.spread / a.spread;
+    assert!(
+        (ratio - 0.625).abs() < 0.1,
+        "a negative 0.625 as wide should read as about that, got {ratio}"
+    );
+    // And the narrower one therefore reads as more widths below the same gate.
+    assert!(b.widths > a.widths);
+}
+
+#[test]
+fn the_flank_count_says_how_many_events_the_width_came_from() {
+    // A width read off a handful of events is not worth the gate it places, and
+    // nothing else in the report would say so.
+    let rule = AboveTheNegativeRule::default();
+    let values = gaussian(16, 4000, 0.0, 0.3);
+    let gate_at = 1.0;
+    let cal = rule
+        .calibrate(&values, &shadow_at(&values, gate_at), gate_at)
+        .unwrap();
+
+    // Below-the-gate takes everything under the line, then the half of that
+    // below its median - so about half of whatever the gate's shadow holds.
+    let under_gate = values.iter().filter(|v| **v <= gate_at).count();
+    assert!(
+        cal.flank_events > under_gate / 2 - 20 && cal.flank_events < under_gate / 2 + 20,
+        "{} events for a shadow holding {under_gate}",
+        cal.flank_events
+    );
 }

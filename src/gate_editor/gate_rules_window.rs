@@ -758,6 +758,55 @@ pub fn GateRulesWindow() -> Element {
                             }
                         }
                     }
+                    if run.positioned.iter().any(|p| p.negative.is_some()) {
+                        h3 { "How the negative was read" }
+                        p { class: "gate_rules-note",
+                            "The gate sits a fixed number of the negative's own widths above its centre, so a sample whose negative reads tighter gets a gate nearer to it. The ratio is that comparison made directly: below 1.00 this sample's negative measured narrower than the reference's."
+                        }
+                        table { class: "gate_rules-table",
+                            thead {
+                                tr {
+                                    th { "Specimen" }
+                                    th { "Gate" }
+                                    th { "Ref centre" }
+                                    th { "Ref width" }
+                                    th { "Centre" }
+                                    th { "Width" }
+                                    th { "Ratio" }
+                                    th { "Widths" }
+                                    th { "Placed at" }
+                                    th { "Flank n" }
+                                }
+                            }
+                            tbody {
+                                for (placed , (reference , here)) in run
+                                    .positioned
+                                    .iter()
+                                    .filter_map(|p| p.negative.map(|n| (p, n)))
+                                {
+                                    tr {
+                                        td { "{placed.specimen}" }
+                                        td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
+                                        td { "{reference.centre:.3}" }
+                                        td { "{reference.spread:.3}" }
+                                        td { "{here.centre:.3}" }
+                                        td { "{here.spread:.3}" }
+                                        td {
+                                            class: if (here.spread / reference.spread - 1.0).abs() > 0.15 { "gate_rules-weak" } else { "" },
+                                            title: "this sample's negative width over the reference's",
+                                            "{here.spread / reference.spread:.2}"
+                                        }
+                                        td { "{here.widths:.2}" }
+                                        td { "{here.at:.3}" }
+                                        td {
+                                            title: "events the width was measured from",
+                                            "{here.flank_events}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if !run.reference.is_empty() {
                         h3 { "Reference - left as drawn" }
                         table { class: "gate_rules-table",
