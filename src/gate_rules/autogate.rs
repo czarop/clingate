@@ -696,6 +696,9 @@ pub struct Positioned {
     /// What the moved gate actually admits from the reference population -
     /// measured by asking the gate, not by counting past a line.
     pub achieved: f64,
+    /// The file whose population `achieved` was counted on. Not always the file
+    /// the rule read: see `judged_on` in `position_one`.
+    pub captured_on: FileId,
     pub reference_events: usize,
     /// Whether that landed inside the band the rule asked for.
     pub in_band: bool,
@@ -900,7 +903,21 @@ fn position_one(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    let population = &reference.measurement.index;
+    // Which population the placed gate is judged against, which is not the same
+    // question for every rule.
+    //
+    // A band rule names a fraction *of the file it reads* - "0.2 to 0.5% of the
+    // FMO" - so the figure that says whether it worked has to be counted on
+    // that file. An above-the-negative rule names no fraction at all: it places
+    // the gate from this sample's own negative, so what it captures on the
+    // reference describes a sample nobody is looking at. Reported that way it
+    // read 5.1% beside a plot showing 16.1%, which is not a figure anyone can
+    // check a gate against.
+    let judged_on = match &rule.rule {
+        crate::gate_rules::rule::Rule::AboveTheNegative(_) => measured,
+        _ => reference.measurement,
+    };
+    let population = &judged_on.index;
 
     // What the gate on the reference file admits from the reference population,
     // as the gate - not as a line. Its other sides can exclude events the line
@@ -909,7 +926,7 @@ fn position_one(
     let current_gate = state
         .gate_for_file(&measured.gate_id, &reference.id, metadata)
         .ok_or_else(|| "the gate no longer resolves".to_string())?;
-    let already = admitted_by(&current_gate, population);
+    let already = admitted_by(&current_gate, &reference.measurement.index);
 
     if let (Some((lo, hi)), Some(already)) = (rule.rule.accepted_band(), already)
         && (lo..=hi).contains(&already)
@@ -1009,7 +1026,7 @@ fn position_one(
     // Scored from what the gate actually did, not from the line that used to
     // stand in for it.
     let parent_events = population.event_index.len();
-    let mut sorted = reference.measurement.values.clone();
+    let mut sorted = judged_on.values.clone();
     sorted.sort_by(|a, b| b.total_cmp(a));
     let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
     // Nudge the gate either side and see how much of its contents survive.
@@ -1043,7 +1060,17 @@ fn position_one(
             }
         },
     };
-    let confidence = rule.rule.assess(&threshold, Some(measured.current));
+    // Above-the-negative is *meant* to move the gate off the reference's
+    // position - that is the whole rule - so scoring it on how far it travelled
+    // marks every correct placement as suspect. It put 15 of 32 gates at zero
+    // confidence on a run where all of them were right.
+    let judge_displacement = !matches!(
+        &rule.rule,
+        crate::gate_rules::rule::Rule::AboveTheNegative(_)
+    );
+    let confidence = rule
+        .rule
+        .assess(&threshold, judge_displacement.then_some(measured.current));
 
     place_for_specimen(state, &measured.gate_id, specimen, &moved);
 
@@ -1058,6 +1085,7 @@ fn position_one(
         confidence: confidence.score,
         weakest: confidence.weakest().map(|c| c.name),
         achieved,
+        captured_on: judged_on.file.clone(),
         reference_events: parent_events,
         in_band,
         negative: reading,

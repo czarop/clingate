@@ -171,26 +171,74 @@ pub enum Rule {
 /// The two differ only here - the calibration, the scale and the nudge are
 /// identical - so a difference in where they put a gate is a difference between
 /// the estimators and nothing else.
+/// Which to pick is decided by the shape of the plot, and the two are not
+/// interchangeable - measured on synthetic populations where only the amount of
+/// smear changes:
+///
+/// | smear | `NegativePeak` centre | `BelowTheGate` centre |
+/// |-------|----------------------|----------------------|
+/// | 4%    | +0.060               | +0.017               |
+/// | 16%   | +0.093               | +0.082               |
+/// | 35%   | +0.118               | +0.182               |
+///
+/// Dim cells that are not detectably positive are counted as negative by both,
+/// and the more of them a sample has the further right its negative reads. That
+/// matters because the bias scales with the positive fraction, so it differs
+/// between the reference and the sample and corrupts the transfer rather than
+/// just the measurement. Below-the-gate drifts three times as far, because
+/// cutting at the gate swallows the whole smear; the peak finder only sees the
+/// smear as a shoulder pushing on its mode.
+///
+/// The reverse holds where the populations are separate: with a real valley to
+/// cut at, below-the-gate was about five times the sharper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum NegativeFinder {
     /// From the shape of the density: the leftmost bump tall enough to count.
     ///
     /// Needs a bandwidth and a prominence threshold, neither of which comes
-    /// from the data.
-    DensityPeak,
+    /// from the data. For a smear, where there is no valley to cut at and the
+    /// dim cells would otherwise be counted as negative wholesale.
+    #[serde(alias = "DensityPeak")]
+    NegativePeak,
     /// From the events below the line, improving on where the line already is.
     ///
     /// No bandwidth and no threshold. Assumes instead that the gate starts
-    /// roughly right, which it does: it came from a sample gated by hand.
+    /// roughly right, which it does: it came from a sample gated by hand. For
+    /// separated populations, where the gate sits in the valley and everything
+    /// below it really is the negative.
     #[default]
-    RefineFromGate,
+    #[serde(alias = "RefineFromGate")]
+    BelowTheGate,
 }
 
 impl NegativeFinder {
+    /// The mechanism, for prose that already has the context.
     pub fn label(self) -> &'static str {
         match self {
-            NegativeFinder::DensityPeak => "the density's leftmost peak",
-            NegativeFinder::RefineFromGate => "the events below the gate",
+            NegativeFinder::NegativePeak => "the negative's own peak",
+            NegativeFinder::BelowTheGate => "the events below the gate",
+        }
+    }
+
+    /// The mechanism *and* when to reach for it, for a menu being chosen from
+    /// cold.
+    pub fn choice(self) -> &'static str {
+        match self {
+            NegativeFinder::NegativePeak => "the negative's own peak - when the positives smear",
+            NegativeFinder::BelowTheGate => {
+                "the events below the gate - when the peaks are separate"
+            }
+        }
+    }
+
+    pub const ALL: [NegativeFinder; 2] =
+        [NegativeFinder::BelowTheGate, NegativeFinder::NegativePeak];
+
+    /// The serialised name, which is also what the menu round-trips on.
+    pub fn key(self) -> &'static str {
+        match self {
+            NegativeFinder::NegativePeak => "NegativePeak",
+            NegativeFinder::BelowTheGate => "BelowTheGate",
         }
     }
 }
@@ -267,8 +315,8 @@ impl AboveTheNegativeRule {
         // Nothing to iterate here: the gate is already where a person put it,
         // so one look at its shadow is the whole answer - offset 0.0.
         let peak = match self.find {
-            NegativeFinder::DensityPeak => t::negative_peak(values)?,
-            NegativeFinder::RefineFromGate => t::negative_below(shadow, 0.0)?,
+            NegativeFinder::NegativePeak => t::negative_peak(values)?,
+            NegativeFinder::BelowTheGate => t::negative_below(shadow, 0.0)?,
         };
         Some(NegativeRead {
             centre: peak.centre,
@@ -295,11 +343,11 @@ impl AboveTheNegativeRule {
         let at =
             |peak: t::NegativePeak| peak.centre + widths * self.scale * peak.spread + self.nudge;
         let peak = match self.find {
-            NegativeFinder::DensityPeak => t::negative_peak(values)?,
+            NegativeFinder::NegativePeak => t::negative_peak(values)?,
             // The refining finder works in slide distances, so it searches from
             // the gate where it stands - offset zero - rather than from a value
             // on the axis. `at` then reads back onto the axis as usual.
-            NegativeFinder::RefineFromGate => t::refine_from(shadow, 0.0, |peak| at(peak) - start)?,
+            NegativeFinder::BelowTheGate => t::refine_from(shadow, 0.0, |peak| at(peak) - start)?,
         };
         Some(NegativeRead {
             centre: peak.centre,

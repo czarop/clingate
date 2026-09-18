@@ -318,7 +318,7 @@ fn the_scale_and_nudge_adjust_the_result() {
     // position, so the nudge moves it and the move changes what it then sees -
     // it lands near, not exactly on, base + nudge.
     let single_pass = AboveTheNegativeRule {
-        find: NegativeFinder::DensityPeak,
+        find: NegativeFinder::NegativePeak,
         ..AboveTheNegativeRule::default()
     };
     let plain_base = single_pass
@@ -327,7 +327,7 @@ fn the_scale_and_nudge_adjust_the_result() {
         .at;
     let nudged = AboveTheNegativeRule {
         nudge: 0.25,
-        find: NegativeFinder::DensityPeak,
+        find: NegativeFinder::NegativePeak,
         ..AboveTheNegativeRule::default()
     };
     assert!(
@@ -389,7 +389,7 @@ fn the_two_finders_have_different_strengths() {
 
     let refine = AboveTheNegativeRule::default();
     let density = AboveTheNegativeRule {
-        find: NegativeFinder::DensityPeak,
+        find: NegativeFinder::NegativePeak,
         ..AboveTheNegativeRule::default()
     };
     let shadow = shadow_at(&reference, gate_at);

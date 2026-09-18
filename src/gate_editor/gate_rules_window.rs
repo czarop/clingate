@@ -178,7 +178,7 @@ pub fn GateRulesWindow() -> Element {
     let mut percentile = use_signal(|| "99".to_string());
     let mut offset = use_signal(|| "0.5".to_string());
     let mut calibrate_on = use_signal(String::new);
-    let mut finder = use_signal(|| "RefineFromGate".to_string());
+    let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut nudge = use_signal(|| "0.0".to_string());
     let mut gated_file = use_signal(String::new);
@@ -218,8 +218,8 @@ pub fn GateRulesWindow() -> Element {
                     scale: s,
                     nudge: n,
                     find: match finder().as_str() {
-                        "DensityPeak" => NegativeFinder::DensityPeak,
-                        _ => NegativeFinder::RefineFromGate,
+                        "NegativePeak" => NegativeFinder::NegativePeak,
+                        _ => NegativeFinder::BelowTheGate,
                     },
                     ..AboveTheNegativeRule::default()
                 })
@@ -428,11 +428,12 @@ pub fn GateRulesWindow() -> Element {
                     select {
                         value: "{finder}",
                         onchange: move |e| finder.set(e.value()),
-                        option { value: "RefineFromGate", "from the events below the gate" }
-                        option { value: "DensityPeak", "from the density's leftmost peak" }
+                        for option_ in NegativeFinder::ALL {
+                            option { value: "{option_.key()}", "{option_.choice()}" }
+                        }
                     }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Below-the-gate is the sharper of the two while a negative has not moved more than the calibrated distance, and sticks low beyond that. The density peak tracks any drift but disagrees with itself more between samples. Worth running both and comparing against your own gating."
+                        "Pick by what the plot looks like. A real valley between negative and positive - use the events below the gate: the gate already sits in that valley, so everything under it is the negative, and it measured about five times the sharper. Dim cells rising out of the negative with no valley - use the negative's own peak: below-the-gate swallows the smear, and its centre drifts about 0.27 of a width as the smear grows from 4% to 35% of the population, where the peak finder drifts 0.09. Neither can tell a spillover shoulder from another channel apart from real dim expression, so place those by hand."
                     }
 
                     label { "Scale" }
@@ -724,7 +725,7 @@ pub fn GateRulesWindow() -> Element {
                                         td { "{placed.from:.3}" }
                                         td { "{placed.to:.3}" }
                                         td {
-                                            title: "of {placed.reference_events} events on the file it measured",
+                                            title: "of {placed.reference_events} events on {name_of(&files.read(), &placed.captured_on)}",
                                             "{placed.achieved * 100.0:.3}%"
                                             if !placed.in_band {
                                                 " (outside the band - nearest achievable)"

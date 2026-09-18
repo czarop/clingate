@@ -1427,3 +1427,219 @@ fn a_band_rule_reports_no_negative_because_it_reads_none() {
 
     assert!(report.positioned.iter().all(|p| p.negative.is_none()));
 }
+
+// ─── which population a placement is judged against ──────────────────────────
+
+#[test]
+fn an_above_the_negative_gate_reports_what_it_holds_on_its_own_sample() {
+    // It placed the gate from this sample's negative, so what it would capture
+    // on the reference describes a sample nobody is looking at. Reported that
+    // way it read 5.1% beside a plot showing 16.1%.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let report = sweep_over(
+        &mut state,
+        &above_the_negative_rule("fs_qc"),
+        &map,
+        &["fs_qc", "fs_b"],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    assert_eq!(
+        &*placed.captured_on, "fs_b",
+        "the capture belongs to the sample being gated, not the one it calibrated from"
+    );
+    assert_eq!(
+        &*placed.measured_on, "fs_qc",
+        "which is not the file it read"
+    );
+}
+
+#[test]
+fn a_band_rule_still_reports_what_it_holds_on_the_file_it_read() {
+    // The other half: a band names a fraction *of the file it reads* - "0.2 to
+    // 0.5% of the FMO" - so counting it anywhere else would not answer the
+    // question the rule asked.
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+
+    let placed = report.positioned.first().expect("positioned");
+    assert_eq!(&*placed.measured_on, "fmx_a");
+    assert_eq!(
+        placed.captured_on, placed.measured_on,
+        "a band rule is judged on the population whose fraction it named"
+    );
+}
+
+#[test]
+fn two_specimens_at_the_same_position_can_report_different_captures() {
+    // The symptom that gave the bug away: every row's capture was one curve in
+    // the position, because all of them were counted on the same population. A
+    // capture that varies with the sample cannot do that.
+    use crate::gate_rules::autogate::{measure_file, position_all};
+    use polars::prelude::*;
+
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let store = above_the_negative_rule("fs_qc");
+
+    // Same gate, deliberately different populations.
+    let dense = ramp(1000);
+    let sparse = {
+        let xs: Vec<f32> = (1..=1000).map(|i| (i as f32) * 0.5).collect();
+        df![X => xs, Y => vec![0.0f32; 1000]].unwrap()
+    };
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in [("fs_qc", &dense), ("fs_b", &sparse)] {
+        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, &store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let report = position_all(&mut state, &store, &measured, &unmeasured, &map);
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    // Counted on the sparse frame, which has half the dense one's values, so a
+    // gate at the same place holds a different fraction of it.
+    assert_eq!(&*placed.captured_on, "fs_b");
+    assert_eq!(
+        placed.reference_events,
+        sparse.height(),
+        "and the event count is that population's, not the reference's"
+    );
+}
+
+// ─── what the confidence score is entitled to complain about ─────────────────
+
+/// A population with a real negative peak at `centre`, plus a scatter of
+/// positives above it - the shape the rule is written for. A uniform ramp has
+/// no peak to find, so it cannot exercise this at all.
+fn with_negative_at(centre: f32) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal, Uniform};
+
+    let mut rng = StdRng::seed_from_u64(7);
+    let neg = Normal::new(centre, 40.0).unwrap();
+    let pos = Uniform::new(centre + 250.0, centre + 400.0).unwrap();
+    let mut xs: Vec<f32> = (0..9000).map(|_| neg.sample(&mut rng)).collect();
+    xs.extend((0..1000).map(|_| pos.sample(&mut rng)));
+    let n = xs.len();
+    df![X => xs, Y => vec![0.0f32; n]].unwrap()
+}
+
+/// The two specimens measured on populations whose negatives sit far apart, so
+/// the gate has to travel a long way to follow the second one's.
+fn sweep_with_a_long_move(
+    state: &mut crate::gate_editor::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+) -> crate::gate_rules::autogate::Report {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let here = with_negative_at(300.0);
+    let far = with_negative_at(600.0);
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in [("fs_qc", &here), ("fs_b", &far)] {
+        let (m, u) = measure_file(state, &Arc::from(file), frame, map, store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    position_all(state, store, &measured, &unmeasured, map)
+}
+
+#[test]
+fn moving_off_the_reference_is_not_held_against_an_above_the_negative_gate() {
+    // Moving the gate to wherever this sample's negative is *is* the rule. A
+    // displacement penalty marked 15 of 32 correct placements as zero
+    // confidence on a real run, so the flag stopped meaning anything.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let mut store = above_the_negative_rule("fs_qc");
+    {
+        use crate::gate_rules::rule::{AboveTheNegativeRule, NegativeFinder, Rule};
+        use crate::gate_rules::rule_store::RuleTarget;
+        let mut entry = store.rule_for(&Arc::from("CD134+"), None).unwrap().clone();
+        entry.rule = Rule::AboveTheNegative(AboveTheNegativeRule {
+            find: NegativeFinder::NegativePeak,
+            ..AboveTheNegativeRule::default()
+        });
+        store.insert(RuleTarget::named("CD134+"), entry);
+    }
+    let report = sweep_with_a_long_move(&mut state, &store, &map);
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    assert!(
+        (placed.to - placed.from).abs() > 150.0,
+        "the gate should have travelled a long way here, or this proves nothing - moved {}",
+        placed.to - placed.from
+    );
+    assert_ne!(
+        placed.weakest,
+        Some(crate::gate_rules::confidence::DISPLACEMENT),
+        "distance from the reference is the intended behaviour here, not a fault"
+    );
+    assert!(
+        placed.confidence > 0.0,
+        "and it should not be scored to zero for doing what it was asked"
+    );
+}
+
+#[test]
+fn a_band_rule_is_still_judged_on_how_far_it_moved() {
+    // The check is meaningful there: a band rule should land near where the
+    // equivalent gate was drawn, so a long trip is evidence something is wrong.
+    // Only above-the-negative is exempt.
+    use crate::gate_rules::confidence::DISPLACEMENT;
+    use crate::gate_rules::rule::{AboveTheNegativeRule, Rule, TailFractionRule};
+    use crate::gate_rules::threshold::{Status, Threshold};
+
+    let t = Threshold {
+        x: 900.0,
+        events_admitted: 30,
+        fraction_admitted: 0.003,
+        parent_events: 10_000,
+        count_swing: 0.1,
+        parent_spread: 100.0,
+        status: Status::InBand,
+    };
+
+    let band = Rule::TailFraction(TailFractionRule::new((0.002, 0.005)));
+    assert!(
+        band.assess(&t, Some(500.0)).get(DISPLACEMENT).is_some(),
+        "a band rule keeps the displacement check"
+    );
+    let above = Rule::AboveTheNegative(AboveTheNegativeRule::default());
+    assert!(
+        above.assess(&t, None).get(DISPLACEMENT).is_none(),
+        "above-the-negative is assessed without it"
+    );
+}
+
+#[test]
+fn an_old_sidecar_still_names_a_finder_after_the_rename() {
+    // The variants were renamed to say when to use them; rule files written
+    // before that must still load, or a person's saved rules silently revert to
+    // the default finder.
+    use crate::gate_rules::rule::NegativeFinder;
+    let old: NegativeFinder = serde_json::from_str("\"DensityPeak\"").unwrap();
+    assert_eq!(old, NegativeFinder::NegativePeak);
+    let old: NegativeFinder = serde_json::from_str("\"RefineFromGate\"").unwrap();
+    assert_eq!(old, NegativeFinder::BelowTheGate);
+}
