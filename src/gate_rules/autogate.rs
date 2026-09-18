@@ -274,6 +274,28 @@ pub fn specimen_of(
     })
 }
 
+/// How strongly a file is preferred as *the* file of its specimen to gate.
+///
+/// [`SamplePairing::display_order`] already names the types in order - the FMO
+/// on the left where the line is set, the full stain on the right where the
+/// positives are read off - so the later a file's type appears in it, the more
+/// it is the one being gated. A file whose type is unknown, or named by no
+/// order at all, ranks below every file that is.
+pub fn gated_rank(pairing: &SamplePairing, file: &FileId, metadata: &MetaDataFileMap) -> usize {
+    let Some(columns) = metadata.get(file) else {
+        return 0;
+    };
+    let Some(kind) = pairing.sample_type_of(columns) else {
+        return 0;
+    };
+    pairing
+        .display_order
+        .iter()
+        .position(|named| *named == kind)
+        .map(|at| at + 1)
+        .unwrap_or(0)
+}
+
 /// Give this specimen its own copy of the gate, leaving every other specimen -
 /// and the global position a person drew - untouched.
 ///
@@ -892,7 +914,35 @@ pub fn solve_all_reporting(
         });
     }
 
-    let mut done: FxHashMap<(Arc<str>, GateId), ()> = FxHashMap::default();
+    // Which file of each specimen the answer is read from.
+    //
+    // A specimen holds several files - the FMO and the full stain at least -
+    // and they share one gate position. They do not share a population: the FMO
+    // is the control, and the full stain is what a person reads the positives
+    // off. Taking whichever file sorted first meant a specimen whose FMO came
+    // first had its negative read, its gate placed *and* its percentage
+    // reported from the control, which is how a gate holding 6.24% came to be
+    // reported as 0.016%.
+    let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    for (i, m) in measurements.iter().enumerate() {
+        let Some(specimen) = specimen_of(&store.pairing, &m.file, metadata) else {
+            continue;
+        };
+        let key = (specimen.group.clone(), m.gate_id.clone());
+        match chosen.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(i);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let held = &measurements[*slot.get()];
+                if gated_rank(&store.pairing, &m.file, metadata)
+                    > gated_rank(&store.pairing, &held.file, metadata)
+                {
+                    slot.insert(i);
+                }
+            }
+        }
+    }
 
     for (seen, measured) in measurements.iter().enumerate() {
         progress(seen + 1, measurements.len());
@@ -911,11 +961,8 @@ pub fn solve_all_reporting(
             });
             continue;
         };
-        // One answer per specimen: its files share a position.
-        if done
-            .insert((specimen.group.clone(), measured.gate_id.clone()), ())
-            .is_some()
-        {
+        // One answer per specimen, read from the file that is actually gated.
+        if chosen.get(&(specimen.group.clone(), measured.gate_id.clone())) != Some(&seen) {
             continue;
         }
 

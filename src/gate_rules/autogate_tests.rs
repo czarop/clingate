@@ -1856,3 +1856,103 @@ fn a_below_gate_counts_the_other_side_of_the_line() {
     assert!((beyond_the_line(&values, Bound::Above, 10.0) - 0.90).abs() < 1e-9);
     assert_eq!(beyond_the_line(&[], Bound::Above, 10.0), 0.0);
 }
+
+// ─── which of a specimen's files is the one gated ────────────────────────────
+
+/// The same two files as `fs_and_fmx`, measured with the FMO first - which is
+/// what path order gives when the control's well sorts ahead of the stain's.
+fn sweep_fmo_first(
+    state: &mut crate::gate_editor::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+    fmx: &polars::prelude::DataFrame,
+    fs: &polars::prelude::DataFrame,
+) -> crate::gate_rules::autogate::Report {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in [("fmx_a", fmx), ("fs_a", fs)] {
+        let (m, u) = measure_file(state, &Arc::from(file), frame, map, store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    position_all(state, store, &measured, &unmeasured, map)
+}
+
+#[test]
+fn a_specimen_is_read_from_its_full_stain_not_whichever_file_sorted_first() {
+    // The control and the stain share a gate position but not a population.
+    // Reading the FMO's meant a gate holding 6.24% of the stain was reported as
+    // 0.016%, and - worse than the report being wrong - the negative was read
+    // and the gate placed off the control too.
+    use crate::gate_rules::rule_store::MeasuredOn;
+    use polars::prelude::*;
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    // The FMO has nothing above the gate; the full stain has a tenth of its
+    // events there. Whichever file the run reads is unmistakable in the result.
+    let fmx = {
+        let xs: Vec<f32> = (1..=1000).map(|i| i as f32 * 0.1).collect();
+        df![X => xs, Y => vec![0.0f32; 1000]].unwrap()
+    };
+    let fs = ramp(1000);
+
+    let mut store = crate::gate_rules::rule_store::RuleStore::default();
+    store.insert(
+        crate::gate_rules::rule_store::RuleTarget::named("CD134+"),
+        crate::gate_rules::rule_store::GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: crate::gate_rules::rule::Rule::AboveTheNegative(
+                crate::gate_rules::rule::AboveTheNegativeRule::default(),
+            ),
+        },
+    );
+
+    let report = sweep_fmo_first(&mut state, &store, &map, &fmx, &fs);
+    let placed = report.positioned.first().expect("positioned");
+    assert_eq!(
+        &*placed.file, "fs_a",
+        "the answer belongs to the full stain, not the control that sorted first"
+    );
+    assert_eq!(&*placed.captured_on, "fs_a");
+}
+
+#[test]
+fn the_display_order_says_which_file_is_the_stained_one() {
+    // The FMO on the left where the line is set, the full stain on the right
+    // where the positives are read off - so the later type is the gated one.
+    use crate::gate_rules::autogate::gated_rank;
+    use crate::gate_rules::rule_store::SamplePairing;
+
+    let pairing = SamplePairing::default();
+    let map = fs_and_fmx();
+    assert!(
+        gated_rank(&pairing, &Arc::from("fs_a"), &map)
+            > gated_rank(&pairing, &Arc::from("fmx_a"), &map),
+        "FS is last in the default order, so it outranks FMX"
+    );
+    // A file the metadata says nothing about ranks below both.
+    assert_eq!(gated_rank(&pairing, &Arc::from("nobody"), &map), 0);
+}
+
+#[test]
+fn reversing_the_display_order_reverses_which_file_is_gated() {
+    // It is configuration, not a guess about the strings "FS" and "FMX" - a
+    // dataset naming them the other way round has to work.
+    use crate::gate_rules::autogate::gated_rank;
+    use crate::gate_rules::rule_store::SamplePairing;
+
+    let pairing = SamplePairing {
+        display_order: vec![Arc::from("FS"), Arc::from("FMX")],
+        ..SamplePairing::default()
+    };
+    let map = fs_and_fmx();
+    assert!(
+        gated_rank(&pairing, &Arc::from("fmx_a"), &map)
+            > gated_rank(&pairing, &Arc::from("fs_a"), &map)
+    );
+}
