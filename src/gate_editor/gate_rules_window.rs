@@ -943,24 +943,30 @@ pub enum Progress {
     /// dropped before the next is opened.
     Measuring { done: usize, total: usize },
     /// Every file is in; the rules are being solved.
-    Solving,
+    Solving { done: usize, total: usize },
 }
 
 impl Progress {
     fn fraction(self) -> f64 {
         match self {
-            // Solving is a small tail on the end of the reading, so the bar
-            // stops just short rather than jumping back.
+            // Solving is the tail after the reading, so the bar carries on
+            // through it rather than stopping dead on one message.
             Progress::Measuring { done, total } if total > 0 => 0.95 * (done as f64 / total as f64),
             Progress::Measuring { .. } => 0.0,
-            Progress::Solving => 0.97,
+            Progress::Solving { done, total } if total > 0 => {
+                0.95 + 0.05 * (done as f64 / total as f64)
+            }
+            Progress::Solving { .. } => 0.95,
         }
     }
 
     fn describe(self) -> String {
         match self {
             Progress::Measuring { done, total } => format!("Measuring file {done} of {total}"),
-            Progress::Solving => "Solving the rules...".to_string(),
+            Progress::Solving { done, total } if total > 0 => {
+                format!("Solving rule {done} of {total}")
+            }
+            Progress::Solving { .. } => "Solving the rules...".to_string(),
         }
     }
 }
@@ -1130,13 +1136,16 @@ fn run_solve(
         };
     }
 
-    let _ = progress.send(Progress::Solving);
-    let (mut report, placements) = crate::gate_rules::autogate::solve_all(
+    let _ = progress.send(Progress::Solving { done: 0, total: 0 });
+    let (mut report, placements) = crate::gate_rules::autogate::solve_all_reporting(
         &snapshot,
         &rules,
         &measured,
         &unmeasured,
         &metadata,
+        |done, total| {
+            let _ = progress.send(Progress::Solving { done, total });
+        },
     );
 
     for problem in problems.drain(..) {

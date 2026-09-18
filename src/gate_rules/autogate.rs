@@ -860,6 +860,22 @@ pub fn solve_all(
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
 ) -> (Report, Vec<Placement>) {
+    solve_all_reporting(state, store, measurements, unmeasured, metadata, |_, _| {})
+}
+
+/// [`solve_all`], calling `progress(done, total)` as it goes.
+///
+/// Solving one specimen bisects against an R-tree, several times over, so a run
+/// spends long enough here to leave a progress bar sitting on one message with
+/// nothing to say how far through it is.
+pub fn solve_all_reporting(
+    state: &GateState,
+    store: &RuleStore,
+    measurements: &[Measurement],
+    unmeasured: &[Unmeasured],
+    metadata: &MetaDataFileMap,
+    progress: impl Fn(usize, usize),
+) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
 
@@ -878,7 +894,8 @@ pub fn solve_all(
 
     let mut done: FxHashMap<(Arc<str>, GateId), ()> = FxHashMap::default();
 
-    for measured in measurements {
+    for (seen, measured) in measurements.iter().enumerate() {
+        progress(seen + 1, measurements.len());
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
             continue;
         };
