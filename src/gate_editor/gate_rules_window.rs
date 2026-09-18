@@ -321,7 +321,7 @@ pub fn GateRulesWindow() -> Element {
                                     match &entry.rule.measured_on {
                                         MeasuredOn::Itself => "the sample itself".to_string(),
                                         MeasuredOn::Partner(t) => format!("its {t}"),
-                                        MeasuredOn::File(f) => format!("{f}"),
+                                        MeasuredOn::File(f) => name_of(&files.read(), f),
                                     }
                                 }
                                 td { "{entry.rule.rule.describe()}" }
@@ -726,6 +726,7 @@ pub fn GateRulesWindow() -> Element {
                                     th { "From" }
                                     th { "To" }
                                     th { "Captured" }
+                                    th { "Line only" }
                                     th { "Confidence" }
                                     th { "Weakest" }
                                 }
@@ -746,6 +747,12 @@ pub fn GateRulesWindow() -> Element {
                                                 " (outside the band - nearest achievable)"
                                             }
                                         }
+                                        td {
+                                            class: if placed.above_the_line > 0.0
+                                                && placed.achieved < placed.above_the_line * 0.5 { "gate_rules-weak" } else { "" },
+                                            title: "what a bare threshold on this parameter would take, the gate's other sides ignored - far above the captured figure means the gate's other axis is discarding the events",
+                                            "{placed.above_the_line * 100.0:.3}%"
+                                        }
                                         td { "{placed.confidence:.2}" }
                                         td { "{placed.weakest.unwrap_or(\"-\")}" }
                                     }
@@ -761,6 +768,7 @@ pub fn GateRulesWindow() -> Element {
                                     th { "Specimen" }
                                     th { "Gate" }
                                     th { "Captures" }
+                                    th { "Line only" }
                                 }
                             }
                             tbody {
@@ -769,6 +777,7 @@ pub fn GateRulesWindow() -> Element {
                                         td { "{kept.specimen}" }
                                         td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }
                                         td { "{kept.achieved * 100.0:.3}%" }
+                                        td { "{kept.above_the_line * 100.0:.3}%" }
                                     }
                                 }
                             }
@@ -831,6 +840,7 @@ pub fn GateRulesWindow() -> Element {
                                     th { "Specimen" }
                                     th { "Gate" }
                                     th { "Captures" }
+                                    th { "Line only" }
                                 }
                             }
                             tbody {
@@ -839,6 +849,11 @@ pub fn GateRulesWindow() -> Element {
                                         td { "{kept.specimen}" }
                                         td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }
                                         td { "{kept.achieved * 100.0:.3}%" }
+                                        td {
+                                            class: if kept.above_the_line > 0.0
+                                                && kept.achieved < kept.above_the_line * 0.5 { "gate_rules-weak" } else { "" },
+                                            "{kept.above_the_line * 100.0:.3}%"
+                                        }
                                     }
                                 }
                             }

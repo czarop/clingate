@@ -1765,3 +1765,94 @@ fn a_snapshot_does_not_see_later_edits_to_the_store() {
         .unwrap();
     assert_eq!(edges(&from_store, X).0, 750.0, "and the edit stands");
 }
+
+// ─── the line against the gate ───────────────────────────────────────────────
+
+#[test]
+fn the_line_and_the_gate_agree_when_the_shape_does_not_interfere() {
+    // A gate open on every other side takes exactly what the line takes, so the
+    // two columns sitting side by side in the report mean nothing is wrong.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::{admitted_by, beyond_the_line};
+    use polars::prelude::*;
+
+    let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    let frame = Arc::new(df![X => xs.clone(), Y => vec![500.0f32; 1000]].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
+    let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
+
+    // Open above 900 and unbounded on every other side.
+    let geometry = create_rectangle_geometry(
+        vec![(900.0, -1e16), (1e16, -1e16), (1e16, 1e16), (900.0, 1e16)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let gate: Arc<dyn DrawableGate> =
+        Arc::new(RectangleGate::try_new(gate("open", geometry), true).unwrap());
+
+    let by_gate = admitted_by(&gate, &index).unwrap();
+    let by_line = beyond_the_line(&values, Bound::Above, 900.0);
+    // Within one event of a thousand, not exact: the R-tree admits the event
+    // sitting exactly on the edge and `beyond_the_line` does not, matching the
+    // `gt(min)` convention `filter_events_by_hierarchy_to_mask` uses. Worth
+    // knowing when reading the two columns against each other - a one-event
+    // disagreement is the floor, not a signal.
+    assert!(
+        (by_gate - by_line).abs() <= 0.0011,
+        "gate {by_gate}, line {by_line}"
+    );
+    assert!(
+        by_line > 0.09 && by_line < 0.11,
+        "about a tenth, got {by_line}"
+    );
+}
+
+#[test]
+fn a_gate_boxed_on_the_other_axis_takes_less_than_the_line() {
+    // The case the two columns exist to expose: the line finds the events, the
+    // gate throws them away because its other axis does not reach them. In the
+    // report that shows up as a capture far below the line's figure, which is
+    // the only signal that separates a misplaced gate from a mis-read axis.
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::{admitted_by, beyond_the_line};
+    use polars::prelude::*;
+
+    let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    // Every event sits at y = 500.
+    let frame = Arc::new(df![X => xs.clone(), Y => vec![500.0f32; 1000]].unwrap());
+    let index = EventIndexMapped {
+        event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+        index_map: Arc::new((0..1000).collect()),
+    };
+    let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
+
+    // Same threshold, but the gate only spans y 0..100 - well below the data.
+    let geometry = create_rectangle_geometry(
+        vec![(900.0, 0.0), (1e16, 0.0), (1e16, 100.0), (900.0, 100.0)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let gate: Arc<dyn DrawableGate> =
+        Arc::new(RectangleGate::try_new(gate("boxed", geometry), true).unwrap());
+
+    let by_gate = admitted_by(&gate, &index).unwrap();
+    let by_line = beyond_the_line(&values, Bound::Above, 900.0);
+    assert_eq!(by_gate, 0.0, "the gate reaches none of them");
+    assert!(by_line > 0.09, "but the line finds them all: {by_line}");
+}
+
+#[test]
+fn a_below_gate_counts_the_other_side_of_the_line() {
+    use crate::gate_rules::autogate::beyond_the_line;
+    let values: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+    assert!((beyond_the_line(&values, Bound::Below, 10.0) - 0.09).abs() < 1e-9);
+    assert!((beyond_the_line(&values, Bound::Above, 10.0) - 0.90).abs() < 1e-9);
+    assert_eq!(beyond_the_line(&[], Bound::Above, 10.0), 0.0);
+}

@@ -557,6 +557,25 @@ pub fn admitted_by(gate: &Arc<dyn DrawableGate>, index: &EventIndexMapped) -> Op
     }
 }
 
+/// What a bare threshold at `at` would admit, the gate's other sides ignored.
+///
+/// Deliberately naive - it is the control for [`admitted_by`], not a rival to
+/// it. A gate reading far below this is one whose other axis is discarding
+/// events; a gate matching it is one where the shape makes no difference.
+pub fn beyond_the_line(values: &[f64], bound: Bound, at: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let past = values
+        .iter()
+        .filter(|v| match bound {
+            Bound::Above => **v > at,
+            Bound::Below => **v < at,
+        })
+        .count();
+    past as f64 / values.len() as f64
+}
+
 /// Slide a gate along one parameter until it captures what the rule asks for.
 ///
 /// This replaces solving a line and anchoring a corner to it, which only ever
@@ -696,6 +715,14 @@ pub struct Positioned {
     /// What the moved gate actually admits from the reference population -
     /// measured by asking the gate, not by counting past a line.
     pub achieved: f64,
+    /// What a bare threshold on the rule's parameter would admit from the same
+    /// population - the gate's other sides ignored.
+    ///
+    /// Reported beside `achieved` because the two disagreeing is the one thing
+    /// that separates "the data is not where the gate thinks" from "the gate's
+    /// other axis is throwing the events away". Nothing else in the report can
+    /// tell those apart, and they need completely different fixes.
+    pub above_the_line: f64,
     /// The file whose population `achieved` was counted on. Not always the file
     /// the rule read: see `judged_on` in `position_one`.
     pub captured_on: FileId,
@@ -727,6 +754,9 @@ pub struct Unchanged {
     pub parent_gate: Option<Arc<str>>,
     pub specimen: Arc<str>,
     pub achieved: f64,
+    /// As [`Positioned::above_the_line`]: the same count with the gate's other
+    /// sides ignored.
+    pub above_the_line: f64,
 }
 
 /// One gate that was not positioned, and why.
@@ -891,6 +921,7 @@ pub fn solve_all(
                 parent_gate: measured.parent_gate.clone(),
                 specimen: specimen.group.clone(),
                 achieved: holds,
+                above_the_line: beyond_the_line(&measured.values, measured.bound, measured.current),
             });
             continue;
         }
@@ -984,6 +1015,11 @@ fn position_one(
             parent_gate: measured.parent_gate.clone(),
             specimen: specimen.group.clone(),
             achieved: already,
+            above_the_line: beyond_the_line(
+                &reference.measurement.values,
+                measured.bound,
+                measured.current,
+            ),
         }));
     }
 
@@ -1132,6 +1168,7 @@ fn position_one(
             weakest: confidence.weakest().map(|c| c.name),
             achieved,
             captured_on: judged_on.file.clone(),
+            above_the_line: beyond_the_line(&judged_on.values, measured.bound, to),
             reference_events: parent_events,
             in_band,
             negative: reading,
