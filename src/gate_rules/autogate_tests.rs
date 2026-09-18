@@ -1643,3 +1643,125 @@ fn an_old_sidecar_still_names_a_finder_after_the_rename() {
     let old: NegativeFinder = serde_json::from_str("\"RefineFromGate\"").unwrap();
     assert_eq!(old, NegativeFinder::BelowTheGate);
 }
+
+// ─── solving off the store ───────────────────────────────────────────────────
+
+#[test]
+fn a_snapshot_solve_matches_an_in_place_one() {
+    // Both entry points agree end to end, store included. The invariant itself
+    // - that a solve cannot depend on its own writes - is held by `solve_all`
+    // taking `&GateState`, which is stronger than anything asserted here; this
+    // guards the wiring around it, that `position_all` still applies what
+    // `solve_all` returns and both reach the same gates.
+    use crate::gate_rules::autogate::{measure_file, position_all, solve_all};
+
+    // Three specimens, so two of them are placed: with only one placement a
+    // store comparison passes however badly the placements are applied.
+    let map = {
+        let mut map = im::HashMap::with_hasher(FxBuildHasher);
+        for (file, id) in [("fs_qc", "QC-A"), ("fs_b", "DONOR-B"), ("fs_c", "DONOR-C")] {
+            let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+            columns.insert(Arc::from("SampleID"), Arc::from(id));
+            columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+            map.insert(Arc::from(file) as Arc<str>, columns);
+        }
+        map
+    };
+    let store = above_the_negative_rule("fs_qc");
+    let here = with_negative_at(300.0);
+    let far = with_negative_at(600.0);
+    let further = with_negative_at(450.0);
+
+    let measure = |state: &crate::gate_editor::gates::GateState| {
+        let mut measured = Vec::new();
+        let mut unmeasured = Vec::new();
+        for (file, frame) in [("fs_qc", &here), ("fs_b", &far), ("fs_c", &further)] {
+            let (m, u) = measure_file(state, &Arc::from(file), frame, &map, &store).unwrap();
+            measured.extend(m);
+            unmeasured.extend(u);
+        }
+        (measured, unmeasured)
+    };
+
+    // In place, as the editor used to do it.
+    let (mut in_place, gate_id) = one_positive_gate();
+    let (measured, unmeasured) = measure(&in_place);
+    let live = position_all(&mut in_place, &store, &measured, &unmeasured, &map);
+
+    // Against a snapshot, as the worker does it.
+    let (mut owner, offline_gate_id) = one_positive_gate();
+    let snapshot = owner.clone();
+    let (measured, unmeasured) = measure(&snapshot);
+    let (offline, placements) = solve_all(&snapshot, &store, &measured, &unmeasured, &map);
+    crate::gate_rules::autogate::apply_placements(&mut owner, &placements);
+
+    assert_eq!(
+        live.positioned.len(),
+        2,
+        "two specimens should be placed, or the comparison below proves little"
+    );
+    assert_eq!(live.positioned.len(), offline.positioned.len());
+    assert_eq!(live.reference.len(), offline.reference.len());
+    assert_eq!(live.skipped.len(), offline.skipped.len());
+    for (a, b) in live.positioned.iter().zip(offline.positioned.iter()) {
+        assert_eq!(a.specimen, b.specimen);
+        assert_eq!(
+            a.to, b.to,
+            "the two paths placed {} differently",
+            a.specimen
+        );
+        assert_eq!(a.achieved, b.achieved);
+    }
+
+    // And the stores end up holding the same gates, not just the same report.
+    for file in ["fs_qc", "fs_b", "fs_c"] {
+        let a = in_place
+            .gate_for_file(&gate_id, &Arc::from(file), &map)
+            .unwrap();
+        // Each store minted its own id for the gate, so each is asked with its
+        // own; what has to match is where the gate ended up.
+        let b = owner
+            .gate_for_file(&offline_gate_id, &Arc::from(file), &map)
+            .unwrap();
+        assert_eq!(
+            edges(&a, X),
+            edges(&b, X),
+            "{file} differs between the paths"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_does_not_see_later_edits_to_the_store() {
+    // The reason only the placements come back rather than the whole state: a
+    // gate moved while a run is in flight has to survive it.
+    use crate::gate_editor::gates::gate_store::GateSource;
+
+    let (mut state, gate_id) = one_positive_gate();
+    let snapshot = state.clone();
+
+    // The person drags the gate while the worker is busy.
+    let moved = translate_edge_to(
+        &state
+            .gate_for_file(&gate_id, &Arc::from("fs_qc"), &two_specimens())
+            .unwrap(),
+        X,
+        Bound::Above,
+        750.0,
+    )
+    .unwrap();
+    state.place_gate(&[gate_id.clone()], &moved, &GateSource::Global);
+
+    let from_snapshot = snapshot
+        .gate_for_file(&gate_id, &Arc::from("fs_qc"), &two_specimens())
+        .unwrap();
+    assert_eq!(
+        edges(&from_snapshot, X).0,
+        500.0,
+        "the snapshot is the state as it was when the run started"
+    );
+    let from_store = state
+        .gate_for_file(&gate_id, &Arc::from("fs_qc"), &two_specimens())
+        .unwrap();
+    assert_eq!(edges(&from_store, X).0, 750.0, "and the edit stands");
+}

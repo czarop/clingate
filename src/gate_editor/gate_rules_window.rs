@@ -10,7 +10,7 @@ use crate::gate_editor::gates::gate_store::GateId;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
-use crate::gate_rules::autogate::{Report, describe, measure_file, position_all};
+use crate::gate_rules::autogate::{Report, describe, measure_file};
 use crate::gate_rules::rule::{
     AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule,
 };
@@ -189,6 +189,9 @@ pub fn GateRulesWindow() -> Element {
     let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
     let mut message = use_signal(|| None::<String>);
+    let mut progress = use_signal(|| None::<Progress>);
+    // Set while a run is in flight, so the Stop button has something to raise.
+    let mut cancel = use_signal(|| None::<Arc<std::sync::atomic::AtomicBool>>);
 
     // Picking a gate offers only the parents and parameters that gate is drawn
     // with, so the form cannot name a combination the document does not have.
@@ -610,7 +613,8 @@ pub fn GateRulesWindow() -> Element {
                         }
                         running.set(true);
                         report.set(None);
-                        message.set(Some("Reading FCS files...".into()));
+                        progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
+                        message.set(None);
 
                         let dir = fcs_dir();
                         let names = metadata_store.file_name_to_gating_id().read().clone();
@@ -622,67 +626,57 @@ pub fn GateRulesWindow() -> Element {
                                 arcsinh.push((param.clone(), cofactor));
                             }
                         }
-
-                        // The reading is the slow part and wants no store, so
-                        // it goes to a blocking thread; the measuring and
-                        // placing want the store and are quick, so they stay
-                        // here.
-                        let loaded = tokio::task::spawn_blocking(move || {
-                            load_scaled(&dir, &names, &arcsinh)
-                        })
-                        .await;
-
-                        let (frames, mut problems) = match loaded {
-                            Ok(v) => v,
-                            Err(e) => {
-                                running.set(false);
-                                message.set(Some(format!("Could not read the files: {e}")));
-                                return;
-                            }
-                        };
-                        if frames.is_empty() {
-                            running.set(false);
-                            message.set(Some(if problems.is_empty() {
-                                format!("No .fcs files in {}", fcs_dir())
-                            } else {
-                                problems.join("; ")
-                            }));
-                            return;
-                        }
-
-                        message.set(Some(format!("Solving over {} files...", frames.len())));
                         let metadata = metadata_store.metadata().read().clone();
                         let rules_now = rules.read().clone();
 
-                        let mut state = gate_store.write();
-                        let mut measured = Vec::new();
-                        let mut unmeasured = Vec::new();
-                        for (id, df) in &frames {
-                            match measure_file(&state, id, df, &metadata, &rules_now) {
-                                Ok((mut m, mut u)) => {
-                                    measured.append(&mut m);
-                                    unmeasured.append(&mut u);
-                                }
-                                Err(e) => problems.push(format!("{id}: {e}")),
-                            }
-                        }
-                        let mut run = position_all(
-                            &mut state,
-                            &rules_now,
-                            &measured,
-                            &unmeasured,
-                            &metadata,
-                        );
-                        drop(state);
+                        // A snapshot, not a lock. Every gate is behind an Arc,
+                        // so this is a refcount bump rather than a copy, and
+                        // the store is free for the rest of the editor the
+                        // moment it is taken.
+                        let snapshot = gate_store.read().clone();
 
-                        for problem in problems {
-                            run.skipped.push(crate::gate_rules::autogate::Skipped {
-                                file: Arc::from(""),
-                                gate: Arc::from(""),
-                                parent_gate: None,
-                                reason: problem,
-                            });
+                        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        cancel.set(Some(flag.clone()));
+                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
+
+                        let worker = tokio::task::spawn_blocking(move || {
+                            run_solve(
+                                snapshot, dir, names, arcsinh, metadata, rules_now, tx, flag,
+                            )
+                        });
+
+                        // The worker's sender drops when it returns, which ends
+                        // this loop - no sentinel message to get wrong.
+                        while let Some(step) = rx.recv().await {
+                            progress.set(Some(step));
                         }
+
+                        let outcome = worker.await;
+                        progress.set(None);
+                        cancel.set(None);
+                        running.set(false);
+
+                        let outcome = match outcome {
+                            Ok(o) => o,
+                            Err(e) => {
+                                message.set(Some(format!("The run did not finish: {e}")));
+                                return;
+                            }
+                        };
+                        if outcome.cancelled {
+                            message.set(Some("Stopped - no gates were moved".into()));
+                            return;
+                        }
+
+                        // Writing happens here, on the one thread that owns the
+                        // store, and only the answers are written: a gate moved
+                        // by hand while this ran keeps its position.
+                        crate::gate_rules::autogate::apply_placements(
+                            &mut gate_store.write(),
+                            &outcome.placements,
+                        );
+
+                        let run = outcome.report;
                         message.set(Some(format!(
                             "Moved {} gates, left {} already in band and {} reference; {} need review",
                             run.positioned.len(),
@@ -691,9 +685,30 @@ pub fn GateRulesWindow() -> Element {
                             run.needs_review(REVIEW_FLOOR).count()
                         )));
                         report.set(Some(run));
-                        running.set(false);
                     },
                     if running() { "Working..." } else { "Solve and apply" }
+                }
+
+                if let Some(step) = progress() {
+                    div { class: "gate_rules-progress gate_rules-span",
+                        div { class: "gate_rules-bar",
+                            div {
+                                class: "gate_rules-bar_fill",
+                                style: "width: {step.fraction() * 100.0}%",
+                            }
+                        }
+                        span { class: "gate_rules-progress_text", "{step.describe()}" }
+                        button {
+                            class: "gate_rules-cancel",
+                            onclick: move |_| {
+                                if let Some(flag) = cancel() {
+                                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    message.set(Some("Stopping after this file...".into()));
+                                }
+                            },
+                            "Stop"
+                        }
+                    }
                 }
             }
 
@@ -906,27 +921,68 @@ fn default_fcs_dir() -> String {
 /// every threshold in a different space from the gate it is meant to move.
 /// Returns the files it could read, paired with the id the gating document
 /// knows them by, and a line per file it could not.
-fn load_scaled(
+/// What a run is doing, for the progress line.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Progress {
+    /// Reading and measuring go together: one file is read, measured, and
+    /// dropped before the next is opened.
+    Measuring { done: usize, total: usize },
+    /// Every file is in; the rules are being solved.
+    Solving,
+}
+
+impl Progress {
+    fn fraction(self) -> f64 {
+        match self {
+            // Solving is a small tail on the end of the reading, so the bar
+            // stops just short rather than jumping back.
+            Progress::Measuring { done, total } if total > 0 => 0.95 * (done as f64 / total as f64),
+            Progress::Measuring { .. } => 0.0,
+            Progress::Solving => 0.97,
+        }
+    }
+
+    fn describe(self) -> String {
+        match self {
+            Progress::Measuring { done, total } => format!("Measuring file {done} of {total}"),
+            Progress::Solving => "Solving the rules...".to_string(),
+        }
+    }
+}
+
+/// Read each FCS file, hand it to `visit`, and drop it before opening the next.
+///
+/// One frame is alive at a time. Reading all of them up front held the whole
+/// experiment in memory for no gain - nothing here ever needs two files at
+/// once - and it also meant no progress could be reported until every one had
+/// been read.
+fn for_each_scaled(
     dir: &str,
     names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     arcsinh: &[(Arc<str>, f32)],
-) -> (Vec<(Arc<str>, polars::prelude::DataFrame)>, Vec<String>) {
+    cancel: &std::sync::atomic::AtomicBool,
+    mut visit: impl FnMut(usize, usize, &Arc<str>, polars::prelude::DataFrame),
+) -> Vec<String> {
     use polars::prelude::*;
+    use std::sync::atomic::Ordering;
 
-    let mut loaded = Vec::new();
     let mut problems = Vec::new();
 
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(e) => return (loaded, vec![format!("{dir}: {e}")]),
+        Err(e) => return vec![format!("{dir}: {e}")],
     };
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcs")))
         .collect();
     paths.sort();
+    let total = paths.len();
 
-    for path in paths {
+    for (i, path) in paths.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -943,9 +999,84 @@ fn load_scaled(
             Ok(scaled.with_row_index("original_index".into(), None)?)
         })();
         match frame {
-            Ok(df) => loaded.push((id.clone(), df)),
+            Ok(df) => visit(i + 1, total, id, df),
             Err(e) => problems.push(format!("{name}: {e}")),
         }
     }
-    (loaded, problems)
+    problems
+}
+
+/// Everything a run produces, handed back from the worker in one piece.
+struct RunOutcome {
+    report: Report,
+    placements: Vec<crate::gate_rules::autogate::Placement>,
+    cancelled: bool,
+}
+
+/// The whole solve, off the UI thread.
+///
+/// It works against a snapshot of the gate store and returns the placements
+/// rather than writing them, so the editor stays live and usable throughout and
+/// a gate moved by hand while this runs is not silently overwritten.
+#[allow(clippy::too_many_arguments)]
+fn run_solve(
+    snapshot: GateState,
+    dir: String,
+    names: HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    arcsinh: Vec<(Arc<str>, f32)>,
+    metadata: crate::omiq::metadata::MetaDataFileMap,
+    rules: RuleStore,
+    progress: tokio::sync::mpsc::UnboundedSender<Progress>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> RunOutcome {
+    use std::sync::atomic::Ordering;
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    // The closure's own problems, kept apart from the reader's: it cannot
+    // borrow the vec `for_each_scaled` is building and returning.
+    let mut measure_problems: Vec<String> = Vec::new();
+    let mut problems = for_each_scaled(&dir, &names, &arcsinh, &cancel, |done, total, id, df| {
+        let _ = progress.send(Progress::Measuring { done, total });
+        match measure_file(&snapshot, id, &df, &metadata, &rules) {
+            Ok((mut m, mut u)) => {
+                measured.append(&mut m);
+                unmeasured.append(&mut u);
+            }
+            Err(e) => measure_problems.push(format!("{id}: {e}")),
+        }
+    });
+    problems.append(&mut measure_problems);
+
+    if cancel.load(Ordering::Relaxed) {
+        return RunOutcome {
+            report: Report::default(),
+            placements: Vec::new(),
+            cancelled: true,
+        };
+    }
+
+    let _ = progress.send(Progress::Solving);
+    let (mut report, placements) = crate::gate_rules::autogate::solve_all(
+        &snapshot,
+        &rules,
+        &measured,
+        &unmeasured,
+        &metadata,
+    );
+
+    for problem in problems.drain(..) {
+        report.skipped.push(crate::gate_rules::autogate::Skipped {
+            file: Arc::from(""),
+            gate: Arc::from(""),
+            parent_gate: None,
+            reason: problem,
+        });
+    }
+
+    RunOutcome {
+        report,
+        placements,
+        cancelled: false,
+    }
 }

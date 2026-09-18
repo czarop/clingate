@@ -67,7 +67,7 @@ impl GatesOnPlotKey {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct GateMap(pub FxHashMap<GateId, Arc<dyn DrawableGate + 'static>>);
 
 impl Deref for GateMap {
@@ -94,7 +94,7 @@ pub enum GateSource {
 pub type GroupGateMap = FxHashMap<(GateId, MetaDataKey), Arc<dyn DrawableGate>>;
 pub type SampleGateMap = FxHashMap<(GateId, FileId), Arc<dyn DrawableGate>>;
 
-#[derive(Default, Store)]
+#[derive(Clone, Default, Store)]
 pub struct GateSubStore {
     pub primary_and_subgate_registry: GateMap,
     pub sample_position_overrides: SampleGateMap,
@@ -301,7 +301,10 @@ pub struct GatePlacement {
     pub collapsed: bool,
 }
 
-#[derive(Default, Store)]
+/// `Clone` is a snapshot, not a deep copy: every gate is behind an `Arc`, so
+/// cloning bumps refcounts. That is what lets a long solve run on a worker
+/// thread against a consistent view while the editor stays live.
+#[derive(Clone, Default, Store)]
 pub struct GateState {
     // file_id: FileId,
     selected_gate: Option<Arc<str>>,

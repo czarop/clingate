@@ -787,6 +787,50 @@ pub fn position_all(
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
 ) -> Report {
+    let (report, placements) = solve_all(state, store, measurements, unmeasured, metadata);
+    apply_placements(state, &placements);
+    report
+}
+
+/// One gate a solve decided on, ready to be written into a store.
+///
+/// Carried out of the solve rather than written during it, so the whole run can
+/// happen on a worker thread against a snapshot and only the answers come back.
+/// Handing back a whole cloned state instead would silently discard anything
+/// the person moved while it ran.
+pub struct Placement {
+    pub gate_id: GateId,
+    pub specimen: MetaDataKey,
+    pub gate: Arc<dyn DrawableGate>,
+}
+
+/// Write a solve's answers into the store.
+pub fn apply_placements(state: &mut GateState, placements: &[Placement]) {
+    for placed in placements {
+        place_for_specimen(state, &placed.gate_id, &placed.specimen, &placed.gate);
+    }
+}
+
+/// Solve every rule that matches, without touching the store.
+///
+/// Taking `&GateState` is the point, and it is what makes running this on a
+/// worker thread legitimate: a solve that cannot write cannot depend on its own
+/// writes, so a snapshot taken before the run gives the same answers as the
+/// live store would have. The borrow checker holds that, not a test - the test
+/// below only guards the two entry points agreeing end to end.
+///
+/// It was true before this signature existed, for a reason worth keeping in
+/// mind if the loop is ever reordered: overrides are keyed per specimen and
+/// `done` stops a specimen being visited twice, so no gate's placement was ever
+/// read by another's solve.
+pub fn solve_all(
+    state: &GateState,
+    store: &RuleStore,
+    measurements: &[Measurement],
+    unmeasured: &[Unmeasured],
+    metadata: &MetaDataFileMap,
+) -> (Report, Vec<Placement>) {
+    let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
 
     let mut told: FxHashMap<GateId, ()> = FxHashMap::default();
@@ -862,7 +906,10 @@ pub fn position_all(
         };
 
         match position_one(state, rule, measured, &reference, &specimen, metadata) {
-            Ok(Outcome::Moved(p)) => report.positioned.push(p),
+            Ok(Outcome::Moved(p, placed)) => {
+                report.positioned.push(p);
+                placements.push(placed);
+            }
             Ok(Outcome::Kept(u)) => report.unchanged.push(u),
             Err(reason) => report.skipped.push(Skipped {
                 file: measured.file.clone(),
@@ -873,7 +920,7 @@ pub fn position_all(
         }
     }
 
-    report
+    (report, placements)
 }
 
 fn resolve_reference<'a>(
@@ -891,12 +938,12 @@ fn resolve_reference<'a>(
 }
 
 enum Outcome {
-    Moved(Positioned),
+    Moved(Positioned, Placement),
     Kept(Unchanged),
 }
 
 fn position_one(
-    state: &mut GateState,
+    state: &GateState,
     rule: &GateRule,
     measured: &Measurement,
     reference: &Reference<'_>,
@@ -1072,24 +1119,29 @@ fn position_one(
         .rule
         .assess(&threshold, judge_displacement.then_some(measured.current));
 
-    place_for_specimen(state, &measured.gate_id, specimen, &moved);
-
-    Ok(Outcome::Moved(Positioned {
-        file: measured.file.clone(),
-        gate: measured.gate.clone(),
-        parent_gate: measured.parent_gate.clone(),
-        specimen: specimen.group.clone(),
-        measured_on: reference.id.clone(),
-        from: measured.current,
-        to,
-        confidence: confidence.score,
-        weakest: confidence.weakest().map(|c| c.name),
-        achieved,
-        captured_on: judged_on.file.clone(),
-        reference_events: parent_events,
-        in_band,
-        negative: reading,
-    }))
+    Ok(Outcome::Moved(
+        Positioned {
+            file: measured.file.clone(),
+            gate: measured.gate.clone(),
+            parent_gate: measured.parent_gate.clone(),
+            specimen: specimen.group.clone(),
+            measured_on: reference.id.clone(),
+            from: measured.current,
+            to,
+            confidence: confidence.score,
+            weakest: confidence.weakest().map(|c| c.name),
+            achieved,
+            captured_on: judged_on.file.clone(),
+            reference_events: parent_events,
+            in_band,
+            negative: reading,
+        },
+        Placement {
+            gate_id: measured.gate_id.clone(),
+            specimen: specimen.clone(),
+            gate: moved,
+        },
+    ))
 }
 
 /// The range of moves worth trying, as deltas.
