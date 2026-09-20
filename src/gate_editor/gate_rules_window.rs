@@ -410,7 +410,9 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "Below", "below the line" }
                 }
 
-                if kind() != "AboveTheNegative" {
+                // Both calibrated rules name one reference file rather than a
+                // partner of each specimen, so the partner field means nothing.
+                if kind() != "AboveTheNegative" && kind() != "InTheValley" {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -520,7 +522,7 @@ pub fn GateRulesWindow() -> Element {
                         value: "{offset}",
                         oninput: move |e| offset.set(e.value()),
                     }
-                } else {
+                } else if kind() == "TailFraction" {
                     label { "Capture between (%)" }
                     div { class: "gate_rules-band",
                         input {

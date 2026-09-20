@@ -565,31 +565,83 @@ const FAR_SIDE_PROMINENCE: f64 = 0.05;
 /// `smoothing` scales the bandwidth. Below 1 finds shallower dips and more
 /// noise; above 1 smooths shallow ones away. It is exposed because which of
 /// those is wanted depends on the marker, and no automatic rule knows that.
-pub fn first_valley(values: &[f64], smoothing: f64) -> Option<Valley> {
+pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> {
     if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
-        return None;
+        return Err(NoValley::NoPopulation);
     }
     let bandwidth = crate::gate_move::kde::silverman_bandwidth(values) * smoothing;
     if !bandwidth.is_finite() || bandwidth <= 0.0 {
-        return None;
+        return Err(NoValley::NoPopulation);
     }
     let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-        return None;
+        return Err(NoValley::NoPopulation);
     }
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
     valley_in(&xs, &density)
+}
+
+/// Why no boundary was found, in enough detail to tell the cases apart.
+///
+/// A bare "no valley" sent two rounds of debugging chasing the wrong thing.
+/// What the density actually looked like is the whole diagnosis, so it is
+/// carried out rather than discarded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NoValley {
+    /// Nothing here that could be a population at all.
+    NoPopulation,
+    /// One peak and then a decline that never rises again - a smear, or two
+    /// populations that have merged into one hump.
+    OnlyOnePeak { peak: f64, events: usize },
+    /// Dips exist, but none is a boundary: too shallow to be anything but
+    /// noise, or out in a tail where there is no population on the far side.
+    NothingDeepEnough {
+        peak: f64,
+        /// The best dip found, and how deep it was.
+        best_at: f64,
+        best_depth: f64,
+        /// The far side of that dip, against the tallest peak. A tiny figure
+        /// means the dip was in a tail rather than between two populations.
+        far_side: f64,
+    },
+}
+
+impl std::fmt::Display for NoValley {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoValley::NoPopulation => {
+                write!(f, "there is no population here to find a boundary in")
+            }
+            NoValley::OnlyOnePeak { peak, events } => write!(
+                f,
+                "one peak at {peak:.3} over {events} events and no second population after it - \
+                 a smear, or two that have merged"
+            ),
+            NoValley::NothingDeepEnough {
+                peak,
+                best_at,
+                best_depth,
+                far_side,
+            } => write!(
+                f,
+                "peak at {peak:.3}, but the best dip ({best_at:.3}) is only {:.1}% deep with a far \
+                 side {:.1}% of the tallest - not a boundary between two populations",
+                best_depth * 100.0,
+                far_side * 100.0
+            ),
+        }
+    }
 }
 
 /// The valley-finding itself, over a density already computed.
 ///
 /// Split out so it can be exercised on a density built by hand, where the
 /// answer is known, rather than only through a kernel estimate.
-pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
+pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
     let n = density.len().min(xs.len());
     if n < 3 {
-        return None;
+        return Err(NoValley::NoPopulation);
     }
     let tallest = density[..n]
         .iter()
@@ -597,7 +649,7 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
         .filter(|d| d.is_finite())
         .fold(f64::NEG_INFINITY, f64::max);
     if !tallest.is_finite() || tallest <= 0.0 {
-        return None;
+        return Err(NoValley::NoPopulation);
     }
 
     // The negative: the leftmost bump tall enough to be a population rather
@@ -605,13 +657,16 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
     // which peak is the negative.
     const PROMINENCE: f64 = 0.25;
     let floor = tallest * PROMINENCE;
-    let left = (1..n - 1).find(|&i| {
+    let Some(left) = (1..n - 1).find(|&i| {
         density[i] >= floor && density[i] >= density[i - 1] && density[i] > density[i + 1]
-    })?;
+    }) else {
+        return Err(NoValley::NoPopulation);
+    };
 
     // Walk right: down into a dip, then up to whatever is on the far side. The
-    // first dip with a real rise after it is the boundary.
+    // first dip with a real population after it is the boundary.
     let mut i = left;
+    let mut best: Option<(f64, f64, f64)> = None;
     while i < n - 1 {
         // Descend to the bottom of this dip.
         let mut bottom = i;
@@ -621,7 +676,18 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
         if bottom >= n - 1 {
             // It fell away to the end of the data without rising again, so
             // there is no population on the other side and no boundary here.
-            return None;
+            return Err(match best {
+                Some((best_at, best_depth, far_side)) => NoValley::NothingDeepEnough {
+                    peak: xs[left],
+                    best_at,
+                    best_depth,
+                    far_side,
+                },
+                None => NoValley::OnlyOnePeak {
+                    peak: xs[left],
+                    events: 0,
+                },
+            });
         }
         // Climb the far side to its summit.
         let mut right = bottom;
@@ -635,8 +701,12 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
         } else {
             0.0
         };
+        let far_side = density[right] / tallest;
+        if best.is_none_or(|(_, d, _)| depth > d) {
+            best = Some((xs[bottom], depth, far_side));
+        }
         if depth >= VALLEY_FLOOR && density[right] >= tallest * FAR_SIDE_PROMINENCE {
-            return Some(Valley {
+            return Ok(Valley {
                 peak: xs[left],
                 bottom: xs[bottom],
                 depth,
@@ -647,5 +717,16 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
         }
         i = right;
     }
-    None
+    Err(match best {
+        Some((best_at, best_depth, far_side)) => NoValley::NothingDeepEnough {
+            peak: xs[left],
+            best_at,
+            best_depth,
+            far_side,
+        },
+        None => NoValley::OnlyOnePeak {
+            peak: xs[left],
+            events: 0,
+        },
+    })
 }

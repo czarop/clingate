@@ -437,7 +437,7 @@ fn a_single_population_has_no_boundary_to_find() {
     // The EOMES failure. Two populations merged into one hump - so there is no
     // dip, and the honest answer is to refuse rather than place something.
     let (xs, d) = density(&[1.0, 4.0, 9.0, 10.0, 9.0, 6.0, 3.0, 1.0]);
-    assert_eq!(valley_in(&xs, &d), None);
+    assert!(valley_in(&xs, &d).is_err());
 }
 
 #[test]
@@ -445,7 +445,7 @@ fn a_smear_off_the_negative_has_no_boundary_either() {
     // Monotone decline from the negative into a tail. No second population, so
     // nothing to sit between - this is what above-the-negative is for.
     let (xs, d) = density(&[1.0, 6.0, 10.0, 7.0, 5.0, 3.5, 2.0, 1.0, 0.5]);
-    assert_eq!(valley_in(&xs, &d), None);
+    assert!(valley_in(&xs, &d).is_err());
 }
 
 #[test]
@@ -453,7 +453,7 @@ fn a_wobble_on_the_shoulder_is_not_a_boundary() {
     // A dip of a few percent is noise on a shoulder. Taking it as a boundary
     // would put the gate wherever the estimate happened to wobble.
     let (xs, d) = density(&[1.0, 5.0, 10.0, 7.0, 6.95, 6.98, 4.0, 1.0]);
-    assert_eq!(valley_in(&xs, &d), None);
+    assert!(valley_in(&xs, &d).is_err());
 }
 
 #[test]
@@ -502,10 +502,13 @@ fn smoothing_trades_shallow_dips_against_noise() {
 
     let fine = first_valley(&v, 0.6);
     let coarse = first_valley(&v, 2.5);
-    assert!(fine.is_some(), "less smoothing should still find it");
+    assert!(
+        fine.is_ok(),
+        "less smoothing should still find it: {fine:?}"
+    );
     // Heavy smoothing merges them into one hump, which is the trade the
     // parameter exists to expose rather than decide.
-    if let (Some(a), Some(b)) = (fine, coarse) {
+    if let (Ok(a), Ok(b)) = (fine, coarse) {
         assert!(a.depth >= b.depth, "{:?} vs {:?}", a, b);
     }
 }
@@ -521,9 +524,8 @@ fn a_ripple_in_the_tail_is_not_a_valley() {
     let (xs, d) = density(&[
         1.0, 20.0, 100.0, 60.0, 20.0, 5.0, 1.0, 0.4, 0.9, 0.5, 0.2, 0.1,
     ]);
-    assert_eq!(
-        valley_in(&xs, &d),
-        None,
+    assert!(
+        valley_in(&xs, &d).is_err(),
         "the far side must be a population, not a ripple"
     );
 }
@@ -535,4 +537,30 @@ fn a_small_but_real_second_population_is_still_a_valley() {
     let (xs, d) = density(&[1.0, 20.0, 100.0, 40.0, 5.0, 2.0, 8.0, 12.0, 6.0, 1.0]);
     let found = valley_in(&xs, &d).expect("a small population is still a population");
     assert_eq!(found.bottom, 5.0);
+}
+
+#[test]
+fn a_refusal_says_what_the_density_looked_like() {
+    use crate::gate_rules::threshold::NoValley;
+
+    // One hump: the message should name the peak rather than just refusing.
+    let (xs, d) = density(&[1.0, 4.0, 9.0, 10.0, 9.0, 6.0, 3.0, 1.0]);
+    let why = valley_in(&xs, &d).unwrap_err();
+    assert!(
+        matches!(why, NoValley::OnlyOnePeak { peak, .. } if peak == 3.0),
+        "{why:?}"
+    );
+    assert!(why.to_string().contains("merged"), "{why}");
+
+    // A tail ripple: the message should say the far side was negligible, which
+    // is what tells it apart from a real dip.
+    let (xs, d) = density(&[
+        1.0, 20.0, 100.0, 60.0, 20.0, 5.0, 1.0, 0.4, 0.9, 0.5, 0.2, 0.1,
+    ]);
+    let why = valley_in(&xs, &d).unwrap_err();
+    let NoValley::NothingDeepEnough { far_side, .. } = why else {
+        panic!("{why:?}");
+    };
+    assert!(far_side < 0.05, "a ripple in the tail: {far_side}");
+    assert!(why.to_string().contains("far side"), "{why}");
 }

@@ -1141,12 +1141,10 @@ fn position_one(
         crate::gate_rules::rule::Rule::InTheValley(dip) => {
             let from_reference = dip
                 .calibrate(&reference.measurement.values, reference.measurement.current)
-                .ok_or_else(|| format!("{} has no valley to calibrate against", reference.id))?;
+                .map_err(|why| format!("the reference {}: {why}", reference.id))?;
             let here = dip
                 .place(&measured.values, from_reference.offset)
-                .ok_or_else(|| {
-                    "this sample has no dip between the negative and the positive".to_string()
-                })?;
+                .map_err(|why| why.to_string())?;
             // A dip a fifth as deep as the reference's is still a dip, and its
             // lowest point is still the boundary. One that has gone entirely
             // means the two populations have merged and there is no boundary to

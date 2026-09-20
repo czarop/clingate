@@ -2118,8 +2118,10 @@ fn merged_populations_are_refused_rather_than_guessed() {
         .find(|s| &*s.file == "fs_b")
         .expect("and it should say why");
     assert!(
-        said.reason.contains("merged") || said.reason.contains("no dip"),
-        "{}",
+        said.reason.contains("not a boundary")
+            || said.reason.contains("merged")
+            || said.reason.contains("no population"),
+        "and say what it saw, not just that it failed: {}",
         said.reason
     );
     // The gate is left exactly where it was rather than moved somewhere wrong.

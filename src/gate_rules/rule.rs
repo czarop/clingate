@@ -443,9 +443,13 @@ pub struct ValleyRead {
 
 impl ValleyRule {
     /// Read the reference's valley, and how far its gate sits from the bottom.
-    pub fn calibrate(&self, values: &[f64], reference_x: f64) -> Option<ValleyRead> {
+    pub fn calibrate(
+        &self,
+        values: &[f64],
+        reference_x: f64,
+    ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
         let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
-        Some(ValleyRead {
+        Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
             depth: found.depth,
@@ -455,9 +459,13 @@ impl ValleyRule {
     }
 
     /// Find this sample's valley and put the gate the same distance from it.
-    pub fn place(&self, values: &[f64], offset: f64) -> Option<ValleyRead> {
+    pub fn place(
+        &self,
+        values: &[f64],
+        offset: f64,
+    ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
         let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
-        Some(ValleyRead {
+        Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
             depth: found.depth,
