@@ -12,7 +12,7 @@ use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, describe, measure_file};
 use crate::gate_rules::rule::{
-    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule,
+    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule, ValleyRule,
 };
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
@@ -180,6 +180,8 @@ pub fn GateRulesWindow() -> Element {
     let mut calibrate_on = use_signal(String::new);
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
+    let mut min_depth = use_signal(|| "0.25".to_string());
+    let mut smoothing = use_signal(|| "1.0".to_string());
     let mut nudge = use_signal(|| "0.0".to_string());
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
@@ -212,6 +214,18 @@ pub fn GateRulesWindow() -> Element {
             return;
         }
         let rule = match kind().as_str() {
+            "InTheValley" => {
+                let (Ok(d), Ok(sm)) = (min_depth().parse::<f64>(), smoothing().parse::<f64>())
+                else {
+                    message.set(Some("The depth and smoothing must be numbers".into()));
+                    return;
+                };
+                Rule::InTheValley(ValleyRule {
+                    min_depth_fraction: d,
+                    smoothing: sm,
+                    ..ValleyRule::default()
+                })
+            }
             "AboveTheNegative" => {
                 let (Ok(s), Ok(n)) = (scale().parse::<f64>(), nudge().parse::<f64>()) else {
                     message.set(Some("The scale and nudge must be numbers".into()));
@@ -247,7 +261,8 @@ pub fn GateRulesWindow() -> Element {
                 Rule::TailFraction(TailFractionRule::new((l / 100.0, h / 100.0)))
             }
         };
-        if kind() == "AboveTheNegative" && calibrate_on().is_empty() {
+        let calibrated = kind() == "AboveTheNegative" || kind() == "InTheValley";
+        if calibrated && calibrate_on().is_empty() {
             message.set(Some("Choose the sample to calibrate against".into()));
             return;
         }
@@ -265,7 +280,7 @@ pub fn GateRulesWindow() -> Element {
                 } else {
                     Bound::Above
                 },
-                measured_on: if kind() == "AboveTheNegative" {
+                measured_on: if calibrated {
                     // This rule calibrates against one named sample - the QC -
                     // rather than a partner of each specimen.
                     MeasuredOn::File(Arc::from(calibrate_on().as_str()))
@@ -411,6 +426,44 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "TailFraction", "capture a percentage of the parent" }
                     option { value: "PercentileOffset", "step above a percentile" }
                     option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
+                    option { value: "InTheValley", "in the valley between the negative and the positive" }
+                }
+
+                if kind() == "InTheValley" {
+                    label { "Calibrate on" }
+                    select {
+                        value: "{calibrate_on}",
+                        onchange: move |e| calibrate_on.set(e.value()),
+                        option { value: "", "choose the reference sample" }
+                        for (name , id) in files.read().clone() {
+                            option { value: "{id}", "{name}" }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
+                    }
+
+                    label { "Refuse below" }
+                    input {
+                        r#type: "number",
+                        step: "0.05",
+                        value: "{min_depth}",
+                        oninput: move |e| min_depth.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "As a fraction of the reference's valley depth. A dip a fifth as deep is still a dip and still places correctly, so this is deliberately generous - it is here to catch the sample where the two populations have merged entirely and there is no boundary to find."
+                    }
+
+                    label { "Smoothing" }
+                    input {
+                        r#type: "number",
+                        step: "0.1",
+                        value: "{smoothing}",
+                        oninput: move |e| smoothing.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
+                    }
                 }
 
                 if kind() == "AboveTheNegative" {
@@ -778,6 +831,52 @@ pub fn GateRulesWindow() -> Element {
                                         td { "{describe(&kept.gate, kept.parent_gate.as_deref())}" }
                                         td { "{kept.achieved * 100.0:.3}%" }
                                         td { "{kept.above_the_line * 100.0:.3}%" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if run.positioned.iter().any(|p| p.valley.is_some()) {
+                        h3 { "How the valley was read" }
+                        p { class: "gate_rules-note",
+                            "The gate sits at the lowest point of the dip, offset by however far from the bottom it sits on the reference. Depth is how far the dip falls below the lower of the two peaks either side: a shallower dip than the reference's still places correctly, but one near zero means the two populations have merged."
+                        }
+                        table { class: "gate_rules-table",
+                            thead {
+                                tr {
+                                    th { "Specimen" }
+                                    th { "Gate" }
+                                    th { "Ref peak" }
+                                    th { "Ref bottom" }
+                                    th { "Ref depth" }
+                                    th { "Peak" }
+                                    th { "Bottom" }
+                                    th { "Depth" }
+                                    th { "Offset" }
+                                    th { "Placed at" }
+                                }
+                            }
+                            tbody {
+                                for (placed , (reference , here)) in run
+                                    .positioned
+                                    .iter()
+                                    .filter_map(|p| p.valley.map(|v| (p, v)))
+                                {
+                                    tr {
+                                        td { "{placed.specimen}" }
+                                        td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
+                                        td { "{reference.peak:.3}" }
+                                        td { "{reference.bottom:.3}" }
+                                        td { "{reference.depth:.3}" }
+                                        td { "{here.peak:.3}" }
+                                        td { "{here.bottom:.3}" }
+                                        td {
+                                            class: if here.depth < reference.depth * 0.5 { "gate_rules-weak" } else { "" },
+                                            title: "against the reference's dip",
+                                            "{here.depth:.3}"
+                                        }
+                                        td { "{here.offset:+.3}" }
+                                        td { "{here.at:.3}" }
                                     }
                                 }
                             }

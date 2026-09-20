@@ -393,3 +393,146 @@ fn a_population_too_small_to_read_is_declined() {
     // Every event identical: no width to measure, so no spread to scale by.
     assert!(negative_peak(&[2.0; 500]).is_none());
 }
+
+// ─── finding the valley ──────────────────────────────────────────────────────
+
+use crate::gate_rules::threshold::{first_valley, valley_in};
+
+/// A density built by hand, so the right answer is known rather than estimated.
+fn density(heights: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let xs: Vec<f64> = (0..heights.len()).map(|i| i as f64).collect();
+    (xs, heights.to_vec())
+}
+
+#[test]
+fn the_dip_between_two_peaks_is_the_boundary() {
+    let (xs, d) = density(&[1.0, 5.0, 10.0, 4.0, 1.0, 4.0, 9.0, 3.0, 1.0]);
+    let found = valley_in(&xs, &d).expect("two peaks with a dip between them");
+    assert_eq!(found.peak, 2.0, "the negative is the leftmost peak");
+    assert_eq!(found.bottom, 4.0, "the gate belongs at the lowest point");
+    // The dip falls to 1 from a flanking height of 9, so it is 8/9 deep.
+    assert!(
+        (found.depth - 8.0 / 9.0).abs() < 1e-9,
+        "depth {}",
+        found.depth
+    );
+}
+
+#[test]
+fn a_shallow_dip_is_still_a_boundary() {
+    // The case this rule exists for: the two populations have blurred together
+    // but there is still a lowest point, and it is still where the gate goes.
+    let (xs, d) = density(&[1.0, 5.0, 10.0, 9.0, 8.5, 9.0, 9.5, 4.0, 1.0]);
+    let found = valley_in(&xs, &d).expect("a shallow dip is a dip");
+    assert_eq!(found.bottom, 4.0);
+    assert!(
+        found.depth > 0.02 && found.depth < 0.2,
+        "shallow but real: {}",
+        found.depth
+    );
+}
+
+#[test]
+fn a_single_population_has_no_boundary_to_find() {
+    // The EOMES failure. Two populations merged into one hump - so there is no
+    // dip, and the honest answer is to refuse rather than place something.
+    let (xs, d) = density(&[1.0, 4.0, 9.0, 10.0, 9.0, 6.0, 3.0, 1.0]);
+    assert_eq!(valley_in(&xs, &d), None);
+}
+
+#[test]
+fn a_smear_off_the_negative_has_no_boundary_either() {
+    // Monotone decline from the negative into a tail. No second population, so
+    // nothing to sit between - this is what above-the-negative is for.
+    let (xs, d) = density(&[1.0, 6.0, 10.0, 7.0, 5.0, 3.5, 2.0, 1.0, 0.5]);
+    assert_eq!(valley_in(&xs, &d), None);
+}
+
+#[test]
+fn a_wobble_on_the_shoulder_is_not_a_boundary() {
+    // A dip of a few percent is noise on a shoulder. Taking it as a boundary
+    // would put the gate wherever the estimate happened to wobble.
+    let (xs, d) = density(&[1.0, 5.0, 10.0, 7.0, 6.95, 6.98, 4.0, 1.0]);
+    assert_eq!(valley_in(&xs, &d), None);
+}
+
+#[test]
+fn the_first_dip_is_taken_when_there_are_several() {
+    // Three populations. The boundary that matters is the one next to the
+    // negative, not the deepest one further out.
+    let (xs, d) = density(&[1.0, 8.0, 10.0, 3.0, 1.0, 7.0, 9.0, 0.5, 0.2, 6.0, 8.0]);
+    let found = valley_in(&xs, &d).expect("several dips");
+    assert_eq!(found.bottom, 4.0, "the first one, next to the negative");
+}
+
+#[test]
+fn a_valley_is_found_in_real_looking_data() {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+
+    let mut rng = StdRng::seed_from_u64(4);
+    let neg = Normal::new(0.0, 0.4).unwrap();
+    let pos = Normal::new(3.0, 0.5).unwrap();
+    let mut v: Vec<f64> = (0..20_000).map(|_| neg.sample(&mut rng)).collect();
+    v.extend((0..8_000).map(|_| pos.sample(&mut rng)));
+
+    let found = first_valley(&v, 1.0).expect("a clean two-peak population");
+    assert!(found.peak.abs() < 0.2, "negative peak at {}", found.peak);
+    assert!(
+        found.bottom > 1.0 && found.bottom < 2.2,
+        "the dip should sit between them, got {}",
+        found.bottom
+    );
+    assert!(found.depth > 0.5, "a clean separation: {}", found.depth);
+}
+
+#[test]
+fn smoothing_trades_shallow_dips_against_noise() {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+
+    // Two populations close enough that the dip between them is shallow.
+    let mut rng = StdRng::seed_from_u64(5);
+    let neg = Normal::new(0.0, 0.5).unwrap();
+    let pos = Normal::new(1.6, 0.5).unwrap();
+    let mut v: Vec<f64> = (0..20_000).map(|_| neg.sample(&mut rng)).collect();
+    v.extend((0..10_000).map(|_| pos.sample(&mut rng)));
+
+    let fine = first_valley(&v, 0.6);
+    let coarse = first_valley(&v, 2.5);
+    assert!(fine.is_some(), "less smoothing should still find it");
+    // Heavy smoothing merges them into one hump, which is the trade the
+    // parameter exists to expose rather than decide.
+    if let (Some(a), Some(b)) = (fine, coarse) {
+        assert!(a.depth >= b.depth, "{:?} vs {:?}", a, b);
+    }
+}
+
+#[test]
+fn a_ripple_in_the_tail_is_not_a_valley() {
+    // Depth is read against the lower of the two flanking peaks, and out in a
+    // sparse tail that height is nearly zero - so a ripple of no consequence
+    // reads as a deep dip and puts the gate far out in empty data. That is the
+    // failure this whole rule exists to avoid, arriving by another route.
+    //
+    // One tall population, then a negligible wobble in its tail.
+    let (xs, d) = density(&[
+        1.0, 20.0, 100.0, 60.0, 20.0, 5.0, 1.0, 0.4, 0.9, 0.5, 0.2, 0.1,
+    ]);
+    assert_eq!(
+        valley_in(&xs, &d),
+        None,
+        "the far side must be a population, not a ripple"
+    );
+}
+
+#[test]
+fn a_small_but_real_second_population_is_still_a_valley() {
+    // The other side of that bar: a positive a tenth the height of the negative
+    // is a population, and the dip before it is a boundary.
+    let (xs, d) = density(&[1.0, 20.0, 100.0, 40.0, 5.0, 2.0, 8.0, 12.0, 6.0, 1.0]);
+    let found = valley_in(&xs, &d).expect("a small population is still a population");
+    assert_eq!(found.bottom, 5.0);
+}

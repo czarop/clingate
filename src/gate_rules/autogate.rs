@@ -25,7 +25,7 @@ use crate::gate_editor::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gate_editor::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_rules::rule::NegativeRead;
+use crate::gate_rules::rule::{NegativeRead, ValleyRead};
 use crate::gate_rules::rule_store::{Bound, MeasuredOn, SamplePairing};
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey};
 use flow_gates::GateGeometry;
@@ -756,6 +756,10 @@ pub struct Positioned {
     /// the only way to tell a gate that moved because the negative moved from
     /// one that moved because the negative was measured differently.
     pub negative: Option<(NegativeRead, NegativeRead)>,
+    /// For a rule that places in the valley: what it read on the reference, and
+    /// on this sample. The two depths side by side are what says whether the
+    /// structure the rule depends on is still there.
+    pub valley: Option<(ValleyRead, ValleyRead)>,
 }
 
 /// A gate no rule could even be tried against, and why.
@@ -1095,6 +1099,7 @@ fn position_one(
     // answer is otherwise impossible to check by eye: the reading it made on
     // the reference, and the reading it made on this sample.
     let mut reading: Option<(NegativeRead, NegativeRead)> = None;
+    let mut valley: Option<(ValleyRead, ValleyRead)> = None;
 
     let (moved, to, achieved) = match &rule.rule {
         // Calibrated against the reference, then applied to this sample's own
@@ -1129,6 +1134,36 @@ fn position_one(
                     .map_err(|e| e.to_string())?;
             let got = admitted_by(&moved, population).unwrap_or(0.0);
             reading = Some((from_reference, here));
+            (moved, here.at, got)
+        }
+        // The boundary read directly rather than paced out from the negative's
+        // centre. Nothing is multiplied, so nothing is amplified.
+        crate::gate_rules::rule::Rule::InTheValley(dip) => {
+            let from_reference = dip
+                .calibrate(&reference.measurement.values, reference.measurement.current)
+                .ok_or_else(|| format!("{} has no valley to calibrate against", reference.id))?;
+            let here = dip
+                .place(&measured.values, from_reference.offset)
+                .ok_or_else(|| {
+                    "this sample has no dip between the negative and the positive".to_string()
+                })?;
+            // A dip a fifth as deep as the reference's is still a dip, and its
+            // lowest point is still the boundary. One that has gone entirely
+            // means the two populations have merged and there is no boundary to
+            // find - place nothing rather than something plausible-looking.
+            if here.depth < from_reference.depth * dip.min_depth_fraction {
+                return Err(format!(
+                    "the valley here is {:.0}% as deep as the reference's ({:.3} against {:.3}) - the populations have merged",
+                    100.0 * here.depth / from_reference.depth.max(f64::EPSILON),
+                    here.depth,
+                    from_reference.depth
+                ));
+            }
+            let moved =
+                translate_edge_to(&current_gate, &measured.parameter, measured.bound, here.at)
+                    .map_err(|e| e.to_string())?;
+            let got = admitted_by(&moved, population).unwrap_or(0.0);
+            valley = Some((from_reference, here));
             (moved, here.at, got)
         }
         _ => match rule.rule.accepted_band() {
@@ -1214,6 +1249,7 @@ fn position_one(
     let judge_displacement = !matches!(
         &rule.rule,
         crate::gate_rules::rule::Rule::AboveTheNegative(_)
+            | crate::gate_rules::rule::Rule::InTheValley(_)
     );
     let confidence = rule
         .rule
@@ -1236,6 +1272,7 @@ fn position_one(
             reference_events: parent_events,
             in_band,
             negative: reading,
+            valley,
         },
         Placement {
             gate_id: measured.gate_id.clone(),

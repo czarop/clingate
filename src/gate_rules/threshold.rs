@@ -514,3 +514,138 @@ fn leftmost_prominent_mode(xs: &[f64], density: &[f64]) -> Option<f64> {
     // the tallest point rather than refusing outright.
     Some(crate::gate_move::kde::kde_peak(xs, density))
 }
+
+// ─── the valley between two populations ──────────────────────────────────────
+
+/// The dip between the negative and whatever sits above it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Valley {
+    /// Where the negative's own peak sits.
+    pub peak: f64,
+    /// The lowest point between that peak and the next one - the boundary a
+    /// person reads off a contour plot.
+    pub bottom: f64,
+    /// How deep the dip is, as a fraction of the lower of the two peaks either
+    /// side of it. Zero is no dip at all; one is a valley reaching the floor.
+    ///
+    /// Reported rather than thresholded here, because how shallow a valley may
+    /// be and still be gated is the caller's judgement, not this function's.
+    pub depth: f64,
+}
+
+/// A dip this shallow is noise on a shoulder rather than a boundary.
+const VALLEY_FLOOR: f64 = 0.02;
+/// How tall the far side of a dip must be, against the tallest peak, to count
+/// as a population rather than a wobble in the tail.
+///
+/// Without this the depth measure is worst exactly where it matters. Depth is
+/// read against the lower of the two flanking peaks, and out in a sparse tail
+/// that height is nearly zero - so a ripple of no consequence reads as a dip
+/// 15% to 29% deep and puts the gate far out in empty data. That is the very
+/// failure the rule exists to avoid, arriving by a different route.
+///
+/// Five percent admits a positive population a few percent the size of the
+/// negative while excluding tail noise. Below that a valley is not visible
+/// anyway, and above-the-negative is the rule for those.
+const FAR_SIDE_PROMINENCE: f64 = 0.05;
+
+/// Find the first real dip to the right of the negative's peak.
+///
+/// This is a different question from [`negative_peak`], and the reason for
+/// having both. That one measures the negative's centre and width and leaves
+/// the caller to work out where the boundary must be - which means multiplying
+/// a width, and a width read from a population that has merged with its
+/// neighbour is multiplied too. Across a real panel that turned a negative
+/// measured 2.47 times too wide into a gate six widths past where it belonged.
+///
+/// This reads the boundary directly. Nothing is extrapolated, so nothing is
+/// amplified, and a valley that is a fifth as deep as the reference's still has
+/// a lowest point in the right place.
+///
+/// `smoothing` scales the bandwidth. Below 1 finds shallower dips and more
+/// noise; above 1 smooths shallow ones away. It is exposed because which of
+/// those is wanted depends on the marker, and no automatic rule knows that.
+pub fn first_valley(values: &[f64], smoothing: f64) -> Option<Valley> {
+    if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
+        return None;
+    }
+    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values) * smoothing;
+    if !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return None;
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+        return None;
+    }
+    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    valley_in(&xs, &density)
+}
+
+/// The valley-finding itself, over a density already computed.
+///
+/// Split out so it can be exercised on a density built by hand, where the
+/// answer is known, rather than only through a kernel estimate.
+pub fn valley_in(xs: &[f64], density: &[f64]) -> Option<Valley> {
+    let n = density.len().min(xs.len());
+    if n < 3 {
+        return None;
+    }
+    let tallest = density[..n]
+        .iter()
+        .copied()
+        .filter(|d| d.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !tallest.is_finite() || tallest <= 0.0 {
+        return None;
+    }
+
+    // The negative: the leftmost bump tall enough to be a population rather
+    // than a wobble. The same bar `negative_peak` uses, so the two agree about
+    // which peak is the negative.
+    const PROMINENCE: f64 = 0.25;
+    let floor = tallest * PROMINENCE;
+    let left = (1..n - 1).find(|&i| {
+        density[i] >= floor && density[i] >= density[i - 1] && density[i] > density[i + 1]
+    })?;
+
+    // Walk right: down into a dip, then up to whatever is on the far side. The
+    // first dip with a real rise after it is the boundary.
+    let mut i = left;
+    while i < n - 1 {
+        // Descend to the bottom of this dip.
+        let mut bottom = i;
+        while bottom < n - 1 && density[bottom + 1] <= density[bottom] {
+            bottom += 1;
+        }
+        if bottom >= n - 1 {
+            // It fell away to the end of the data without rising again, so
+            // there is no population on the other side and no boundary here.
+            return None;
+        }
+        // Climb the far side to its summit.
+        let mut right = bottom;
+        while right < n - 1 && density[right + 1] >= density[right] {
+            right += 1;
+        }
+
+        let flanking = density[left].min(density[right]);
+        let depth = if flanking > 0.0 {
+            (flanking - density[bottom]) / flanking
+        } else {
+            0.0
+        };
+        if depth >= VALLEY_FLOOR && density[right] >= tallest * FAR_SIDE_PROMINENCE {
+            return Some(Valley {
+                peak: xs[left],
+                bottom: xs[bottom],
+                depth,
+            });
+        }
+        if right <= i {
+            break;
+        }
+        i = right;
+    }
+    None
+}

@@ -149,6 +149,7 @@ pub enum Rule {
     TailFraction(TailFractionRule),
     PercentileOffset(PercentileOffsetRule),
     AboveTheNegative(AboveTheNegativeRule),
+    InTheValley(ValleyRule),
 }
 
 /// "Where I put it on the QC, relative to that sample's negative."
@@ -373,6 +374,108 @@ impl AboveTheNegativeRule {
     }
 }
 
+/// "In the dip between the negative and the positive, where I put it on the QC."
+///
+/// The sibling of [`AboveTheNegativeRule`], and the difference is what each one
+/// measures. That one reads the negative's centre and width and paces out a
+/// fixed number of widths; this one reads the boundary itself.
+///
+/// Nothing is extrapolated here, so nothing is amplified - which is the failure
+/// that motivated it. On a marker whose two populations had merged in one
+/// sample, the negative measured 2.47 times wider than the reference's, and
+/// because the gate sits a fixed number of widths out, that carried it six
+/// widths past where it belonged and off the end of the data.
+///
+/// It needs two populations. Where the positives are a smear with no peak of
+/// their own there is no dip to find and this rule has nothing to say;
+/// `AboveTheNegative` is for those. The two are not competitors, they are for
+/// different shapes of plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValleyRule {
+    /// How shallow this sample's valley may be, against the reference's, before
+    /// the placement is refused.
+    ///
+    /// Deliberately generous: a shallower dip is still a dip, and its lowest
+    /// point is still the right place for the gate. This is here to catch the
+    /// case where the two populations have merged entirely and the structure
+    /// the rule depends on is simply absent.
+    #[serde(default = "quarter")]
+    pub min_depth_fraction: f64,
+    /// Scales the density's bandwidth. Below 1 finds shallower dips and more
+    /// noise; above 1 smooths shallow ones away. Exposed because which of those
+    /// is wanted depends on the marker, and no automatic rule knows that.
+    #[serde(default = "one")]
+    pub smoothing: f64,
+    #[serde(default)]
+    pub confidence: CountAndSeparation,
+}
+
+fn quarter() -> f64 {
+    0.25
+}
+
+impl Default for ValleyRule {
+    fn default() -> Self {
+        Self {
+            min_depth_fraction: 0.25,
+            smoothing: 1.0,
+            confidence: CountAndSeparation::default(),
+        }
+    }
+}
+
+/// What the valley rule read off one sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ValleyRead {
+    /// The negative's own peak.
+    pub peak: f64,
+    /// The lowest point of the dip beyond it.
+    pub bottom: f64,
+    /// How deep that dip is, as a fraction of the lower peak either side.
+    pub depth: f64,
+    /// How far the gate sits from the bottom. Read from the reference and
+    /// applied as given, so a person who habitually gates a little to one side
+    /// of the true bottom has that reproduced rather than corrected.
+    pub offset: f64,
+    /// Where that puts the gate.
+    pub at: f64,
+}
+
+impl ValleyRule {
+    /// Read the reference's valley, and how far its gate sits from the bottom.
+    pub fn calibrate(&self, values: &[f64], reference_x: f64) -> Option<ValleyRead> {
+        let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
+        Some(ValleyRead {
+            peak: found.peak,
+            bottom: found.bottom,
+            depth: found.depth,
+            offset: reference_x - found.bottom,
+            at: reference_x,
+        })
+    }
+
+    /// Find this sample's valley and put the gate the same distance from it.
+    pub fn place(&self, values: &[f64], offset: f64) -> Option<ValleyRead> {
+        let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
+        Some(ValleyRead {
+            peak: found.peak,
+            bottom: found.bottom,
+            depth: found.depth,
+            offset,
+            at: found.bottom + offset,
+        })
+    }
+
+    pub fn describe(&self) -> String {
+        let mut how =
+            "in the dip between the negative and the positive, as on the reference".to_string();
+        if self.smoothing != 1.0 {
+            how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
+        }
+        how
+    }
+}
+
 impl Rule {
     /// Solve and score, dispatching to the variant's own implementation.
     pub fn apply(&self, values: &[f64], reference_x: Option<f64>) -> Result<Solved, SolveError> {
@@ -381,7 +484,9 @@ impl Rule {
             Rule::PercentileOffset(r) => r.apply(values, reference_x),
             // Calibrated against another sample, so it cannot be solved from
             // one population alone - see `AboveTheNegativeRule`.
-            Rule::AboveTheNegative(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            Rule::AboveTheNegative(_) | Rule::InTheValley(_) => {
+                Err(SolveError::BadBand { band: (0.0, 0.0) })
+            }
         }
     }
 
@@ -397,6 +502,7 @@ impl Rule {
             Rule::TailFraction(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
+            Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
         }
     }
 
@@ -404,7 +510,9 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.solve(values),
             Rule::PercentileOffset(r) => r.solve(values),
-            Rule::AboveTheNegative(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            Rule::AboveTheNegative(_) | Rule::InTheValley(_) => {
+                Err(SolveError::BadBand { band: (0.0, 0.0) })
+            }
         }
     }
 
@@ -413,6 +521,7 @@ impl Rule {
             Rule::TailFraction(r) => r.describe(),
             Rule::PercentileOffset(r) => r.describe(),
             Rule::AboveTheNegative(r) => r.describe(),
+            Rule::InTheValley(r) => r.describe(),
         }
     }
 
@@ -430,7 +539,7 @@ impl Rule {
     pub fn accepted_band(&self) -> Option<(f64, f64)> {
         match self {
             Rule::TailFraction(r) => Some(r.band),
-            Rule::PercentileOffset(_) | Rule::AboveTheNegative(_) => None,
+            Rule::PercentileOffset(_) | Rule::AboveTheNegative(_) | Rule::InTheValley(_) => None,
         }
     }
 
@@ -440,6 +549,7 @@ impl Rule {
             Rule::TailFraction(_) => "Tail fraction",
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
+            Rule::InTheValley(_) => "In the valley",
         }
     }
 }

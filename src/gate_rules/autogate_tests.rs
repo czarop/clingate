@@ -1956,3 +1956,228 @@ fn reversing_the_display_order_reverses_which_file_is_gated() {
             > gated_rank(&pairing, &Arc::from("fs_a"), &map)
     );
 }
+
+// ─── placing in the valley ───────────────────────────────────────────────────
+
+/// Two populations: a negative at `negative`, a positive 3.0 above it, with a
+/// real dip between. `merge` moves the positive down onto the negative until
+/// the dip fills in.
+fn two_populations(negative: f32, merge: f32) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+
+    let mut rng = StdRng::seed_from_u64(9);
+    let neg = Normal::new(negative, 40.0).unwrap();
+    let pos = Normal::new(negative + 300.0 - merge, 45.0).unwrap();
+    let mut xs: Vec<f32> = (0..14_000).map(|_| neg.sample(&mut rng)).collect();
+    xs.extend((0..6_000).map(|_| pos.sample(&mut rng)));
+    let n = xs.len();
+    df![X => xs, Y => vec![0.0f32; n]].unwrap()
+}
+
+fn valley_rule(file: &str, min_depth: f64) -> crate::gate_rules::rule_store::RuleStore {
+    use crate::gate_rules::rule::{Rule, ValleyRule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("CD134+"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from(file)),
+            rule: Rule::InTheValley(ValleyRule {
+                min_depth_fraction: min_depth,
+                ..ValleyRule::default()
+            }),
+        },
+    );
+    store
+}
+
+fn sweep_frames(
+    state: &mut crate::gate_editor::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+    frames: &[(&str, &polars::prelude::DataFrame)],
+) -> crate::gate_rules::autogate::Report {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in frames {
+        let (m, u) = measure_file(state, &Arc::from(*file), frame, map, store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    position_all(state, store, &measured, &unmeasured, map)
+}
+
+#[test]
+fn the_gate_follows_the_valley_when_the_populations_move() {
+    // Both populations shifted up by 150. The dip moves with them, and so
+    // should the gate - by the same amount, since nothing else changed.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let shifted = two_populations(550.0, 0.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.25),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &shifted)],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    let (reference, sample) = placed.valley.expect("the reading is reported");
+    assert!(
+        (sample.bottom - reference.bottom - 150.0).abs() < 25.0,
+        "the dip moved 150; read {} against {}",
+        sample.bottom,
+        reference.bottom
+    );
+    assert!(
+        (placed.to - 150.0 - reference.at).abs() < 25.0,
+        "so should the gate: {} against {}",
+        placed.to,
+        reference.at
+    );
+}
+
+#[test]
+fn a_wider_positive_population_does_not_carry_the_gate_away() {
+    // The EOMES failure, as a test. Pacing out a fixed number of the negative's
+    // widths let a negative measured 2.47x too wide throw the gate six widths
+    // past where it belonged. Reading the dip cannot do that, because there is
+    // no width being multiplied.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    // Populations closer together: the dip is shallower and sits lower, but it
+    // is still a dip and the gate should follow it - not fly outwards.
+    let closer = two_populations(400.0, 120.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.05),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &closer)],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    let (reference, sample) = placed.valley.expect("reported");
+    assert!(
+        sample.depth < reference.depth,
+        "the dip should be shallower: {} against {}",
+        sample.depth,
+        reference.depth
+    );
+    assert!(
+        placed.to < reference.at,
+        "and the gate should move inwards with it, not outwards: {} against {}",
+        placed.to,
+        reference.at
+    );
+}
+
+#[test]
+fn merged_populations_are_refused_rather_than_guessed() {
+    // When the two have run together there is no boundary, and a rule that
+    // reads boundaries should say so. Placing something plausible-looking is
+    // how a gate holding 35% came back holding 0.07%.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let merged = two_populations(400.0, 300.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.25),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &merged)],
+    );
+
+    assert!(
+        report.positioned.iter().all(|p| &*p.specimen != "DONOR-B"),
+        "nothing should be placed where there is no boundary"
+    );
+    let said = report
+        .skipped
+        .iter()
+        .find(|s| &*s.file == "fs_b")
+        .expect("and it should say why");
+    assert!(
+        said.reason.contains("merged") || said.reason.contains("no dip"),
+        "{}",
+        said.reason
+    );
+    // The gate is left exactly where it was rather than moved somewhere wrong.
+    let untouched = state
+        .gate_for_file(&gate_id, &Arc::from("fs_b"), &map)
+        .unwrap();
+    assert_eq!(edges(&untouched, X).0, 500.0);
+}
+
+#[test]
+fn a_shallower_valley_within_tolerance_is_still_placed() {
+    // The other half: shallower is not the same as absent. A dip a third as
+    // deep still has a lowest point and the gate still belongs there.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let shallower = two_populations(400.0, 130.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.05),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &shallower)],
+    );
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("a shallower dip should still be gated");
+    let (_, sample) = placed.valley.unwrap();
+    assert!(sample.depth > 0.0);
+}
+
+#[test]
+fn the_offset_from_the_bottom_is_carried_across() {
+    // If a person gates a little to one side of the true bottom, that is their
+    // judgement and it should be reproduced, not corrected to the centre.
+    use crate::gate_rules::rule::ValleyRule;
+    let rule = ValleyRule::default();
+    let mut v: Vec<f64> = Vec::new();
+    {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+        use rand_distr::{Distribution, Normal};
+        let mut rng = StdRng::seed_from_u64(11);
+        let neg = Normal::new(0.0, 0.4).unwrap();
+        let pos = Normal::new(3.0, 0.5).unwrap();
+        v.extend((0..12_000).map(|_| neg.sample(&mut rng)));
+        v.extend((0..5_000).map(|_| pos.sample(&mut rng)));
+    }
+    let bottom = rule.calibrate(&v, 0.0).unwrap().bottom;
+    // A gate drawn 0.4 to the right of the bottom.
+    let cal = rule.calibrate(&v, bottom + 0.4).unwrap();
+    assert!((cal.offset - 0.4).abs() < 1e-9, "offset {}", cal.offset);
+    let back = rule.place(&v, cal.offset).unwrap();
+    assert!(
+        (back.at - (bottom + 0.4)).abs() < 1e-9,
+        "applied back to its own sample it reproduces the gate: {}",
+        back.at
+    );
+}
