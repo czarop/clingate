@@ -82,6 +82,47 @@ pub fn PairingColumns() -> Element {
         (matched, files.len())
     });
 
+    // Which sample types the loaded files actually resolve to, and how many
+    // resolve to none at all.
+    //
+    // Nothing used to say when this failed, and it fails quietly and totally:
+    // with no type, the two plots cannot be told apart so they keep the
+    // folder's order and swap sides between specimens, and the autogater
+    // cannot tell a full stain from its FMO so it reads whichever file sorts
+    // first. A whole run came back unpositioned because every rule had been
+    // measured against an FMO, and not one message said so.
+    let types = use_memo(move || {
+        let pairing = rules.read().pairing.clone();
+        let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
+            return (Vec::<(Arc<str>, usize)>::new(), 0usize);
+        };
+        let ids = metadata_store.file_name_to_gating_id();
+        let ids = ids.read();
+        let lens = metadata_store.metadata();
+        let metadata = lens.read();
+
+        let mut counts: Vec<(Arc<str>, usize)> = Vec::new();
+        let mut untyped = 0usize;
+        for stub in &files {
+            let found = stub
+                .get_filepath()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|name| ids.get(name))
+                .and_then(|id| metadata.get(id))
+                .and_then(|columns| pairing.sample_type_of(columns));
+            match found {
+                Some(kind) => match counts.iter_mut().find(|(k, _)| *k == kind) {
+                    Some((_, n)) => *n += 1,
+                    None => counts.push((kind, 1)),
+                },
+                None => untyped += 1,
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1));
+        (counts, untyped)
+    });
+
     rsx! {
         div { class: "pairing-columns",
             label { "Sample ID" }
@@ -104,6 +145,74 @@ pub fn PairingColumns() -> Element {
                 for name in offered(&columns.read(), &rules.read().pairing.sample_type_column) {
                     option { value: "{name}", "{name}" }
                 }
+            }
+
+            {
+                let (found, untyped) = types();
+                let order = rules.read().pairing.display_order.clone();
+                let named: Vec<Arc<str>> = found
+                    .iter()
+                    .map(|(k, _)| k.clone())
+                    .filter(|k| !order.contains(k))
+                    .collect();
+                if found.is_empty() {
+                    rsx! {
+                        span { class: "pairing-columns_note pairing-columns_warn",
+                            "No loaded file has a value in this column. Without a sample type the two plots cannot be told apart, so they keep the folder's order, and a rule reads whichever file of a specimen sorts first rather than its full stain."
+                        }
+                    }
+                } else {
+                    let listed = found
+                        .iter()
+                        .map(|(k, n)| format!("{k} ({n})"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if untyped > 0 || !named.is_empty() {
+                        let mut trouble = Vec::new();
+                        if untyped > 0 {
+                            trouble.push(format!("{untyped} files have no type"));
+                        }
+                        if !named.is_empty() {
+                            trouble.push(format!(
+                                "{} is not in the display order, so it gets no plot of its own",
+                                named
+                                    .iter()
+                                    .map(|k| k.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                        }
+                        rsx! {
+                            span { class: "pairing-columns_note pairing-columns_warn",
+                                "Found {listed} - but {trouble.join(\"; \")}."
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            span { class: "pairing-columns_note", "Found {listed}." }
+                        }
+                    }
+                }
+            }
+
+            label { "Plot order" }
+            input {
+                value: "{rules.read().pairing.display_order.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(\", \")}",
+                onchange: move |e| {
+                    let order: Vec<Arc<str>> = e
+                        .value()
+                        .split(',')
+                        .map(|t| t.trim())
+                        .filter(|t| !t.is_empty())
+                        .map(Arc::from)
+                        .collect();
+                    if !order.is_empty() {
+                        rules.write().pairing.display_order = order;
+                    }
+                },
+            }
+            span { class: "pairing-columns_note",
+                "The sample types, left plot first. A specimen with no file of the first type leaves that plot empty rather than sliding its other one across. This is also what tells a rule which file of a specimen is the full stain to gate."
             }
 
             label { "Sort by" }

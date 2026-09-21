@@ -2343,3 +2343,48 @@ fn the_valley_rule_gives_each_specimen_its_own_position_and_badge() {
     assert!(groups.contains(&gate_id), "the badge's source says group");
     assert!(!samples.contains(&gate_id), "not per sample");
 }
+
+#[test]
+fn a_run_that_cannot_tell_a_stain_from_its_fmo_says_so() {
+    // It fails quietly and totally: with no sample type every rule reads
+    // whichever file of a specimen sorts first, and an FMO has no positive
+    // population to gate against. A whole run came back unpositioned that way
+    // with not one message explaining it.
+    use crate::gate_rules::rule_store::SamplePairing;
+
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for file in ["fs_qc", "fs_b"] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("SampleID"), Arc::from(file));
+        // A type the display order does not name - which is the same as none.
+        columns.insert(Arc::from("SampleType"), Arc::from("Unstained"));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    let mut store = above_the_negative_rule("fs_qc");
+    store.pairing = SamplePairing::default();
+
+    let (mut state, _) = one_positive_gate();
+    let report = sweep_over(&mut state, &store, &map, &["fs_qc", "fs_b"]);
+
+    let warned = report
+        .skipped
+        .iter()
+        .find(|s| s.reason.contains("full stain cannot be told from its FMO"))
+        .expect("the run should say it could not tell them apart");
+    assert!(warned.reason.contains("SampleType"), "{}", warned.reason);
+    assert!(warned.reason.contains("FMX"), "{}", warned.reason);
+}
+
+#[test]
+fn a_run_that_can_tell_them_apart_stays_quiet_about_it() {
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let report = sweep(&mut state, &fmx_rule(), &map);
+    assert!(
+        !report
+            .skipped
+            .iter()
+            .any(|s| s.reason.contains("cannot be told")),
+        "no warning when the types resolve"
+    );
+}

@@ -928,6 +928,34 @@ pub fn solve_all_reporting(
     // reported from the control, which is how a gate holding 6.24% came to be
     // reported as 0.016%.
     let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    // If no file resolves to a sample type, nothing here can tell a full stain
+    // from its FMO, and every rule silently reads whichever file of a specimen
+    // sorts first. A whole run came back unpositioned that way - every rule
+    // measured against an FMO - with not one message saying so. Say it once.
+    if !measurements.is_empty()
+        && measurements
+            .iter()
+            .all(|m| gated_rank(&store.pairing, &m.file, metadata) == 0)
+    {
+        report.skipped.push(Skipped {
+            file: Arc::from(""),
+            gate: Arc::from(""),
+            parent_gate: None,
+            reason: format!(
+                "no file has a sample type under \"{}\" that \"{}\" names, so a specimen's \
+                 full stain cannot be told from its FMO - each rule read whichever of its files \
+                 sorted first",
+                store.pairing.sample_type_column,
+                store
+                    .pairing
+                    .display_order
+                    .iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
     for (i, m) in measurements.iter().enumerate() {
         let Some(specimen) = specimen_of(&store.pairing, &m.file, metadata) else {
             continue;
