@@ -1,3 +1,4 @@
+use crate::components::toast::{say, use_toast, warn};
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::axis_store::AxisStore;
@@ -5,7 +6,7 @@ use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::axis_store::ScalingInfoSource;
 use crate::gate_editor::plots::axis_store::{default_axis_params, index_of_fluoro};
-use crate::gate_editor::plots::plot_window::PlotWindow;
+use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
 use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of};
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataImplExt;
@@ -36,9 +37,9 @@ use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/main_window.css");
 
-/// The plot is 600x600, and the drawing area inside it is inset by the axis
-/// labels. Taken from the same helper the gate geometry uses, so the two agree.
-const PLOT_SIZE: u32 = 600;
+/// The drawing area inside the plot, inset by the axis labels. Taken from the
+/// same helper the gate geometry uses, so the two agree, and from the plot's
+/// own size so a change there cannot leave this behind.
 static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| {
     let (x, _) = flow_gates::transforms::get_plotting_area(PLOT_SIZE, PLOT_SIZE);
     (x.start, x.end - x.start)
@@ -61,6 +62,77 @@ fn loaded_gating_file() -> String {
                 .map(|l| l.trim().to_string())
         })
         .unwrap_or_default()
+}
+
+/// A button that opens the OS file dialog and writes the chosen path back into
+/// `path`.
+///
+/// The text box beside it stays editable on purpose. A dialog is the easy way
+/// to find a file you can see, but a path pasted from a terminal or a ticket is
+/// the easy way to reach one you cannot - a mounted share, a directory behind a
+/// symlink - and on a machine with no XDG desktop portal the dialog is the part
+/// that does not work. Neither one is a fallback for the other; they are two
+/// ways in.
+///
+/// `saving` picks the dialog: choosing an existing file to read, or naming one
+/// that need not exist yet to write. They are different system dialogs, and an
+/// open dialog cannot name a file that is not there - which is most of the
+/// files this one is used for.
+#[component]
+fn PickPath(path: Signal<String>, saving: bool, disabled: bool) -> Element {
+    let mut path = path;
+    let toasts = use_toast();
+    let browse = move |_| {
+        let current = path();
+        spawn(async move {
+            let opened = std::time::Instant::now();
+            let current = std::path::PathBuf::from(current.trim());
+            let mut dialog = rfd::AsyncFileDialog::new()
+                .add_filter("Omiq gating file", &["omiqgt"])
+                .add_filter("Every file", &["*"]);
+            // Open where the box is already pointing, so the dialog starts
+            // beside the last file rather than in the home directory.
+            if let Some(parent) = current.parent().filter(|p| p.is_dir()) {
+                dialog = dialog.set_directory(parent);
+            }
+            if saving && let Some(name) = current.file_name().and_then(|n| n.to_str()) {
+                dialog = dialog.set_file_name(name);
+            }
+            let chosen = if saving {
+                dialog.save_file().await
+            } else {
+                dialog.pick_file().await
+            };
+            // `None` is the person pressing Cancel, which is not a failure and
+            // should leave what they had typed alone.
+            if let Some(handle) = chosen {
+                path.set(handle.path().display().to_string());
+                return;
+            }
+            // Unless it came back faster than anyone could have pressed Cancel.
+            // The dialog is an XDG desktop portal, a D-Bus service separate
+            // from this application, and where it is not running rfd reports
+            // exactly what it reports for Cancel: nothing. Saying so beats a
+            // button that appears to do nothing at all, and the box beside it
+            // still takes a typed or pasted path.
+            if opened.elapsed() < std::time::Duration::from_millis(300) {
+                warn(
+                    &toasts,
+                    "Could not open the file dialog - type or paste the path instead",
+                );
+            }
+        });
+    };
+
+    rsx! {
+        button {
+            class: "export-gating_browse",
+            disabled,
+            title: "Choose a file",
+            onclick: browse,
+            "..."
+        }
+    }
 }
 
 /// Loading and writing gating files, side by side.
@@ -96,8 +168,8 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
+    let toasts = use_toast();
     let mut path = use_signal(loaded_gating_file);
-    let mut result = use_signal(|| None::<Result<String, String>>);
     let mut busy = use_signal(|| false);
 
     let load = move |_| {
@@ -108,14 +180,13 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
         let metadata = metadata_store.metadata().peek().clone();
         let axes = axis_store.settings().peek().clone();
         if metadata.is_empty() || axes.is_empty() {
-            result.set(Some(Err(
-                "Load the metadata and scaling files first - gates cannot be placed without them"
-                    .to_string(),
-            )));
+            warn(
+                &toasts,
+                "Load the metadata and scaling files first - gates cannot be placed without them",
+            );
             return;
         }
         busy.set(true);
-        result.set(None);
 
         // Parsed on a worker thread and applied here. A real gating file is
         // hundreds of kilobytes over a few hundred containers, which is long
@@ -134,16 +205,19 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
                     // so no plot renders against a chain from the old document.
                     parental_gate.set(Some(ROOTGATE.clone()));
                     gate_store.set(fresh);
-                    result.set(Some(Ok(format!(
-                        "{count} gates from {}",
-                        target
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("the file")
-                    ))));
+                    say(
+                        &toasts,
+                        format!(
+                            "Loaded {count} gates from {}",
+                            target
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("the file")
+                        ),
+                    );
                 }
-                Ok(Err(e)) => result.set(Some(Err(e.to_string()))),
-                Err(e) => result.set(Some(Err(format!("load thread failed: {e}")))),
+                Ok(Err(e)) => warn(&toasts, format!("Could not load: {e}")),
+                Err(e) => warn(&toasts, format!("The load thread failed: {e}")),
             }
             busy.set(false);
         });
@@ -157,6 +231,7 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
                 disabled: busy(),
                 oninput: move |e| path.set(e.value()),
             }
+            PickPath { path, saving: false, disabled: busy() }
             button {
                 class: "export-gating_go",
                 disabled: busy(),
@@ -166,16 +241,6 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
                     "Loading..."
                 } else {
                     "Replace gates"
-                }
-            }
-            if let Some(outcome) = result() {
-                match outcome {
-                    Ok(what) => rsx! {
-                        span { class: "export-gating_note", "Loaded {what}" }
-                    },
-                    Err(why) => rsx! {
-                        span { class: "export-gating_note export-gating_warn", "{why}" }
-                    },
                 }
             }
         }
@@ -197,8 +262,8 @@ fn ExportGatingFile() -> Element {
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
+    let toasts = use_toast();
     let mut path = use_signal(|| "gating_export.omiqgt".to_string());
-    let mut result = use_signal(|| None::<Result<String, String>>);
 
     rsx! {
         div { class: "export-gating",
@@ -207,6 +272,7 @@ fn ExportGatingFile() -> Element {
                 value: "{path}",
                 oninput: move |e| path.set(e.value()),
             }
+            PickPath { path, saving: true, disabled: false }
             button {
                 class: "export-gating_go",
                 onclick: move |_| {
@@ -222,25 +288,12 @@ fn ExportGatingFile() -> Element {
                         std::fs::write(&target, serde_json::to_string_pretty(&document)?)?;
                         Ok(target.display().to_string())
                     })();
-                    result
-                        .set(
-                            Some(match written {
-                                Ok(where_to) => Ok(where_to),
-                                Err(e) => Err(e.to_string()),
-                            }),
-                        );
+                    match written {
+                        Ok(where_to) => say(&toasts, format!("Written to {where_to}")),
+                        Err(e) => warn(&toasts, format!("Could not write: {e}")),
+                    }
                 },
                 "Write gating file"
-            }
-            if let Some(outcome) = result() {
-                match outcome {
-                    Ok(where_to) => rsx! {
-                        span { class: "export-gating_note", "Written to {where_to}" }
-                    },
-                    Err(why) => rsx! {
-                        span { class: "export-gating_note export-gating_warn", "{why}" }
-                    },
-                }
             }
         }
     }
@@ -282,7 +335,9 @@ pub fn MainWindow() -> Element {
     // document, and the gate rules tab counts them to say whether the pairing
     // column actually reaches them.
     let mut filehandler = use_context::<Signal<Option<FcsFiles>>>();
-    let mut message = use_signal(|| None::<String>);
+    // Reports of what just happened. This used to be a signal that nothing
+    // rendered, so an axis rescale that failed said nothing at all.
+    let toasts = use_toast();
 
     // Also created by the NavBar layout: the loaded metadata describes the
     // document, and the gate rules tab reads the same file list.
@@ -356,16 +411,15 @@ pub fn MainWindow() -> Element {
 
         match result {
             Ok(Ok(files)) => {
-                message.set(None);
                 filehandler.set(Some(files));
                 Ok(())
             }
             Ok(Err(e)) => {
-                message.set(Some(e.to_string()));
+                warn(&toasts, format!("Could not open the FCS folder: {e}"));
                 Err(e)
             }
             Err(e) => {
-                message.set(Some(e.to_string()));
+                warn(&toasts, format!("Could not open the FCS folder: {e}"));
                 Err(anyhow::anyhow!("Failed to load files from path {}", e))
             }
         }
@@ -599,21 +653,20 @@ pub fn MainWindow() -> Element {
                                             let res = axis_store.update_cofactor(&param.fluoro, val as f32);
                                             match res {
                                                 Ok((old, new)) => {
-                                                    match gate_store.rescale_gates(&param.fluoro, &old, &new) {
-                                                        Ok(_) => message.set(None),
-                                                        Err(e) => {
-                                                            message.set(Some(e.join("\n")));
-                                                        }
-                                                    };
+                                                    if let Err(e) = gate_store
+                                                        .rescale_gates(&param.fluoro, &old, &new)
+                                                    {
+                                                        warn(&toasts, e.join("; "));
+                                                    }
                                                 }
                                                 Err(e) => println!("{e}"),
 
                                             }
                                         } else {
-                                            message
-                                                .set(
-                                                    Some("Arcsinh cofactor should be a positive integer".to_string()),
-                                                );
+                                            warn(
+                                                &toasts,
+                                                "Arcsinh cofactor should be a positive integer",
+                                            );
                                         }
                                     }
                                 },
@@ -699,25 +752,23 @@ pub fn MainWindow() -> Element {
                                 oninput: move |evt| {
                                     if let Ok(val) = evt.value().parse::<i32>() {
                                         if val >= 1 {
-                                            message.set(None);
                                             let param = y_axis_marker.peek();
                                             let res = axis_store.update_cofactor(&param.fluoro, val as f32);
                                             match res {
                                                 Ok((old, new)) => {
-                                                    match gate_store.rescale_gates(&param.fluoro, &old, &new) {
-                                                        Ok(_) => message.set(None),
-                                                        Err(e) => {
-                                                            message.set(Some(e.join("\n")));
-                                                        }
-                                                    };
+                                                    if let Err(e) = gate_store
+                                                        .rescale_gates(&param.fluoro, &old, &new)
+                                                    {
+                                                        warn(&toasts, e.join("; "));
+                                                    }
                                                 }
                                                 Err(e) => println!("{e}"),
                                             }
                                         } else {
-                                            message
-                                                .set(
-                                                    Some("Arcsinh cofactor should be a positive integer".to_string()),
-                                                );
+                                            warn(
+                                                &toasts,
+                                                "Arcsinh cofactor should be a positive integer",
+                                            );
                                         }
                                     }
                                 },

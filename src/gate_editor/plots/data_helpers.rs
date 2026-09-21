@@ -20,6 +20,34 @@ pub async fn get_flow_data(path: std::path::PathBuf) -> Result<Fcs, Arc<anyhow::
     .map_err(|e| Arc::new(e.into()))?
 }
 
+/// The cofactors that name a channel this file actually carries.
+///
+/// The axis settings describe the whole panel as the scaling file defines it,
+/// and `apply_arcsinh_transforms` errors on the first parameter it cannot find.
+/// So one channel absent from one file - a shorter panel, a renamed detector -
+/// used to lose the entire plot rather than one axis of it, and on the editor
+/// tab it lost it silently: the frame never arrived and the plot sat on
+/// "Rendering Plot..." indefinitely, which reads as slowness rather than as an
+/// error.
+///
+/// Nothing measured changes by skipping a missing channel. A transform for a
+/// column that is not there cannot have reached a plot's axes or its gating
+/// chain, both of which are columns that are. A gate that needs the missing
+/// channel still fails at the filter and says so, which is the right answer to
+/// gating on a parameter the file does not have.
+pub fn cofactors_carried_by(fcs: &Fcs, cofactors: &[(Arc<str>, f32)]) -> Vec<(Arc<str>, f32)> {
+    let present: rustc_hash::FxHashSet<&str> = fcs
+        .parameters
+        .values()
+        .map(|parameter| parameter.channel_name.as_ref())
+        .collect();
+    cofactors
+        .iter()
+        .filter(|(channel, _)| present.contains(channel.as_ref()))
+        .cloned()
+        .collect()
+}
+
 pub async fn get_filtered_dataframe(
     df: Arc<DataFrame>,
     parental_gate_id: Option<Arc<str>>,

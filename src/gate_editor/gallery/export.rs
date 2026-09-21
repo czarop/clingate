@@ -17,6 +17,7 @@ use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 use rayon::prelude::*;
 
+use crate::components::toast::{say, use_toast, warn};
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::{GateStateStoreExt, ROOTGATE};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
@@ -59,8 +60,8 @@ pub fn ExportPdf(
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
+    let toasts = use_toast();
     let mut path = use_signal(|| "gate_gallery.pdf".to_string());
-    let mut message = use_signal(|| None::<Result<String, String>>);
     let mut progress = use_signal(|| None::<(usize, usize)>);
     let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
 
@@ -148,7 +149,7 @@ pub fn ExportPdf(
         }
 
         if jobs.is_empty() {
-            message.set(Some(Err("nothing to export".to_string())));
+            warn(&toasts, "Nothing to export");
             return;
         }
 
@@ -156,7 +157,6 @@ pub fn ExportPdf(
         let stop = Arc::new(AtomicBool::new(false));
         cancel.set(Some(stop.clone()));
         progress.set(Some((0, total)));
-        message.set(None);
 
         spawn(async move {
             let done = Arc::new(AtomicUsize::new(0));
@@ -239,7 +239,10 @@ pub fn ExportPdf(
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(e) => Err(format!("export thread failed: {e}")),
             };
-            message.set(Some(written));
+            match written {
+                Ok(where_to) => say(&toasts, format!("Contact sheet written to {where_to}")),
+                Err(why) => warn(&toasts, format!("Could not export: {why}")),
+            }
         });
     };
 
@@ -269,18 +272,11 @@ pub fn ExportPdf(
                     "Export PDF"
                 }
             }
+            // Progress stays inline: it describes what is happening right
+            // now and has to be watchable, which is the opposite of a message
+            // that fades.
             if let Some((done, total)) = progress() {
                 span { class: "gallery-export_note", "drawing {done} of {total}" }
-            }
-            if let Some(outcome) = message() {
-                match outcome {
-                    Ok(where_to) => rsx! {
-                        span { class: "gallery-export_note", "Written to {where_to}" }
-                    },
-                    Err(why) => rsx! {
-                        span { class: "gallery-export_note gallery-export_warn", "{why}" }
-                    },
-                }
             }
         }
     }

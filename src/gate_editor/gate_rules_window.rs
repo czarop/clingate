@@ -4,6 +4,7 @@
 //! one rule covers every place that gate appears. In a real export "CD279+"
 //! occupied twenty-five containers; four rules covered the whole panel.
 
+use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
 use crate::gate_editor::gates::gate_store::GateId;
@@ -226,7 +227,12 @@ pub fn GateRulesWindow() -> Element {
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
-    let mut message = use_signal(|| None::<String>);
+    let toasts = use_toast();
+    // Not a message: it says what the form in front of you is currently doing,
+    // and has to stay readable while you fill it in. A toast that faded after
+    // five seconds would take away the one thing that distinguishes editing a
+    // rule from adding one.
+    let mut editing_note = use_signal(|| None::<String>);
     let mut progress = use_signal(|| None::<Progress>);
     // Set while a run is in flight, so the Stop button has something to raise.
     let mut cancel = use_signal(|| None::<Arc<std::sync::atomic::AtomicBool>>);
@@ -291,7 +297,7 @@ pub fn GateRulesWindow() -> Element {
             }
         }
         editing.set(replacing.then(|| entry.target.clone()));
-        message.set(Some(if replacing {
+        editing_note.set(Some(if replacing {
             format!("Editing {} - Add rule saves it", entry.target.describe())
         } else {
             format!(
@@ -304,19 +310,19 @@ pub fn GateRulesWindow() -> Element {
     let mut add = move || {
         let name = gate();
         if name.is_empty() {
-            message.set(Some("Choose a gate first".into()));
+            warn(&toasts, "Choose a gate first");
             return;
         }
         let param = parameter();
         if param.is_empty() {
-            message.set(Some("Choose the parameter the rule positions".into()));
+            warn(&toasts, "Choose the parameter the rule positions");
             return;
         }
         let rule = match kind().as_str() {
             "InTheValley" => {
                 let (Ok(d), Ok(sm)) = (min_depth().parse::<f64>(), smoothing().parse::<f64>())
                 else {
-                    message.set(Some("The depth and smoothing must be numbers".into()));
+                    warn(&toasts, "The depth and smoothing must be numbers");
                     return;
                 };
                 Rule::InTheValley(ValleyRule {
@@ -327,7 +333,7 @@ pub fn GateRulesWindow() -> Element {
             }
             "AboveTheNegative" => {
                 let (Ok(s), Ok(n)) = (scale().parse::<f64>(), nudge().parse::<f64>()) else {
-                    message.set(Some("The scale and nudge must be numbers".into()));
+                    warn(&toasts, "The scale and nudge must be numbers");
                     return;
                 };
                 Rule::AboveTheNegative(AboveTheNegativeRule {
@@ -342,18 +348,18 @@ pub fn GateRulesWindow() -> Element {
             }
             "PercentileOffset" => {
                 let (Ok(p), Ok(o)) = (percentile().parse::<f64>(), offset().parse::<f64>()) else {
-                    message.set(Some("The percentile and offset must be numbers".into()));
+                    warn(&toasts, "The percentile and offset must be numbers");
                     return;
                 };
                 Rule::PercentileOffset(PercentileOffsetRule::new(p, o))
             }
             _ => {
                 let (Ok(l), Ok(h)) = (low().parse::<f64>(), high().parse::<f64>()) else {
-                    message.set(Some("The band must be two numbers".into()));
+                    warn(&toasts, "The band must be two numbers");
                     return;
                 };
                 if l > h {
-                    message.set(Some("The band's lower bound is above its upper".into()));
+                    warn(&toasts, "The band's lower bound is above its upper");
                     return;
                 }
                 // Typed as percentages, stored as fractions.
@@ -362,7 +368,7 @@ pub fn GateRulesWindow() -> Element {
         };
         let calibrated = kind() == "AboveTheNegative" || kind() == "InTheValley";
         if calibrated && calibrate_on().is_empty() {
-            message.set(Some("Choose the sample to calibrate against".into()));
+            warn(&toasts, "Choose the sample to calibrate against");
             return;
         }
         let target = match parent().as_str() {
@@ -399,7 +405,7 @@ pub fn GateRulesWindow() -> Element {
                 rule,
             },
         );
-        message.set(Some(format!("Rule set for {described}")));
+        say(&toasts, format!("Rule set for {described}"));
     };
 
     rsx! {
@@ -761,7 +767,7 @@ pub fn GateRulesWindow() -> Element {
                     onclick: move |_| {
                         let (gated, reference) = (gated_file(), reference_file());
                         if gated.is_empty() || reference.is_empty() {
-                            message.set(Some("Choose both files".into()));
+                            warn(&toasts, "Choose both files");
                             return;
                         }
                         rules
@@ -771,7 +777,7 @@ pub fn GateRulesWindow() -> Element {
                                 Arc::from(reference_type().as_str()),
                                 Arc::from(reference.as_str()),
                             );
-                        message.set(Some("Reference set".into()));
+                        say(&toasts, "Reference set");
                     },
                     "Set reference"
                 }
@@ -800,7 +806,6 @@ pub fn GateRulesWindow() -> Element {
                         running.set(true);
                         report.set(None);
                         progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
-                        message.set(None);
 
                         let dir = fcs_dir();
                         let names = metadata_store.file_name_to_gating_id().read().clone();
@@ -845,12 +850,12 @@ pub fn GateRulesWindow() -> Element {
                         let outcome = match outcome {
                             Ok(o) => o,
                             Err(e) => {
-                                message.set(Some(format!("The run did not finish: {e}")));
+                                warn(&toasts, format!("The run did not finish: {e}"));
                                 return;
                             }
                         };
                         if outcome.cancelled {
-                            message.set(Some("Stopped - no gates were moved".into()));
+                            note(&toasts, "Stopped - no gates were moved");
                             return;
                         }
 
@@ -863,13 +868,16 @@ pub fn GateRulesWindow() -> Element {
                         );
 
                         let run = outcome.report;
-                        message.set(Some(format!(
-                            "Moved {} gates, left {} already in band and {} reference; {} need review",
-                            run.positioned.len(),
-                            run.unchanged.len(),
-                            run.reference.len(),
-                            run.needs_review(REVIEW_FLOOR).count()
-                        )));
+                        say(
+                            &toasts,
+                            format!(
+                                "Moved {} gates, left {} already in band and {} reference; {} need review",
+                                run.positioned.len(),
+                                run.unchanged.len(),
+                                run.reference.len(),
+                                run.needs_review(REVIEW_FLOOR).count()
+                            ),
+                        );
                         report.set(Some(run));
                     },
                     if running() { "Working..." } else { "Solve and apply" }
@@ -889,7 +897,7 @@ pub fn GateRulesWindow() -> Element {
                             onclick: move |_| {
                                 if let Some(flag) = cancel() {
                                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    message.set(Some("Stopping after this file...".into()));
+                                    note(&toasts, "Stopping after this file...");
                                 }
                             },
                             "Stop"
@@ -1123,8 +1131,8 @@ pub fn GateRulesWindow() -> Element {
                         onclick: move |_| {
                             let path = PathBuf::from(sidecar());
                             match rules.read().save(&path) {
-                                Ok(()) => message.set(Some(format!("Saved to {}", path.display()))),
-                                Err(e) => message.set(Some(format!("Could not save: {e}"))),
+                                Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
+                                Err(e) => warn(&toasts, format!("Could not save: {e}")),
                             }
                         },
                         "Save"
@@ -1136,9 +1144,9 @@ pub fn GateRulesWindow() -> Element {
                                 Ok(loaded) => {
                                     let n = loaded.len();
                                     rules.set(loaded);
-                                    message.set(Some(format!("Loaded {n} rules")));
+                                    say(&toasts, format!("Loaded {n} rules"));
                                 }
-                                Err(e) => message.set(Some(format!("Could not load: {e}"))),
+                                Err(e) => warn(&toasts, format!("Could not load: {e}")),
                             }
                         },
                         "Load"
@@ -1146,7 +1154,7 @@ pub fn GateRulesWindow() -> Element {
                 }
             }
 
-            if let Some(text) = message() {
+            if let Some(text) = editing_note() {
                 p { class: "gate_rules-message", "{text}" }
             }
         }

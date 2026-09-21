@@ -1,0 +1,99 @@
+/* Toast styling.
+ *
+ * Written rather than taken from the dioxus-primitives reference. That one is
+ * built for a demo of a deep stack: toasts are pulled on top of each other with
+ * a negative margin, shrunk by a `scale()` that steps with their index, and
+ * faded out past the third, all of it unfolding again on hover. Dropped in
+ * here, nothing appeared on screen at all - the arithmetic depends on custom
+ * properties and a `transform: scale()` in percentages, and when any part of it
+ * does not resolve the toast is still in the document but not where you can see
+ * it.
+ *
+ * This app shows one or two messages at a time and does not need any of that.
+ * Plain boxes in a column, separated by a gap: nothing here depends on a
+ * computed index, so there is no arithmetic to go wrong.
+ */
+
+.dx-toast-container {
+  position: fixed;
+  /* Above the FPS counter, which sits bottom-right at 10000 and would
+     otherwise be drawn over the message. */
+  z-index: 10001;
+  right: 20px;
+  /* Clear of the tab bar along the bottom of the window. In pixels rather than
+     rem, because this has to miss a bar whose own height is in pixels. */
+  bottom: 96px;
+  max-width: 24rem;
+}
+
+.dx-toast-container ol {
+  display: flex;
+  /* Newest nearest the bottom, where the eye already is after pressing a
+     button down there. */
+  flex-direction: column-reverse;
+  padding: 0;
+  margin: 0;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.dx-toast {
+  display: flex;
+  width: 22rem;
+  box-sizing: border-box;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+  font-size: 0.85rem;
+  animation: dx-toast-in 0.15s ease-out;
+}
+
+@keyframes dx-toast-in {
+  from { opacity: 0; transform: translateY(0.5rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Colours are literal rather than drawn from the theme's light/dark variables.
+   Those resolve through a two-value substitution trick, and a toast that gets
+   it wrong renders as transparent text on a transparent background - present,
+   correct, and invisible. A message you cannot read is worse than a plain one. */
+.dx-toast[data-type="success"] { background: #0f5132; color: #d1f7e4; }
+.dx-toast[data-type="error"] { background: #842029; color: #ffd9dc; }
+.dx-toast[data-type="warning"] { background: #664d03; color: #ffecb5; }
+.dx-toast[data-type="info"] { background: #084298; color: #d6e4ff; }
+
+.dx-toast-content {
+  flex: 1;
+  margin-right: 10px;
+  min-width: 0;
+}
+
+.dx-toast-title {
+  font-weight: 600;
+  /* A message naming a path has to wrap rather than run out of the toast. */
+  overflow-wrap: anywhere;
+}
+
+.dx-toast-description {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
+.dx-toast-close {
+  flex: none;
+  padding: 0 2px;
+  border: none;
+  margin: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1.2;
+  opacity: 0.7;
+}
+
+.dx-toast-close:hover { opacity: 1; }

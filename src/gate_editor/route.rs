@@ -14,6 +14,7 @@
 //! noticeable, the render is the part worth skipping - the data pipeline is
 //! cheap to keep warm, the image is not.
 
+use crate::components::toast::ToastProvider;
 use crate::file_load::FcsFiles;
 use crate::gate_editor::gallery::window::GalleryWindow;
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
@@ -87,6 +88,11 @@ pub fn Shell() -> Element {
     use_context_provider(|| active);
 
     rsx! {
+        // Every tab is inside the provider, so a toast raised by a run that
+        // finishes while you are looking at another tab still arrives. A
+        // provider per tab would have swallowed exactly the messages most worth
+        // seeing.
+        ToastProvider {
         // Hidden by class, not by an inline style. Diffing `style` down to an
         // empty string does not reliably clear what was set before, which left
         // both panels displaying none and the nav bar alone at the top of the
@@ -116,6 +122,7 @@ pub fn Shell() -> Element {
                     }
                 }
             }
+        }
         }
     }
 }

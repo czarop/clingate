@@ -4,6 +4,27 @@
 
 ### Added
 
+- **Messages are toasts.** Every report of something that just happened - a file
+  written, a rule saved, a run finished, a path that did not resolve - now
+  appears briefly in the corner and clears itself. They used to be inline notes
+  that stayed until something else replaced them, so the editor accumulated
+  stale claims like "Loaded 150 gates from ..." long after the fact, and a note
+  could only be seen on the tab that wrote it - a run finishing while you were
+  looking at the plots said nothing at all. Four of the editor's own reports
+  were set on a signal nothing rendered, so a failed axis rescale had been
+  silent entirely.
+
+  State that describes the form *right now* stays inline, because it has to be
+  readable while you act on it: which rule is being edited, how a pairing column
+  resolves, how far through a run the solver is.
+
+- **Browse buttons on the gating file boxes.** The OS file dialog, through
+  `rfd` - already in the tree via dioxus-desktop, so no new dependency. The
+  text field stays: a pasted path reaches a mounted share that a dialog makes
+  hard work of, and the dialog is a separate D-Bus service that not every
+  machine runs. Where it does not open, that is now said rather than the button
+  appearing to do nothing.
+
 - **Load a different gating file without restarting.** A Load box on the editor
   tab, beside the export one, replaces every gate with the ones in another Omiq
   file. A replacement, not an addition: uploading over a loaded document used to
@@ -59,6 +80,20 @@
   not have.
 
 ### Fixed
+
+- **A plot no longer needs every channel the scaling file names** - in the
+  editor too, not only the gallery. `apply_arcsinh_transforms` errors on the
+  first parameter it cannot find, and the editor swallowed that error into an
+  endless "Rendering Plot..." spinner, which reads as slowness rather than as a
+  failure. Both tabs now go through one filter, so they cannot answer
+  differently.
+
+- **The editor no longer scrolls back to the top on every change of sample.** A
+  plot that was loading, failed, or had no resolver rendered a placeholder sized
+  to its contents, so the page lost 600 pixels of height and the browser clamped
+  the scroll position to fit what was left. Every state a plot can be in now
+  occupies the same square.
+
 
 - **Y axis transform read from the X axis.** `extract_axis_range_from_axis_settings`
   returned `x_axis.transform` for both axes, so every quadrant and skewed-quadrant

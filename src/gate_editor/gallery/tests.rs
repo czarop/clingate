@@ -725,3 +725,43 @@ fn a_real_file_renders_with_cofactors_it_does_not_have() {
     let image = render_plot(&job).expect("an absent channel must not lose the plot");
     assert!(image.parent_events > 0);
 }
+
+/// The shared cofactor filter, against a real panel.
+///
+/// Both the editor's plot and the gallery's go through this; before it existed
+/// a channel in the scaling file but not in the FCS lost the whole plot.
+#[test]
+fn a_real_panel_keeps_its_own_channels_and_drops_the_rest() {
+    let Ok(dir) = std::env::var("OMIQ_FCS_DIR") else {
+        eprintln!("skipped: set OMIQ_FCS_DIR");
+        return;
+    };
+    let Some(file) = std::fs::read_dir(&dir)
+        .expect("the FCS directory can be read")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "fcs"))
+        .min()
+    else {
+        eprintln!("skipped: no FCS files in {dir}");
+        return;
+    };
+    let fcs = flow_fcs::Fcs::open(file.to_str().expect("utf-8 path")).expect("the file opens");
+
+    use crate::gate_editor::plots::data_helpers::cofactors_carried_by;
+    let real: Arc<str> = fcs
+        .parameters
+        .values()
+        .next()
+        .expect("the panel has channels")
+        .channel_name
+        .clone();
+
+    let asked = vec![
+        (real.clone(), 150.0f32),
+        (Arc::from("No Such Channel-A"), 6000.0),
+    ];
+    let carried = cofactors_carried_by(&fcs, &asked);
+    assert_eq!(carried.len(), 1, "one of the two is in this panel");
+    assert_eq!(carried[0].0, real);
+    assert_eq!(carried[0].1, 150.0, "the cofactor comes through unchanged");
+}

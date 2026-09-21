@@ -26,6 +26,15 @@ itertools = "0.15.0"
 rustfft = "^6.4"
 rand = "0.10"
 rand_distr = "0.6"
+# The native file dialogs. Already in the tree, since dioxus-desktop depends on
+# it; pinned to its version and features so there is only ever one copy.
+#
+# The features are not a choice. rfd's build script refuses `gtk3` and
+# `xdg-portal` together, and dioxus-desktop requires `xdg-portal`, so that is
+# the backend whether or not it suits - and it is a separate D-Bus service that
+# a machine may not be running. `PickPath` handles that: see the note there
+# about a dialog that closes faster than a person could have closed it.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 [features]
 default = ["desktop"]
