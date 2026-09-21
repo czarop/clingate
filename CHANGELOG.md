@@ -18,12 +18,20 @@
   readable while you act on it: which rule is being edited, how a pairing column
   resolves, how far through a run the solver is.
 
-- **Browse buttons on the gating file boxes.** The OS file dialog, through
-  `rfd` - already in the tree via dioxus-desktop, so no new dependency. The
-  text field stays: a pasted path reaches a mounted share that a dialog makes
-  hard work of, and the dialog is a separate D-Bus service that not every
-  machine runs. Where it does not open, that is now said rather than the button
-  appearing to do nothing.
+- **Browse buttons beside every path field**, on all three tabs: the gating file
+  to load and to write, the rules sidecar to load and to save, the FCS folder,
+  and the exported contact sheet. The OS file dialog, through `rfd` - already in
+  the tree via dioxus-desktop, so no new dependency.
+
+  Three dialogs, not one: choosing a file that exists is not the same dialog as
+  naming one to write, and an open dialog cannot name a file that is not there
+  yet - which most of these are. So the rules sidecar carries two, one on the
+  field for Load and one joined to Save.
+
+  The text field stays everywhere. A pasted path reaches a mounted share that a
+  dialog makes hard work of, and the dialog is a separate D-Bus service that not
+  every machine runs. Where it does not open, that is now said rather than the
+  button appearing to do nothing.
 
 - **Load a different gating file without restarting.** A Load box on the editor
   tab, beside the export one, replaces every gate with the ones in another Omiq
@@ -80,6 +88,11 @@
   not have.
 
 ### Fixed
+
+- **The sample pairing controls no longer overlap themselves on the rules tab.**
+  They carry a grid of their own, and dropping them into a cell of that tab's
+  form grid squeezed it into the 11rem label column: the labels wrapped and the
+  warning underneath was drawn over them. They take the full width of the row.
 
 - **A plot no longer needs every channel the scaling file names** - in the
   editor too, not only the gallery. `apply_arcsinh_transforms` errors on the

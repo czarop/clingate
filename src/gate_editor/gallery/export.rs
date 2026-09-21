@@ -21,6 +21,7 @@ use crate::components::toast::{say, use_toast, warn};
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::{GateStateStoreExt, ROOTGATE};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
+use crate::gate_editor::path_picker::{Pick, PickPath};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
@@ -252,6 +253,13 @@ pub fn ExportPdf(
                 value: "{path}",
                 disabled: running,
                 oninput: move |e| path.set(e.value()),
+            }
+            PickPath {
+                path,
+                mode: Pick::SaveFile,
+                label: "PDF",
+                extensions: vec!["pdf".to_string()],
+                disabled: running,
             }
             if running {
                 button {

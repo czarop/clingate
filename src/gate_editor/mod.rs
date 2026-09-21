@@ -11,4 +11,5 @@ mod gate_rules_window_tests;
 pub mod gate_sidebar;
 pub mod main_window;
 pub mod pairing_controls;
+pub mod path_picker;
 pub mod plots;

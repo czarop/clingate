@@ -1,6 +1,7 @@
 use crate::components::toast::{say, use_toast, warn};
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
 use crate::gate_editor::pairing_controls::PairingColumns;
+use crate::gate_editor::path_picker::{Pick, PickPath};
 use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
@@ -62,77 +63,6 @@ fn loaded_gating_file() -> String {
                 .map(|l| l.trim().to_string())
         })
         .unwrap_or_default()
-}
-
-/// A button that opens the OS file dialog and writes the chosen path back into
-/// `path`.
-///
-/// The text box beside it stays editable on purpose. A dialog is the easy way
-/// to find a file you can see, but a path pasted from a terminal or a ticket is
-/// the easy way to reach one you cannot - a mounted share, a directory behind a
-/// symlink - and on a machine with no XDG desktop portal the dialog is the part
-/// that does not work. Neither one is a fallback for the other; they are two
-/// ways in.
-///
-/// `saving` picks the dialog: choosing an existing file to read, or naming one
-/// that need not exist yet to write. They are different system dialogs, and an
-/// open dialog cannot name a file that is not there - which is most of the
-/// files this one is used for.
-#[component]
-fn PickPath(path: Signal<String>, saving: bool, disabled: bool) -> Element {
-    let mut path = path;
-    let toasts = use_toast();
-    let browse = move |_| {
-        let current = path();
-        spawn(async move {
-            let opened = std::time::Instant::now();
-            let current = std::path::PathBuf::from(current.trim());
-            let mut dialog = rfd::AsyncFileDialog::new()
-                .add_filter("Omiq gating file", &["omiqgt"])
-                .add_filter("Every file", &["*"]);
-            // Open where the box is already pointing, so the dialog starts
-            // beside the last file rather than in the home directory.
-            if let Some(parent) = current.parent().filter(|p| p.is_dir()) {
-                dialog = dialog.set_directory(parent);
-            }
-            if saving && let Some(name) = current.file_name().and_then(|n| n.to_str()) {
-                dialog = dialog.set_file_name(name);
-            }
-            let chosen = if saving {
-                dialog.save_file().await
-            } else {
-                dialog.pick_file().await
-            };
-            // `None` is the person pressing Cancel, which is not a failure and
-            // should leave what they had typed alone.
-            if let Some(handle) = chosen {
-                path.set(handle.path().display().to_string());
-                return;
-            }
-            // Unless it came back faster than anyone could have pressed Cancel.
-            // The dialog is an XDG desktop portal, a D-Bus service separate
-            // from this application, and where it is not running rfd reports
-            // exactly what it reports for Cancel: nothing. Saying so beats a
-            // button that appears to do nothing at all, and the box beside it
-            // still takes a typed or pasted path.
-            if opened.elapsed() < std::time::Duration::from_millis(300) {
-                warn(
-                    &toasts,
-                    "Could not open the file dialog - type or paste the path instead",
-                );
-            }
-        });
-    };
-
-    rsx! {
-        button {
-            class: "export-gating_browse",
-            disabled,
-            title: "Choose a file",
-            onclick: browse,
-            "..."
-        }
-    }
 }
 
 /// Loading and writing gating files, side by side.
@@ -231,7 +161,13 @@ fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
                 disabled: busy(),
                 oninput: move |e| path.set(e.value()),
             }
-            PickPath { path, saving: false, disabled: busy() }
+            PickPath {
+                path,
+                mode: Pick::OpenFile,
+                label: "Omiq gating file",
+                extensions: vec!["omiqgt".to_string()],
+                disabled: busy(),
+            }
             button {
                 class: "export-gating_go",
                 disabled: busy(),
@@ -272,7 +208,12 @@ fn ExportGatingFile() -> Element {
                 value: "{path}",
                 oninput: move |e| path.set(e.value()),
             }
-            PickPath { path, saving: true, disabled: false }
+            PickPath {
+                path,
+                mode: Pick::SaveFile,
+                label: "Omiq gating file",
+                extensions: vec!["omiqgt".to_string()],
+            }
             button {
                 class: "export-gating_go",
                 onclick: move |_| {

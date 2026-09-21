@@ -10,6 +10,7 @@ use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
 use crate::gate_editor::gates::gate_store::GateId;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
+use crate::gate_editor::path_picker::{Pick, PickPath};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, describe, measure_file};
 use crate::gate_rules::rule::{
@@ -791,9 +792,14 @@ pub fn GateRulesWindow() -> Element {
                 }
 
                 label { "FCS folder" }
-                input {
-                    value: "{fcs_dir}",
-                    oninput: move |e| fcs_dir.set(e.value()),
+                // The field and its browse button share one cell, so the form's
+                // two-column grid stays two columns.
+                div { class: "gate_rules-path",
+                    input {
+                        value: "{fcs_dir}",
+                        oninput: move |e| fcs_dir.set(e.value()),
+                    }
+                    PickPath { path: fcs_dir, mode: Pick::Folder }
                 }
 
                 button {
@@ -1122,11 +1128,22 @@ pub fn GateRulesWindow() -> Element {
             fieldset { class: "gate_rules-form",
                 legend { "Sidecar" }
                 label { "File" }
-                input {
-                    value: "{sidecar}",
-                    oninput: move |e| sidecar.set(e.value()),
+                div { class: "gate_rules-path",
+                    input {
+                        value: "{sidecar}",
+                        oninput: move |e| sidecar.set(e.value()),
+                    }
+                    // Choosing one that exists, for Load. Naming one to write
+                    // is the button beside Save; they are different dialogs,
+                    // and an open dialog cannot name a file that is not there.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::OpenFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
                 }
-                div { class: "gate_rules-band",
+                div { class: "gate_rules-band gate_rules-actions_row",
                     button {
                         onclick: move |_| {
                             let path = PathBuf::from(sidecar());
@@ -1137,6 +1154,16 @@ pub fn GateRulesWindow() -> Element {
                         },
                         "Save"
                     }
+                    // Joined to Save, not floating between the two actions:
+                    // this dialog names where to write, which is Save's
+                    // question and not Load's.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::SaveFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
+                    span { class: "gate_rules-gap" }
                     button {
                         onclick: move |_| {
                             let path = PathBuf::from(sidecar());

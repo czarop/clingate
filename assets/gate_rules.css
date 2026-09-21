@@ -26,11 +26,24 @@
 .gate_rules-form select,
 .gate_rules-form input { padding: 0.2rem 0.35rem; min-width: 12rem; }
 .gate_rules-band { display: flex; align-items: center; gap: 0.5rem; }
+/* A path field and its browse button sharing one cell of the form's grid, so
+   adding the button does not turn every other row into three columns. */
+.gate_rules-path { display: flex; align-items: center; gap: 0.4rem; }
+/* Save and its "choose where to write" button read as one control; the gap
+   after them separates that pair from Load. */
+.gate_rules-actions_row { gap: 0.15rem; }
+.gate_rules-gap { width: 0.9rem; }
+.gate_rules-path input { flex: 1; min-width: 6rem; }
 .gate_rules-band input { min-width: 6rem; }
 .gate_rules-add { grid-column: 2; justify-self: start; margin-top: 0.5rem; padding: 0.3rem 1rem; }
 .gate_rules-remove { padding: 0.1rem 0.5rem; opacity: 0.8; }
 .gate_rules-message { margin-top: 0.75rem; opacity: 0.85; }
 .gate_rules-span { grid-column: 1 / -1; margin: 0 0 0.25rem; }
+/* The pairing controls bring a grid of their own, so dropping them into a cell
+   of this one squeezed that grid into the 11rem label column: the labels
+   wrapped and the warning underneath overlapped them. They get the full width
+   of the row instead. */
+.gate_rules-form > .pairing-columns { grid-column: 1 / -1; }
 .gate_rules-span .gate_rules-table { margin-bottom: 0.5rem; }
 .gate_rules-report { margin-top: 1.25rem; }
 .gate_rules-report h3 { font-size: 0.95rem; margin: 0.75rem 0 0.35rem; opacity: 0.8; }

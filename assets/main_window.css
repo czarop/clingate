@@ -218,12 +218,6 @@ button:hover {
 .export-gating label { justify-self: start; opacity: 0.75; }
 .export-gating input { min-width: 0; width: 100%; padding: 1px 3px; }
 .export-gating_go { grid-column: 1 / -1; padding: 0.25rem 0.75rem; }
-.export-gating_browse {
-    padding: 1px 7px;
-    border: none;
-    border-radius: 3px;
-    line-height: 1.2;
-}
 .export-gating_note {
     grid-column: 1 / -1;
     font-size: 0.75rem;
