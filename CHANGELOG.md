@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Load a different gating file without restarting.** A Load box on the editor
+  tab, beside the export one, replaces every gate with the ones in another Omiq
+  file. A replacement, not an addition: uploading over a loaded document used to
+  leave the old gates in the registry, unreachable from the new tree but still
+  resolved into every sample and still written back out on export. The new
+  document is parsed on a worker thread into a state of its own and swapped in
+  only once it has read, so a mistyped path leaves what is on screen alone. The
+  selected position returns to the root, since a node id from the discarded
+  document answers to nothing in the new one.
+
 - **Gate gallery (third tab).** Pick a gate in the hierarchy and see it on every
   sample in the run at once - the question the editor cannot answer, because a
   rule that works on the reference and drifts on a third of the cohort looks

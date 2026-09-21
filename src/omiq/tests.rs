@@ -4514,3 +4514,91 @@ fn a_column_the_file_arrived_with_is_not_overwritten() {
     let containers = objects(&written, &["tree", "filterContainers"]);
     assert_eq!(containers["QCVn"]["md"], "Type");
 }
+
+// ── loading a different document over the top of one ─────────────────────
+//
+// `upload_gates_from_file` fills a document; `replace_gates_from_file` swaps
+// one for another. The difference only shows when something is already loaded,
+// which is exactly the case the Load button on the editor tab creates.
+
+/// What a state holds, in the terms these tests care about.
+fn shape(state: &GateState) -> (usize, usize, Vec<String>) {
+    let mut names: Vec<String> = state
+        .placements()
+        .filter_map(|(_, placement)| state.registered_gate(&placement.gate_id))
+        .map(|gate| gate.get_name().to_string())
+        .collect();
+    names.sort();
+    (state.gate_count(), names.len(), names)
+}
+
+#[test]
+fn replacing_leaves_exactly_what_the_new_file_holds() {
+    let mut state = import(BEFORE);
+    let before = shape(&state);
+    state
+        .replace_gates_from_file(
+            fixture(AFTER),
+            &im::HashMap::with_hasher(FxBuildHasher),
+            fixture_axes(),
+        )
+        .expect("the second file imports");
+
+    // Indistinguishable from having loaded the second file into an empty
+    // editor - not the second file plus whatever the first left behind.
+    assert_eq!(shape(&state), shape(&import(AFTER)));
+    assert_ne!(shape(&state), before, "the two fixtures must differ");
+}
+
+#[test]
+fn uploading_twice_would_have_kept_the_old_gates() {
+    // Why `replace_gates_from_file` exists at all. Uploading a second file adds
+    // to the registry: the first document's gates stay, unreachable from the
+    // new tree but still resolved into every sample and still written back out
+    // on export.
+    let mut state = import(BEFORE);
+    state
+        .upload_gates_from_file(
+            fixture(AFTER),
+            &im::HashMap::with_hasher(FxBuildHasher),
+            fixture_axes(),
+        )
+        .expect("the second file imports");
+    assert!(
+        state.gate_count() > import(AFTER).gate_count(),
+        "an upload should have merged; that is the behaviour replace exists to avoid"
+    );
+}
+
+#[test]
+fn a_file_that_does_not_parse_leaves_the_gates_alone() {
+    // The new document is built in a state of its own and swapped in only once
+    // it has parsed. Otherwise a mistyped path would empty the editor.
+    let mut state = import(BEFORE);
+    let before = shape(&state);
+
+    let bad = std::env::temp_dir().join("clingate_not_a_gating_file.omiqgt");
+    std::fs::write(&bad, b"{ this is not json").expect("the temp file can be written");
+    let outcome = state.replace_gates_from_file(
+        bad.clone(),
+        &im::HashMap::with_hasher(FxBuildHasher),
+        fixture_axes(),
+    );
+    let _ = std::fs::remove_file(&bad);
+
+    assert!(outcome.is_err(), "malformed json must be refused");
+    assert_eq!(shape(&state), before, "the loaded document must survive");
+}
+
+#[test]
+fn a_missing_file_leaves_the_gates_alone() {
+    let mut state = import(BEFORE);
+    let before = shape(&state);
+    let outcome = state.replace_gates_from_file(
+        fixture("no_such_file.omiqgt"),
+        &im::HashMap::with_hasher(FxBuildHasher),
+        fixture_axes(),
+    );
+    assert!(outcome.is_err(), "a missing file must be refused");
+    assert_eq!(shape(&state), before);
+}

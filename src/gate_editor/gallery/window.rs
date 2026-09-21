@@ -25,7 +25,7 @@ use dioxus::stores::SyncStore;
 use crate::file_load::FcsFiles;
 use crate::gate_editor::gate_sidebar::GateSidebar;
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::ROOTGATE;
+use crate::gate_editor::gates::gate_store::{NodeId, ROOTGATE};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use crate::gate_editor::plots::sample_pairs::{Pair, pair_files};
 use crate::gate_editor::route::Tab;
@@ -160,19 +160,34 @@ pub fn GalleryWindow() -> Element {
     // writing back avoids a signal write inside a render.
     let showing = use_memo(move || page().min(pages().saturating_sub(1)));
 
+    // The selection, dropped if the document it named has been replaced.
+    //
+    // Loading a gating file on the editor tab swaps the whole tree, and a node
+    // id from the old one answers to nothing in the new: the plots would filter
+    // through an empty chain while the heading still named a gate that is gone.
+    // Falling back to the root says what is actually being shown.
+    let showing_node = use_memo(move || {
+        let node = selected_node()?;
+        if *node == **ROOTGATE {
+            return Some(node);
+        }
+        let held = gate_store.read();
+        held.gate_for_node(&NodeId::from(node.clone()))
+            .is_some()
+            .then_some(node)
+    });
+
     // What the person is looking at, named rather than left as a node id.
     let gate_name = use_memo(move || {
-        let Some(node) = selected_node() else {
-            return "nothing selected".to_string();
+        let Some(node) = showing_node() else {
+            return "all events".to_string();
         };
         if *node == **ROOTGATE {
             return "all events".to_string();
         }
         gate_store
             .read()
-            .gate_for_node(&crate::gate_editor::gates::gate_store::NodeId::from(
-                node.clone(),
-            ))
+            .gate_for_node(&NodeId::from(node.clone()))
             .and_then(|id| gate_store.read().registered_gate(id))
             .map(|g| g.get_name().to_string())
             .unwrap_or_else(|| node.to_string())
@@ -243,7 +258,7 @@ pub fn GalleryWindow() -> Element {
                     }
                     super::export::ExportPdf {
                         cards: cards(),
-                        node: selected_node().unwrap_or_else(|| ROOTGATE.clone()),
+                        node: showing_node().unwrap_or_else(|| ROOTGATE.clone()),
                         x: x_axis_marker(),
                         y: y_axis_marker(),
                         gate_name: gate_name(),
@@ -289,7 +304,7 @@ pub fn GalleryWindow() -> Element {
                                                     if active() == Tab::Gallery {
                                                         GalleryPlot {
                                                             path: path.clone(),
-                                                            node: selected_node().unwrap_or_else(|| ROOTGATE.clone()),
+                                                            node: showing_node().unwrap_or_else(|| ROOTGATE.clone()),
                                                             x: x_axis_marker(),
                                                             y: y_axis_marker(),
                                                             size: plot_size(),

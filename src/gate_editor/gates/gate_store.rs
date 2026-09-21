@@ -1541,6 +1541,48 @@ impl GateState {
 }
 
 impl GateState {
+    /// Replace every gate with the ones in an Omiq export.
+    ///
+    /// A second import is a *replacement*, not an addition.
+    /// [`upload_gates_from_file`](Self::upload_gates_from_file) registers what
+    /// the file holds alongside whatever is already there, which is right for
+    /// filling an empty document and wrong for loading a different one: the
+    /// previous document's gates would stay in the registry, unreachable from
+    /// the new tree but still resolved into every sample and still written back
+    /// out on export.
+    ///
+    /// The new document is built in a state of its own and swapped in only once
+    /// it has parsed, so a malformed file costs nothing - what is on screen
+    /// afterwards is what was there before, rather than half of a document that
+    /// failed to load.
+    pub fn replace_gates_from_file(
+        &mut self,
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<()> {
+        *self = Self::from_gating_file(path, metadata, axis_settings)?;
+        Ok(())
+    }
+
+    /// A whole document, read from an Omiq export into a state of its own.
+    ///
+    /// Separate from [`replace_gates_from_file`](Self::replace_gates_from_file)
+    /// because reading one is slow enough to want a worker thread - a real file
+    /// is hundreds of kilobytes over a few hundred containers - and a `Store`
+    /// cannot be written from one. The editor parses through this, then swaps
+    /// the result in on the thread that owns the store; the two paths share this
+    /// one definition of what loading a file means.
+    pub fn from_gating_file(
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<Self> {
+        let mut fresh = GateState::default();
+        fresh.upload_gates_from_file(path, metadata, axis_settings)?;
+        Ok(fresh)
+    }
+
     /// Build the gate tree from an Omiq experiment export.
     pub fn upload_gates_from_file(
         &mut self,
@@ -2229,6 +2271,17 @@ impl<Lens> Store<GateState, Lens> {
     ) -> anyhow::Result<()> {
         self.write()
             .upload_gates_from_file(path, metadata, axis_settings)
+    }
+
+    /// See [`GateState::replace_gates_from_file`].
+    fn replace_gates_from_file(
+        &mut self,
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<()> {
+        self.write()
+            .replace_gates_from_file(path, metadata, axis_settings)
     }
 }
 

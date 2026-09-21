@@ -44,6 +44,144 @@ static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| 
     (x.start, x.end - x.start)
 });
 
+/// The gating file the session started with, so the Load box opens showing
+/// what is currently loaded rather than empty.
+///
+/// The same third line of `file_paths.txt` the startup import reads. A failure
+/// here is not worth reporting - it only means the box starts empty, and the
+/// startup import will have said so already.
+fn loaded_gating_file() -> String {
+    std::fs::read_to_string("file_paths.txt")
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .nth(2)
+                .map(|l| l.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Loading and writing gating files, side by side.
+///
+/// One row rather than two stacked boxes: they are the same kind of action on
+/// the same kind of file, and the sample list below needs the height more than
+/// either of them does.
+#[component]
+fn GatingFiles(parental_gate: Signal<Option<Arc<str>>>) -> Element {
+    rsx! {
+        div { class: "gating-files",
+            LoadGatingFile { parental_gate }
+            ExportGatingFile {}
+        }
+    }
+}
+
+/// Replace every gate with the ones in another Omiq gating file.
+///
+/// A replacement, not an addition - see
+/// [`GateState::replace_gates_from_file`](crate::gate_editor::gates::gate_store::GateState::replace_gates_from_file).
+/// The store builds the new document separately and swaps it in only once it
+/// has parsed, so a mistyped path leaves what is on screen alone.
+///
+/// The selected position is sent back to the root afterwards. It is a node id
+/// from the document being discarded, and nothing in the new one answers to it:
+/// left alone it would leave every plot filtering through a chain that no longer
+/// exists.
+#[component]
+fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
+    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+
+    let mut path = use_signal(loaded_gating_file);
+    let mut result = use_signal(|| None::<Result<String, String>>);
+    let mut busy = use_signal(|| false);
+
+    let load = move |_| {
+        if busy() {
+            return;
+        }
+        let target = PathBuf::from(path().trim().to_string());
+        let metadata = metadata_store.metadata().peek().clone();
+        let axes = axis_store.settings().peek().clone();
+        if metadata.is_empty() || axes.is_empty() {
+            result.set(Some(Err(
+                "Load the metadata and scaling files first - gates cannot be placed without them"
+                    .to_string(),
+            )));
+            return;
+        }
+        busy.set(true);
+        result.set(None);
+
+        // Parsed on a worker thread and applied here. A real gating file is
+        // hundreds of kilobytes over a few hundred containers, which is long
+        // enough to freeze the window if it runs on the renderer.
+        spawn(async move {
+            let parsed = tokio::task::spawn_blocking(move || {
+                GateState::from_gating_file(target.clone(), &metadata, axes)
+                    .map(|fresh| (fresh, target))
+            })
+            .await;
+
+            match parsed {
+                Ok(Ok((fresh, target))) => {
+                    let count = fresh.gate_count();
+                    // The selection has to go before the gates it names do,
+                    // so no plot renders against a chain from the old document.
+                    parental_gate.set(Some(ROOTGATE.clone()));
+                    gate_store.set(fresh);
+                    result.set(Some(Ok(format!(
+                        "{count} gates from {}",
+                        target
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("the file")
+                    ))));
+                }
+                Ok(Err(e)) => result.set(Some(Err(e.to_string()))),
+                Err(e) => result.set(Some(Err(format!("load thread failed: {e}")))),
+            }
+            busy.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "export-gating",
+            label { "Load from" }
+            input {
+                value: "{path}",
+                disabled: busy(),
+                oninput: move |e| path.set(e.value()),
+            }
+            button {
+                class: "export-gating_go",
+                disabled: busy(),
+                title: "Replace every gate with the ones in this file. The positions on screen are discarded.",
+                onclick: load,
+                if busy() {
+                    "Loading..."
+                } else {
+                    "Replace gates"
+                }
+            }
+            if let Some(outcome) = result() {
+                match outcome {
+                    Ok(what) => rsx! {
+                        span { class: "export-gating_note", "Loaded {what}" }
+                    },
+                    Err(why) => rsx! {
+                        span { class: "export-gating_note export-gating_warn", "{why}" }
+                    },
+                }
+            }
+        }
+    }
+}
+
 /// Write the current gates back out as an Omiq gating file.
 ///
 /// Everything the document needs is already held: the geometry comes from the
@@ -646,7 +784,7 @@ pub fn MainWindow() -> Element {
                     }
                     div { class: "file-info",
                         PairingColumns {}
-                        ExportGatingFile {}
+                        GatingFiles { parental_gate }
                         div { class: "file-info_button-panel",
                             button { onclick: move |_| step_specimen(-1), "Prev" }
                             button { onclick: move |_| step_specimen(1), "Next" }

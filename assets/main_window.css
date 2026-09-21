@@ -189,25 +189,42 @@ button:hover {
 .combobox-container {
     width: 100% !important;
 }
-/* Writing the gates back out as an Omiq file. */
-.export-gating {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 4px 8px;
-    align-items: center;
-    font-size: 0.8rem;
+/* Loading a gating file and writing one back out, as two columns of one row.
+   They are the same action on the same kind of file, and the sample list under
+   them needs the height more than either of them does. */
+.gating-files {
+    display: flex;
+    flex-direction: row;
+    align-items: start;
+    gap: 14px;
     margin-top: 6px;
     padding-top: 6px;
     border-top: 1px solid #e2e8f0;
 }
+/* Equal halves whatever the labels and notes inside them are: `1fr` alone
+   would let the longer message widen its own column and shove the other one
+   narrow, which is exactly what happens when a load fails. */
+.gating-files > .export-gating { flex: 1 1 0; min-width: 0; }
+
+/* Writing the gates back out as an Omiq file. */
+.export-gating {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 6px;
+    align-items: center;
+    font-size: 0.8rem;
+}
 .export-gating label { justify-self: start; opacity: 0.75; }
-.export-gating input { min-width: 9rem; padding: 1px 3px; }
+.export-gating input { min-width: 0; width: 100%; padding: 1px 3px; }
 .export-gating_go { grid-column: 1 / -1; padding: 0.25rem 0.75rem; }
 .export-gating_note {
     grid-column: 1 / -1;
     font-size: 0.75rem;
     opacity: 0.8;
-    word-break: break-all;
+    /* `anywhere`, not `break-all`: a long path still wraps rather than widening
+       its column, but a file name that fits is left whole instead of being cut
+       mid-word, which is what the note is there to let you read. */
+    overflow-wrap: anywhere;
 }
 .export-gating_warn { color: hsl(0, 70%, 45%); opacity: 1; }
 
