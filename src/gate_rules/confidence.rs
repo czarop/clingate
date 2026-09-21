@@ -150,11 +150,12 @@ impl ConfidenceModel for CountAndSeparation {
             ),
             Component::new(
                 ADMITTED,
-                admitted_count_score(t.events_admitted),
+                admitted_count_score(t.events_admitted, t.parent_events),
                 format!(
-                    "{} events admitted ({:.3}%)",
+                    "{} events admitted ({:.3}%), {} excluded",
                     t.events_admitted,
-                    t.fraction_admitted * 100.0
+                    t.fraction_admitted * 100.0,
+                    t.parent_events.saturating_sub(t.events_admitted)
                 ),
             ),
             Component::new(
@@ -189,17 +190,26 @@ fn event_count_score(n: f64, limits: &ConfidenceLimits) -> f64 {
         .clamp(0.0, 1.0)
 }
 
-/// The count inside the gate carries Poisson noise of about `sqrt(k)`, so the
-/// relative error on the fraction the rule was aiming at is `1/sqrt(k)`.
+/// The smaller of the two sides the edge divides carries Poisson noise of about
+/// `sqrt(k)`, so the relative error on the fraction the rule was aiming at is
+/// `1/sqrt(k)`.
 ///
 /// This is the component the parent count misses. A rule asking for 0.2% of
 /// 2,000 events is asking about four cells: the parent is comfortable, the
 /// answer is not, and no amount of parent population fixes it.
-fn admitted_count_score(k: usize) -> f64 {
-    if k == 0 {
+///
+/// **The smaller side, not the admitted one.** A negative gate asked to hold
+/// 99.7% of its parent admits nearly all of it, and scoring on that count says
+/// the placement is certain - when where the edge sits is decided entirely by
+/// the hundred-odd events it excludes. The noise lives on whichever side is
+/// scarce, and an edge is equally uncertain whether the scarce side is the one
+/// being kept or the one being cut.
+fn admitted_count_score(k: usize, parent: usize) -> f64 {
+    let scarce = k.min(parent.saturating_sub(k));
+    if scarce == 0 {
         return 0.0;
     }
-    (1.0 - 1.0 / (k as f64).sqrt()).clamp(0.0, 1.0)
+    (1.0 - 1.0 / (scarce as f64).sqrt()).clamp(0.0, 1.0)
 }
 
 /// Move the edge slightly and see whether the answer survives.

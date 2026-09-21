@@ -286,3 +286,69 @@ fn one_bad_component_is_not_rescued_by_the_others() {
     assert_eq!(t.events_admitted, 1);
     assert_eq!(c.score, 0.0, "one event cannot support a placement: {c:?}");
 }
+
+// ─── which side of the edge carries the noise ────────────────────────────────
+
+/// A threshold holding `admitted` of `parent`, otherwise unremarkable.
+fn holding(admitted: usize, parent: usize) -> Threshold {
+    Threshold {
+        x: 1.0,
+        events_admitted: admitted,
+        fraction_admitted: admitted as f64 / parent as f64,
+        parent_events: parent,
+        count_swing: 0.05,
+        parent_spread: 2.0,
+        status: Status::InBand,
+    }
+}
+
+#[test]
+fn a_gate_keeping_almost_everything_is_scored_on_what_it_excludes() {
+    // A negative gate asked to hold 99.7% of its parent admits nearly all of
+    // it. Scoring on that count called the placement certain, when where the
+    // edge sits is decided entirely by the hundred-odd events it cuts.
+    use crate::gate_rules::confidence::ADMITTED;
+    let model = CountAndSeparation::default();
+
+    let keeps_most = model.assess(&holding(39_880, 40_000), None);
+    let keeps_few = model.assess(&holding(120, 40_000), None);
+
+    let a = keeps_most.get(ADMITTED).unwrap().score;
+    let b = keeps_few.get(ADMITTED).unwrap().score;
+    assert!(
+        (a - b).abs() < 1e-9,
+        "an edge is equally uncertain whichever side is scarce: {a} against {b}"
+    );
+    assert!(a < 0.92, "120 events is not a certain answer: {a}");
+}
+
+#[test]
+fn the_detail_names_both_sides() {
+    use crate::gate_rules::confidence::ADMITTED;
+    let model = CountAndSeparation::default();
+    let detail = model
+        .assess(&holding(39_880, 40_000), None)
+        .get(ADMITTED)
+        .unwrap()
+        .detail
+        .clone();
+    assert!(detail.contains("39880"), "{detail}");
+    assert!(detail.contains("120 excluded"), "{detail}");
+}
+
+#[test]
+fn a_gate_that_excludes_nothing_is_not_a_placement() {
+    // Its edge sits off the end of the data - nothing constrains where.
+    use crate::gate_rules::confidence::ADMITTED;
+    let model = CountAndSeparation::default();
+    let all = model.assess(&holding(40_000, 40_000), None);
+    assert_eq!(all.get(ADMITTED).unwrap().score, 0.0);
+}
+
+#[test]
+fn a_comfortable_split_still_scores_well() {
+    use crate::gate_rules::confidence::ADMITTED;
+    let model = CountAndSeparation::default();
+    let even = model.assess(&holding(20_000, 40_000), None);
+    assert!(even.get(ADMITTED).unwrap().score > 0.99);
+}
