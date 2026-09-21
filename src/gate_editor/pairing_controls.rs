@@ -189,7 +189,7 @@ pub fn PairingColumns() -> Element {
                         }
                     } else {
                         rsx! {
-                            span { class: "pairing-columns_note", "Found {listed}." }
+                            span { class: "pairing-columns_note", "{listed}." }
                         }
                     }
                 }
@@ -197,6 +197,7 @@ pub fn PairingColumns() -> Element {
 
             label { "Plot order" }
             input {
+                title: "The sample types, left plot first. A specimen with no file of the first type leaves that plot empty rather than sliding its other one across. This is also what tells a rule which file of a specimen is the full stain to gate.",
                 value: "{rules.read().pairing.display_order.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(\", \")}",
                 onchange: move |e| {
                     let order: Vec<Arc<str>> = e
@@ -211,10 +212,6 @@ pub fn PairingColumns() -> Element {
                     }
                 },
             }
-            span { class: "pairing-columns_note",
-                "The sample types, left plot first. A specimen with no file of the first type leaves that plot empty rather than sliding its other one across. This is also what tells a rule which file of a specimen is the full stain to gate."
-            }
-
             label { "Sort by" }
             select {
                 value: "{rules.read().pairing.sort_column.clone().unwrap_or_default()}",
@@ -241,7 +238,7 @@ pub fn PairingColumns() -> Element {
                     }
                 } else if matched == total {
                     rsx! {
-                        span { class: "pairing-columns_note", "Grouping {total} files by {column}." }
+                        span { class: "pairing-columns_note", "{total} files grouped." }
                     }
                 } else {
                     rsx! {

@@ -68,6 +68,12 @@ button:hover {
     gap: 20px;
 }
 
+/* The axis controls keep the width they ask for; the sample pane takes what is
+   left. Without this the pane grew to fit its longest line of text and squeezed
+   the axis controls, which have fixed-width number fields and no room to give. */
+.controls-row > .axis-controls-grid { flex: 0 0 auto; }
+.controls-row > .file-info { flex: 1 1 22rem; min-width: 18rem; }
+
 .pairing-columns {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -88,6 +94,10 @@ button:hover {
     grid-column: 1 / -1;
     opacity: 0.7;
     font-size: 0.75rem;
+    /* Its own line, so a long warning wraps inside the pane rather than
+       widening it and pushing the axis controls over. */
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 .pairing-columns_warn { color: hsl(35, 90%, 45%); opacity: 1; font-weight: 600; }
 
