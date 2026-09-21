@@ -291,6 +291,13 @@ pub fn GateRulesWindow() -> Element {
                 scale.set(format!("{}", r.scale));
                 nudge.set(format!("{}", r.nudge));
             }
+            // The form has no fields for this one yet, so Edit opens it on
+            // its kind and nothing else. It is not offered in the menu below
+            // either - the rule exists and the solver cannot run it - so the
+            // only way to reach this arm is a sidecar written by hand.
+            Rule::MatchThePhenotype(_) => {
+                kind.set("MatchThePhenotype".to_string());
+            }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 min_depth.set(format!("{}", r.min_depth_fraction));

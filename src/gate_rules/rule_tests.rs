@@ -521,3 +521,80 @@ fn the_flank_count_says_how_many_events_the_width_came_from() {
         cal.flank_events
     );
 }
+
+// ── the phenotype rule's shape ───────────────────────────────────────────
+
+#[test]
+fn a_phenotype_rule_round_trips_through_a_sidecar() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec![
+            std::sync::Arc::from("TCRVa7.2"),
+            std::sync::Arc::from("CD161"),
+            std::sync::Arc::from("CD127"),
+        ],
+        fit: ShapeFit::DrawPolygon,
+        keep: 0.9,
+        smoothing: 1.2,
+        vertices: 16,
+        ..Default::default()
+    });
+    let text = serde_json::to_string(&rule).expect("serialises");
+    let back: Rule = serde_json::from_str(&text).expect("deserialises");
+    assert_eq!(back, rule);
+}
+
+#[test]
+fn a_phenotype_rule_defaults_to_every_marker_and_the_drawn_shape() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let rule = PhenotypeRule::default();
+    assert!(rule.markers.is_empty(), "empty means the whole panel");
+    assert_eq!(rule.fit, ShapeFit::KeepShape);
+}
+
+#[test]
+fn a_sidecar_written_before_this_rule_existed_still_loads() {
+    // Every field is defaulted, so a rule naming only its markers is valid -
+    // which is what a hand-written sidecar will look like.
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let rule: PhenotypeRule =
+        serde_json::from_str(r#"{"markers":["CD161"]}"#).expect("the rest defaults");
+    assert_eq!(rule.markers.len(), 1);
+    assert_eq!(rule.fit, ShapeFit::KeepShape);
+    assert_eq!(rule.vertices, 24);
+}
+
+#[test]
+fn the_two_ways_of_fitting_are_offered_and_round_trip_on_their_keys() {
+    use crate::gate_rules::rule::ShapeFit;
+    for fit in ShapeFit::ALL {
+        let text = serde_json::to_string(&fit).expect("serialises");
+        assert_eq!(text.trim_matches('"'), fit.key());
+        assert!(!fit.label().is_empty());
+        assert!(!fit.choice().is_empty());
+    }
+}
+
+#[test]
+fn a_phenotype_rule_says_which_markers_it_uses() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let named = PhenotypeRule {
+        markers: vec![std::sync::Arc::from("CD161")],
+        fit: ShapeFit::DrawPolygon,
+        ..Default::default()
+    };
+    assert!(named.describe().contains("CD161"));
+    assert!(PhenotypeRule::default().describe().contains("every marker"));
+}
+
+#[test]
+fn a_phenotype_rule_has_no_band_to_be_already_inside() {
+    use crate::gate_rules::rule::PhenotypeRule;
+    // A gate is right when it holds the matching cells, which cannot be read
+    // off a fraction of the parent - so it is always re-fitted.
+    assert!(
+        Rule::MatchThePhenotype(PhenotypeRule::default())
+            .accepted_band()
+            .is_none()
+    );
+}

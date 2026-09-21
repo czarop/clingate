@@ -246,3 +246,122 @@ fn a_fitted_shape_can_be_looked_at() {
         drawn.caught * 100.0
     );
 }
+
+// ── keeping the shape ────────────────────────────────────────────────────
+
+#[test]
+fn a_shape_follows_its_population_across() {
+    let mut rng = Cloud(11);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 2000);
+    let to = rng.blob((5.0, -3.0), (1.0, 1.0), 2000);
+    let moved = Reshape::between(&from, &to);
+    // Same size, new place.
+    assert!(
+        (moved.scale.0 - 1.0).abs() < 0.15,
+        "x scale {}",
+        moved.scale.0
+    );
+    assert!(
+        (moved.scale.1 - 1.0).abs() < 0.15,
+        "y scale {}",
+        moved.scale.1
+    );
+    let centre = moved.moved((0.0, 0.0));
+    assert!((centre.0 - 5.0).abs() < 0.3, "x centre {}", centre.0);
+    assert!((centre.1 + 3.0).abs() < 0.3, "y centre {}", centre.1);
+}
+
+#[test]
+fn a_shape_grows_with_a_population_that_spread_out() {
+    let mut rng = Cloud(12);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 3000);
+    let to = rng.blob((0.0, 0.0), (2.5, 1.0), 3000);
+    let moved = Reshape::between(&from, &to);
+    assert!(
+        (moved.scale.0 - 2.5).abs() < 0.4,
+        "x should have grown 2.5x, got {}",
+        moved.scale.0
+    );
+    assert!(
+        (moved.scale.1 - 1.0).abs() < 0.2,
+        "y should not have changed, got {}",
+        moved.scale.1
+    );
+}
+
+#[test]
+fn the_shape_is_kept_even_as_it_is_resized() {
+    // The whole point of this mode: proportions within the outline survive.
+    // A square stays square-cornered; only its size and place change.
+    let mut rng = Cloud(13);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 2000);
+    let to = rng.blob((10.0, 10.0), (2.0, 2.0), 2000);
+    let moved = Reshape::between(&from, &to);
+
+    let square = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+    let out = moved.apply(&square);
+    // Still a rectangle: opposite sides equal, and the corners still square.
+    let width_bottom = out[1].0 - out[0].0;
+    let width_top = out[2].0 - out[3].0;
+    let height_left = out[3].1 - out[0].1;
+    let height_right = out[2].1 - out[1].1;
+    assert!((width_bottom - width_top).abs() < 1e-9);
+    assert!((height_left - height_right).abs() < 1e-9);
+    assert!((out[0].1 - out[1].1).abs() < 1e-9, "the bottom edge tilted");
+}
+
+#[test]
+fn a_shape_off_to_one_side_does_not_fly_away_when_resized() {
+    // Scaling about the origin rather than the population's centre would send
+    // a gate drawn far from zero a long way off when its population widened.
+    let mut rng = Cloud(14);
+    let from = rng.blob((100.0, 100.0), (1.0, 1.0), 2000);
+    let to = rng.blob((100.0, 100.0), (3.0, 3.0), 2000);
+    let moved = Reshape::between(&from, &to);
+    let centre = moved.moved((100.0, 100.0));
+    assert!(
+        (centre.0 - 100.0).abs() < 1.0 && (centre.1 - 100.0).abs() < 1.0,
+        "the centre moved to {centre:?}"
+    );
+}
+
+#[test]
+fn an_absurd_stretch_is_clamped_and_said_so() {
+    let mut rng = Cloud(15);
+    let from = rng.blob((0.0, 0.0), (0.01, 1.0), 2000);
+    let to = rng.blob((0.0, 0.0), (10.0, 1.0), 2000);
+    let moved = Reshape::between(&from, &to);
+    assert!(moved.clamped, "a 1000x stretch was not flagged");
+    assert!(
+        moved.scale.0 <= MAX_STRETCH + 1e-9,
+        "scale {}",
+        moved.scale.0
+    );
+}
+
+#[test]
+fn an_ordinary_change_of_size_is_not_flagged() {
+    let mut rng = Cloud(16);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 2000);
+    let to = rng.blob((0.0, 0.0), (1.4, 0.8), 2000);
+    assert!(!Reshape::between(&from, &to).clamped);
+}
+
+#[test]
+fn a_stray_cell_does_not_set_the_size_of_the_gate() {
+    // Median and MAD, not mean and standard deviation: the signature will
+    // occasionally catch something far away, and it must not inflate the gate.
+    let mut rng = Cloud(17);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 2000);
+    let mut to = rng.blob((0.0, 0.0), (1.0, 1.0), 2000);
+    let honest = Reshape::between(&from, &to).scale;
+    to.push((500.0, 500.0));
+    to.push((-500.0, -500.0));
+    let with_strays = Reshape::between(&from, &to).scale;
+    assert!(
+        (with_strays.0 - honest.0).abs() < 0.05,
+        "two strays moved the scale from {} to {}",
+        honest.0,
+        with_strays.0
+    );
+}

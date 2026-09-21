@@ -21,6 +21,7 @@
 use crate::gate_rules::confidence::{Confidence, ConfidenceModel, CountAndSeparation};
 use crate::gate_rules::threshold::{SolveError, Threshold, percentile_offset, tail_fraction};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// A position and the confidence in it, which is what every caller wants.
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +151,7 @@ pub enum Rule {
     PercentileOffset(PercentileOffsetRule),
     AboveTheNegative(AboveTheNegativeRule),
     InTheValley(ValleyRule),
+    MatchThePhenotype(PhenotypeRule),
 }
 
 /// "Where I put it on the QC, relative to that sample's negative."
@@ -497,8 +499,11 @@ impl Rule {
             Rule::TailFraction(r) => r.apply(values, reference_x),
             Rule::PercentileOffset(r) => r.apply(values, reference_x),
             // Calibrated against another sample, so it cannot be solved from
-            // one population alone - see `AboveTheNegativeRule`.
-            Rule::AboveTheNegative(_) | Rule::InTheValley(_) => {
+            // one population alone - see `AboveTheNegativeRule`. The phenotype
+            // rule is not a threshold at all: it does not move an edge along
+            // one parameter, it replaces a geometry, so there is nothing here
+            // for it to return.
+            Rule::AboveTheNegative(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => {
                 Err(SolveError::BadBand { band: (0.0, 0.0) })
             }
         }
@@ -517,6 +522,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
+            Rule::MatchThePhenotype(r) => r.confidence.assess(threshold, reference_x),
         }
     }
 
@@ -524,7 +530,7 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.solve(values),
             Rule::PercentileOffset(r) => r.solve(values),
-            Rule::AboveTheNegative(_) | Rule::InTheValley(_) => {
+            Rule::AboveTheNegative(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => {
                 Err(SolveError::BadBand { band: (0.0, 0.0) })
             }
         }
@@ -536,6 +542,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.describe(),
             Rule::AboveTheNegative(r) => r.describe(),
             Rule::InTheValley(r) => r.describe(),
+            Rule::MatchThePhenotype(r) => r.describe(),
         }
     }
 
@@ -553,7 +560,13 @@ impl Rule {
     pub fn accepted_band(&self) -> Option<(f64, f64)> {
         match self {
             Rule::TailFraction(r) => Some(r.band),
-            Rule::PercentileOffset(_) | Rule::AboveTheNegative(_) | Rule::InTheValley(_) => None,
+            // A position, not a range. The phenotype rule has no band either:
+            // a gate is right when it holds the cells that match, and whether
+            // it does cannot be read off a fraction of the parent.
+            Rule::PercentileOffset(_)
+            | Rule::AboveTheNegative(_)
+            | Rule::InTheValley(_)
+            | Rule::MatchThePhenotype(_) => None,
         }
     }
 
@@ -564,6 +577,154 @@ impl Rule {
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
             Rule::InTheValley(_) => "In the valley",
+            Rule::MatchThePhenotype(_) => "Match the phenotype",
+        }
+    }
+}
+
+// ── matching a population by what it is ──────────────────────────────────
+
+/// What to do with the outline once the population has been found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShapeFit {
+    /// Move and resize the gate as drawn, without changing its shape.
+    ///
+    /// For an outline that carries meaning the data does not: a rectangle that
+    /// stands for a quadrant, a shape agreed with a collaborator, a gate that
+    /// has to stay comparable with how it was drawn before. The population
+    /// decides where it sits and how big it is; what it looks like is kept.
+    ///
+    /// Also the only option that preserves the *kind* of gate - a rectangle
+    /// stays a rectangle, an ellipse an ellipse.
+    #[default]
+    KeepShape,
+    /// Draw a fresh polygon round the matched cells on every sample.
+    ///
+    /// For a population whose shape genuinely differs between donors, where
+    /// the reference's outline is a record of one sample rather than a
+    /// statement about the population. Turns the gate into a polygon whatever
+    /// it started as, because no other geometry can express a traced contour.
+    DrawPolygon,
+}
+
+impl ShapeFit {
+    pub fn label(self) -> &'static str {
+        match self {
+            ShapeFit::KeepShape => "keep the shape, move and resize it",
+            ShapeFit::DrawPolygon => "draw a new polygon round the cells",
+        }
+    }
+
+    pub fn choice(self) -> &'static str {
+        match self {
+            ShapeFit::KeepShape => {
+                "keep the shape - move and resize it, and stay the kind of gate it is"
+            }
+            ShapeFit::DrawPolygon => {
+                "draw a new polygon - follow the cells, whatever shape they make"
+            }
+        }
+    }
+
+    pub const ALL: [ShapeFit; 2] = [ShapeFit::KeepShape, ShapeFit::DrawPolygon];
+
+    /// The serialised name, which is also what the menu round-trips on.
+    pub fn key(self) -> &'static str {
+        match self {
+            ShapeFit::KeepShape => "KeepShape",
+            ShapeFit::DrawPolygon => "DrawPolygon",
+        }
+    }
+}
+
+/// "The cells that look like the ones I gated on the QC, wherever they are."
+///
+/// The rule for populations the others cannot reach. Every other rule reads
+/// one parameter and moves one edge, which works where a population separates
+/// along a single axis and has nothing to say where it does not - a smear with
+/// no dip, several clusters near each other, a population that moves in both
+/// axes at once.
+///
+/// This one identifies the population instead. The cells inside the reference
+/// gate are described by where they sit across the chosen markers - their
+/// phenotype - and that description is used to find the same cells in each
+/// sample. Where they turn out to be on the plot is then an answer rather than
+/// an assumption, and the gate is fitted to them.
+///
+/// Nothing is normalised between samples: each one's markers are read against
+/// its own parent population, so donor differences are carried rather than
+/// flattened. See [`phenotype`](super::phenotype).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhenotypeRule {
+    /// The markers that say what this population *is*.
+    ///
+    /// Chosen per rule, because which markers define a population is knowledge
+    /// about the biology that nothing in the data supplies. MAIT cells are
+    /// TCR Va7.2 and CD161; a monocyte marker is not wrong about them, it is
+    /// silent, and including it spends the distance budget on noise. Empty
+    /// means every marker on the panel, which is a reasonable place to start
+    /// and rarely where you finish.
+    #[serde(default)]
+    pub markers: Vec<Arc<str>>,
+    /// Whether the drawn outline is kept or replaced.
+    #[serde(default)]
+    pub fit: ShapeFit,
+    /// The fraction of the matched cells the gate should hold.
+    ///
+    /// Not all of them: the last few percent of any population are the ones
+    /// the signature is least sure about, and a boundary drawn to include them
+    /// is drawn around the doubt.
+    #[serde(default = "ninety_five")]
+    pub keep: f64,
+    /// Scales the bandwidth of the density the outline is traced on. Below 1
+    /// follows the cells more closely and picks up their noise; above 1 gives
+    /// a smoother boundary. Ignored when the shape is kept.
+    #[serde(default = "one")]
+    pub smoothing: f64,
+    /// About how many points the drawn polygon may have. Ignored when the
+    /// shape is kept.
+    #[serde(default = "two_dozen")]
+    pub vertices: usize,
+    #[serde(default)]
+    pub confidence: CountAndSeparation,
+}
+
+fn ninety_five() -> f64 {
+    0.95
+}
+
+fn two_dozen() -> usize {
+    24
+}
+
+impl PhenotypeRule {
+    /// What this rule does, for the rules table.
+    pub fn describe(&self) -> String {
+        let markers = if self.markers.is_empty() {
+            "every marker".to_string()
+        } else {
+            self.markers
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(
+            "find the cells that match on {markers}, then {}",
+            self.fit.label()
+        )
+    }
+}
+
+impl Default for PhenotypeRule {
+    fn default() -> Self {
+        Self {
+            markers: Vec::new(),
+            fit: ShapeFit::default(),
+            keep: ninety_five(),
+            smoothing: one(),
+            vertices: two_dozen(),
+            confidence: CountAndSeparation::default(),
         }
     }
 }

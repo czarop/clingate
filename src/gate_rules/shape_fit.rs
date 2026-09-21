@@ -606,3 +606,105 @@ fn perpendicular((x, y): (f64, f64), (x1, y1): (f64, f64), (x2, y2): (f64, f64))
     }
     ((x - x1) * dy - (y - y1) * dx).abs() / length
 }
+
+// ── keeping the shape ────────────────────────────────────────────────────
+
+/// Where a population sits and how far it spreads, on the two plot axes.
+///
+/// Median and MAD rather than mean and standard deviation, for the reason
+/// [`phenotype`](super::phenotype) gives: a handful of cells the signature
+/// caught by mistake should not set the size of the gate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    pub centre: (f64, f64),
+    pub spread: (f64, f64),
+}
+
+/// The smallest spread an axis may report, so a population that is flat on one
+/// axis cannot make the scale infinite.
+const MIN_SPREAD: f64 = 1e-9;
+
+impl Extent {
+    pub fn of(points: &[(f64, f64)]) -> Self {
+        let xs: Vec<f64> = points.iter().map(|p| p.0).collect();
+        let ys: Vec<f64> = points.iter().map(|p| p.1).collect();
+        let (cx, sx) = middle_and_spread(&xs);
+        let (cy, sy) = middle_and_spread(&ys);
+        Self {
+            centre: (cx, cy),
+            spread: (sx, sy),
+        }
+    }
+}
+
+fn middle_and_spread(values: &[f64]) -> (f64, f64) {
+    if values.is_empty() {
+        return (0.0, MIN_SPREAD);
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let middle = sorted[sorted.len() / 2];
+    let mut deviations: Vec<f64> = sorted.iter().map(|v| (v - middle).abs()).collect();
+    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let spread = (deviations[deviations.len() / 2] * 1.482_602_218_505_602).max(MIN_SPREAD);
+    (middle, spread)
+}
+
+/// How far a shape may be stretched or shrunk before the fit is doubted.
+///
+/// A gate four times the size it was drawn is not the same gate. The limit
+/// does not refuse - it clamps and says so, because a population really can
+/// change size between donors and a flagged answer beats no answer.
+pub const MAX_STRETCH: f64 = 4.0;
+
+/// Moving and resizing a shape onto a population, without reshaping it.
+///
+/// The alternative to drawing a new boundary, and the right one when the
+/// outline carries meaning the data does not - a rectangle that means "this
+/// quadrant", a shape agreed with somebody else, a gate that has to stay
+/// comparable with how it was drawn last year. The population decides where
+/// the shape goes and how big it is; the person keeps what it looks like.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reshape {
+    /// The reference population's extent, which the shape was drawn around.
+    pub from: Extent,
+    /// This sample's, which it is being moved onto.
+    pub to: Extent,
+    /// Per axis, clamped to [`MAX_STRETCH`] either way.
+    pub scale: (f64, f64),
+    /// Whether the clamp bit.
+    pub clamped: bool,
+}
+
+impl Reshape {
+    /// Work out the move and resize between two populations.
+    pub fn between(from: &[(f64, f64)], to: &[(f64, f64)]) -> Self {
+        let (from, to) = (Extent::of(from), Extent::of(to));
+        let raw = (to.spread.0 / from.spread.0, to.spread.1 / from.spread.1);
+        let limit = |v: f64| v.clamp(1.0 / MAX_STRETCH, MAX_STRETCH);
+        let scale = (limit(raw.0), limit(raw.1));
+        Self {
+            from,
+            to,
+            scale,
+            clamped: scale != raw,
+        }
+    }
+
+    /// Put one point through it.
+    ///
+    /// Scaling happens about the *population's* centre rather than the
+    /// origin, so a shape drawn off to one side does not fly away when its
+    /// population turns out to be wider.
+    pub fn moved(&self, (x, y): (f64, f64)) -> (f64, f64) {
+        (
+            (x - self.from.centre.0) * self.scale.0 + self.to.centre.0,
+            (y - self.from.centre.1) * self.scale.1 + self.to.centre.1,
+        )
+    }
+
+    /// Put a whole outline through it.
+    pub fn apply(&self, points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+        points.iter().map(|p| self.moved(*p)).collect()
+    }
+}
