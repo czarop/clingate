@@ -95,9 +95,26 @@ pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
             .ok_or_else(|| anyhow::anyhow!("file path is not valid UTF-8"))?,
     )?;
 
+    // Only the channels this file actually carries.
+    //
+    // The cofactors come from the axis settings, which describe the whole panel
+    // as the scaling file defines it. `apply_arcsinh_transforms` errors on the
+    // first name it cannot find, so one channel missing from one file - a
+    // shorter panel, a renamed detector - loses the entire plot rather than one
+    // axis of it. Nothing measured changes by skipping it: a transform for a
+    // column that is not there could not have affected this plot's x, y or
+    // chain, all of which are columns that are. If a *gate* needs the missing
+    // channel the filter below still fails, and says so, which is the right
+    // answer to gating on a parameter the file does not have.
+    let present: rustc_hash::FxHashSet<&str> = fcs
+        .parameters
+        .values()
+        .map(|p| p.channel_name.as_ref())
+        .collect();
     let refs: Vec<(&str, f32)> = job
         .cofactors
         .iter()
+        .filter(|(k, _)| present.contains(k.as_ref()))
         .map(|(k, v)| (k.as_ref(), *v))
         .collect();
     let scaled = fcs.apply_arcsinh_transforms(refs.as_slice())?;

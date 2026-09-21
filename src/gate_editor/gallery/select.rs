@@ -56,8 +56,23 @@ pub fn drawn_on(
 
 /// Those of `gates` that are drawn on this pair of axes, rewritten for them.
 ///
-/// A gate drawn on a different pair is not an error - a population usually
-/// carries several - it simply is not on this plot.
+/// [`DrawableGate::match_to_plot_axis`] has three answers, and the middle one
+/// is easy to misread:
+///
+/// - `Ok(None)` - the gate is already on these axes, so there is nothing to
+///   rewrite. This is the *usual* case, and the gate is kept exactly as it is.
+/// - `Ok(Some(g))` - the plot has the gate's two parameters the other way
+///   round, and `g` is the gate transposed onto them.
+/// - `Err(_)` - the gate is drawn on some other pair and is not on this plot.
+///   Not a failure: a population usually carries gates on several pairs.
+///
+/// Reading `Ok(None)` as "not on this plot" drops every gate that did not need
+/// transposing, which is nearly all of them - the gallery drew no outlines at
+/// all until this was fixed. The editor's `match_gates_to_plot` takes the same
+/// three answers but *writes* the rewritten gates back to its view index and
+/// skips the `None`s, because for it `None` means "the copy I hold is still
+/// right"; here there is no stored copy to leave alone, so `None` has to
+/// produce the original.
 pub fn matched_to_axes(
     gates: &[Arc<dyn DrawableGate>],
     x: &str,
@@ -66,8 +81,9 @@ pub fn matched_to_axes(
     gates
         .iter()
         .filter_map(|gate| match gate.match_to_plot_axis(x, y) {
-            Ok(Some(matched)) => Some(Arc::from(matched)),
-            _ => None,
+            Ok(None) => Some(gate.clone()),
+            Ok(Some(transposed)) => Some(Arc::from(transposed)),
+            Err(_) => None,
         })
         .collect()
 }

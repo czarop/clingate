@@ -72,7 +72,10 @@ pub fn ExportPdf(
         let cards = cards.clone();
         let node = node.clone();
         let (x, y) = (x.clone(), y.clone());
-        let heading = format!("{gate_name} — {x} / {y}");
+        // ASCII only: a page's strings are WinAnsi, so anything else is
+        // written out as a question mark. A dash that survives beats one that
+        // turns into punctuation nobody chose.
+        let heading = format!("{gate_name}  -  {x} / {y}");
         let target = std::path::PathBuf::from(path());
 
         // Every store read happens here, on the UI thread, before anything is

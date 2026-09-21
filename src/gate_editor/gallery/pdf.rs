@@ -76,8 +76,17 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
     // Geometry of one cell, worked out once.
     let usable = (PAGE.0 - 2.0 * MARGIN, PAGE.1 - 2.0 * MARGIN - HEADER_HEIGHT);
     let cell = (usable.0 / ACROSS as f32, usable.1 / DOWN as f32);
-    // Two plots side by side inside a cell, under the specimen's name.
-    let plot = ((cell.0 - CELL_GAP * 3.0) / 2.0).min(cell.1 - TITLE_HEIGHT - CELL_GAP);
+    // Two plots side by side, the specimen's name above them and each file's
+    // name below. Every one of those four bands has to come out of the cell's
+    // height - leaving the file name's out was enough to drop it into the next
+    // row's title.
+    let plot =
+        ((cell.0 - CELL_GAP * 3.0) / 2.0).min(cell.1 - TITLE_HEIGHT - NAME_HEIGHT - CELL_GAP * 2.0);
+    // Height is what limits the plot, so a card is narrower than its cell.
+    // Centring spreads what is left either side instead of banking it all on
+    // the right, where it reads as a missing column.
+    let card = plot * 2.0 + CELL_GAP;
+    let indent = ((cell.0 - card) / 2.0).max(0.0);
 
     let mut page_ids = Vec::new();
     for (page_number, chunk) in sheets.chunks(PER_PAGE).enumerate() {
@@ -104,7 +113,7 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
         for (at, sheet) in chunk.iter().enumerate() {
             let column = at % ACROSS;
             let row = at / ACROSS;
-            let left = MARGIN + column as f32 * cell.0;
+            let left = MARGIN + column as f32 * cell.0 + indent;
             // Rows run down the page; PDF y runs up it.
             let top = PAGE.1 - MARGIN - HEADER_HEIGHT - row as f32 * cell.1;
 
@@ -118,8 +127,8 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
             );
 
             for (slot, filled) in sheet.slots.iter().enumerate() {
-                let x = left + CELL_GAP + slot as f32 * (plot + CELL_GAP);
-                let y = top - TITLE_HEIGHT - CELL_GAP - plot;
+                let x = left + slot as f32 * (plot + CELL_GAP);
+                let y = top - TITLE_HEIGHT - plot;
                 let Some(drawn) = filled else {
                     write_text(&mut content, x, y + plot / 2.0, 7.5, "no paired file", None);
                     continue;
@@ -137,7 +146,14 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
                     content,
                     "q 0.6 w 0.7 0.7 0.7 RG {x} {y} {plot} {plot} re S Q\n"
                 );
-                write_text(&mut content, x, y - 9.0, 7.0, &drawn.name, None);
+                write_text(
+                    &mut content,
+                    x,
+                    y - NAME_HEIGHT + 3.0,
+                    6.5,
+                    &drawn.name,
+                    None,
+                );
             }
         }
 
@@ -164,6 +180,8 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
 
 const HEADER_HEIGHT: f32 = 26.0;
 const TITLE_HEIGHT: f32 = 13.0;
+/// The band under a plot holding its file name.
+const NAME_HEIGHT: f32 = 11.0;
 const CELL_GAP: f32 = 6.0;
 
 enum Anchor {

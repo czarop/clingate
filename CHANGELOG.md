@@ -32,6 +32,14 @@
 
 ### Changed
 
+- **A plot no longer needs every channel the scaling file names.** The cofactors
+  handed to `apply_arcsinh_transforms` come from the axis settings, which
+  describe the whole panel; it errors on the first name it cannot find, so one
+  channel absent from one file lost the entire plot. The gallery now passes only
+  the channels the file carries. Nothing measured changes - a transform for a
+  column that is not there could not have reached the plot's axes or its gating
+  chain, which are columns that are.
+
 - **Editing a rule keeps its gate when the population changes.** The Edit button
   exists so one rule can be moved onto a second population without retyping it,
   and clearing the gate and parameter on every change of parent made that three

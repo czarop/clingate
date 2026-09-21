@@ -611,6 +611,117 @@ fn a_real_gate_that_admits_nothing_still_draws() {
         size: 320,
     };
     let image = render_plot(&job).expect("an empty population still renders");
-    assert_eq!(image.parent_events, 0, "the gate was meant to admit nothing");
+    assert_eq!(
+        image.parent_events, 0,
+        "the gate was meant to admit nothing"
+    );
     assert_eq!(&image.jpeg[..2], &[0xFF, 0xD8], "not a JPEG");
+}
+
+// ── which gates land on a plot ───────────────────────────────────────────
+
+/// Build a state with one gate under a parent, and return (parent node, the
+/// resolver, the gates drawn on the parent's plot).
+fn drawn_under(
+    gate_x: &str,
+    gate_y: &str,
+) -> (
+    Vec<Arc<dyn DrawableGate>>,
+    crate::gate_editor::gates::gate_store::GateOverrideResolver,
+) {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &mapper(),
+            300.0,
+            300.0,
+            Arc::from(gate_x),
+            Arc::from(gate_y),
+            None,
+            Some(ROOTGATE.clone()),
+            PrimaryGateType::Rectangle,
+            Some("child".to_string()),
+        )
+        .expect("a gate can be added");
+    let resolver = state.get_current_sample(Arc::from("f1"), &Default::default());
+    let drawn = super::select::drawn_on(&state, &ROOTGATE, &resolver);
+    (drawn, resolver)
+}
+
+#[test]
+fn a_gate_already_on_the_plots_axes_is_drawn() {
+    // The case that matters: `match_to_plot_axis` answers `Ok(None)` for a gate
+    // that needs no rewriting, and reading that as "not on this plot" left the
+    // gallery with no outlines at all.
+    let (drawn, _) = drawn_under("FSC-A", "SSC-A");
+    assert_eq!(drawn.len(), 1, "the child gate is under the root");
+    let matched = super::select::matched_to_axes(&drawn, "FSC-A", "SSC-A");
+    assert_eq!(matched.len(), 1, "a gate on these very axes must be drawn");
+    assert!(
+        Arc::ptr_eq(&matched[0], &drawn[0]),
+        "nothing to rewrite, so it should be the gate itself"
+    );
+}
+
+#[test]
+fn a_gate_with_its_axes_the_other_way_round_is_transposed() {
+    let (drawn, _) = drawn_under("FSC-A", "SSC-A");
+    let matched = super::select::matched_to_axes(&drawn, "SSC-A", "FSC-A");
+    assert_eq!(matched.len(), 1, "the same gate, read the other way round");
+    assert_eq!(
+        matched[0].get_params(),
+        (Arc::from("SSC-A"), Arc::from("FSC-A"))
+    );
+}
+
+#[test]
+fn a_gate_on_another_pair_is_not_on_this_plot() {
+    // Not a failure - a population usually carries gates on several pairs.
+    let (drawn, _) = drawn_under("FSC-A", "SSC-A");
+    assert!(super::select::matched_to_axes(&drawn, "CD3", "CD4").is_empty());
+}
+
+/// The axis settings describe the whole panel, but a given file need not carry
+/// every channel in it. One absent name used to lose the entire plot, because
+/// `apply_arcsinh_transforms` errors on the first parameter it cannot find.
+#[test]
+fn a_real_file_renders_with_cofactors_it_does_not_have() {
+    let Ok(dir) = std::env::var("OMIQ_FCS_DIR") else {
+        eprintln!("skipped: set OMIQ_FCS_DIR");
+        return;
+    };
+    let Some(file) = std::fs::read_dir(&dir)
+        .expect("the FCS directory can be read")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "fcs"))
+        .min()
+    else {
+        eprintln!("skipped: no FCS files in {dir}");
+        return;
+    };
+
+    use super::render::{PlotJob, render_plot};
+    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+
+    let job = PlotJob {
+        path: file,
+        cofactors: vec![
+            // Not in any panel this program will meet.
+            (Arc::from("No Such Channel-A"), 150.0),
+            (Arc::from("Also Absent-A"), 6000.0),
+        ],
+        chain: Vec::new(),
+        resolver: GateOverrideResolver {
+            active_gates: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            gate_origins: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+        },
+        x: Arc::from("FSC-A"),
+        y: Arc::from("SSC-A"),
+        x_axis: scatter("FSC-A"),
+        y_axis: scatter("SSC-A"),
+        gates: Vec::new(),
+        size: 320,
+    };
+    let image = render_plot(&job).expect("an absent channel must not lose the plot");
+    assert!(image.parent_events > 0);
 }
