@@ -93,6 +93,28 @@ pub fn pair_files(
         pair.files
             .sort_by_key(|i| rank(&pairing.display_order, types[*i].as_ref()));
     }
+
+    // Then the specimens themselves, by whichever metadata column the pairing
+    // names. Stable, so without a column they stay in the folder's order, and
+    // a specimen the column says nothing about sorts last rather than first.
+    if pairing.sort_column.is_some() {
+        let key_of = |pair: &Pair| -> Option<Arc<str>> {
+            let index = *pair.files.first()?;
+            let columns = names_to_id
+                .get(&keys[index])
+                .and_then(|id| metadata.get(id))?;
+            pairing.sort_key(columns)
+        };
+        let keyed: Vec<Option<Arc<str>>> = pairs.iter().map(key_of).collect();
+        let mut order: Vec<usize> = (0..pairs.len()).collect();
+        order.sort_by(|a, b| match (&keyed[*a], &keyed[*b]) {
+            (Some(x), Some(y)) => crate::gate_rules::rule_store::human_order(x, y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        pairs = order.into_iter().map(|i| pairs[i].clone()).collect();
+    }
     pairs
 }
 

@@ -88,6 +88,7 @@ pub const ADMITTED: &str = "events in the gate";
 pub const STABILITY: &str = "stability of the gate's contents";
 pub const BAND: &str = "rule satisfied";
 pub const DISPLACEMENT: &str = "distance moved from the reference";
+pub const VALLEY: &str = "depth of the valley it sat in";
 
 /// Where each component stops being a concern.
 ///

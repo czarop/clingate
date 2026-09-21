@@ -445,7 +445,7 @@ pub fn GateRulesWindow() -> Element {
                         "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
                     }
 
-                    label { "Refuse below" }
+                    label { "Flag below" }
                     input {
                         r#type: "number",
                         step: "0.05",
@@ -453,7 +453,7 @@ pub fn GateRulesWindow() -> Element {
                         oninput: move |e| min_depth.set(e.value()),
                     }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "As a fraction of the reference's valley depth. A dip a fifth as deep is still a dip and still places correctly, so this is deliberately generous - it is here to catch the sample where the two populations have merged entirely and there is no boundary to find."
+                        "As a fraction of the reference's valley depth. A shallower dip below this still gets a gate - refusing hid the answer exactly where it was most wanted - but it is scored low and rises to the top for review. Only a density with no dip at all is left unplaced, because then there is nothing to place."
                     }
 
                     label { "Smoothing" }
@@ -965,7 +965,13 @@ pub fn GateRulesWindow() -> Element {
                         ul { class: "gate_rules-skipped",
                             for missed in run.skipped.iter() {
                                 li {
-                                    "{describe(&missed.gate, missed.parent_gate.as_deref())} {missed.file}: {missed.reason}"
+                                    // The file's own name: an opaque gating id
+                                    // names a file nobody can look up.
+                                    if missed.file.is_empty() {
+                                        "{describe(&missed.gate, missed.parent_gate.as_deref())}: {missed.reason}"
+                                    } else {
+                                        "{describe(&missed.gate, missed.parent_gate.as_deref())} on {name_of(&files.read(), &missed.file)}: {missed.reason}"
+                                    }
                                 }
                             }
                         }

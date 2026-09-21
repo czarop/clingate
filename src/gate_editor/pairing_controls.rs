@@ -106,6 +106,23 @@ pub fn PairingColumns() -> Element {
                 }
             }
 
+            label { "Sort by" }
+            select {
+                value: "{rules.read().pairing.sort_column.clone().unwrap_or_default()}",
+                onchange: move |e| {
+                    let picked = e.value();
+                    rules.write().pairing.sort_column = if picked.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::from(picked.as_str()))
+                    };
+                },
+                option { value: "", "the folder's own order" }
+                for name in columns.read().iter() {
+                    option { value: "{name}", "{name}" }
+                }
+            }
+
             {
                 let (matched, total) = reach();
                 let column = rules.read().pairing.sample_id_column.clone();

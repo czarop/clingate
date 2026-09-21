@@ -679,3 +679,48 @@ fn targets_survive_the_sidecar() {
         Some(Bound::Below)
     );
 }
+
+// ─── the order samples are listed in ─────────────────────────────────────────
+
+#[test]
+fn a_timepoint_column_sorts_the_way_a_person_reads_it() {
+    use crate::gate_rules::rule_store::human_order;
+    let mut days = ["D85", "D4", "D1", "D29"];
+    days.sort_by(|a, b| human_order(a, b));
+    assert_eq!(days, ["D1", "D4", "D29", "D85"], "not D1, D29, D4, D85");
+}
+
+#[test]
+fn digits_inside_a_name_compare_as_numbers() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("000602_D4", "000602_D29"), Ordering::Less);
+    assert_eq!(human_order("000602_D4", "000604_D1"), Ordering::Less);
+    assert_eq!(human_order("Plate_2", "Plate_10"), Ordering::Less);
+    assert_eq!(human_order("abc", "abc"), Ordering::Equal);
+}
+
+#[test]
+fn an_id_too_long_for_a_number_still_compares() {
+    // A gating id is a long run of digits. Parsing it would overflow, so it
+    // falls back to text rather than panicking or wrapping.
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    let a = "178385878716855178385878716855178385878716855";
+    let b = "178385878716855178385878716855178385878716856";
+    assert_eq!(human_order(a, b), Ordering::Less);
+}
+
+#[test]
+fn case_does_not_split_the_ordering() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("donor", "DONOR"), Ordering::Equal);
+    assert_eq!(human_order("Apple", "banana"), Ordering::Less);
+}
+
+#[test]
+fn sorting_is_off_until_a_column_is_named() {
+    use crate::gate_rules::rule_store::SamplePairing;
+    assert!(SamplePairing::default().sort_column.is_none());
+}

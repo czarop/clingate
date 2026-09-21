@@ -2183,3 +2183,115 @@ fn the_offset_from_the_bottom_is_carried_across() {
         back.at
     );
 }
+
+#[test]
+fn a_shallow_valley_is_placed_and_flagged_rather_than_refused() {
+    // Refusing hid the answer exactly where a person most wanted it: a run came
+    // back with seven samples unplaced at depths of 5% to 24% against a
+    // threshold of 25%, one short by a single point, and the only way to see
+    // where the gate would have gone was to change the setting and run again.
+    use crate::gate_rules::confidence::VALLEY;
+
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let shallow = two_populations(400.0, 130.0);
+
+    // A threshold the sample's dip does not meet.
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.9),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &shallow)],
+    );
+
+    let placed = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .expect("a shallow dip is still placed");
+    let (reference, sample) = placed.valley.unwrap();
+    assert!(
+        sample.depth < reference.depth * 0.9,
+        "shallower than the bar"
+    );
+    assert_eq!(
+        placed.weakest,
+        Some(VALLEY),
+        "and the shallow dip is what holds its score down"
+    );
+    assert!(
+        placed.confidence < 1.0,
+        "scored on how deep the dip was: {}",
+        placed.confidence
+    );
+}
+
+#[test]
+fn a_density_with_no_dip_at_all_is_still_refused() {
+    // The other side: flagging is for a dip that is shallow, not for one that
+    // is absent. With nothing to place against there is nothing to place.
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let merged = two_populations(400.0, 300.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.0),
+        &map,
+        &[("fs_qc", &here), ("fs_b", &merged)],
+    );
+    assert!(report.positioned.iter().all(|p| &*p.specimen != "DONOR-B"));
+    assert!(report.skipped.iter().any(|s| &*s.file == "fs_b"));
+}
+
+#[test]
+fn the_report_follows_the_pairing_s_sample_order() {
+    // Two tabs disagreeing about the order of the same specimens is worse than
+    // either order, so the report follows the column the plots are sorted by.
+    use crate::gate_rules::autogate::{measure_file, position_all};
+    use crate::gate_rules::rule_store::SamplePairing;
+
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    // Deliberately measured in an order that is not the sorted one.
+    for (file, id, day) in [
+        ("fs_qc", "QC-A", "D1"),
+        ("fs_c", "DONOR-C", "D85"),
+        ("fs_b", "DONOR-B", "D4"),
+    ] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("SampleID"), Arc::from(id));
+        columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+        columns.insert(Arc::from("Day"), Arc::from(day));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+
+    let mut store = above_the_negative_rule("fs_qc");
+    store.pairing = SamplePairing {
+        sort_column: Some(Arc::from("Day")),
+        ..SamplePairing::default()
+    };
+
+    let (mut state, _) = one_positive_gate();
+    let frames = [
+        ("fs_qc", with_negative_at(300.0)),
+        ("fs_c", with_negative_at(500.0)),
+        ("fs_b", with_negative_at(400.0)),
+    ];
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in &frames {
+        let (m, u) = measure_file(&state, &Arc::from(*file), frame, &map, &store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let report = position_all(&mut state, &store, &measured, &unmeasured, &map);
+
+    let order: Vec<&str> = report.positioned.iter().map(|p| &*p.specimen).collect();
+    assert_eq!(
+        order,
+        ["DONOR-B", "DONOR-C"],
+        "D4 before D85, not the order they were measured in"
+    );
+}

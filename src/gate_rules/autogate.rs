@@ -1019,7 +1019,37 @@ pub fn solve_all_reporting(
         }
     }
 
+    // Every list in the report follows the same specimen order the plots do -
+    // two tabs disagreeing about the order of the same samples is worse than
+    // either order.
+    sort_report(&mut report, &store.pairing, metadata);
     (report, placements)
+}
+
+/// Put every list in the report into the pairing's sample order.
+fn sort_report(report: &mut Report, pairing: &SamplePairing, metadata: &MetaDataFileMap) {
+    if pairing.sort_column.is_none() {
+        return;
+    }
+    let key = |file: &FileId| -> Option<Arc<str>> { pairing.sort_key(metadata.get(file)?) };
+    let compare = |a: Option<Arc<str>>, b: Option<Arc<str>>| match (a, b) {
+        (Some(x), Some(y)) => crate::gate_rules::rule_store::human_order(&x, &y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
+    report
+        .positioned
+        .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
+    report
+        .unchanged
+        .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
+    report
+        .reference
+        .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
+    report
+        .skipped
+        .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
 }
 
 fn resolve_reference<'a>(
@@ -1145,18 +1175,6 @@ fn position_one(
             let here = dip
                 .place(&measured.values, from_reference.offset)
                 .map_err(|why| why.to_string())?;
-            // A dip a fifth as deep as the reference's is still a dip, and its
-            // lowest point is still the boundary. One that has gone entirely
-            // means the two populations have merged and there is no boundary to
-            // find - place nothing rather than something plausible-looking.
-            if here.depth < from_reference.depth * dip.min_depth_fraction {
-                return Err(format!(
-                    "the valley here is {:.0}% as deep as the reference's ({:.3} against {:.3}) - the populations have merged",
-                    100.0 * here.depth / from_reference.depth.max(f64::EPSILON),
-                    here.depth,
-                    from_reference.depth
-                ));
-            }
             let moved =
                 translate_edge_to(&current_gate, &measured.parameter, measured.bound, here.at)
                     .map_err(|e| e.to_string())?;
@@ -1249,9 +1267,31 @@ fn position_one(
         crate::gate_rules::rule::Rule::AboveTheNegative(_)
             | crate::gate_rules::rule::Rule::InTheValley(_)
     );
-    let confidence = rule
+    let mut confidence = rule
         .rule
         .assess(&threshold, judge_displacement.then_some(measured.current));
+
+    // How deep the dip it sat in was, against the reference's. A gate placed in
+    // a dip a twentieth as deep is a best guess, not a measurement - so it is
+    // placed and scored low rather than withheld, which is what a person
+    // reviewing a run actually needs to see.
+    if let Some((reference_dip, here)) = valley {
+        let ratio = here.depth / reference_dip.depth.max(f64::EPSILON);
+        confidence
+            .components
+            .push(crate::gate_rules::confidence::Component::new(
+                crate::gate_rules::confidence::VALLEY,
+                ratio,
+                format!(
+                    "the dip is {:.0}% as deep as the reference's ({:.3} against {:.3})",
+                    ratio * 100.0,
+                    here.depth,
+                    reference_dip.depth
+                ),
+            ));
+        confidence =
+            crate::gate_rules::confidence::Confidence::from_components(confidence.components);
+    }
 
     Ok(Outcome::Moved(
         Positioned {

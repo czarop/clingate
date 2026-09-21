@@ -393,12 +393,18 @@ impl AboveTheNegativeRule {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValleyRule {
     /// How shallow this sample's valley may be, against the reference's, before
-    /// the placement is refused.
+    /// the placement is flagged for review.
     ///
-    /// Deliberately generous: a shallower dip is still a dip, and its lowest
-    /// point is still the right place for the gate. This is here to catch the
-    /// case where the two populations have merged entirely and the structure
-    /// the rule depends on is simply absent.
+    /// It flags rather than refuses. Refusing hid the answer exactly when a
+    /// person most wanted to see it - a run came back with seven samples
+    /// unplaced at depths of 5% to 24% against a threshold of 25%, one of them
+    /// short by a single point, and the only way to find out where the gate
+    /// would have gone was to change the setting and run again. Placing it and
+    /// saying so is more useful, and the confidence score carries how shallow
+    /// the dip was.
+    ///
+    /// Only a density with no dip at all is refused, because then there is
+    /// nothing to place.
     #[serde(default = "quarter")]
     pub min_depth_fraction: f64,
     /// Scales the density's bandwidth. Below 1 finds shallower dips and more
