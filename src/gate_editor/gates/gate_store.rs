@@ -234,7 +234,13 @@ impl GateOverrideResolver {
     //         .ok_or_else(|| anyhow::anyhow!("Gate {} has no internal data", id))
     // }
 
-    fn resolve_drawable(&self, id: &str) -> anyhow::Result<Arc<dyn DrawableGate + 'static>> {
+    /// The gate this resolver holds for `id`.
+    ///
+    /// Public because the gallery resolves gates outside the component that
+    /// draws them - twenty plots at once, off the UI thread - rather than
+    /// through the editor's `gate_ids_by_view` cache, which is written as a
+    /// side effect of drawing.
+    pub fn resolve_drawable(&self, id: &str) -> anyhow::Result<Arc<dyn DrawableGate + 'static>> {
         let drawable = self
             .active_gates
             .get(id)

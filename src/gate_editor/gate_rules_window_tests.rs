@@ -131,3 +131,62 @@ fn a_gate_at_the_root_is_not_offered() {
     );
     assert!(everything_offered(&state).is_empty());
 }
+
+// ── carrying a rule's gate across a change of population ──────────────────
+//
+// The Edit button exists so one rule can be moved onto a second population
+// without retyping it, which only pays off if the gate survives the move.
+
+use crate::gate_editor::gate_rules_window::{GateChoices, carry_over};
+
+fn two_populations() -> GateChoices {
+    GateChoices {
+        parents: vec![Arc::from("CD4+"), Arc::from("CD8+")],
+        children: vec![
+            (
+                Arc::from("CD4+"),
+                vec![Arc::from("Ki67+"), Arc::from("TIGIT+")],
+            ),
+            (Arc::from("CD8+"), vec![Arc::from("Ki67+")]),
+        ],
+        parameters: vec![
+            (
+                Arc::from("Ki67+"),
+                vec![Arc::from("Ki-67"), Arc::from("CD3")],
+            ),
+            (Arc::from("TIGIT+"), vec![Arc::from("TIGIT")]),
+        ],
+    }
+}
+
+#[test]
+fn a_gate_the_new_population_also_holds_is_kept() {
+    let (gate, parameter) = carry_over(&two_populations(), "CD8+", "Ki67+", "Ki-67");
+    assert_eq!(gate, "Ki67+");
+    assert_eq!(parameter, "Ki-67");
+}
+
+#[test]
+fn a_gate_the_new_population_does_not_hold_is_cleared() {
+    // TIGIT+ is drawn on CD4+ only. Carrying the name over would let the form
+    // name a population that does not exist.
+    let (gate, parameter) = carry_over(&two_populations(), "CD8+", "TIGIT+", "TIGIT");
+    assert_eq!(gate, "");
+    assert_eq!(parameter, "");
+}
+
+#[test]
+fn a_parameter_that_gate_is_not_drawn_on_is_cleared_but_the_gate_stays() {
+    // The gate survives the move; the parameter did not come with it, so the
+    // form asks for that one field rather than both.
+    let (gate, parameter) = carry_over(&two_populations(), "CD8+", "Ki67+", "TIGIT");
+    assert_eq!(gate, "Ki67+");
+    assert_eq!(parameter, "");
+}
+
+#[test]
+fn clearing_the_population_clears_the_gate() {
+    let (gate, parameter) = carry_over(&two_populations(), "", "Ki67+", "Ki-67");
+    assert_eq!(gate, "");
+    assert_eq!(parameter, "");
+}

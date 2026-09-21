@@ -61,6 +61,40 @@ impl GateChoices {
     }
 }
 
+/// What the gate and parameter fields should hold once the population changes.
+///
+/// Editing a rule is nearly always "the same gate, a different population":
+/// that is what the Edit button is for, and clearing both fields on every
+/// change of parent made it three picks instead of one - the slowest of them
+/// being to find the gate again by name in a list that had just been rebuilt.
+///
+/// So a gate the new parent also holds is kept, and the parameter with it where
+/// that gate is still drawn on it. A name the new parent does not hold is
+/// cleared, because carrying it over would let the form name a combination the
+/// document does not have, which is the one thing these narrowing lists exist
+/// to prevent.
+pub fn carry_over(
+    choices: &GateChoices,
+    parent: &str,
+    gate: &str,
+    parameter: &str,
+) -> (String, String) {
+    if gate.is_empty() || !choices.children_of(parent).iter().any(|g| &**g == gate) {
+        return (String::new(), String::new());
+    }
+    let keep = !parameter.is_empty()
+        && choices
+            .parameters_of(gate)
+            .iter()
+            .any(|p| &**p == parameter);
+    let parameter = if keep {
+        parameter.to_string()
+    } else {
+        String::new()
+    };
+    (gate.to_string(), parameter)
+}
+
 fn push_unique(list: &mut Vec<Arc<str>>, value: Arc<str>) {
     if !list.iter().any(|v| *v == value) {
         list.push(value);
@@ -459,9 +493,16 @@ pub fn GateRulesWindow() -> Element {
                 select {
                     value: "{parent}",
                     onchange: move |e| {
-                        parent.set(e.value());
-                        gate.set(String::new());
-                        parameter.set(String::new());
+                        let chosen = e.value();
+                        let (keep_gate, keep_parameter) = carry_over(
+                            &choices.read(),
+                            &chosen,
+                            &gate(),
+                            &parameter(),
+                        );
+                        parent.set(chosen);
+                        gate.set(keep_gate);
+                        parameter.set(keep_parameter);
                     },
                     option { value: "", "choose a population" }
                     for name in choices.read().parents.clone() {

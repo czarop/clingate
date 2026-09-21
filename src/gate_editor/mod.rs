@@ -4,6 +4,7 @@ pub mod macros;
 mod reactivity_tests;
 pub mod route;
 pub use axis_info::AxisInfo;
+pub mod gallery;
 pub mod gate_rules_window;
 #[cfg(test)]
 mod gate_rules_window_tests;

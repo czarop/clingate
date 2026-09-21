@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Added
+
+- **Gate gallery (third tab).** Pick a gate in the hierarchy and see it on every
+  sample in the run at once - the question the editor cannot answer, because a
+  rule that works on the reference and drifts on a third of the cohort looks
+  fine one sample at a time. Specimens come from the same `pair_files` grouping
+  the editor uses, so the sort column chosen there orders this too and the FMX
+  is always the left plot of a pair. Ten specimens to a page.
+
+  Plots are pictures, not editors: the rendered bitmap with a static outline
+  over it and no event handlers at all, so a stray click cannot move a gate on a
+  sample someone was only looking at. Percentages are computed through the same
+  `get_percent_and_counts_gate` the editor uses, against the same R-tree, so the
+  two tabs cannot disagree.
+
+  Rendered images are cached against a fingerprint of every gate the picture
+  depends on. Gates are never mutated in place - moving one replaces the `Arc` -
+  so pointer identity answers "has this gone stale", and the fingerprint holds
+  the `Arc`s it hashed to keep those addresses from being reused. Paging back is
+  free; re-running the autogater invalidates exactly the plots whose gates moved.
+
+- **Contact-sheet PDF export.** The whole run for one gate, six specimens to an
+  A4 landscape page, re-rendered at print resolution with a count and a Stop.
+  JPEGs are embedded unchanged as `DCTDecode` images and outlines are drawn as
+  page operators from the same flattened primitives the screen uses, so the
+  exported sheet is the page you looked at rather than a second drawing of it.
+  Written directly rather than through a PDF library - no new dependency.
+
+### Changed
+
+- **Editing a rule keeps its gate when the population changes.** The Edit button
+  exists so one rule can be moved onto a second population without retyping it,
+  and clearing the gate and parameter on every change of parent made that three
+  picks instead of one. A gate the new population also holds is now kept, and
+  the parameter with it; a name the new parent does not hold is still cleared,
+  since carrying it over would let the form name a combination the document does
+  not have.
+
 ### Fixed
 
 - **Y axis transform read from the X axis.** `extract_axis_range_from_axis_settings`

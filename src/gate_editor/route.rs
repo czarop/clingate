@@ -15,6 +15,7 @@
 //! cheap to keep warm, the image is not.
 
 use crate::file_load::FcsFiles;
+use crate::gate_editor::gallery::window::GalleryWindow;
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
@@ -29,6 +30,7 @@ use dioxus::stores::use_store_sync;
 pub enum Tab {
     Editor,
     Rules,
+    Gallery,
 }
 
 impl Tab {
@@ -36,6 +38,7 @@ impl Tab {
         match self {
             Tab::Editor => "🏠",
             Tab::Rules => "📐",
+            Tab::Gallery => "🖼",
         }
     }
 
@@ -43,11 +46,12 @@ impl Tab {
         match self {
             Tab::Editor => "Gate editor",
             Tab::Rules => "Gate rules",
+            Tab::Gallery => "Gate gallery",
         }
     }
 }
 
-const TABS: [Tab; 2] = [Tab::Editor, Tab::Rules];
+const TABS: [Tab; 3] = [Tab::Editor, Tab::Rules, Tab::Gallery];
 
 /// Every panel is mounted; only the one in front is displayed.
 fn panel_class(active: Tab, tab: Tab) -> &'static str {
@@ -91,6 +95,7 @@ pub fn Shell() -> Element {
         // Hiding, not unmounting: that difference is the whole point.
         div { class: panel_class(active(), Tab::Editor), MainWindow {} }
         div { class: panel_class(active(), Tab::Rules), GateRulesWindow {} }
+        div { class: panel_class(active(), Tab::Gallery), GalleryWindow {} }
 
         div { class: "route-nav_bar",
             nav { aria_label: "main navigation", role: "navigation",

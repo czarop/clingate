@@ -1,0 +1,207 @@
+/* The gallery tab: a sidebar, a control bar, and a scrolling grid of
+   specimens. The grid is the only thing that scrolls - the bar has to stay
+   reachable while paging through a hundred samples. */
+
+.gallery-layout {
+    display: flex;
+    width: 100%;
+    height: 100% !important;
+    min-height: 100% !important;
+}
+
+.gallery-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem 1.25rem;
+    /* The column itself does not scroll; .gallery-grid does. Without this the
+       bar would scroll away with the plots. */
+    overflow: hidden;
+}
+
+/* ── the bar ─────────────────────────────────────────────────────────── */
+
+.gallery-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid hsl(0, 0%, 88%);
+}
+
+.gallery-spacer { flex: 1 1 auto; }
+
+.gallery-heading {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.gallery-gate {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.gallery-axes {
+    font-size: 0.75rem;
+    opacity: 0.6;
+}
+
+.gallery-size {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    opacity: 0.8;
+}
+
+.gallery-pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gallery-pager button {
+    border: none;
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+}
+
+.gallery-pager button:disabled {
+    background-color: hsl(0, 0%, 80%);
+    cursor: default;
+}
+
+.gallery-page_count {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+/* ── export ──────────────────────────────────────────────────────────── */
+
+.gallery-export {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+}
+
+.gallery-export input {
+    width: 140px;
+    font-size: 0.75rem;
+    padding: 3px 5px;
+}
+
+.gallery-export button {
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+}
+
+.gallery-export_stop { background-color: hsl(0, 65%, 45%); }
+.gallery-export_stop:hover { background-color: hsl(0, 65%, 38%); }
+
+.gallery-export_note {
+    opacity: 0.75;
+    max-width: 260px;
+    overflow-wrap: anywhere;
+}
+
+.gallery-export_warn { color: hsl(0, 70%, 45%); opacity: 1; }
+
+/* ── the grid ────────────────────────────────────────────────────────── */
+
+.gallery-grid {
+    flex: 1;
+    overflow-y: auto;
+    padding-top: 0.9rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 18px;
+}
+
+.gallery-empty {
+    padding: 2rem;
+    opacity: 0.6;
+}
+
+.gallery-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gallery-card_title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gallery-card_plots {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.gallery-plot {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.gallery-plot_name {
+    font-size: 0.7rem;
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* Reserves the line's height even when empty, so an empty slot's plot area
+       still lines up with the one beside it. */
+    min-height: 1em;
+}
+
+/* The image and its outline share this box: the overlay is absolutely
+   positioned inside it, so the two cannot drift apart. */
+.gallery-plot_frame {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: hsl(0, 0%, 98%);
+    border: 1px solid hsl(0, 0%, 90%);
+    box-sizing: border-box;
+}
+
+.gallery-plot_frame img {
+    user-select: none;
+    -webkit-user-select: none;
+    display: block;
+}
+
+.gallery-plot_failed {
+    font-size: 0.7rem;
+    color: hsl(0, 60%, 45%);
+    text-align: center;
+    padding: 8px;
+    overflow-wrap: anywhere;
+}
+
+/* A specimen with no file of one type leaves its side empty rather than
+   letting its partner slide across - the same rule as the editor's pair. */
+.gallery-plot_empty {
+    opacity: 0.35;
+    font-size: 0.75rem;
+    align-items: center;
+    justify-content: center;
+    display: flex;
+    flex-direction: column;
+}
