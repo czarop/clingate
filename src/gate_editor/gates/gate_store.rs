@@ -1069,6 +1069,24 @@ impl GateState {
     /// Returned as sets rather than answered per gate: the sidebar asks for
     /// every row it draws, and the override maps hold an entry per specimen or
     /// file, so a scan each time would be a scan of thousands per row.
+    /// The metadata column this gate's positions are grouped by, if any.
+    ///
+    /// Omiq stores one filter per file whatever drives it, and names the
+    /// grouping column separately. Without that name a set of per-file
+    /// positions reads as per-sample even when every file of a specimen holds
+    /// the same one, so the same run came back group-specific for containers
+    /// that already carried the name and sample-specific for the rest.
+    pub fn group_override_column(
+        &self,
+        gate_id: &GateId,
+    ) -> Option<crate::omiq::metadata::MetaDataParameter> {
+        self.gate_store
+            .group_position_overrides
+            .keys()
+            .find(|(id, _)| id == gate_id)
+            .map(|(_, key)| key.parameter.clone())
+    }
+
     pub fn overridden_ids(&self) -> (FxHashSet<GateId>, FxHashSet<GateId>) {
         let groups = self
             .gate_store

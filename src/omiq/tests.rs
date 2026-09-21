@@ -4460,3 +4460,57 @@ fn every_gate_keeps_the_label_it_came_in_with() {
         }
     }
 }
+
+/// A gate given a position here must export as grouped on the column it was
+/// grouped by, not as a set of unrelated per-file positions.
+///
+/// Omiq stores one filter per file whatever drives it and names the grouping
+/// column separately, so without that name the same run came back
+/// group-specific for the containers that happened to carry it already and
+/// sample-specific for the rest.
+#[test]
+fn a_gate_positioned_in_this_session_exports_as_grouped() {
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::omiq::metadata::MetaDataKey;
+
+    let mut state = import_with_metadata(BEFORE);
+
+    // A container the file gave no grouping column to.
+    let plain = objects(&export_with_metadata(BEFORE), &["tree", "filterContainers"])
+        .iter()
+        .find(|(_, c)| c["md"].is_null())
+        .map(|(id, _)| Arc::from(id.as_str()) as Arc<str>)
+        .expect("the fixture needs a container with no md for this to prove anything");
+
+    let gate = state
+        .registered_gate(&plain)
+        .expect("the container resolves to a gate")
+        .clone();
+    state.place_gate(
+        &[plain.clone()],
+        &gate,
+        &GateSource::Group((
+            plain.clone(),
+            MetaDataKey {
+                parameter: Arc::from("test"),
+                group: Arc::from("one"),
+            },
+        )),
+    );
+
+    let written = to_omiq_document(&state, &fixture_metadata(), &fixture_axes()).unwrap();
+    let containers = objects(&written, &["tree", "filterContainers"]);
+    assert_eq!(
+        containers[&*plain]["md"], "test",
+        "the column the session grouped by"
+    );
+}
+
+#[test]
+fn a_column_the_file_arrived_with_is_not_overwritten() {
+    // Nothing was grouped in this session, so whatever the document carried
+    // stands - round-tripping must not invent a grouping.
+    let written = export_with_metadata(BEFORE);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+    assert_eq!(containers["QCVn"]["md"], "Type");
+}

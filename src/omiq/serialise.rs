@@ -409,7 +409,15 @@ fn container_for(
         group_id: rebuild
             .and_then(|r| r.group_id.clone())
             .or(synthesised.map(|(group_id, _)| group_id)),
-        md: rebuild.and_then(|r| r.md.clone()),
+        // Which metadata column drives these positions. The session's own
+        // grouping wins where it has one, because the per-file filters above
+        // were resolved through it: naming a different column - or none -
+        // would have Omiq group them by something the geometry does not
+        // follow. Where the session grouped nothing, whatever the document
+        // arrived with stands.
+        md: state
+            .group_override_column(container_id)
+            .or_else(|| rebuild.and_then(|r| r.md.clone())),
         per_file_filters,
     }))
 }

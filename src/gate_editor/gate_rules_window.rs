@@ -14,7 +14,9 @@ use crate::gate_rules::autogate::{Report, describe, measure_file};
 use crate::gate_rules::rule::{
     AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule, ValleyRule,
 };
-use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
+use crate::gate_rules::rule_store::{
+    Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
+};
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
@@ -202,6 +204,69 @@ pub fn GateRulesWindow() -> Element {
     let selected_children = use_memo(move || choices.read().children_of(&parent()).to_vec());
     let selected_parameters = use_memo(move || choices.read().parameters_of(&gate()).to_vec());
 
+    // The rule the form is standing in for, when it was opened by Edit. The
+    // next Add replaces it, so a rule can be moved to another population rather
+    // than only removed and retyped. Duplicate leaves this empty, which is the
+    // quick way to cover a second population with the same rule.
+    let mut editing = use_signal(|| None::<RuleTarget>);
+
+    let mut load = move |entry: RuleEntry, replacing: bool| {
+        parent.set(
+            entry
+                .target
+                .parent
+                .clone()
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+        );
+        gate.set(entry.target.gate.to_string());
+        parameter.set(entry.rule.parameter.to_string());
+        bound.set(
+            match entry.rule.bound {
+                Bound::Above => "Above",
+                Bound::Below => "Below",
+            }
+            .to_string(),
+        );
+        match &entry.rule.measured_on {
+            MeasuredOn::Itself => measured_on.set("Itself".to_string()),
+            MeasuredOn::Partner(t) => measured_on.set(t.to_string()),
+            MeasuredOn::File(f) => calibrate_on.set(f.to_string()),
+        }
+        match &entry.rule.rule {
+            Rule::TailFraction(r) => {
+                kind.set("TailFraction".to_string());
+                low.set(format!("{}", r.band.0 * 100.0));
+                high.set(format!("{}", r.band.1 * 100.0));
+            }
+            Rule::PercentileOffset(r) => {
+                kind.set("PercentileOffset".to_string());
+                percentile.set(format!("{}", r.percentile));
+                offset.set(format!("{}", r.offset));
+            }
+            Rule::AboveTheNegative(r) => {
+                kind.set("AboveTheNegative".to_string());
+                finder.set(r.find.key().to_string());
+                scale.set(format!("{}", r.scale));
+                nudge.set(format!("{}", r.nudge));
+            }
+            Rule::InTheValley(r) => {
+                kind.set("InTheValley".to_string());
+                min_depth.set(format!("{}", r.min_depth_fraction));
+                smoothing.set(format!("{}", r.smoothing));
+            }
+        }
+        editing.set(replacing.then(|| entry.target.clone()));
+        message.set(Some(if replacing {
+            format!("Editing {} - Add rule saves it", entry.target.describe())
+        } else {
+            format!(
+                "Copied {} - change it and Add rule",
+                entry.target.describe()
+            )
+        }));
+    };
+
     let mut add = move || {
         let name = gate();
         if name.is_empty() {
@@ -271,6 +336,13 @@ pub fn GateRulesWindow() -> Element {
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
+        // Moved to another population: the rule leaves where it was rather than
+        // being copied there, which is what Edit means.
+        if let Some(was) = editing.take()
+            && was != target
+        {
+            rules.write().remove(&was);
+        }
         rules.write().insert(
             target,
             GateRule {
@@ -340,7 +412,25 @@ pub fn GateRulesWindow() -> Element {
                                     }
                                 }
                                 td { "{entry.rule.rule.describe()}" }
-                                td {
+                                td { class: "gate_rules-actions",
+                                    button {
+                                        class: "gate_rules-secondary",
+                                        title: "Open this rule in the form below. Saving replaces it, so changing the population moves the rule rather than copying it.",
+                                        onclick: {
+                                            let entry = entry.clone();
+                                            move |_| load(entry.clone(), true)
+                                        },
+                                        "edit"
+                                    }
+                                    button {
+                                        class: "gate_rules-secondary",
+                                        title: "Open a copy in the form below, leaving this one alone - the quick way to cover a second population with the same rule.",
+                                        onclick: {
+                                            let entry = entry.clone();
+                                            move |_| load(entry.clone(), false)
+                                        },
+                                        "duplicate"
+                                    }
                                     button {
                                         class: "gate_rules-remove",
                                         onclick: {

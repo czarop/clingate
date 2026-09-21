@@ -724,3 +724,54 @@ fn sorting_is_off_until_a_column_is_named() {
     use crate::gate_rules::rule_store::SamplePairing;
     assert!(SamplePairing::default().sort_column.is_none());
 }
+
+// ─── moving a rule to another population ─────────────────────────────────────
+
+#[test]
+fn inserting_under_a_new_parent_leaves_the_old_rule_in_place() {
+    // What Duplicate relies on: two targets naming the same gate under
+    // different populations are two rules, not one.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::under("Ki67+", "CD4+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
+    store.insert(
+        RuleTarget::under("Ki67+", "CD8+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
+
+    assert_eq!(store.entries().len(), 2);
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD4+")).is_some());
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD8+")).is_some());
+}
+
+#[test]
+fn removing_the_old_target_is_what_makes_an_edit_a_move() {
+    // What Edit relies on: the rule has to leave where it was, or changing the
+    // population would silently copy it instead.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    let was = RuleTarget::under("Ki67+", "CD4+");
+    store.insert(was.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+
+    let now = RuleTarget::under("Ki67+", "CD8+");
+    store.remove(&was);
+    store.insert(now, gate_rule(Bound::Above, (0.002, 0.005)));
+
+    assert_eq!(store.entries().len(), 1);
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD4+")).is_none());
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD8+")).is_some());
+}
+
+#[test]
+fn re_inserting_the_same_target_replaces_rather_than_doubles() {
+    // And an edit that keeps the population is a plain replacement.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    let target = RuleTarget::under("Ki67+", "CD4+");
+    store.insert(target.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+    store.insert(target.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+    assert_eq!(store.entries().len(), 1);
+}

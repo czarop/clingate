@@ -2388,3 +2388,79 @@ fn a_run_that_can_tell_them_apart_stays_quiet_about_it() {
         "no warning when the types resolve"
     );
 }
+
+// ─── how a positioned gate is written back ───────────────────────────────────
+
+#[test]
+fn every_file_of_a_specimen_gets_the_one_position() {
+    // The FMO and the full stain must never hold different positions: the FMO
+    // is where the line is set and the stain is where it is read off, and a
+    // line set on one and read on the other is the entire point.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    sweep(&mut state, &fmx_rule(), &map);
+
+    let fmx = state
+        .gate_for_file(&gate_id, &Arc::from("fmx_a"), &map)
+        .unwrap();
+    let fs = state
+        .gate_for_file(&gate_id, &Arc::from("fs_a"), &map)
+        .unwrap();
+    assert_eq!(
+        edges(&fmx, X),
+        edges(&fs, X),
+        "one specimen, one position, whichever of its files is asked"
+    );
+}
+
+#[test]
+fn a_positioned_gate_names_the_column_its_grouping_follows() {
+    // Omiq stores one filter per file whatever drives it, and names the
+    // grouping column separately. Without that name the positions read as
+    // per-sample even though every file of a specimen holds the same one - so
+    // the same run came back group-specific for containers that happened to
+    // carry the name already and sample-specific for the rest.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = fs_and_fmx();
+    assert_eq!(
+        state.group_override_column(&gate_id),
+        None,
+        "nothing to name before the run"
+    );
+
+    sweep(&mut state, &fmx_rule(), &map);
+
+    assert_eq!(
+        state.group_override_column(&gate_id).as_deref(),
+        Some("SampleID"),
+        "the column the pairing groups by"
+    );
+}
+
+#[test]
+fn renaming_the_grouping_column_follows_through_to_the_export() {
+    // It reports the column actually used, not a default - a dataset grouping
+    // on its own column has to export as grouped on that column.
+    use crate::gate_rules::rule_store::SamplePairing;
+
+    let mut map = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, kind) in [("fs_a", "FS"), ("fmx_a", "FMX")] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("Donor_Day"), Arc::from("000602_D4"));
+        columns.insert(Arc::from("Type"), Arc::from(kind));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    let mut store = fmx_rule();
+    store.pairing = SamplePairing {
+        sample_id_column: Arc::from("Donor_Day"),
+        sample_type_column: Arc::from("Type"),
+        ..SamplePairing::default()
+    };
+
+    let (mut state, gate_id) = one_positive_gate();
+    sweep(&mut state, &store, &map);
+    assert_eq!(
+        state.group_override_column(&gate_id).as_deref(),
+        Some("Donor_Day")
+    );
+}
