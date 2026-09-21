@@ -96,14 +96,20 @@ fn specimens_keep_the_order_their_first_file_appears_in() {
 }
 
 #[test]
-fn a_specimen_with_only_one_file_still_shows_it() {
-    // The FMO was never run. Better one plot than none.
+fn a_specimen_with_only_one_file_shows_it_on_its_own_side() {
+    // The FMO was never run, so the left slot stays empty and the full stain
+    // keeps the right. It used to slide over to fill the gap, which meant the
+    // same side of the screen showed a control for one specimen and a stain for
+    // the next - and comparing those two is exactly the mistake the paired
+    // layout exists to prevent.
     let (keys, names, metadata) = fixture(&[(Some("QC-A"), Some("FS"))]);
     let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
 
     assert_eq!(pairs.len(), 1);
-    assert_eq!(pairs[0].left(), Some(0));
-    assert_eq!(pairs[0].right(), None);
+    assert_eq!(pairs[0].left(), None);
+    assert_eq!(pairs[0].right(), Some(0));
+    // The file is still listed - it is shown, just not on the FMO's side.
+    assert_eq!(pairs[0].files, vec![0]);
 }
 
 #[test]
@@ -180,4 +186,117 @@ fn the_defaults_match_an_omiq_metadata_export() {
     assert_eq!(pairs.len(), 1, "one specimen, not three");
     assert_eq!(pairs[0].left(), Some(1), "the FMO is shown first");
     assert_eq!(pairs[0].right(), Some(2), "the full stain beside it");
+}
+
+// ─── the slots each plot is drawn into ───────────────────────────────────────
+
+#[test]
+fn the_fmo_holds_its_side_even_when_the_specimen_has_none() {
+    // The full stain must not slide over to fill the empty slot: the same side
+    // of the screen showing the control for one specimen and the stain for the
+    // next is how a person comes to compare the wrong two plots.
+    let keys: Vec<Arc<str>> = vec![Arc::from("only_fs.fcs")];
+    let mut names = HashMap::with_hasher(FxBuildHasher);
+    names.insert(
+        Arc::from("only_fs.fcs") as Arc<str>,
+        Arc::from("f1") as Arc<str>,
+    );
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+    columns.insert(Arc::from("SampleID"), Arc::from("A"));
+    columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+    metadata.insert(Arc::from("f1") as Arc<str>, columns);
+
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(
+        pairs[0].left(),
+        None,
+        "no FMO, so the left slot stays empty"
+    );
+    assert_eq!(pairs[0].right(), Some(0), "and the stain keeps the right");
+}
+
+#[test]
+fn the_fmo_is_on_the_left_whichever_order_the_folder_holds_them() {
+    // Ranking alone let two files of unnamed types keep the folder's order,
+    // which is how the two plots came to swap sides between specimens.
+    for (first, second) in [("FMX", "FS"), ("FS", "FMX")] {
+        let keys: Vec<Arc<str>> = vec![Arc::from("a.fcs"), Arc::from("b.fcs")];
+        let mut names = HashMap::with_hasher(FxBuildHasher);
+        names.insert(Arc::from("a.fcs") as Arc<str>, Arc::from("f1") as Arc<str>);
+        names.insert(Arc::from("b.fcs") as Arc<str>, Arc::from("f2") as Arc<str>);
+        let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+        for (id, kind) in [("f1", first), ("f2", second)] {
+            let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+            columns.insert(Arc::from("SampleID"), Arc::from("A"));
+            columns.insert(Arc::from("SampleType"), Arc::from(kind));
+            metadata.insert(Arc::from(id) as Arc<str>, columns);
+        }
+        let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+        let left = pairs[0].left().unwrap();
+        let right = pairs[0].right().unwrap();
+        assert_ne!(left, right);
+        // Whichever file it is, the left one is the FMO.
+        let kind_of = |i: usize| {
+            let id: Arc<str> = Arc::from(if i == 0 { "f1" } else { "f2" });
+            metadata
+                .get(&id)
+                .unwrap()
+                .get(&Arc::from("SampleType"))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(&*kind_of(left), "FMX", "folder order {first} then {second}");
+        assert_eq!(&*kind_of(right), "FS");
+    }
+}
+
+#[test]
+fn a_specimen_the_display_order_does_not_name_is_still_shown() {
+    // A misconfigured order must not blank the screen. It falls back to the
+    // files in order; the pairing controls are where the mismatch is reported.
+    let keys: Vec<Arc<str>> = vec![Arc::from("a.fcs"), Arc::from("b.fcs")];
+    let mut names = HashMap::with_hasher(FxBuildHasher);
+    names.insert(Arc::from("a.fcs") as Arc<str>, Arc::from("f1") as Arc<str>);
+    names.insert(Arc::from("b.fcs") as Arc<str>, Arc::from("f2") as Arc<str>);
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for id in ["f1", "f2"] {
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("SampleID"), Arc::from("A"));
+        columns.insert(Arc::from("SampleType"), Arc::from("something else"));
+        metadata.insert(Arc::from(id) as Arc<str>, columns);
+    }
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    assert_eq!(pairs[0].left(), Some(0));
+    assert_eq!(pairs[0].right(), Some(1));
+}
+
+#[test]
+fn specimens_follow_the_sort_column() {
+    let keys: Vec<Arc<str>> = vec![Arc::from("a.fcs"), Arc::from("b.fcs"), Arc::from("c.fcs")];
+    let mut names = HashMap::with_hasher(FxBuildHasher);
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for (key, id, day) in [
+        ("a.fcs", "f1", "D85"),
+        ("b.fcs", "f2", "D4"),
+        ("c.fcs", "f3", "D29"),
+    ] {
+        names.insert(Arc::from(key) as Arc<str>, Arc::from(id) as Arc<str>);
+        let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+        columns.insert(Arc::from("SampleID"), Arc::from(day));
+        columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+        columns.insert(Arc::from("Day"), Arc::from(day));
+        metadata.insert(Arc::from(id) as Arc<str>, columns);
+    }
+    let pairing = SamplePairing {
+        sort_column: Some(Arc::from("Day")),
+        ..SamplePairing::default()
+    };
+    let pairs = pair_files(&keys, &names, &metadata, &pairing);
+    let order: Vec<&str> = pairs
+        .iter()
+        .map(|p| p.specimen.as_deref().unwrap())
+        .collect();
+    assert_eq!(order, ["D4", "D29", "D85"], "not the folder's order");
 }

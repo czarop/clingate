@@ -108,6 +108,36 @@ fn ExportGatingFile() -> Element {
     }
 }
 
+/// File indices in the order the pairs put their specimens, so the list and the
+/// Next button agree about what comes next.
+///
+/// `total` caps it to the file list's length; files no pair mentions follow in
+/// their own order rather than being dropped from the list.
+fn listing_order(pairs: &[Pair], total: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = Vec::new();
+    for pair in pairs {
+        for slot in &pair.slots {
+            if let Some(i) = slot {
+                order.push(*i);
+            }
+        }
+        for i in &pair.files {
+            if !order.contains(i) {
+                order.push(*i);
+            }
+        }
+    }
+    if total != usize::MAX {
+        for i in 0..total {
+            if !order.contains(&i) {
+                order.push(i);
+            }
+        }
+        order.retain(|i| *i < total);
+    }
+    order
+}
+
 #[component]
 pub fn MainWindow() -> Element {
     // Created by the NavBar layout: which files are open describes the
@@ -621,15 +651,35 @@ pub fn MainWindow() -> Element {
                             button { onclick: move |_| step_specimen(-1), "Prev" }
                             button { onclick: move |_| step_specimen(1), "Next" }
                         }
+                        // Listed in the specimen order the plots step through,
+                        // not the folder's. A list that disagrees with the Next
+                        // button about what comes next is worse than either
+                        // order on its own.
                         match &*filehandler.read() {
                             Some(fh) => {
-                                let list = fh.get_file_names();
+                                let names = fh.get_file_names();
+                                let order = listing_order(&pairs.read(), names.len());
+                                let listed: Vec<String> = order
+                                    .iter()
+                                    .filter_map(|i| names.get(*i).cloned())
+                                    .collect();
+                                let to_file = order.clone();
+                                let shown_at = use_memo(move || {
+                                    listing_order(&pairs.read(), usize::MAX)
+                                        .iter()
+                                        .position(|i| *i == sample_index())
+                                        .unwrap_or(0)
+                                });
                                 rsx! {
                                     SearchableSelectList {
-                                        items: list,
-                                        on_select: move |(i, _)| { sample_index.set(i) },
+                                        items: listed,
+                                        on_select: move |(i, _)| {
+                                            if let Some(file) = to_file.get(i) {
+                                                sample_index.set(*file);
+                                            }
+                                        },
                                         placeholder: "Select a file".to_string(),
-                                        selected_index: Some(sample_index.into()),
+                                        selected_index: Some(shown_at.into()),
                                     }
                                 }
                             }
@@ -652,31 +702,35 @@ pub fn MainWindow() -> Element {
                             .map(|files| {
                                 let list = files.file_list();
                                 let pairs = pairs.read();
-                                let indices = pair_of(&pairs, sample_index())
-                                    .map(|at| pairs[at].files.clone())
-                                    .unwrap_or_else(|| vec![sample_index()]);
-                                indices
+                                // By slot, not by position: the FMO's side of
+                                // the screen stays the FMO's even for a
+                                // specimen that has none, rather than its full
+                                // stain sliding over to fill the gap.
+                                let slots = pair_of(&pairs, sample_index())
+                                    .map(|at| pairs[at].slots.clone())
+                                    .unwrap_or_else(|| vec![Some(sample_index())]);
+                                slots
                                     .into_iter()
                                     .take(2)
-                                    .filter_map(|i| {
-                                        list.get(i)
-                                            .map(|stub| {
-                                                let name = stub
-                                                    .get_filepath()
-                                                    .file_name()
-                                                    .and_then(|n| n.to_str())
-                                                    .unwrap_or_default()
-                                                    .trim_end_matches(".fcs")
-                                                    .to_string();
-                                                (name, stub.clone())
-                                            })
+                                    .map(|slot| {
+                                        slot.and_then(|i| list.get(i)).map(|stub| {
+                                            let name = stub
+                                                .get_filepath()
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or_default()
+                                                .trim_end_matches(".fcs")
+                                                .to_string();
+                                            (name, stub.clone())
+                                        })
                                     })
                                     .collect::<Vec<_>>()
                             });
                         match shown {
-                            Some(shown) if !shown.is_empty() => rsx! {
+                            Some(shown) if shown.iter().any(Option::is_some) => rsx! {
                                 div { class: "gate-window-container",
-                                    for (name , sample_stub) in shown {
+                                    for (slot , filled) in shown.into_iter().enumerate() {
+                                        if let Some((name , sample_stub)) = filled {
                                         div { class: "gate-window", key: "{name}",
                                             // Centred over the data area rather
                                             // than the image: the plot carries
@@ -695,6 +749,16 @@ pub fn MainWindow() -> Element {
                                                 x_axis_marker,
                                                 y_axis_marker,
                                                 parental_gate,
+                                            }
+                                        }
+                                        } else {
+                                            // An empty slot, not a missing
+                                            // plot: it holds its side of the
+                                            // screen so the one beside it stays
+                                            // where it belongs.
+                                            div { class: "gate-window gate-window_empty", key: "empty-{slot}",
+                                                div { class: "gate-window_title", "" }
+                                                span { class: "gate-window_none", "no paired file" }
                                             }
                                         }
                                     }

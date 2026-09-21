@@ -200,3 +200,13 @@ button:hover {
     word-break: break-all;
 }
 .export-gating_warn { color: hsl(0, 70%, 45%); opacity: 1; }
+
+/* A specimen with no file of one type keeps that side of the screen empty
+   rather than letting its partner slide across. */
+.gate-window_empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.35;
+  font-size: 0.85rem;
+}

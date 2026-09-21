@@ -23,14 +23,23 @@ pub struct Pair {
     pub specimen: Option<Arc<str>>,
     /// Indices into the file list, ordered by [`SamplePairing::display_order`].
     pub files: Vec<usize>,
+    /// One slot per entry in [`SamplePairing::display_order`], holding that
+    /// specimen's file of that type where it has one.
+    ///
+    /// A slot rather than a position, because a specimen missing its FMO must
+    /// leave the left plot empty rather than have its full stain slide over to
+    /// fill it. Ordering by rank alone did that, and it meant the same side of
+    /// the screen showed the control for one specimen and the stain for the
+    /// next.
+    pub slots: Vec<Option<usize>>,
 }
 
 impl Pair {
     pub fn left(&self) -> Option<usize> {
-        self.files.first().copied()
+        self.slots.first().copied().flatten()
     }
     pub fn right(&self) -> Option<usize> {
-        self.files.get(1).copied()
+        self.slots.get(1).copied().flatten()
     }
 }
 
@@ -78,12 +87,14 @@ pub fn pair_files(
                     pairs.push(Pair {
                         specimen: Some(name),
                         files: vec![index],
+                        slots: Vec::new(),
                     });
                 }
             },
             None => pairs.push(Pair {
                 specimen: None,
                 files: vec![index],
+                slots: Vec::new(),
             }),
         }
     }
@@ -92,6 +103,25 @@ pub fn pair_files(
         // Stable, so files of the same type keep the folder's order.
         pair.files
             .sort_by_key(|i| rank(&pairing.display_order, types[*i].as_ref()));
+        // One slot per named type, filled by the first file of that type.
+        pair.slots = pairing
+            .display_order
+            .iter()
+            .map(|wanted| {
+                pair.files
+                    .iter()
+                    .copied()
+                    .find(|i| types[*i].as_ref().is_some_and(|t| t == wanted))
+            })
+            .collect();
+        // A specimen whose types the display order does not name at all would
+        // otherwise show nothing. Falling back to its files in order keeps it
+        // visible; the pairing controls say when this is happening, because a
+        // misconfigured order is worth seeing rather than silently working
+        // half way.
+        if pair.slots.iter().all(Option::is_none) {
+            pair.slots = pair.files.iter().map(|i| Some(*i)).collect();
+        }
     }
 
     // Then the specimens themselves, by whichever metadata column the pairing

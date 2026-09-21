@@ -2295,3 +2295,51 @@ fn the_report_follows_the_pairing_s_sample_order() {
         "D4 before D85, not the order they were measured in"
     );
 }
+
+#[test]
+fn the_valley_rule_gives_each_specimen_its_own_position_and_badge() {
+    // Two things reported broken together after a run: every gate at the same
+    // position, and no group badge in the hierarchy. Both would follow from the
+    // placements never reaching the store, so both are checked here in one go.
+    let (mut state, gate_id) = one_positive_gate();
+    let map = {
+        let mut map = im::HashMap::with_hasher(FxBuildHasher);
+        for (file, id) in [("fs_qc", "QC-A"), ("fs_b", "DONOR-B"), ("fs_c", "DONOR-C")] {
+            let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+            columns.insert(Arc::from("SampleID"), Arc::from(id));
+            columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+            map.insert(Arc::from(file) as Arc<str>, columns);
+        }
+        map
+    };
+    let qc = two_populations(400.0, 0.0);
+    let b = two_populations(480.0, 0.0);
+    let c = two_populations(330.0, 0.0);
+
+    let report = sweep_frames(
+        &mut state,
+        &valley_rule("fs_qc", 0.25),
+        &map,
+        &[("fs_qc", &qc), ("fs_b", &b), ("fs_c", &c)],
+    );
+    assert_eq!(report.positioned.len(), 2, "{:?}", report.skipped.len());
+
+    // Each specimen's gate resolves to its own place, not one shared position.
+    let at = |file: &str| {
+        edges(
+            &state
+                .gate_for_file(&gate_id, &Arc::from(file), &map)
+                .unwrap(),
+            X,
+        )
+        .0
+    };
+    assert_ne!(at("fs_b"), at("fs_c"), "two specimens, two positions");
+    assert_ne!(at("fs_b"), 500.0, "and not the global one either");
+
+    // And the store reports the gate as group-overridden, which is what the
+    // hierarchy's G badge reads.
+    let (groups, samples) = state.overridden_ids();
+    assert!(groups.contains(&gate_id), "the badge's source says group");
+    assert!(!samples.contains(&gate_id), "not per sample");
+}
