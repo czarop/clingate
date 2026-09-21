@@ -31,10 +31,17 @@ pub fn metadata_columns(metadata: &MetaDataFileMap) -> Vec<Arc<str>> {
 /// A select whose value is not in its options shows the wrong thing, and the
 /// stored column can legitimately name something this metadata does not have -
 /// a sidecar written for another export, or a file not loaded yet.
+///
+/// The stray choice goes on the **end**, never the front. Put at the front it
+/// shifted every real column down one while it was there, and choosing one made
+/// it vanish and shift them all back - so the first pick from a freshly loaded
+/// export landed on the neighbour of the row that had been clicked. Appending
+/// leaves every real column at the same index whether the stray is there or
+/// not, so nothing moves under the pointer.
 pub fn offered(columns: &[Arc<str>], current: &Arc<str>) -> Vec<Arc<str>> {
     let mut out = columns.to_vec();
     if !out.iter().any(|c| c == current) {
-        out.insert(0, current.clone());
+        out.push(current.clone());
     }
     out
 }
@@ -132,7 +139,7 @@ pub fn PairingColumns() -> Element {
                     rules.write().pairing.sample_id_column = Arc::from(e.value().as_str());
                 },
                 for name in offered(&columns.read(), &rules.read().pairing.sample_id_column) {
-                    option { value: "{name}", "{name}" }
+                    option { key: "{name}", value: "{name}", "{name}" }
                 }
             }
 
@@ -143,7 +150,7 @@ pub fn PairingColumns() -> Element {
                     rules.write().pairing.sample_type_column = Arc::from(e.value().as_str());
                 },
                 for name in offered(&columns.read(), &rules.read().pairing.sample_type_column) {
-                    option { value: "{name}", "{name}" }
+                    option { key: "{name}", value: "{name}", "{name}" }
                 }
             }
 
@@ -223,9 +230,9 @@ pub fn PairingColumns() -> Element {
                         Some(Arc::from(picked.as_str()))
                     };
                 },
-                option { value: "", "the folder's own order" }
+                option { key: "", value: "", "the folder's own order" }
                 for name in columns.read().iter() {
-                    option { value: "{name}", "{name}" }
+                    option { key: "{name}", value: "{name}", "{name}" }
                 }
             }
 
@@ -249,5 +256,66 @@ pub fn PairingColumns() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cols(names: &[&str]) -> Vec<Arc<str>> {
+        names.iter().map(|n| Arc::from(*n)).collect()
+    }
+
+    #[test]
+    fn a_column_the_metadata_has_is_offered_once_and_in_place() {
+        let columns = cols(&["Donor_Day", "Plate", "Type"]);
+        let offer = offered(&columns, &Arc::from("Type"));
+        assert_eq!(offer, columns, "nothing added, nothing moved");
+    }
+
+    #[test]
+    fn a_column_the_metadata_lacks_is_offered_without_moving_the_others() {
+        // The bug this guards: prepended, the stray pushed every real column
+        // down one index. Choosing one then removed it and shifted them all
+        // back, so the first pick from a freshly loaded export landed on the
+        // neighbour of the row that had been clicked.
+        let columns = cols(&["Donor_Day", "Plate", "Type"]);
+        let stray = offered(&columns, &Arc::from("SampleType"));
+
+        assert_eq!(stray.len(), columns.len() + 1);
+        assert_eq!(
+            &stray[..columns.len()],
+            &columns[..],
+            "every real column keeps the index it has without the stray"
+        );
+        assert_eq!(&*stray[columns.len()], "SampleType", "the stray goes last");
+    }
+
+    #[test]
+    fn the_real_columns_sit_at_the_same_index_either_way() {
+        // Stated as the property rather than the arrangement: what matters is
+        // that nothing moves under the pointer when the stray disappears.
+        let columns = cols(&["Donor_Day", "Plate", "Type"]);
+        let before = offered(&columns, &Arc::from("SampleType"));
+        let after = offered(&columns, &Arc::from("Type"));
+        for (i, name) in columns.iter().enumerate() {
+            assert_eq!(&before[i], name);
+            assert_eq!(&after[i], name);
+        }
+    }
+
+    #[test]
+    fn columns_are_gathered_across_files_and_sorted() {
+        use rustc_hash::{FxBuildHasher, FxHashMap};
+        let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+        for (id, extra) in [("f1", "Plate"), ("f2", "Donor_Day")] {
+            let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
+            columns.insert(Arc::from("Type"), Arc::from("FS"));
+            columns.insert(Arc::from(extra), Arc::from("x"));
+            metadata.insert(Arc::from(id) as Arc<str>, columns);
+        }
+        let found = metadata_columns(&metadata);
+        assert_eq!(found, cols(&["Donor_Day", "Plate", "Type"]));
     }
 }
