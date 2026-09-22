@@ -14,7 +14,8 @@ use crate::gate_editor::path_picker::{Pick, PickPath};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
 use crate::gate_rules::autogate::{Report, describe, measure_file};
 use crate::gate_rules::rule::{
-    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, Rule, TailFractionRule, ValleyRule,
+    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit,
+    TailFractionRule, ValleyRule,
 };
 use crate::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -169,6 +170,74 @@ pub fn choices(state: &GateState) -> GateChoices {
 /// units of where a person had put it, which is a typical manual nudge.
 const REVIEW_FLOOR: f64 = 0.30;
 
+/// Below this, the verification table marks a gate's purity as worth a look.
+///
+/// Not a failure: a population that overlaps its neighbours on the two axes
+/// the gate is drawn on cannot be gated cleanly there by anything, and the
+/// honest response is to gate it somewhere else. The mark says "this number is
+/// the reason to doubt the gate", which is what a person scanning a run needs.
+const PURE_ENOUGH: f64 = 0.70;
+
+/// How far a marker's centre may differ between the reference and a sample
+/// before the table marks it.
+///
+/// In spreads of each sample's own parent, so it is already comparable. Three
+/// is generous - a population really does shift between donors - and it is
+/// there to catch the case that matters: a marker reading +8 on the reference
+/// and +1 here has not been matched on, whatever the overall distance said.
+const MARKER_DISAGREEMENT: f64 = 3.0;
+
+/// A phenotype rule in the words a person used to write it.
+///
+/// [`Rule::describe`] names the markers by the column the rule reads, because
+/// that is what it stores and what it has to store - a signature is built by
+/// looking those columns up in a DataFrame. Nobody ticks a column called
+/// `BV421-A`, though; they tick CD279. The panel is the only place the two are
+/// connected and it is loaded per file, so the translation belongs here rather
+/// than in the rule.
+///
+/// A marker the panel does not carry is shown as the rule stores it, which is
+/// the honest answer: that is what the rule will look for.
+/// One marker's name as a person would recognise it, from the column it is
+/// read out of.
+pub fn marker_label(
+    column: &str,
+    panel: &[crate::gate_editor::plots::axis_store::Param],
+) -> String {
+    panel
+        .iter()
+        .find(|param| &*param.fluoro == column)
+        .map(|param| param.to_string())
+        .unwrap_or_else(|| column.to_string())
+}
+
+pub fn describe_phenotype(
+    rule: &PhenotypeRule,
+    panel: &[crate::gate_editor::plots::axis_store::Param],
+) -> String {
+    let named = if rule.markers.is_empty() {
+        "every marker".to_string()
+    } else {
+        rule.markers
+            .iter()
+            .map(|column| marker_label(column, panel))
+            .collect::<Vec<String>>()
+            .join(", ")
+    };
+    format!(
+        "find the cells that match on {named}, then {}",
+        rule.fit.label()
+    )
+}
+
+/// A count as a percentage of its whole, for the report's tables.
+fn fraction(part: usize, whole: usize) -> String {
+    if whole == 0 {
+        return "-".to_string();
+    }
+    format!("{:.2}%", part as f64 / whole as f64 * 100.0)
+}
+
 /// A file id as the name a person knows it by, falling back to the id itself
 /// when the metadata has not been loaded.
 fn name_of(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
@@ -221,6 +290,16 @@ pub fn GateRulesWindow() -> Element {
     let mut min_depth = use_signal(|| "0.25".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
     let mut nudge = use_signal(|| "0.0".to_string());
+    // The phenotype rule's own fields. `outline_smoothing` is separate from
+    // `smoothing` above even though the two are never on screen together: one
+    // scales a density's bandwidth along one axis and the other a boundary's
+    // in two, and a shared signal would carry a number tuned for one rule into
+    // the other.
+    let mut fit = use_signal(|| ShapeFit::default().key().to_string());
+    let mut markers = use_signal(Vec::<String>::new);
+    let mut keep = use_signal(|| "95".to_string());
+    let mut outline_smoothing = use_signal(|| "1.0".to_string());
+    let mut vertices = use_signal(|| "24".to_string());
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
@@ -244,6 +323,18 @@ pub fn GateRulesWindow() -> Element {
     // parameters, so the form cannot name a combination the document lacks.
     let selected_children = use_memo(move || choices.read().children_of(&parent()).to_vec());
     let selected_parameters = use_memo(move || choices.read().parameters_of(&gate()).to_vec());
+    // Every channel the panel carries, for the phenotype rule's marker picker.
+    // The gate's own two parameters are not enough: a population is identified
+    // by markers the plot it is drawn on says nothing about, which is the
+    // entire reason that rule exists.
+    let panel = use_memo(move || {
+        axis_store
+            .sorted_settings()
+            .read()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    });
 
     // The rule the form is standing in for, when it was opened by Edit. The
     // next Add replaces it, so a rule can be moved to another population rather
@@ -291,12 +382,13 @@ pub fn GateRulesWindow() -> Element {
                 scale.set(format!("{}", r.scale));
                 nudge.set(format!("{}", r.nudge));
             }
-            // The form has no fields for this one yet, so Edit opens it on
-            // its kind and nothing else. It is not offered in the menu below
-            // either - the rule exists and the solver cannot run it - so the
-            // only way to reach this arm is a sidecar written by hand.
-            Rule::MatchThePhenotype(_) => {
+            Rule::MatchThePhenotype(r) => {
                 kind.set("MatchThePhenotype".to_string());
+                fit.set(r.fit.key().to_string());
+                markers.set(r.markers.iter().map(|m| m.to_string()).collect());
+                keep.set(format!("{}", r.keep * 100.0));
+                outline_smoothing.set(format!("{}", r.smoothing));
+                vertices.set(format!("{}", r.vertices));
             }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
@@ -322,11 +414,45 @@ pub fn GateRulesWindow() -> Element {
             return;
         }
         let param = parameter();
-        if param.is_empty() {
+        // A phenotype rule positions nothing along an axis, so there is no
+        // parameter to name. Every other rule needs one.
+        if param.is_empty() && kind() != "MatchThePhenotype" {
             warn(&toasts, "Choose the parameter the rule positions");
             return;
         }
         let rule = match kind().as_str() {
+            "MatchThePhenotype" => {
+                let (Ok(k), Ok(sm), Ok(v)) = (
+                    keep().parse::<f64>(),
+                    outline_smoothing().parse::<f64>(),
+                    vertices().parse::<usize>(),
+                ) else {
+                    warn(
+                        &toasts,
+                        "The percentage, smoothing and point count must be numbers",
+                    );
+                    return;
+                };
+                if !(0.0..=100.0).contains(&k) {
+                    warn(&toasts, "The percentage to hold must be between 0 and 100");
+                    return;
+                }
+                if fit() == ShapeFit::DrawPolygon.key() && v < 3 {
+                    warn(&toasts, "A polygon needs at least three points");
+                    return;
+                }
+                Rule::MatchThePhenotype(PhenotypeRule {
+                    markers: markers().iter().map(|m| Arc::from(m.as_str())).collect(),
+                    fit: match fit().as_str() {
+                        "DrawPolygon" => ShapeFit::DrawPolygon,
+                        _ => ShapeFit::KeepShape,
+                    },
+                    // Typed as a percentage, stored as a fraction.
+                    keep: k / 100.0,
+                    smoothing: sm,
+                    vertices: v,
+                })
+            }
             "InTheValley" => {
                 let (Ok(d), Ok(sm)) = (min_depth().parse::<f64>(), smoothing().parse::<f64>())
                 else {
@@ -374,7 +500,12 @@ pub fn GateRulesWindow() -> Element {
                 Rule::TailFraction(TailFractionRule::new((l / 100.0, h / 100.0)))
             }
         };
-        let calibrated = kind() == "AboveTheNegative" || kind() == "InTheValley";
+        // All three read a named reference sample rather than a partner of
+        // each specimen.
+        let calibrated = matches!(
+            kind().as_str(),
+            "AboveTheNegative" | "InTheValley" | "MatchThePhenotype"
+        );
         if calibrated && calibrate_on().is_empty() {
             warn(&toasts, "Choose the sample to calibrate against");
             return;
@@ -445,11 +576,20 @@ pub fn GateRulesWindow() -> Element {
                         for entry in rules.read().entries().to_vec() {
                             tr { key: "{entry.target.describe()}",
                                 td { "{entry.target.describe()}" }
-                                td { "{entry.rule.parameter}" }
-                                td {
-                                    match entry.rule.bound {
-                                        Bound::Above => "above",
-                                        Bound::Below => "below",
+                                // A phenotype rule positions nothing along an
+                                // axis, so showing the parameter and the side
+                                // it keeps would be showing two fields it does
+                                // not read.
+                                if matches!(entry.rule.rule, Rule::MatchThePhenotype(_)) {
+                                    td { class: "gate_rules-hint", "the whole shape" }
+                                    td { }
+                                } else {
+                                    td { "{entry.rule.parameter}" }
+                                    td {
+                                        match entry.rule.bound {
+                                            Bound::Above => "above",
+                                            Bound::Below => "below",
+                                        }
                                     }
                                 }
                                 td {
@@ -459,7 +599,20 @@ pub fn GateRulesWindow() -> Element {
                                         MeasuredOn::File(f) => name_of(&files.read(), f),
                                     }
                                 }
-                                td { "{entry.rule.rule.describe()}" }
+                                // A phenotype rule names its markers by the
+                                // column it reads, which is what it has to
+                                // store and not what anybody ticked. The
+                                // panel is the only place the two are
+                                // connected, and it lives here rather than in
+                                // the rule.
+                                match &entry.rule.rule {
+                                    Rule::MatchThePhenotype(r) => rsx! {
+                                        td { "{describe_phenotype(r, &panel.read())}" }
+                                    },
+                                    other => rsx! {
+                                        td { "{other.describe()}" }
+                                    },
+                                }
                                 td { class: "gate_rules-actions",
                                     button {
                                         class: "gate_rules-secondary",
@@ -537,27 +690,33 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
 
-                label { "Positions on" }
-                select {
-                    value: "{parameter}",
-                    onchange: move |e| parameter.set(e.value()),
-                    option { value: "", "choose a parameter" }
-                    for name in selected_parameters.read().clone() {
-                        option { value: "{name}", "{name}" }
+                // A phenotype rule fits a whole shape to a population, so it
+                // has no parameter it positions along and no leading side.
+                // Leaving the fields on screen would invite a person to set
+                // something the rule then ignores.
+                if kind() != "MatchThePhenotype" {
+                    label { "Positions on" }
+                    select {
+                        value: "{parameter}",
+                        onchange: move |e| parameter.set(e.value()),
+                        option { value: "", "choose a parameter" }
+                        for name in selected_parameters.read().clone() {
+                            option { value: "{name}", "{name}" }
+                        }
+                    }
+
+                    label { "Gate keeps events" }
+                    select {
+                        value: "{bound}",
+                        onchange: move |e| bound.set(e.value()),
+                        option { value: "Above", "above the line" }
+                        option { value: "Below", "below the line" }
                     }
                 }
 
-                label { "Gate keeps events" }
-                select {
-                    value: "{bound}",
-                    onchange: move |e| bound.set(e.value()),
-                    option { value: "Above", "above the line" }
-                    option { value: "Below", "below the line" }
-                }
-
-                // Both calibrated rules name one reference file rather than a
+                // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if kind() != "AboveTheNegative" && kind() != "InTheValley" {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -574,6 +733,115 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "PercentileOffset", "step above a percentile" }
                     option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
                     option { value: "InTheValley", "in the valley between the negative and the positive" }
+                    option { value: "MatchThePhenotype", "find the cells that match the reference population" }
+                }
+
+                if kind() == "MatchThePhenotype" {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Describes the cells inside the gate on the reference sample by where they sit across the markers below, then finds the same cells in every other sample and fits the gate to wherever they turn out to be. For populations the other rules cannot reach: a smear with no dip, several clusters near each other, anything that moves in both axes at once. Nothing is normalised between samples - each one's markers are read against its own parent - so donor differences are carried rather than flattened."
+                    }
+
+                    label { "Calibrate on" }
+                    select {
+                        value: "{calibrate_on}",
+                        onchange: move |e| calibrate_on.set(e.value()),
+                        option { value: "", "choose the reference sample" }
+                        for (name , id) in files.read().clone() {
+                            option { value: "{id}", "{name}" }
+                        }
+                    }
+
+                    label { "Identified by" }
+                    div { class: "gate_rules-markers",
+                        if panel.read().is_empty() {
+                            span { class: "gate_rules-hint",
+                                "No panel loaded yet - open a file on the plots tab first."
+                            }
+                        }
+                        for param in panel.read().clone() {
+                            label { class: "gate_rules-marker",
+                                input {
+                                    r#type: "checkbox",
+                                    checked: markers().iter().any(|m| *m == *param.fluoro),
+                                    onchange: {
+                                        let fluoro = param.fluoro.clone();
+                                        move |e: FormEvent| {
+                                            let name = fluoro.to_string();
+                                            let mut chosen = markers();
+                                            if e.checked() {
+                                                if !chosen.contains(&name) {
+                                                    chosen.push(name);
+                                                }
+                                            } else {
+                                                chosen.retain(|m| *m != name);
+                                            }
+                                            markers.set(chosen);
+                                        }
+                                    },
+                                }
+                                "{param}"
+                            }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        if markers().is_empty() {
+                            "Nothing ticked means the whole panel, which is a reasonable place to start. Narrowing it is usually better: a marker that says nothing about this population still contributes noise to the distance, so ticking the four or five that define it beats ticking thirty."
+                        } else {
+                            "{markers().len()} ticked. A marker that says nothing about this population still contributes noise to the distance, so fewer and more relevant beats more."
+                        }
+                    }
+
+                    label { "Then" }
+                    select {
+                        value: "{fit}",
+                        onchange: move |e| fit.set(e.value()),
+                        for choice in ShapeFit::ALL {
+                            option { value: "{choice.key()}", "{choice.choice()}" }
+                        }
+                    }
+
+                    if fit() == ShapeFit::DrawPolygon.key() {
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gate becomes a polygon whatever it is now, because no other shape can follow a traced boundary. A rectangle or an ellipse will stop being one."
+                        }
+
+                        label { "Hold this much (%)" }
+                        input {
+                            r#type: "number",
+                            step: "1",
+                            value: "{keep}",
+                            oninput: move |e| keep.set(e.value()),
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Of the matched cells. Not all of them: the last few percent are the ones the match is least sure about, and a boundary drawn to include them is drawn around the doubt."
+                        }
+
+                        label { "Boundary smoothing" }
+                        input {
+                            r#type: "number",
+                            step: "0.1",
+                            value: "{outline_smoothing}",
+                            oninput: move |e| outline_smoothing.set(e.value()),
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Below 1 follows the cells more closely and picks up their noise; above 1 gives a smoother outline that may cut corners off a genuinely angular population."
+                        }
+
+                        label { "About this many points" }
+                        input {
+                            r#type: "number",
+                            step: "1",
+                            value: "{vertices}",
+                            oninput: move |e| vertices.set(e.value()),
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "A gate with two hundred points is a different kind of object from one drawn by hand, however well it fits."
+                        }
+                    } else {
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gate is moved and resized onto the matched cells and keeps its shape and its kind - a rectangle stays a rectangle. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                        }
+                    }
                 }
 
                 if kind() == "InTheValley" {
@@ -922,7 +1190,12 @@ pub fn GateRulesWindow() -> Element {
             // ── what it did ───────────────────────────────────────────────
             if let Some(run) = report.read().as_ref() {
                 div { class: "gate_rules-report",
-                    if !run.positioned.is_empty() {
+                    // Two kinds of placement, two tables. A phenotype rule's
+                    // "from" and "to" are fractions of the parent and every
+                    // other rule's are coordinates on an axis, so one table
+                    // would put an axis value in the same column as a
+                    // percentage and label them both From.
+                    if run.positioned.iter().any(|p| p.phenotype.is_none()) {
                         h3 { "Positioned" }
                         table { class: "gate_rules-table",
                             thead {
@@ -939,7 +1212,7 @@ pub fn GateRulesWindow() -> Element {
                                 }
                             }
                             tbody {
-                                for placed in run.positioned.iter() {
+                                for placed in run.positioned.iter().filter(|p| p.phenotype.is_none()) {
                                     tr {
                                         class: if placed.confidence < REVIEW_FLOOR || !placed.in_band { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
@@ -962,6 +1235,86 @@ pub fn GateRulesWindow() -> Element {
                                         }
                                         td { "{placed.confidence:.2}" }
                                         td { "{placed.weakest.unwrap_or(\"-\")}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if run.positioned.iter().any(|p| p.phenotype.is_some()) {
+                        h3 { "Matched by phenotype" }
+                        p { class: "gate_rules-hint",
+                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, both in spreads of their own parent - the two should agree, because they are supposed to be the same cells."
+                        }
+                        div { class: "gate_rules-verify",
+                            table { class: "gate_rules-table",
+                                thead {
+                                    tr {
+                                        th { "Specimen" }
+                                        th { "Gate" }
+                                        th { "Matched" }
+                                        th { "On the reference" }
+                                        th { "Only this population" }
+                                        th { "Of the population" }
+                                        th { "Clouds" }
+                                        th { "Fitted" }
+                                        th { "Marker, reference to here" }
+                                        th { "Confidence" }
+                                        th { "Weakest" }
+                                    }
+                                }
+                                tbody {
+                                    for placed in run.positioned.iter() {
+                                        if let Some(read) = placed.phenotype.as_ref() {
+                                            tr {
+                                                class: if placed.confidence < REVIEW_FLOOR { "gate_rules-weak" } else { "" },
+                                                td { "{placed.specimen}" }
+                                                td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
+                                                td {
+                                                    title: "of {read.parent} events in the parent population",
+                                                    "{read.matched} ({fraction(read.matched, read.parent)})"
+                                                }
+                                                td {
+                                                    title: "what the hand-drawn gate held on {name_of(&files.read(), &placed.measured_on)}",
+                                                    "{read.reference_matched} ({fraction(read.reference_matched, read.reference_parent)})"
+                                                }
+                                                td {
+                                                    class: if read.purity < PURE_ENOUGH { "gate_rules-doubt" } else { "" },
+                                                    title: "of what the fitted gate holds. Low means the population is not separated on these two axes, so no boundary round it can exclude its neighbours - which is a fact about the plot, not a fault in the fit",
+                                                    "{read.purity * 100.0:.0}%"
+                                                }
+                                                td {
+                                                    title: "how much of the matched population the fitted gate holds",
+                                                    "{read.caught * 100.0:.0}%"
+                                                }
+                                                td {
+                                                    class: if read.pieces > 1 { "gate_rules-doubt" } else { "" },
+                                                    title: if read.pieces > 1 { "the matched cells sit in more than one place on this plot, so one outline is not the whole story" } else { "the matched cells form a single cloud" },
+                                                    "{read.pieces}"
+                                                }
+                                                td {
+                                                    match read.reshaped {
+                                                        Some((dx, dy)) => format!(
+                                                            "moved {dx:+.0}, {dy:+.0}{}",
+                                                            if read.clamped { " (stretch clamped)" } else { "" },
+                                                        ),
+                                                        None => "new polygon".to_string(),
+                                                    }
+                                                }
+                                                td {
+                                                    for (marker , there , here) in read.centres.iter() {
+                                                        span {
+                                                            class: if (there - here).abs() > MARKER_DISAGREEMENT { "gate_rules-doubt" } else { "" },
+                                                            title: "{marker}: {there:+.1} spreads on the reference, {here:+.1} here",
+                                                            // The marker as it was ticked, not the
+                                                            // column it was read from.
+                                                            "{marker_label(marker, &panel.read())} {there:+.1}→{here:+.1}  "
+                                                        }
+                                                    }
+                                                }
+                                                td { "{placed.confidence:.2}" }
+                                                td { "{placed.weakest.unwrap_or(\"-\")}" }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1340,8 +1693,17 @@ fn measure_all(
             }
             let frame = (|| -> anyhow::Result<DataFrame> {
                 let fcs = flow_fcs::Fcs::open(path.to_str().unwrap_or_default())?;
+                // Only the cofactors this file actually carries.
+                // `apply_arcsinh_transforms` errors on the first parameter it
+                // cannot find, and the cofactors describe the whole panel as
+                // the scaling file defines it - so one channel absent from one
+                // file failed every rule on every file, with the run reporting
+                // "Parameter AF P1-A not found" six times and nothing placed.
+                // The same filter the two plotting paths use.
+                let carried =
+                    crate::gate_editor::plots::data_helpers::cofactors_carried_by(&fcs, arcsinh);
                 let params: Vec<(&str, f32)> =
-                    arcsinh.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
+                    carried.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
                 let scaled = (*fcs.apply_arcsinh_transforms(&params)?).clone();
                 Ok(scaled.with_row_index("original_index".into(), None)?)
             })();

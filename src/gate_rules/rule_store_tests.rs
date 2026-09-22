@@ -775,3 +775,128 @@ fn re_inserting_the_same_target_replaces_rather_than_doubles() {
     store.insert(target.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
     assert_eq!(store.entries().len(), 1);
 }
+
+// ── the phenotype rule through a sidecar ─────────────────────────────────
+
+#[test]
+fn a_phenotype_rule_survives_a_save_and_a_load() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    // The whole rule, as the form writes it: the markers a person ticked, the
+    // way of fitting they chose, and the three numbers.
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::under("MAIT", "CD3+"),
+        GateRule {
+            parameter: Arc::from("FSC-A"),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from("qc")),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![
+                    Arc::from("TCRVa7.2"),
+                    Arc::from("CD161"),
+                    Arc::from("CD127"),
+                    Arc::from("CD218a"),
+                ],
+                fit: ShapeFit::DrawPolygon,
+                keep: 0.9,
+                smoothing: 1.3,
+                vertices: 18,
+            }),
+        },
+    );
+
+    let text = serde_json::to_string(&store).expect("serialises");
+    let back: RuleStore = serde_json::from_str(&text).expect("deserialises");
+    let entry = back
+        .rule_for("MAIT", Some("CD3+"))
+        .expect("the rule is found where it was put");
+    let Rule::MatchThePhenotype(rule) = &entry.rule else {
+        panic!("the kind changed on the way through");
+    };
+    assert_eq!(rule.markers.len(), 4);
+    assert_eq!(&*rule.markers[0], "TCRVa7.2");
+    assert_eq!(rule.fit, ShapeFit::DrawPolygon);
+    assert_eq!(rule.keep, 0.9);
+    assert_eq!(rule.smoothing, 1.3);
+    assert_eq!(rule.vertices, 18);
+}
+
+#[test]
+fn a_phenotype_rule_with_no_markers_means_the_whole_panel_after_a_round_trip() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: Vec::new(),
+        fit: ShapeFit::KeepShape,
+        ..Default::default()
+    });
+    let back: Rule = serde_json::from_str(&serde_json::to_string(&rule).unwrap()).unwrap();
+    let Rule::MatchThePhenotype(back) = back else {
+        panic!("the kind changed");
+    };
+    assert!(back.markers.is_empty());
+}
+
+/// Write a sidecar holding one phenotype rule, for trying the rule in the app
+/// by hand. Set `PHENOTYPE_SIDECAR_OUT` to a path; skipped otherwise.
+///
+/// `PHENOTYPE_REFERENCE` is the gating id of the sample to calibrate from,
+/// which is awkward to find - the app's own "Calibrate on" menu is the easy
+/// way, so leaving it unset and setting it there is the expected route. The
+/// pairing is this dataset's: it groups a specimen by `GROUPNAME` and has no
+/// sample-type column, so the type comes out of the file name.
+#[test]
+fn a_phenotype_sidecar_can_be_written_for_trying_the_app() {
+    let Ok(out) = std::env::var("PHENOTYPE_SIDECAR_OUT") else {
+        return;
+    };
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    use crate::gate_rules::rule_store::{DerivedSampleType, SampleTypeMarker};
+
+    let mut store = RuleStore::default();
+    store.pairing.sample_id_column = Arc::from("GROUPNAME");
+    store.pairing.sample_type_column = Arc::from("SampleType");
+    store.pairing.derive_type = Some(DerivedSampleType {
+        column: Arc::from("OriginalFileName"),
+        markers: vec![
+            SampleTypeMarker {
+                contains: Arc::from("_FMX_"),
+                sample_type: Arc::from("FMX"),
+            },
+            SampleTypeMarker {
+                contains: Arc::from("_FS_"),
+                sample_type: Arc::from("FS"),
+            },
+        ],
+    });
+    store.insert(
+        RuleTarget::under(
+            std::env::var("PHENOTYPE_GATE")
+                .unwrap_or_else(|_| "Singlets".to_string())
+                .as_str(),
+            std::env::var("PHENOTYPE_PARENT")
+                .unwrap_or_else(|_| "Cells".to_string())
+                .as_str(),
+        ),
+        GateRule {
+            // Neither is read by this rule. They are on every rule.
+            parameter: Arc::from("FSC-A"),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from(
+                std::env::var("PHENOTYPE_REFERENCE")
+                    .unwrap_or_default()
+                    .as_str(),
+            )),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![
+                    Arc::from("BV421-A"),
+                    Arc::from("BV711-A"),
+                    Arc::from("BB700-A"),
+                ],
+                fit: ShapeFit::DrawPolygon,
+                ..Default::default()
+            }),
+        },
+    );
+    std::fs::write(&out, serde_json::to_string_pretty(&store).unwrap()).expect("written");
+    eprintln!("wrote {out}");
+}

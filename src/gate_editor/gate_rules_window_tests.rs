@@ -190,3 +190,55 @@ fn clearing_the_population_clears_the_gate() {
     assert_eq!(gate, "");
     assert_eq!(parameter, "");
 }
+
+// ── how a phenotype rule reads back ──────────────────────────────────────
+
+use crate::gate_editor::plots::axis_store::Param;
+
+fn param(marker: &str, fluoro: &str) -> Param {
+    Param {
+        marker: Arc::from(marker),
+        fluoro: Arc::from(fluoro),
+    }
+}
+
+#[test]
+fn a_phenotype_rule_names_its_markers_as_they_were_ticked() {
+    use crate::gate_editor::gate_rules_window::describe_phenotype;
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    // The rule stores the column it reads, because that is what a DataFrame is
+    // indexed by. Nobody ticks a column called BV421-A.
+    let panel = vec![
+        param("CD279", "BV421-A"),
+        param("Va7_2", "BV711-A"),
+        param("CD161", "BB700-A"),
+    ];
+    let rule = PhenotypeRule {
+        markers: vec![Arc::from("BV421-A"), Arc::from("BB700-A")],
+        fit: ShapeFit::DrawPolygon,
+        ..Default::default()
+    };
+    let described = describe_phenotype(&rule, &panel);
+    assert!(described.contains("CD279"), "got: {described}");
+    assert!(described.contains("CD161"), "got: {described}");
+    assert!(
+        !described.contains("BV421-A"),
+        "the column leaked: {described}"
+    );
+}
+
+#[test]
+fn a_marker_the_panel_does_not_carry_is_shown_as_the_rule_stores_it() {
+    use crate::gate_editor::gate_rules_window::marker_label;
+    // The honest answer: that is the column the rule will look for, and saying
+    // so is how a person finds out the panel has changed under them.
+    assert_eq!(marker_label("PE-A", &[param("CD279", "BV421-A")]), "PE-A");
+}
+
+#[test]
+fn a_phenotype_rule_with_nothing_ticked_says_it_uses_every_marker() {
+    use crate::gate_editor::gate_rules_window::describe_phenotype;
+    use crate::gate_rules::rule::PhenotypeRule;
+    let described = describe_phenotype(&PhenotypeRule::default(), &[]);
+    assert!(described.contains("every marker"), "got: {described}");
+}

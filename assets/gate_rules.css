@@ -90,3 +90,40 @@
   font-size: 0.78rem;
   cursor: pointer;
 }
+
+/* The phenotype rule's marker picker. A panel runs to thirty channels and the
+   form has to stay a form, so the list scrolls inside its own cell rather than
+   pushing everything below it off the pane. Two columns, because a channel
+   name is much narrower than the space a single column wastes. */
+.gate_rules-markers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.1rem 0.5rem;
+    max-height: 11rem;
+    overflow-y: auto;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid #d0d7de;
+    border-radius: 3px;
+}
+/* Scoped inside the form so it out-specifies `.gate_rules-form label`, which
+   right-aligns captions. These are list items, not captions for the field
+   beside them, and a ragged left edge makes a panel of thirty unreadable. */
+.gate_rules-form .gate_rules-marker {
+    justify-self: start;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    opacity: 1;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.gate_rules-form .gate_rules-marker input { min-width: 0; margin: 0; }
+
+/* The verification table. Wider than the report's other tables because it
+   carries a column per marker, so it scrolls sideways rather than squeezing
+   the numbers into columns too narrow to read. */
+.gate_rules-verify { overflow-x: auto; }
+.gate_rules-verify table { font-size: 0.78rem; }
+.gate_rules-verify th { white-space: nowrap; }
+.gate_rules-doubt { color: #b45309; font-weight: 600; }

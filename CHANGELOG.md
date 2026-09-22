@@ -4,6 +4,37 @@
 
 ### Added
 
+- **A rule that finds a population by what it is, rather than where it sat.**
+  The cells inside the gate on the reference sample are described by where they
+  sit across markers you choose, and that description is used to find the same
+  cells in every other sample; the gate is then fitted to wherever they turn out
+  to be. For populations the threshold rules cannot reach - a smear with no dip,
+  several clusters near each other, anything that moves in both axes at once.
+
+  The markers are per rule, because which ones define a population is knowledge
+  about the biology that nothing in the data supplies. MAIT cells are TCR Va7.2
+  and CD161 and CD127; a monocyte marker is not wrong about them, it is silent,
+  and including it spends the distance budget on noise.
+
+  Two ways to fit, also per rule. *Keep the shape* moves and resizes the gate as
+  drawn and stays the kind of gate it is, for an outline that means something the
+  data does not - a quadrant, a shape agreed with somebody else, a gate that has
+  to stay comparable with how it was drawn before. *Draw a polygon* traces a
+  fresh boundary round the matched cells on every sample, and turns the gate into
+  a polygon whatever it was.
+
+  Nothing is normalised between samples: each one's markers are read against its
+  own parent population, so donor differences are carried rather than flattened.
+
+- **A verification table for it.** A gate drawn round the wrong cells looks
+  exactly like one drawn round the right cells until you look. Per sample: how
+  many cells matched against how many the hand-drawn gate held, what fraction of
+  the fitted gate's contents are actually the population, how much of the
+  population it holds, how many separate clouds they formed, and - per marker -
+  where they sat on the reference against where they sit here. The last is the
+  check that these are the same cells: a marker reading +8 on the reference and
+  +1 here has not been matched on, whatever the distance said.
+
 - **Messages are toasts.** Every report of something that just happened - a file
   written, a rule saved, a run finished, a path that did not resolve - now
   appears briefly in the corner and clears itself. They used to be inline notes
@@ -89,7 +120,16 @@
 
 ### Fixed
 
+- **A run no longer fails on every file because one channel is missing from
+  one.** The third and last place with this fault: `apply_arcsinh_transforms`
+  errors on the first parameter it cannot find, and the cofactors describe the
+  whole panel as the scaling file defines it, so a channel absent from a single
+  file failed every rule on every file - a real run reported "Parameter AF P1-A
+  not found" six times and placed nothing. The gallery and the editor were fixed
+  earlier; the autogate solver reads its own frames and was still doing it.
+
 - **The sample pairing controls no longer overlap themselves on the rules tab.**
+
   They carry a grid of their own, and dropping them into a cell of that tab's
   form grid squeezed it into the 11rem label column: the labels wrapped and the
   warning underneath was drawn over them. They take the full width of the row.
