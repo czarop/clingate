@@ -492,6 +492,40 @@ pub fn measure_file(
         // measure - so it takes its own path and the checks below never apply
         // to it.
         if let Rule::MatchThePhenotype(wanted) = &rule.rule {
+            // The population has to be described from a sample somebody gated
+            // by hand, and only `File` names one.
+            //
+            // `Partner` is the dangerous one. It resolves per specimen, so it
+            // can point at a control - and an FMO has, by definition, no
+            // signal in the channel it drops, which is usually the very marker
+            // the population is defined by. The phenotype would be described
+            // from cells that cannot show it, and the result would look like
+            // an answer. `Itself` is merely circular: it would describe the
+            // population from the gate it is about to move.
+            //
+            // The form only ever writes `File` for this rule. This is for a
+            // sidecar written by hand, where nothing else would catch it.
+            let wrong_reference = match &rule.measured_on {
+                MeasuredOn::File(_) => None,
+                MeasuredOn::Itself => Some("the sample itself".to_string()),
+                MeasuredOn::Partner(kind) => Some(format!(
+                    "each specimen's {kind}, which resolves per sample and may be a control \
+                     with no signal in the markers it is matching on"
+                )),
+            };
+            if let Some(wrong) = wrong_reference {
+                unmeasured.push(Unmeasured {
+                    gate_id: gate_id.clone(),
+                    gate: name,
+                    parent_gate: parent_gate.clone(),
+                    reason: format!(
+                        "this rule identifies a population by its phenotype, which has to be \
+                         described from one named sample gated by hand - but it is measured on \
+                         {wrong}. Name the reference sample instead."
+                    ),
+                });
+                continue;
+            }
             let markers = markers_for(&frame, &wanted.markers);
             if markers.is_empty() {
                 unmeasured.push(Unmeasured {

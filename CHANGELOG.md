@@ -120,6 +120,23 @@
 
 ### Fixed
 
+- **Edit on a rule brings back the gate and the parameter.** Both were coming
+  back empty, so editing a rule meant re-picking them, and a threshold rule
+  refused to save until you did. Their menus are built from the field above -
+  gates from the population, parameters from the gate - and Edit sets both
+  halves in one go, so the value could reach the menu before the matching entry
+  existed. A menu given a value it has no entry for falls back to its first one.
+
+- **A phenotype rule now insists on a named reference sample.** Only a sample
+  gated by hand can say what a population is. Measured on "its FMX" the rule
+  would resolve a different file per specimen and could land on a control -
+  which has, by definition, no signal in the channel it drops, usually the very
+  marker the population is defined by. The phenotype would be described from
+  cells that cannot show it, and the result would look like an answer. Measured
+  on "itself" it would describe the population from the gate it is about to
+  move. The form only ever writes a named file; this is for a sidecar written by
+  hand, where nothing else would catch it.
+
 - **A run no longer fails on every file because one channel is missing from
   one.** The third and last place with this fault: `apply_arcsinh_transforms`
   errors on the first parameter it cannot find, and the cofactors describe the

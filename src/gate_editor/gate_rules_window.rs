@@ -685,8 +685,25 @@ pub fn GateRulesWindow() -> Element {
                         parameter.set(String::new());
                     },
                     option { value: "", "choose a gate" }
+                    // `selected` on the option as well as `value` on the
+                    // select. Edit sets the population and the gate in one go,
+                    // and this list is derived from the population - so the
+                    // value can reach the select before the matching option
+                    // exists, and a select given a value it has no option for
+                    // falls back to the first one. Opening a rule then showed
+                    // "choose a gate" for a rule that plainly named one.
+                    // Marking the option is order-independent: the browser
+                    // honours it whenever the option is appended.
+                    //
+                    // The population's own select needs none of this, because
+                    // its options do not depend on anything the same update
+                    // sets.
                     for name in selected_children.read().clone() {
-                        option { value: "{name}", "{name}" }
+                        option {
+                            value: "{name}",
+                            selected: gate() == *name,
+                            "{name}"
+                        }
                     }
                 }
 
@@ -700,8 +717,14 @@ pub fn GateRulesWindow() -> Element {
                         value: "{parameter}",
                         onchange: move |e| parameter.set(e.value()),
                         option { value: "", "choose a parameter" }
+                        // Derived from the gate, which Edit sets in the same
+                        // update - see the note on the gate's own list.
                         for name in selected_parameters.read().clone() {
-                            option { value: "{name}", "{name}" }
+                            option {
+                                value: "{name}",
+                                selected: parameter() == *name,
+                                "{name}"
+                            }
                         }
                     }
 

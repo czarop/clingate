@@ -2818,3 +2818,96 @@ fn an_empty_marker_list_takes_the_whole_panel() {
     // Every f32 column: the two axes and the marker.
     assert_eq!(read.markers.len(), 3, "{:?}", read.markers);
 }
+
+#[test]
+fn a_phenotype_rule_measured_on_a_partner_is_refused() {
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+    // A partner resolves per specimen and can be a control. An FMO has no
+    // signal in the channel it drops - usually the very marker the population
+    // is defined by - so the phenotype would be described from cells that
+    // cannot show it, and the answer would look like an answer.
+    let (state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let mut rules = RuleStore::default();
+    rules.insert(
+        RuleTarget::named("MAIT"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Partner(Arc::from("FMX")),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![Arc::from("CD161")],
+                fit: ShapeFit::KeepShape,
+                ..Default::default()
+            }),
+        },
+    );
+    let frame = panel(1, 500, 100, (700.0, 700.0, 800.0));
+    let (measured, unmeasured) =
+        measure_file(&state, &Arc::from("fs_qc"), &frame, &map, &rules).unwrap();
+    assert!(measured.is_empty(), "it went ahead anyway");
+    assert_eq!(unmeasured.len(), 1);
+    assert!(
+        unmeasured[0].reason.contains("control"),
+        "the reason should say why a partner is not good enough: {}",
+        unmeasured[0].reason
+    );
+}
+
+#[test]
+fn a_phenotype_rule_measured_on_itself_is_refused() {
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+    // Circular: it would describe the population from the gate it is about to
+    // move.
+    let (state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let mut rules = RuleStore::default();
+    rules.insert(
+        RuleTarget::named("MAIT"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![Arc::from("CD161")],
+                fit: ShapeFit::KeepShape,
+                ..Default::default()
+            }),
+        },
+    );
+    let frame = panel(1, 500, 100, (700.0, 700.0, 800.0));
+    let (measured, unmeasured) =
+        measure_file(&state, &Arc::from("fs_qc"), &frame, &map, &rules).unwrap();
+    assert!(measured.is_empty());
+    assert!(unmeasured[0].reason.contains("the sample itself"));
+}
+
+#[test]
+fn the_other_rules_still_take_a_partner() {
+    // The guard is about this one rule, not a new restriction on the rest:
+    // every threshold rule is calibrated from a partner and must stay that way.
+    use crate::gate_rules::autogate::measure_file;
+    let (state, _) = one_positive_gate();
+    let frame = ramp(1000);
+    let (measured, unmeasured) = measure_file(
+        &state,
+        &Arc::from("fmx_a"),
+        &frame,
+        &fs_and_fmx(),
+        &fmx_rule(),
+    )
+    .unwrap();
+    assert_eq!(
+        measured.len(),
+        1,
+        "{:?}",
+        unmeasured
+            .iter()
+            .map(|u| u.reason.clone())
+            .collect::<Vec<String>>()
+    );
+}
