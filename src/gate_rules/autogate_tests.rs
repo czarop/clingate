@@ -891,8 +891,12 @@ fn a_gate_that_bounds_both_axes_is_still_positioned() {
         measure_file(&state, &Arc::from("fmx_a"), &frame, &map, &fmx_rule()).unwrap();
     assert_eq!(measured.len(), 1, "it should be measured, not refused");
     assert!(unmeasured.is_empty());
-    assert_eq!(&*measured[0].parameter, X);
-    assert_eq!(measured[0].current, 500.0);
+    let line = measured[0]
+        .line
+        .as_ref()
+        .expect("a rule that positions an axis is measured along one");
+    assert_eq!(&*line.parameter, X);
+    assert_eq!(line.current, 500.0);
 }
 
 #[test]
@@ -1622,12 +1626,19 @@ fn a_band_rule_is_still_judged_on_how_far_it_moved() {
 
     let band = Rule::TailFraction(TailFractionRule::new((0.002, 0.005)));
     assert!(
-        band.assess(&t, Some(500.0)).get(DISPLACEMENT).is_some(),
+        band.assess(&t, Some(500.0))
+            .expect("a band rule is judged on a threshold")
+            .get(DISPLACEMENT)
+            .is_some(),
         "a band rule keeps the displacement check"
     );
     let above = Rule::AboveTheNegative(AboveTheNegativeRule::default());
     assert!(
-        above.assess(&t, None).get(DISPLACEMENT).is_none(),
+        above
+            .assess(&t, None)
+            .expect("above-the-negative is judged on a threshold")
+            .get(DISPLACEMENT)
+            .is_none(),
         "above-the-negative is assessed without it"
     );
 }
@@ -2463,4 +2474,347 @@ fn renaming_the_grouping_column_follows_through_to_the_export() {
         state.group_override_column(&gate_id).as_deref(),
         Some("Donor_Day")
     );
+}
+
+// ── matching a phenotype ─────────────────────────────────────────────────
+
+/// Deterministic scatter for the end-to-end phenotype tests.
+struct Spread(u64);
+
+impl Spread {
+    fn unit(&mut self) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        ((self.0 >> 32) as u32) as f32 / u32::MAX as f32
+    }
+    fn about(&mut self, centre: f32, spread: f32) -> f32 {
+        centre + (self.unit() + self.unit() - 1.0) * spread
+    }
+}
+
+/// A frame with a background and one population, on two axes plus a marker.
+///
+/// `population` says where those cells sit: their x, y and marker value. The
+/// background sits at the origin and is dim for the marker, so the population
+/// is identifiable by the marker whatever the axes do.
+fn panel(
+    seed: u64,
+    background: usize,
+    members: usize,
+    population: (f32, f32, f32),
+) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    let mut rng = Spread(seed);
+    let mut xs = Vec::with_capacity(background + members);
+    let mut ys = Vec::with_capacity(background + members);
+    let mut marker = Vec::with_capacity(background + members);
+    for _ in 0..background {
+        xs.push(rng.about(200.0, 60.0));
+        ys.push(rng.about(200.0, 60.0));
+        marker.push(rng.about(100.0, 30.0));
+    }
+    for _ in 0..members {
+        xs.push(rng.about(population.0, 25.0));
+        ys.push(rng.about(population.1, 25.0));
+        marker.push(rng.about(population.2, 20.0));
+    }
+    df![X => xs, Y => ys, "CD161" => marker].unwrap()
+}
+
+/// A state with one rectangle drawn round `(cx, cy)`, named so a rule can
+/// find it.
+fn gate_around(cx: f32, cy: f32, half: f32) -> (crate::gate_editor::gates::GateState, Arc<str>) {
+    use crate::gate_editor::gates::GateState;
+    use crate::gate_editor::gates::gate_store::GateSource;
+    use crate::gate_editor::gates::gate_types::PrimaryGateType;
+    use crate::gate_editor::plots::axis_store::PlotMapper;
+    use flow_fcs::TransformType;
+
+    let mapper = PlotMapper::new(
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &mapper,
+            300.0,
+            300.0,
+            Arc::from(X),
+            Arc::from(Y),
+            None,
+            Some(crate::gate_editor::gates::gate_store::ROOTGATE.clone()),
+            PrimaryGateType::Rectangle,
+            Some("MAIT".to_string()),
+        )
+        .expect("a rectangle can be added at the root");
+    let gate_id = state
+        .placements()
+        .next()
+        .map(|(_, p)| p.gate_id.clone())
+        .expect("adding a gate leaves a placement");
+
+    let geometry = create_rectangle_geometry(
+        vec![
+            (cx - half, cy - half),
+            (cx + half, cy - half),
+            (cx + half, cy + half),
+            (cx - half, cy + half),
+        ],
+        X,
+        Y,
+    )
+    .unwrap();
+    let mut inner = gate(&gate_id, geometry);
+    inner.name = "MAIT".to_string();
+    let drawn: Arc<dyn DrawableGate> = Arc::new(RectangleGate::try_new(inner, true).unwrap());
+    state.place_gate(&[gate_id.clone()], &drawn, &GateSource::Global);
+    (state, gate_id)
+}
+
+fn phenotype_rule(
+    fit: crate::gate_rules::rule::ShapeFit,
+    markers: &[&str],
+) -> crate::gate_rules::rule_store::RuleStore {
+    use crate::gate_rules::rule::{PhenotypeRule, Rule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
+
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::named("MAIT"),
+        GateRule {
+            // Neither is read by this rule; they are on every rule, and a
+            // phenotype rule ignores them.
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: markers.iter().map(|m| Arc::from(*m)).collect(),
+                fit,
+                ..Default::default()
+            }),
+        },
+    );
+    store
+}
+
+/// Run a phenotype rule over a reference and one sample whose population sits
+/// at `moved_to`, and give back the report and the state.
+fn match_run(
+    fit: crate::gate_rules::rule::ShapeFit,
+    moved_to: (f32, f32, f32),
+) -> (
+    crate::gate_rules::autogate::Report,
+    crate::gate_editor::gates::GateState,
+    Arc<str>,
+) {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+
+    // The reference: the population sits at (700, 700) and is bright.
+    let (mut state, gate_id) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let rules = phenotype_rule(fit, &["CD161"]);
+
+    let reference = panel(1, 1800, 200, (700.0, 700.0, 800.0));
+    let sample = panel(2, 1800, 200, moved_to);
+
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in [("fs_qc", &reference), ("fs_b", &sample)] {
+        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, &rules).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let report = position_all(&mut state, &rules, &measured, &unmeasured, &map);
+    (report, state, gate_id)
+}
+
+/// The centre of a gate on the two axes, whatever shape it is.
+fn centre_of(gate: &Arc<dyn DrawableGate>) -> (f32, f32) {
+    let inner = gate.get_gate_ref(None).unwrap();
+    match &inner.geometry {
+        GateGeometry::Rectangle { min, max } => (
+            (min.get_coordinate(X).unwrap() + max.get_coordinate(X).unwrap()) / 2.0,
+            (min.get_coordinate(Y).unwrap() + max.get_coordinate(Y).unwrap()) / 2.0,
+        ),
+        GateGeometry::Polygon { nodes, .. } => {
+            let n = nodes.len() as f32;
+            (
+                nodes
+                    .iter()
+                    .map(|v| v.get_coordinate(X).unwrap())
+                    .sum::<f32>()
+                    / n,
+                nodes
+                    .iter()
+                    .map(|v| v.get_coordinate(Y).unwrap())
+                    .sum::<f32>()
+                    / n,
+            )
+        }
+        other => panic!("unexpected geometry {other:?}"),
+    }
+}
+
+#[test]
+fn keeping_the_shape_carries_the_gate_onto_the_moved_population() {
+    use crate::gate_rules::rule::ShapeFit;
+    // The same cells, bright for CD161 as before, but sitting somewhere else
+    // on the two axes the gate is drawn on. Nothing about the axes identifies
+    // them - only the marker does.
+    let (report, state, gate_id) = match_run(ShapeFit::KeepShape, (300.0, 650.0, 800.0));
+
+    assert_eq!(
+        report.positioned.len(),
+        1,
+        "{:?}",
+        report.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+    );
+    let placed = state
+        .gate_for_file(&gate_id, &Arc::from("fs_b"), &two_specimens())
+        .expect("the sample has a gate");
+    let (cx, cy) = centre_of(&placed);
+    assert!(
+        (cx - 300.0).abs() < 60.0 && (cy - 650.0).abs() < 60.0,
+        "the gate centred on ({cx:.0}, {cy:.0}), the cells are at (300, 650)"
+    );
+}
+
+#[test]
+fn keeping_the_shape_keeps_the_gate_a_rectangle() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (_, state, gate_id) = match_run(ShapeFit::KeepShape, (300.0, 650.0, 800.0));
+    let placed = state
+        .gate_for_file(&gate_id, &Arc::from("fs_b"), &two_specimens())
+        .expect("the sample has a gate");
+    assert!(
+        matches!(
+            placed.get_gate_ref(None).unwrap().geometry,
+            GateGeometry::Rectangle { .. }
+        ),
+        "a rectangle must stay a rectangle"
+    );
+}
+
+#[test]
+fn drawing_a_polygon_replaces_the_rectangle_with_one() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (report, state, gate_id) = match_run(ShapeFit::DrawPolygon, (300.0, 650.0, 800.0));
+    assert_eq!(
+        report.positioned.len(),
+        1,
+        "{:?}",
+        report.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+    );
+    let placed = state
+        .gate_for_file(&gate_id, &Arc::from("fs_b"), &two_specimens())
+        .expect("the sample has a gate");
+    let GateGeometry::Polygon { nodes, .. } = &placed.get_gate_ref(None).unwrap().geometry else {
+        panic!("drawing a polygon should have produced one");
+    };
+    assert!(nodes.len() >= 3, "a polygon needs at least three points");
+    let (cx, cy) = centre_of(&placed);
+    assert!(
+        (cx - 300.0).abs() < 80.0 && (cy - 650.0).abs() < 80.0,
+        "the polygon centred on ({cx:.0}, {cy:.0}), the cells are at (300, 650)"
+    );
+}
+
+#[test]
+fn the_reference_specimen_is_left_where_it_was_drawn() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (report, _, _) = match_run(ShapeFit::KeepShape, (300.0, 650.0, 800.0));
+    assert_eq!(
+        report.reference.len(),
+        1,
+        "the sample the rule calibrates from is reported, not moved"
+    );
+}
+
+#[test]
+fn the_report_says_what_was_matched_and_where_it_sat() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (report, _, _) = match_run(ShapeFit::KeepShape, (300.0, 650.0, 800.0));
+    let read = report.positioned[0]
+        .phenotype
+        .as_ref()
+        .expect("a phenotype rule reports what it matched");
+
+    assert_eq!(read.markers.len(), 1);
+    assert!(read.matched > 100, "matched only {}", read.matched);
+    assert!(
+        read.matched < 500,
+        "matched {} - it has taken in background",
+        read.matched
+    );
+    // The marker's centre should read about the same on both, since it is the
+    // same population - that is the check that these are the same cells.
+    let (_, there, here) = &read.centres[0];
+    assert!(
+        (there - here).abs() < 3.0,
+        "CD161 read {there:.1} on the reference and {here:.1} here"
+    );
+    assert!(read.purity > 0.5, "purity {:.2}", read.purity);
+}
+
+#[test]
+fn a_sample_missing_the_population_is_refused_rather_than_gated_on_the_nearest_cells() {
+    use crate::gate_rules::rule::ShapeFit;
+    // The population is simply not there: the "moved" cells are dim, like the
+    // background. A gate placed round whatever was nearest would be worse than
+    // no gate, because nothing downstream would say so.
+    let (report, _, _) = match_run(ShapeFit::KeepShape, (300.0, 650.0, 100.0));
+    assert!(
+        report.positioned.is_empty(),
+        "it placed a gate on a sample with no such population"
+    );
+    assert!(
+        report.skipped.iter().any(|s| s.reason.contains("match")),
+        "the report should say why: {:?}",
+        report.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_rule_naming_a_marker_the_file_does_not_have_says_so() {
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::rule::ShapeFit;
+    let (state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let rules = phenotype_rule(ShapeFit::KeepShape, &["CD3", "CD4"]);
+    let frame = panel(1, 500, 100, (700.0, 700.0, 800.0));
+    let (measured, unmeasured) =
+        measure_file(&state, &Arc::from("fs_qc"), &frame, &map, &rules).unwrap();
+    assert!(measured.is_empty());
+    assert_eq!(unmeasured.len(), 1);
+    assert!(
+        unmeasured[0].reason.contains("CD3"),
+        "got: {}",
+        unmeasured[0].reason
+    );
+}
+
+#[test]
+fn an_empty_marker_list_takes_the_whole_panel() {
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::rule::ShapeFit;
+    let (state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let rules = phenotype_rule(ShapeFit::KeepShape, &[]);
+    let frame = panel(1, 500, 100, (700.0, 700.0, 800.0));
+    let (measured, _) = measure_file(&state, &Arc::from("fs_qc"), &frame, &map, &rules).unwrap();
+    let read = measured[0]
+        .phenotype
+        .as_ref()
+        .expect("a phenotype rule is measured across markers");
+    // Every f32 column: the two axes and the marker.
+    assert_eq!(read.markers.len(), 3, "{:?}", read.markers);
 }

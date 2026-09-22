@@ -512,18 +512,25 @@ impl Rule {
     /// Score a result this rule's own way, for a threshold arrived at by some
     /// other means than [`Rule::solve`] - sliding the gate until it captures
     /// the right fraction, say.
+    ///
+    /// `None` for a rule that never produces a threshold. That is the
+    /// phenotype rule, which is judged on what it matched rather than on where
+    /// a line went - see `confidence::assess_match`. Returning an `Option`
+    /// rather than some stand-in score is deliberate: a number on the same
+    /// scale as the others, arrived at from different evidence, would be
+    /// compared with them.
     pub fn assess(
         &self,
         threshold: &Threshold,
         reference_x: Option<f64>,
-    ) -> crate::gate_rules::confidence::Confidence {
-        match self {
+    ) -> Option<crate::gate_rules::confidence::Confidence> {
+        Some(match self {
             Rule::TailFraction(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
-            Rule::MatchThePhenotype(r) => r.confidence.assess(threshold, reference_x),
-        }
+            Rule::MatchThePhenotype(_) => return None,
+        })
     }
 
     pub fn solve(&self, values: &[f64]) -> Result<Threshold, SolveError> {
@@ -685,8 +692,6 @@ pub struct PhenotypeRule {
     /// shape is kept.
     #[serde(default = "two_dozen")]
     pub vertices: usize,
-    #[serde(default)]
-    pub confidence: CountAndSeparation,
 }
 
 fn ninety_five() -> f64 {
@@ -724,7 +729,6 @@ impl Default for PhenotypeRule {
             keep: ninety_five(),
             smoothing: one(),
             vertices: two_dozen(),
-            confidence: CountAndSeparation::default(),
         }
     }
 }

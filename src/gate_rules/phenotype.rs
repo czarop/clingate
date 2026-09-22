@@ -58,6 +58,75 @@
 
 use std::sync::Arc;
 
+/// A population as a matrix: `markers` values per event, row-major.
+///
+/// A borrowed flat slice rather than a `Vec<Vec<_>>`. A panel of thirty
+/// markers over forty thousand events is more than a million numbers, and a
+/// vector per event would add its own header to each one - more memory in
+/// bookkeeping than in data, scattered across the heap for a workload that
+/// reads every value in order.
+///
+/// `f32` because that is what an FCS file holds and what polars hands back, so
+/// there is nothing to convert and no precision to lose. The arithmetic below
+/// accumulates in `f64`.
+#[derive(Clone, Copy, Debug)]
+pub struct Rows<'a> {
+    values: &'a [f32],
+    markers: usize,
+}
+
+impl<'a> Rows<'a> {
+    /// `values` must hold a whole number of rows of `markers`.
+    pub fn new(values: &'a [f32], markers: usize) -> Option<Self> {
+        if markers == 0 || values.len() % markers != 0 {
+            return None;
+        }
+        Some(Self { values, markers })
+    }
+
+    pub fn markers(&self) -> usize {
+        self.markers
+    }
+
+    /// How many events.
+    pub fn len(&self) -> usize {
+        self.values.len() / self.markers
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn row(&self, at: usize) -> &'a [f32] {
+        &self.values[at * self.markers..(at + 1) * self.markers]
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
+        self.values.chunks_exact(self.markers)
+    }
+
+    /// One marker's values across every event.
+    pub fn column(&self, marker: usize) -> impl Iterator<Item = f64> + '_ {
+        self.values
+            .iter()
+            .skip(marker)
+            .step_by(self.markers)
+            .map(|v| *v as f64)
+    }
+
+    /// Only the rows at `keep`, copied out.
+    ///
+    /// Used where a subset has to outlive the borrow - the reference gate's
+    /// members, which are chosen from the parent and then described.
+    pub fn select(&self, keep: &[usize]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(keep.len() * self.markers);
+        for at in keep {
+            out.extend_from_slice(self.row(*at));
+        }
+        out
+    }
+}
+
 /// The markers a phenotype is measured in, and where a population sits in them.
 ///
 /// Both the centre and the spread are needed. A population is not a point: it
@@ -182,27 +251,24 @@ impl Baseline {
 }
 
 /// The baseline for every marker of one sample's parent population.
-///
-/// `rows` is one row per event, each holding the markers in a fixed order.
-pub fn baselines(rows: &[Vec<f64>], markers: usize) -> Vec<Baseline> {
-    (0..markers)
-        .map(|at| {
-            let column: Vec<f64> = rows.iter().filter_map(|row| row.get(at).copied()).collect();
-            Baseline::of(&column)
-        })
+pub fn baselines(rows: Rows<'_>) -> Vec<Baseline> {
+    (0..rows.markers())
+        .map(|at| Baseline::of(&rows.column(at).collect::<Vec<_>>()))
         .collect()
 }
 
-/// Put a population into robust-z space against its parent's baselines.
-pub fn to_z(rows: &[Vec<f64>], baselines: &[Baseline]) -> Vec<Vec<f64>> {
-    rows.iter()
-        .map(|row| {
-            row.iter()
-                .zip(baselines.iter())
-                .map(|(value, base)| base.z(*value))
-                .collect()
-        })
-        .collect()
+/// Put one event into robust-z space, into a buffer the caller reuses.
+///
+/// Into a buffer rather than returning a vector, because this runs once per
+/// event of every parent population: allocating a row each time would be the
+/// dominant cost of scoring a sample.
+pub fn z_into(row: &[f32], baselines: &[Baseline], out: &mut Vec<f64>) {
+    out.clear();
+    out.extend(
+        row.iter()
+            .zip(baselines.iter())
+            .map(|(value, base)| base.z(*value as f64)),
+    );
 }
 
 fn median_of(values: &[f64]) -> f64 {
@@ -223,7 +289,7 @@ fn median_of_mut(values: &mut [f64]) -> f64 {
     }
 }
 
-/// The mean of each column.
+/// The mean of each marker, over a population already in z space.
 fn centre_of(rows: &[Vec<f64>], markers: usize) -> Vec<f64> {
     let mut centre = vec![0.0; markers];
     if rows.is_empty() {
@@ -364,17 +430,23 @@ impl Signature {
     /// population they were gated out of, both as raw marker values in the same
     /// column order. The parent is what the members are measured against - see
     /// the module comment - so it has to be the same sample's.
-    pub fn describe(
-        markers: Vec<Arc<str>>,
-        members: &[Vec<f64>],
-        parent: &[Vec<f64>],
-    ) -> Option<Self> {
+    pub fn describe(markers: Vec<Arc<str>>, members: Rows<'_>, parent: Rows<'_>) -> Option<Self> {
         let n = markers.len();
-        if n == 0 || members.is_empty() {
+        if n == 0 || n != members.markers() || n != parent.markers() || members.is_empty() {
             return None;
         }
-        let baselines = baselines(parent, n);
-        let z = to_z(members, &baselines);
+        let baselines = baselines(parent);
+        // The members are held in z space because both the centre and the
+        // covariance need a second pass over them. A parent is only ever
+        // streamed, and is not.
+        let mut buffer = Vec::with_capacity(n);
+        let z: Vec<Vec<f64>> = members
+            .rows()
+            .map(|row| {
+                z_into(row, &baselines, &mut buffer);
+                buffer.clone()
+            })
+            .collect();
         let centre = centre_of(&z, n);
         let mut spread = covariance(&z, n, &centre);
         // What the baseline cannot resolve, added to what the population's own
@@ -416,17 +488,30 @@ impl Signature {
     ///
     /// The parent is baselined against itself, so this sample is measured in
     /// its own frame and nothing is rescaled across samples.
-    pub fn find_in(&self, parent: &[Vec<f64>]) -> Matched {
+    ///
+    /// Streamed: each event is put into z space in a reused buffer and scored,
+    /// so the whole parent is never held in a second representation.
+    pub fn find_in(&self, parent: Rows<'_>) -> Matched {
         let n = self.markers.len();
-        let baselines = baselines(parent, n);
-        let z = to_z(parent, &baselines);
-        let distances: Vec<f64> = z.iter().map(|row| distance_squared(self, row)).collect();
-        let members: Vec<usize> = distances
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| **d <= self.cut)
-            .map(|(at, _)| at)
-            .collect();
+        if n != parent.markers() {
+            return Matched {
+                members: Vec::new(),
+                distances: Vec::new(),
+                parent: parent.len(),
+            };
+        }
+        let baselines = baselines(parent);
+        let mut buffer = Vec::with_capacity(n);
+        let mut distances = Vec::with_capacity(parent.len());
+        let mut members = Vec::new();
+        for (at, row) in parent.rows().enumerate() {
+            z_into(row, &baselines, &mut buffer);
+            let distance = distance_squared(self, &buffer);
+            if distance <= self.cut {
+                members.push(at);
+            }
+            distances.push(distance);
+        }
         Matched {
             members,
             distances,

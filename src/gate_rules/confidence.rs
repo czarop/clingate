@@ -89,6 +89,11 @@ pub const STABILITY: &str = "stability of the gate's contents";
 pub const BAND: &str = "rule satisfied";
 pub const DISPLACEMENT: &str = "distance moved from the reference";
 pub const VALLEY: &str = "depth of the valley it sat in";
+pub const MATCHED: &str = "events matching the phenotype";
+pub const PURITY: &str = "how much else the gate holds";
+pub const CAUGHT: &str = "how much of the population the gate holds";
+pub const ONE_CLOUD: &str = "whether the matched cells form one cloud";
+pub const ABUNDANCE: &str = "how common the population is, against the reference";
 
 /// Where each component stops being a concern.
 ///
@@ -296,4 +301,134 @@ fn displacement_detail(t: &Threshold, reference: f64) -> String {
         reference,
         (t.x - reference).abs() / t.parent_spread
     )
+}
+
+// ─── The model a phenotype rule is judged on ─────────────────────────────────
+
+/// What a phenotype rule found, as the scorer needs it.
+///
+/// Its own model rather than [`Threshold`]: that describes a cut along one
+/// axis - where it sits, what it admits, how a nudge changes it - and none of
+/// those exist here. A rule that identifies cells and draws a boundary round
+/// them is trustworthy or not for entirely different reasons, and squeezing it
+/// into the other shape would produce a number that looked comparable and was
+/// not.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MatchEvidence {
+    /// Events matching the phenotype, and the parent they came from.
+    pub matched: usize,
+    pub parent: usize,
+    /// The same on the reference, for comparing how common the population is.
+    pub reference_matched: usize,
+    pub reference_parent: usize,
+    /// The fraction of what the fitted gate holds that is the population.
+    pub purity: f64,
+    /// The fraction of the population the fitted gate holds.
+    pub caught: f64,
+    /// How many separate clouds the matched cells formed.
+    pub pieces: usize,
+}
+
+/// How far the abundance may differ from the reference's before it counts
+/// against the placement.
+///
+/// A population really does vary between donors - that is the thing being
+/// measured - so a factor of three either way is not evidence of anything. A
+/// hundredfold difference is: either the population is not there, or the
+/// signature has matched something else.
+const ABUNDANCE_TOLERANCE: f64 = 3.0;
+
+/// Judge a phenotype rule's placement.
+pub fn assess_match(found: MatchEvidence) -> Confidence {
+    let mut components = Vec::new();
+
+    // The same scarce-side count rule the threshold rules use: what limits a
+    // measurement is whichever side of the boundary has fewer events.
+    components.push(Component::new(
+        MATCHED,
+        admitted_count_score(found.matched, found.parent),
+        format!("{} of {} events matched", found.matched, found.parent),
+    ));
+
+    // Purity and catch are already fractions of exactly the thing being
+    // asked about, so they are their own scores. Purity low is not a fault in
+    // the fitting - it is the population not being separated on these two
+    // axes, which is the honest reason to distrust the gate.
+    components.push(Component::new(
+        PURITY,
+        if found.purity.is_finite() {
+            found.purity
+        } else {
+            0.0
+        },
+        format!(
+            "{:.0}% of what the gate holds is the population",
+            found.purity * 100.0
+        ),
+    ));
+    components.push(Component::new(
+        CAUGHT,
+        if found.caught.is_finite() {
+            found.caught
+        } else {
+            0.0
+        },
+        format!(
+            "the gate holds {:.0}% of the population",
+            found.caught * 100.0
+        ),
+    ));
+
+    // Two clouds means one outline cannot describe them, whichever is drawn.
+    components.push(Component::new(
+        ONE_CLOUD,
+        match found.pieces {
+            0 => 0.0,
+            1 => 1.0,
+            n => 1.0 / n as f64,
+        },
+        match found.pieces {
+            1 => "the matched cells form one cloud".to_string(),
+            n => format!("the matched cells form {n} separate clouds"),
+        },
+    ));
+
+    components.push(abundance(found));
+    Confidence::from_components(components)
+}
+
+/// How this sample's abundance compares with the reference's.
+///
+/// Scored on the ratio rather than the difference, because a population at 5%
+/// and one at 0.05% differ by a hundredfold whichever way round they are, and
+/// the same five percentage points between 40% and 45% mean nothing.
+fn abundance(found: MatchEvidence) -> Component {
+    let here = fraction(found.matched, found.parent);
+    let there = fraction(found.reference_matched, found.reference_parent);
+    if !(here > 0.0) || !(there > 0.0) {
+        return Component::new(
+            ABUNDANCE,
+            0.0,
+            "one of the two samples matched nothing, so there is nothing to compare",
+        );
+    }
+    let ratio = (here / there).max(there / here);
+    // 1 at equal, falling through a half at the tolerance and on from there.
+    let score = 1.0 / (1.0 + (ratio - 1.0).max(0.0) / (ABUNDANCE_TOLERANCE - 1.0));
+    Component::new(
+        ABUNDANCE,
+        score,
+        format!(
+            "{:.3}% here against {:.3}% on the reference",
+            here * 100.0,
+            there * 100.0
+        ),
+    )
+}
+
+fn fraction(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    part as f64 / whole as f64
 }

@@ -30,11 +30,26 @@ impl Cloud {
         a + b - 1.0
     }
 
-    fn around(&mut self, centre: &[f64], spread: f64, n: usize) -> Vec<Vec<f64>> {
-        (0..n)
-            .map(|_| centre.iter().map(|c| c + self.next() * spread).collect())
-            .collect()
+    /// A cloud as the flat row-major matrix the code takes.
+    fn around(&mut self, centre: &[f64], spread: f64, n: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(n * centre.len());
+        for _ in 0..n {
+            for c in centre {
+                out.push((c + self.next() * spread) as f32);
+            }
+        }
+        out
     }
+}
+
+/// A matrix view over a flat cloud.
+fn rows(values: &[f32], markers: usize) -> Rows<'_> {
+    Rows::new(values, markers).expect("a whole number of rows")
+}
+
+/// One marker's column, for the tests that read values back.
+fn column(values: &[f32], markers: usize, marker: usize) -> Vec<f64> {
+    rows(values, markers).column(marker).collect()
 }
 
 // ── the arithmetic ───────────────────────────────────────────────────────
@@ -130,11 +145,15 @@ fn a_population_finds_itself() {
     let mut rng = Cloud(1);
     let mut parent = rng.around(&[0.0, 0.0, 0.0], 1.0, 800);
     let population = rng.around(&[6.0, 0.0, -4.0], 0.4, 120);
-    parent.extend(population.clone());
+    parent.extend_from_slice(&population);
 
-    let signature = Signature::describe(markers(&["a", "b", "c"]), &population, &parent)
-        .expect("a signature can be described");
-    let found = signature.find_in(&parent);
+    let signature = Signature::describe(
+        markers(&["a", "b", "c"]),
+        rows(&population, 3),
+        rows(&parent, 3),
+    )
+    .expect("a signature can be described");
+    let found = signature.find_in(rows(&parent, 3));
 
     // Every member should be found, and few others.
     assert!(
@@ -157,27 +176,31 @@ fn a_population_is_found_where_the_whole_panel_moved() {
     let mut rng = Cloud(2);
     let mut reference = rng.around(&[0.0, 0.0, 0.0], 1.0, 800);
     let population = rng.around(&[6.0, 0.0, -4.0], 0.4, 120);
-    reference.extend(population.clone());
-    let signature =
-        Signature::describe(markers(&["a", "b", "c"]), &population, &reference).expect("described");
+    reference.extend_from_slice(&population);
+    let signature = Signature::describe(
+        markers(&["a", "b", "c"]),
+        rows(&population, 3),
+        rows(&reference, 3),
+    )
+    .expect("described");
 
     // The same structure, shifted and stretched as a different donor's would be.
-    let shift = [3.0, -2.0, 1.5];
-    let stretch = 1.6;
-    let moved = |rows: &[Vec<f64>]| -> Vec<Vec<f64>> {
-        rows.iter()
-            .map(|row| {
+    let shift = [3.0f32, -2.0, 1.5];
+    let stretch = 1.6f32;
+    let moved = |flat: &[f32]| -> Vec<f32> {
+        flat.chunks_exact(3)
+            .flat_map(|row| {
                 row.iter()
                     .zip(shift.iter())
                     .map(|(v, s)| v * stretch + s)
-                    .collect()
+                    .collect::<Vec<f32>>()
             })
             .collect()
     };
     let sample = moved(&reference);
-    let expected: Vec<Vec<f64>> = moved(&population);
+    let expected = moved(&population);
 
-    let found = signature.find_in(&sample);
+    let found = signature.find_in(rows(&sample, 3));
     assert!(
         found.members.len() >= 100,
         "found only {} of 120 after the panel moved",
@@ -185,8 +208,13 @@ fn a_population_is_found_where_the_whole_panel_moved() {
     );
     // And they are the right cells: the members sit where the moved population
     // does, not where the background does.
-    let centre = expected[0][0];
-    let matched_first: Vec<f64> = found.members.iter().map(|at| sample[*at][0]).collect();
+    let centre = expected[0] as f64;
+    let sample_rows = rows(&sample, 3);
+    let matched_first: Vec<f64> = found
+        .members
+        .iter()
+        .map(|at| sample_rows.row(*at)[0] as f64)
+        .collect();
     let mean = matched_first.iter().sum::<f64>() / matched_first.len() as f64;
     assert!(
         (mean - centre).abs() < 3.0,
@@ -202,15 +230,19 @@ fn a_rarer_population_is_still_found() {
     let mut rng = Cloud(3);
     let mut reference = rng.around(&[0.0, 0.0, 0.0], 1.0, 930);
     let population = rng.around(&[6.0, 0.0, -4.0], 0.4, 70);
-    reference.extend(population.clone());
-    let signature =
-        Signature::describe(markers(&["a", "b", "c"]), &population, &reference).expect("described");
+    reference.extend_from_slice(&population);
+    let signature = Signature::describe(
+        markers(&["a", "b", "c"]),
+        rows(&population, 3),
+        rows(&reference, 3),
+    )
+    .expect("described");
 
     let mut sample = rng.around(&[0.0, 0.0, 0.0], 1.0, 990);
     let rare = rng.around(&[6.0, 0.0, -4.0], 0.4, 10);
-    sample.extend(rare);
+    sample.extend_from_slice(&rare);
 
-    let found = signature.find_in(&sample);
+    let found = signature.find_in(rows(&sample, 3));
     assert!(
         found.members.len() >= 8,
         "found only {} of 10",
@@ -231,13 +263,17 @@ fn a_population_that_is_not_there_matches_almost_nothing() {
     let mut rng = Cloud(4);
     let mut reference = rng.around(&[0.0, 0.0, 0.0], 1.0, 800);
     let population = rng.around(&[6.0, 0.0, -4.0], 0.4, 120);
-    reference.extend(population.clone());
-    let signature =
-        Signature::describe(markers(&["a", "b", "c"]), &population, &reference).expect("described");
+    reference.extend_from_slice(&population);
+    let signature = Signature::describe(
+        markers(&["a", "b", "c"]),
+        rows(&population, 3),
+        rows(&reference, 3),
+    )
+    .expect("described");
 
     // Background only.
     let sample = rng.around(&[0.0, 0.0, 0.0], 1.0, 900);
-    let found = signature.find_in(&sample);
+    let found = signature.find_in(rows(&sample, 3));
     assert!(
         found.fraction() < 0.02,
         "matched {:.1}% of a sample with no such population",
@@ -247,8 +283,8 @@ fn a_population_that_is_not_there_matches_almost_nothing() {
 
 #[test]
 fn a_signature_needs_members() {
-    let parent = vec![vec![0.0, 0.0]; 10];
-    assert!(Signature::describe(markers(&["a", "b"]), &[], &parent).is_none());
+    let parent = vec![0.0f32; 20];
+    assert!(Signature::describe(markers(&["a", "b"]), rows(&[], 2), rows(&parent, 2)).is_none());
 }
 
 #[test]
@@ -257,7 +293,8 @@ fn a_signature_remembers_how_many_cells_described_it() {
     let parent = rng.around(&[0.0, 0.0], 1.0, 200);
     let population = rng.around(&[3.0, 3.0], 0.3, 17);
     let signature =
-        Signature::describe(markers(&["a", "b"]), &population, &parent).expect("described");
+        Signature::describe(markers(&["a", "b"]), rows(&population, 2), rows(&parent, 2))
+            .expect("described");
     assert_eq!(signature.members, 17);
 }
 
@@ -317,8 +354,8 @@ fn how_common_the_population_is_does_not_move_where_it_sits() {
         let total = 2000;
         let members = (total as f64 * fraction) as usize;
         let mut parent = rng.around(&[0.0], 1.0, total - members);
-        parent.extend(rng.around(&[6.0], 0.4, members));
-        let base = &baselines(&parent, 1)[0];
+        parent.extend_from_slice(&rng.around(&[6.0], 0.4, members));
+        let base = &baselines(rows(&parent, 1))[0];
         base.z(6.0)
     };
 
@@ -341,8 +378,8 @@ fn an_untrimmed_baseline_would_have_moved_it() {
         let total = 2000;
         let members = (total as f64 * fraction) as usize;
         let mut parent = rng.around(&[0.0], 1.0, total - members);
-        parent.extend(rng.around(&[6.0], 0.4, members));
-        let mut column: Vec<f64> = parent.iter().map(|r| r[0]).collect();
+        parent.extend_from_slice(&rng.around(&[6.0], 0.4, members));
+        let mut column = column(&parent, 1, 0);
         column.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = column[column.len() / 2];
         let mut deviations: Vec<f64> = column.iter().map(|v| (v - median).abs()).collect();
