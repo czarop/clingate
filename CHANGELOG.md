@@ -193,6 +193,10 @@
   newer covers. A save names a grouping column only when grouping by it gives
   every sample its position; otherwise it writes the positions sample by
   sample, so reopening the file shows exactly what was saved.
+  The same holds between a sample's own position and its specimen's: whichever
+  was set last applies. A rules run used to be hidden from any sample that
+  had been adjusted by hand (or had its own position in the gating file),
+  while its report said the sample had been moved.
 
 - **A rules run never writes to a workspace it did not measure.** A run
   carries on while another tab is in front, and one that finished after the

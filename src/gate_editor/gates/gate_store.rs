@@ -99,16 +99,20 @@ pub struct GateSubStore {
     pub primary_and_subgate_registry: GateMap,
     pub sample_position_overrides: SampleGateMap,
     pub group_position_overrides: GroupGateMap,
-    /// When each per-group position was written, as a count of writes: the
-    /// larger, the more recent. See [`GateSubStore::newest_group_position`].
+    /// When each per-group and per-sample position was written, as a count
+    /// of writes: the larger, the more recent. See
+    /// [`GateSubStore::position_for`].
     ///
-    /// Kept beside the map rather than in it so everything that reads a
-    /// position - filtering, drawing, the export - keeps reading the map it
+    /// Kept beside the maps rather than in them so everything that reads a
+    /// position - filtering, drawing, the export - keeps reading the maps it
     /// always has. Written only by [`GateSubStore::set_group_position`] and
-    /// trimmed only by [`GateSubStore::retain_group_positions`], so the two
-    /// cannot drift.
+    /// [`GateSubStore::set_sample_position`], trimmed only by the matching
+    /// `retain_` methods, so they cannot drift from the maps.
     group_written: FxHashMap<(GateId, MetaDataKey), u64>,
-    group_writes: u64,
+    sample_written: FxHashMap<(GateId, FileId), u64>,
+    /// One count for both tiers, so a per-sample position and a per-group
+    /// one can be told apart by age.
+    writes: u64,
 }
 
 /// The plain-data half of the gate store.
@@ -119,9 +123,75 @@ pub struct GateSubStore {
 impl GateSubStore {
     /// Write one per-group position, as the newest.
     pub fn set_group_position(&mut self, key: (GateId, MetaDataKey), gate: Arc<dyn DrawableGate>) {
-        self.group_writes += 1;
-        self.group_written.insert(key.clone(), self.group_writes);
+        self.writes += 1;
+        self.group_written.insert(key.clone(), self.writes);
         self.group_position_overrides.insert(key, gate);
+    }
+
+    /// Write one per-sample position, as the newest.
+    pub fn set_sample_position(&mut self, key: (GateId, FileId), gate: Arc<dyn DrawableGate>) {
+        self.writes += 1;
+        self.sample_written.insert(key.clone(), self.writes);
+        self.sample_position_overrides.insert(key, gate);
+    }
+
+    /// Drop every per-sample position `keep` says no to.
+    pub fn retain_sample_positions(&mut self, mut keep: impl FnMut(&(GateId, FileId)) -> bool) {
+        self.sample_position_overrides.retain(|key, _| keep(key));
+        self.sample_written.retain(|key, _| keep(key));
+    }
+
+    /// Where `gate_id` sits for one file: of the file's own position and the
+    /// newest position of any group it is in, whichever was written last -
+    /// or `None`, for the gate's global position.
+    ///
+    /// The one rule every reader follows: the plots, the filtering and the
+    /// statistics through [`GateState::get_current_sample`], the export through
+    /// [`GateState::gate_for_file`]. A file's own position used to win
+    /// whatever its age, so a rules run - which positions a whole specimen -
+    /// was hidden from any file of it that had been given a position of its
+    /// own, while the report said it had been positioned (B-GRP-2). Now the
+    /// last position written applies, whichever kind it is: a run beats an
+    /// older adjustment on one sample, and a later adjustment beats the run.
+    ///
+    /// Positions of equal age - only possible when they were put straight
+    /// into the maps rather than through the `set_` methods - go to the
+    /// file's own, as they always did.
+    pub fn position_for<'a>(
+        &self,
+        gate_id: &GateId,
+        file_id: &FileId,
+        groups: impl IntoIterator<Item = (&'a MetaDataParameter, &'a GroupId)>,
+    ) -> Option<(GateSource, &Arc<dyn DrawableGate>)> {
+        let own_key = (gate_id.clone(), file_id.clone());
+        let own = self.sample_position_overrides.get(&own_key).map(|gate| {
+            let written = self.sample_written.get(&own_key).copied().unwrap_or(0);
+            (written, gate)
+        });
+        let group = self
+            .newest_group_position(gate_id, groups)
+            .map(|(key, gate)| {
+                let written = self
+                    .group_written
+                    .get(&(gate_id.clone(), key.clone()))
+                    .copied()
+                    .unwrap_or(0);
+                (written, key, gate)
+            });
+        match (own, group) {
+            (Some((own_at, own)), Some((group_at, key, group))) => {
+                if group_at > own_at {
+                    Some((GateSource::Group((gate_id.clone(), key)), group))
+                } else {
+                    Some((GateSource::Sample(own_key), own))
+                }
+            }
+            (Some((_, own)), None) => Some((GateSource::Sample(own_key), own)),
+            (None, Some((_, key, group))) => {
+                Some((GateSource::Group((gate_id.clone(), key)), group))
+            }
+            (None, None) => None,
+        }
     }
 
     /// Drop every per-group position `keep` says no to.
@@ -228,8 +298,7 @@ impl GateSubStore {
                     self.set_group_position((id.clone(), group_key.clone()), gate.clone());
                 }
                 GateSource::Sample((_, file_id)) => {
-                    self.sample_position_overrides
-                        .insert((id.clone(), file_id.clone()), gate.clone());
+                    self.set_sample_position((id.clone(), file_id.clone()), gate.clone());
                 }
             }
         }
@@ -740,8 +809,7 @@ impl GateState {
             .primary_and_subgate_registry
             .retain(|id, _| !dropped.contains(id));
         self.gate_store
-            .sample_position_overrides
-            .retain(|(id, _file), _| !dropped.contains(id));
+            .retain_sample_positions(|(id, _file)| !dropped.contains(id));
         self.gate_store
             .retain_group_positions(|(id, _group)| !dropped.contains(id));
         self.omiq_rebuild
@@ -1219,10 +1287,11 @@ impl GateState {
             .contains_key(gate_id)
     }
 
-    /// The gate that applies to one sample: a per-sample override wins, then a
-    /// per-group override, then the global position.
+    /// The gate that applies to one sample: the more recently written of its
+    /// own position and its groups' (see [`GateSubStore::position_for`]), else
+    /// the global position.
     ///
-    /// The same precedence `get_current_sample` uses, for one gate rather than
+    /// The same rule `get_current_sample` uses, for one gate rather than
     /// all of them - the export needs it per file when writing `perFileFilters`.
     pub fn gate_for_file(
         &self,
@@ -1230,18 +1299,8 @@ impl GateState {
         file_id: &FileId,
         metadata: &crate::omiq::metadata::MetaDataFileMap,
     ) -> Option<Arc<dyn DrawableGate>> {
-        if let Some(gate) = self
-            .gate_store
-            .sample_position_overrides
-            .get(&(gate_id.clone(), file_id.clone()))
-        {
-            return Some(gate.clone());
-        }
-
-        if let Some((_, gate)) = metadata
-            .get(file_id)
-            .and_then(|groups| self.gate_store.newest_group_position(gate_id, groups))
-        {
+        let groups = metadata.get(file_id).into_iter().flatten();
+        if let Some((_, gate)) = self.gate_store.position_for(gate_id, file_id, groups) {
             return Some(gate.clone());
         }
 
@@ -1510,8 +1569,7 @@ impl GateState {
         // Drop the position overrides for every gate that went, not just the one
         // that was asked for.
         self.gate_store
-            .sample_position_overrides
-            .retain(|(gid, _file_id), _| !gates_to_delete.contains(gid));
+            .retain_sample_positions(|(gid, _file_id)| !gates_to_delete.contains(gid));
         self.gate_store
             .retain_group_positions(|(gid, _group_id)| !gates_to_delete.contains(gid));
 
@@ -1699,8 +1757,9 @@ impl GateState {
 }
 
 impl GateState {
-    /// Resolve every gate for one sample: a per-sample override wins, then a
-    /// per-group override, then the global position.
+    /// Resolve every gate for one sample: the more recently written of its own
+    /// position and its groups' (see [`GateSubStore::position_for`]), else the
+    /// global position.
     pub fn get_current_sample(
         &self,
         file_id: FileId,
@@ -1714,22 +1773,14 @@ impl GateState {
 
         {
             let registry = &self.gate_store.primary_and_subgate_registry;
-            let sample_overrides = &self.gate_store.sample_position_overrides;
 
             for (default_id, base_arc) in &registry.0 {
-                if let Some((key, s_ovr)) =
-                    sample_overrides.get_key_value(&(default_id.clone(), file_id.clone()))
+                if let Some((source, gate)) = self
+                    .gate_store
+                    .position_for(default_id, &file_id, group_ids)
                 {
-                    active_gates.insert(default_id.clone(), s_ovr.clone().into());
-                    gate_origins.insert(default_id.clone(), GateSource::Sample(key.clone()));
-                } else if let Some((key, g_ovr)) =
-                    self.gate_store.newest_group_position(default_id, group_ids)
-                {
-                    active_gates.insert(default_id.clone(), g_ovr.clone().into());
-                    gate_origins.insert(
-                        default_id.clone(),
-                        GateSource::Group((default_id.clone(), key)),
-                    );
+                    active_gates.insert(default_id.clone(), gate.clone().into());
+                    gate_origins.insert(default_id.clone(), source);
                 } else {
                     active_gates.insert(default_id.clone(), base_arc.clone().into());
                     gate_origins.insert(default_id.clone(), GateSource::Global);
@@ -1968,7 +2019,7 @@ impl GateState {
                         self.gate_store.set_group_position(key, gate);
                     }
                     GateSource::Sample(key) => {
-                        self.gate_store.sample_position_overrides.insert(key, gate);
+                        self.gate_store.set_sample_position(key, gate);
                     }
                 }
             }
@@ -2025,12 +2076,10 @@ impl GateState {
                     }
                     GateSource::Sample(key) => {
                         self.gate_store
-                            .sample_position_overrides
-                            .insert(key.clone(), gate.clone());
+                            .set_sample_position(key.clone(), gate.clone());
                         for sub_id in subgate_ids {
                             self.gate_store
-                                .sample_position_overrides
-                                .insert((sub_id, key.1.clone()), gate.clone());
+                                .set_sample_position((sub_id, key.1.clone()), gate.clone());
                         }
                     }
                 }
@@ -3155,6 +3204,69 @@ mod gate_store_tests {
         state.remove_gate(id.clone()).unwrap();
         assert!(state.group_columns_newest_first(&id).is_empty());
         assert!(state.gate_store.group_written.is_empty());
+        assert!(state.gate_store.sample_written.is_empty());
+    }
+
+    // ── a sample's own position against its group's: the newer applies ─────
+
+    #[test]
+    fn a_group_position_written_after_a_samples_own_applies_to_it() {
+        // A rules run positions the specimen after someone adjusted one of
+        // its samples by hand: the run's answer is what that sample shows.
+        let (mut state, id, groups) = grouped_twice();
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        let run = place(&mut state, &id, "SampleID", "one");
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &run));
+    }
+
+    #[test]
+    fn a_samples_own_position_written_after_its_groups_applies_to_it() {
+        // And an adjustment made after the run beats the run.
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "SampleID", "one");
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &own));
+        // The other samples of the group keep the group's position.
+        let other = state
+            .get_current_sample(file("g"), &groups)
+            .active_gates
+            .get(&id)
+            .unwrap()
+            .0
+            .clone();
+        assert!(!Arc::ptr_eq(&other, &own));
+    }
+
+    #[test]
+    fn the_resolver_names_the_tier_it_resolved_from() {
+        // The editor writes a drag back into this tier, so it must be the one
+        // the position actually came from.
+        let (mut state, id, groups) = grouped_twice();
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        place(&mut state, &id, "SampleID", "one");
+        let resolver = state.get_current_sample(file("f"), &groups);
+        assert_eq!(
+            resolver.gate_origins.get(&id),
+            Some(&GateSource::Group((
+                id.clone(),
+                group_key("SampleID", "one")
+            )))
+        );
     }
 
     // ── GateState::unchanged_since: whether a run's answers still apply ──────
@@ -3320,7 +3432,9 @@ mod gate_store_tests {
         ));
     }
 
-    /// Precedence is sample, then group, then global.
+    /// Written straight into the maps - so of no known age - a sample's own
+    /// position beats its group's, as it always has. Written through the
+    /// store, the newer wins; see the tests after this one.
     #[test]
     fn a_sample_override_beats_a_group_override() {
         let mut state = GateState::default();

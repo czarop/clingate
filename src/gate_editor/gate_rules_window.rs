@@ -2442,15 +2442,13 @@ mod tests {
             );
         }
 
-        /// A run positions a specimen: one position for every file of it, in
-        /// the group tier. A file with a position of its own - a per-file
-        /// filter from the imported document, or a gate dragged on that one
-        /// sample - resolves through the sample tier first, so the run's
-        /// position never reaches it. The report still lists the file as
-        /// positioned, from where it was to where the run put it, beside a
-        /// plot showing neither.
+        /// Was B-GRP-2. A run positions a specimen: one position for every
+        /// file of it, in the group tier. A file with an older position of its
+        /// own - a per-file filter from the imported document, or a gate
+        /// dragged on that one sample - used to resolve through the sample
+        /// tier first, so the run's position never reached it while the
+        /// report listed it as positioned. The newer position now applies.
         #[test]
-        #[ignore = "known bug B-GRP-2: a run reports a file positioned that its own per-sample position hides"]
         fn a_file_the_run_reports_positioned_is_drawn_where_it_was_put() {
             use crate::gate_rules::rule::NegativeFinder;
             let (mut state, id) = positive_gate();
