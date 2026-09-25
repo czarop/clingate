@@ -21,7 +21,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **28 known-bug tests (27 bugs) are pinned as failing tests** (`#[ignore]`d
+- **31 known-bug tests (29 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -48,6 +48,7 @@ to fix first.
 | B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
 | B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
 | B-AX-3 | the same `clamp`, reached from files: `axis_store::read_axis_configs` and the gating import | Nothing checks a scaling file's range is the right way round. A file with Min above Max crashes the app when it replaces the scaling (every quadrant on the channel is relimited) and when a gating file is imported over it | **High** - loading a file crashes the app |
+| B-OMIQ-2 | `GateState::upload_gates_from_file` (the node depth sort) | Walks each node's `parentId` to the root with nothing to notice a node already seen: a gating file in which a node is its own parent never finishes importing - the Workspace tab hangs on "Loading" instead of calling the file damaged | **High** - a damaged file hangs the app |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
@@ -64,6 +65,7 @@ to fix first.
 | B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
 | B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
+| B-HIER-2 | `gate_hierarchy::GateHierarchy::would_create_cycle` (used by `add_child`, `reparent`, `delete_node_keep_children`) | Checks whether the parent is among the child's descendants; a gate is not its own, so a gate can be made its own parent - directly, or by deleting a gate and handing its children to one of them. `get_ancestors` then loops forever. Found by the random edit sequences | Medium - reachable from a damaged file (B-OMIQ-2) |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
@@ -364,3 +366,14 @@ ends `# example().unwrap();`. Run, three failed: `reparent` and
 the functions correctly refuse (the examples were wrong, and now add it);
 `clone_subtree` failed on a real bug, B-HIER-1, and its example is marked
 `ignore` with a pointer here until it is fixed.
+
+### Random edit sequences
+
+`gate_hierarchy_tests::any_sequence_of_edits_leaves_a_valid_tree` runs 2,000
+seeded sequences of 40 random edits - add, reparent, reparent a subtree,
+delete a subtree, delete keeping children, delete - and checks `validate()`
+after every step. It found B-HIER-2 twice: a direct self-edge on the first
+seed, and on seed 21 a 25-step sequence that shrinks (by removing steps while
+it still fails) to two: `add_child(g6, g7); delete_node_keep_children(g6,
+Some(g7))`. Both routes are pinned by the B-HIER-2 test and stepped around
+in the random sequences, which otherwise pass.

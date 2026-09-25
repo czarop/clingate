@@ -187,3 +187,69 @@ fn a_gating_file_imported_over_an_inverted_range_is_an_error_not_a_crash() {
     });
     assert!(outcome.is_ok(), "importing over an inverted range panicked");
 }
+
+/// Import a copy of the fixture with its JSON edited by `edit`, on a thread,
+/// giving up after `seconds`. `None` means it never finished.
+fn import_edited(
+    name: &str,
+    edit: impl FnOnce(&mut serde_json::Value),
+    seconds: u64,
+) -> Option<bool> {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture(FIXTURE)).unwrap()).unwrap();
+    edit(&mut doc);
+    let path = scratch(name).join("edited.omiqgt");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut state = GateState::default();
+        let ok = state
+            .upload_gates_from_file(path, &fixture_metadata(), fixture_axes())
+            .is_ok();
+        let _ = done.send(ok);
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(seconds))
+        .ok()
+}
+
+/// BUG (docs/test-audit.md, B-OMIQ-2): the import sorts nodes by depth by
+/// walking each one's `parentId` up to the root, with nothing to notice a
+/// node it has already seen. A file in which a node is its own parent - or
+/// two are each other's - sends the walk round forever: opening it hangs
+/// the Workspace tab on "Loading" rather than saying the file is damaged.
+/// The hierarchy would then accept the self-edge too (B-HIER-2).
+#[test]
+#[ignore = "known bug B-OMIQ-2: a node that is its own parent hangs the gating import"]
+fn a_gating_file_whose_tree_loops_is_refused_rather_than_hanging() {
+    let outcome = import_edited(
+        "loop",
+        |doc| {
+            let nodes = doc["tree"]["nodes"].as_object_mut().unwrap();
+            let (id, node) = nodes.iter_mut().next().unwrap();
+            node["parentId"] = serde_json::Value::String(id.clone());
+        },
+        10,
+    );
+    assert_eq!(
+        outcome,
+        Some(false),
+        "the import never finished (None) or accepted it"
+    );
+}
+
+#[test]
+fn a_gating_file_naming_a_parent_it_does_not_contain_still_opens() {
+    // The comment in the depth sort says this "shouldn't happen with clean
+    // data"; what happens if it does is that it finishes, rather than hangs.
+    let outcome = import_edited(
+        "orphan",
+        |doc| {
+            let nodes = doc["tree"]["nodes"].as_object_mut().unwrap();
+            let (_, node) = nodes.iter_mut().next().unwrap();
+            node["parentId"] = serde_json::Value::String("not-a-node".into());
+        },
+        10,
+    );
+    assert!(outcome.is_some(), "the import never finished");
+}

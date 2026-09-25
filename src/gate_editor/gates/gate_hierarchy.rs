@@ -1370,7 +1370,94 @@ mod gate_hierarchy_tests {
             cloned.get_parent("grandchild_copy").map(|p| p.as_ref()),
             Some("child_copy")
         );
-        assert!(cloned.get_parent("child").is_none(), "the originals are not copied");
+        assert!(
+            cloned.get_parent("child").is_none(),
+            "the originals are not copied"
+        );
+    }
+
+    /// BUG (docs/test-audit.md, B-HIER-2): `would_create_cycle` asks whether
+    /// the new parent is among the child's descendants, and a gate is not its
+    /// own descendant - so a gate can be made its own parent, by `add_child`
+    /// or by `reparent`. Walking up from it (`get_ancestors`, every gate
+    /// chain) then never ends.
+    #[test]
+    #[ignore = "known bug B-HIER-2: a gate can be made its own parent"]
+    fn a_gate_cannot_be_its_own_parent() {
+        let mut h = GateHierarchy::new();
+        assert!(!h.add_child("g", "g", 0), "add_child accepted a self-edge");
+        h.add_child("root", "a", 0);
+        assert!(
+            h.reparent("a", "a").is_err(),
+            "reparent accepted a self-edge"
+        );
+        assert!(h.validate().is_ok());
+
+        // The same gap, reached by deleting a gate and handing its children
+        // to one of those children - found by the random sequences below.
+        let mut h = GateHierarchy::new();
+        h.add_child("g6", "g7", 0);
+        let _ = h.delete_node_keep_children("g6", Some(Arc::from("g7")));
+        assert!(h.validate().is_ok(), "g7 was made its own parent");
+    }
+
+    /// Random sequences of every editing operation, checked after each step:
+    /// the tree must stay valid - no cycles, every child's parent entry
+    /// agreeing with its parent's child list - whatever order the edits
+    /// come in. Seeded, so a failure names the sequence that caused it.
+    #[test]
+    fn any_sequence_of_edits_leaves_a_valid_tree() {
+        use rand::prelude::*;
+        let names: Vec<String> = (0..12).map(|i| format!("g{i}")).collect();
+        for seed in 0..2_000u64 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut h = GateHierarchy::new();
+            let mut log = Vec::new();
+            for _ in 0..40 {
+                let a = names[rng.random_range(0..names.len())].clone();
+                let b = names[rng.random_range(0..names.len())].clone();
+                if a == b {
+                    // A self-edge is B-HIER-2, pinned on its own above;
+                    // skipped here so the sequences can find anything else.
+                    continue;
+                }
+                let step = match rng.random_range(0..6) {
+                    0 => {
+                        h.add_child(a.as_str(), b.as_str(), rng.random_range(0..5));
+                        format!("add_child({a}, {b})")
+                    }
+                    1 => {
+                        let _ = h.reparent(b.as_str(), a.as_str());
+                        format!("reparent({b}, {a})")
+                    }
+                    2 => {
+                        let _ = h.reparent_subtree(b.as_str(), a.as_str());
+                        format!("reparent_subtree({b}, {a})")
+                    }
+                    3 => {
+                        h.delete_subtree(&a);
+                        format!("delete_subtree({a})")
+                    }
+                    4 => {
+                        if h.get_children(&a).iter().any(|c| c.as_ref() == b) {
+                            // Handing a gate's children to one of them is
+                            // B-HIER-2 again; pinned above.
+                            continue;
+                        }
+                        let _ = h.delete_node_keep_children(&a, Some(Arc::from(b.as_str())));
+                        format!("delete_node_keep_children({a}, Some({b}))")
+                    }
+                    _ => {
+                        let _ = h.delete_node(&a);
+                        format!("delete_node({a})")
+                    }
+                };
+                log.push(step);
+                if let Err(e) = h.validate() {
+                    panic!("seed {seed}: {e}\nafter: {}", log.join(", "));
+                }
+            }
+        }
     }
 
     #[test]
