@@ -303,7 +303,10 @@ pictures by the addresses of the gates they depend on.
 
 **Found.** B-AX-1 and B-AX-2, from reading `main_window`'s limit handlers
 against the quadrant relimit. The handlers also print errors to stdout
-rather than showing them.
+rather than showing them. The sidebar's context menu offers *Rename*, whose
+handler is empty - choosing it does nothing - and its Delete and
+Add NOT/AND/OR items report a failure only with `println!`, so a refused
+edit looks to the person like one that was ignored.
 
 **Added.** `data_helpers`: plotted points skip incomplete events and keep
 their order, a missing column is an error, the event index covers the two
