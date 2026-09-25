@@ -183,6 +183,13 @@
 
 ### Fixed
 
+- **The PDF contact sheet says when a plot could not be drawn.** A paired
+  file that failed to render, or had no row in the metadata, was printed as
+  "no paired file" - the QC record said the specimen had no such file - and
+  the export reported success. Such a slot is now framed like a plot, names
+  the file and says why it could not be drawn, and the message after export
+  lists them.
+
 - **The most recent per-specimen position is the one that applies.** A gate
   can be positioned per group under more than one metadata column - the
   gating file groups it by one, a rules run by the pairing's Sample ID

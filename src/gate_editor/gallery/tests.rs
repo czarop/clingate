@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::cache::{Fingerprint, PlotCache};
 use super::overlay::{Flat, flatten};
-use super::pdf::{Drawn, Sheet, write_pdf};
+use super::pdf::{Cell, Drawn, Sheet, write_pdf};
 use super::render::PlotImage;
 use crate::gate_editor::AxisInfo;
 use crate::gate_editor::gates::GateState;
@@ -275,7 +275,7 @@ fn sheet(title: &str) -> Sheet {
     Sheet {
         title: title.to_string(),
         slots: vec![
-            Some(Drawn {
+            Cell::Drawn(Drawn {
                 name: format!("{title} FMX"),
                 jpeg: tiny_jpeg(),
                 shapes: flatten(
@@ -291,7 +291,7 @@ fn sheet(title: &str) -> Sheet {
                 ),
                 rendered_at: 600.0,
             }),
-            None,
+            Cell::NoFile,
         ],
     }
 }
@@ -344,7 +344,7 @@ fn a_bracket_in_a_name_does_not_end_the_string() {
 fn a_run_with_no_plots_still_writes_a_page() {
     let empty = Sheet {
         title: "D1".to_string(),
-        slots: vec![None, None],
+        slots: vec![Cell::NoFile, Cell::NoFile],
     };
     let bytes = write_pdf("x", &[empty]).expect("wrote");
     assert!(String::from_utf8_lossy(&bytes).contains("/Count 1"));
@@ -423,13 +423,13 @@ fn a_real_gallery_page_renders_and_writes() {
     let sheets = vec![Sheet {
         title: "real sample".to_string(),
         slots: vec![
-            Some(Drawn {
+            Cell::Drawn(Drawn {
                 name: "FMX".to_string(),
                 jpeg: image.jpeg.clone(),
                 shapes: Vec::new(),
                 rendered_at: 320.0,
             }),
-            None,
+            Cell::NoFile,
         ],
     }];
     let pdf = write_pdf("FSC-A / SSC-A", &sheets).expect("the PDF is written");
@@ -1042,7 +1042,9 @@ fn any_name_leaves_the_file_well_formed() {
 mod the_export {
     use super::*;
     use crate::file_load_tests::{scratch, write_fcs_rows};
-    use crate::gate_editor::gallery::export::{ExportJob, contact_sheet};
+    use crate::gate_editor::gallery::export::{
+        ContactSheet, ExportJob, NO_METADATA, ToDraw, contact_sheet,
+    };
     use crate::gate_editor::gallery::render::PlotJob;
     use crate::gate_editor::gates::gate_store::GateOverrideResolver;
     use std::path::{Path, PathBuf};
@@ -1081,27 +1083,32 @@ mod the_export {
             card,
             slot,
             name: name.to_string(),
-            job: PlotJob {
-                path,
-                cofactors: Vec::new(),
-                chain: Vec::new(),
-                resolver: GateOverrideResolver {
-                    active_gates: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
-                    gate_origins: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            plot: Ok(ToDraw {
+                job: PlotJob {
+                    path,
+                    cofactors: Vec::new(),
+                    chain: Vec::new(),
+                    resolver: GateOverrideResolver {
+                        active_gates: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+                        gate_origins: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+                    },
+                    x: Arc::from("FSC-A"),
+                    y: Arc::from("SSC-A"),
+                    x_axis: small("FSC-A"),
+                    y_axis: small("SSC-A"),
+                    gates: drawn.clone(),
+                    size: 160,
                 },
-                x: Arc::from("FSC-A"),
-                y: Arc::from("SSC-A"),
-                x_axis: small("FSC-A"),
-                y_axis: small("SSC-A"),
-                gates: drawn.clone(),
-                size: 160,
-            },
-            drawn,
-            selected: None,
+                drawn,
+                selected: None,
+            }),
         }
     }
 
-    fn run(titles: &[(String, usize)], jobs: &[ExportJob]) -> (anyhow::Result<Vec<u8>>, usize) {
+    fn run(
+        titles: &[(String, usize)],
+        jobs: &[ExportJob],
+    ) -> (anyhow::Result<ContactSheet>, usize) {
         let done = AtomicUsize::new(0);
         let out = contact_sheet("heading", titles, jobs, &AtomicBool::new(false), &done);
         (out, done.load(Ordering::Relaxed))
@@ -1118,7 +1125,7 @@ mod the_export {
             job(0, 0, "first-a", file(&dir, "s1a"), Vec::new()),
         ];
         let (pdf, done) = run(&titles, &jobs);
-        let pdf = pdf.expect("the sheet is written");
+        let pdf = pdf.expect("the sheet is written").pdf;
         assert_eq!(done, 3, "every plot is counted");
         assert_well_formed(&pdf);
 
@@ -1152,7 +1159,7 @@ mod the_export {
         let titles = vec![("only".to_string(), 1)];
         let jobs = vec![job(0, 0, "f", file(&dir, "f"), vec![gate("drawn")])];
         let (pdf, _) = run(&titles, &jobs);
-        let pdf = pdf.expect("the sheet is written");
+        let pdf = pdf.expect("the sheet is written").pdf;
         assert_well_formed(&pdf);
         let text = String::from_utf8_lossy(&pdf);
         assert!(
@@ -1174,14 +1181,10 @@ mod the_export {
         assert_eq!(done.load(Ordering::Relaxed), 0, "nothing was rendered");
     }
 
-    /// On screen a plot that cannot be drawn shows why, in its own frame. The
-    /// export turns the same failure into an empty slot, and an empty slot is
-    /// written as "no paired file" - so the QC record says the specimen had no
-    /// such file when it did, and the run still reports success. (The export
-    /// also skips a paired file with no metadata row before rendering, into
-    /// the same empty slot; the screen says "no metadata for this file".)
+    /// Was B-PDF-1. On screen a plot that cannot be drawn shows why, in its
+    /// own frame. The export turned the same failure into an empty slot,
+    /// printed "no paired file", and reported the sheet written as if clean.
     #[test]
-    #[ignore = "known bug B-PDF-1: a plot that fails to render is exported as 'no paired file'"]
     fn a_plot_that_fails_to_render_is_not_called_a_missing_file() {
         let dir = scratch("export-fail");
         let damaged = dir.join("damaged.fcs");
@@ -1191,9 +1194,11 @@ mod the_export {
             job(0, 0, "good", file(&dir, "good"), Vec::new()),
             job(0, 1, "damaged", damaged, Vec::new()),
         ];
-        let (pdf, _) = run(&titles, &jobs);
-        let pdf = pdf.expect("one bad file does not stop the sheet");
-        let text = String::from_utf8_lossy(&pdf);
+        let (sheet, done) = run(&titles, &jobs);
+        let sheet = sheet.expect("one bad file does not stop the sheet");
+        assert_eq!(done, 2, "a failure is counted as done");
+        assert_well_formed(&sheet.pdf);
+        let text = String::from_utf8_lossy(&sheet.pdf);
         assert!(
             !text.contains("(no paired file) Tj"),
             "the damaged file was paired; the record says it was not"
@@ -1202,5 +1207,81 @@ mod the_export {
             text.contains("(damaged) Tj"),
             "the slot names the file that could not be drawn"
         );
+        assert!(text.contains("(could not be drawn:) Tj"));
+        assert_eq!(
+            text.matches("/Filter /DCTDecode").count(),
+            1,
+            "the good plot is drawn"
+        );
+        assert_eq!(
+            sheet.failed.len(),
+            1,
+            "the failure is reported: {:?}",
+            sheet.failed
+        );
+        assert_eq!(sheet.failed[0].0, "damaged");
+    }
+
+    #[test]
+    fn a_paired_file_with_no_metadata_says_so_on_the_sheet() {
+        // Skipped before rendering, as the on-screen gallery does, and said in
+        // the same words.
+        let dir = scratch("export-no-metadata");
+        let titles = vec![("only".to_string(), 2)];
+        let jobs = vec![
+            job(0, 0, "good", file(&dir, "good"), Vec::new()),
+            ExportJob {
+                card: 0,
+                slot: 1,
+                name: "unlisted".to_string(),
+                plot: Err(NO_METADATA.to_string()),
+            },
+        ];
+        let (sheet, done) = run(&titles, &jobs);
+        let sheet = sheet.expect("written");
+        assert_eq!(done, 2);
+        let text = String::from_utf8_lossy(&sheet.pdf);
+        assert!(text.contains("(unlisted) Tj"));
+        assert!(text.contains(&format!("({NO_METADATA}) Tj")));
+        assert!(!text.contains("(no paired file) Tj"));
+        assert_eq!(
+            sheet.failed,
+            vec![("unlisted".to_string(), NO_METADATA.to_string())]
+        );
+    }
+
+    #[test]
+    fn a_long_reason_is_wrapped_inside_the_frame() {
+        let reason = "Parameter BUV805-A not found: column BUV805-A not found in the frame \
+                      read from /data/plate_12/a_very_long_folder_name_without_spaces_at_all.fcs";
+        let sheets = vec![Sheet {
+            title: "D1".to_string(),
+            slots: vec![Cell::Failed {
+                name: "D1 FS".to_string(),
+                reason: reason.to_string(),
+            }],
+        }];
+        let pdf = write_pdf("x", &sheets).expect("written");
+        assert_well_formed(&pdf);
+        let text = String::from_utf8_lossy(&pdf);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains(" 6.50 Tf") && !l.contains("(D1 FS)"))
+            .collect();
+        assert!(lines.len() > 1, "wrapped over several lines: {lines:?}");
+        for line in &lines {
+            let body = &line[line.find('(').unwrap() + 1..line.rfind(") Tj").unwrap()];
+            assert!(
+                body.chars().count() <= 44,
+                "{body:?} is wider than the frame"
+            );
+        }
+        // Nothing lost in the wrapping.
+        let joined: String = lines
+            .iter()
+            .map(|l| &l[l.find('(').unwrap() + 1..l.rfind(") Tj").unwrap()])
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(joined.replace(' ', ""), reason.replace(' ', ""));
     }
 }

@@ -54,7 +54,23 @@ pub struct Drawn {
 /// One specimen's row on the sheet.
 pub struct Sheet {
     pub title: String,
-    pub slots: Vec<Option<Drawn>>,
+    pub slots: Vec<Cell>,
+}
+
+/// What one slot of a specimen's row holds.
+///
+/// Three cases, not two. A slot with no file and a file that could not be
+/// drawn used to be the same empty slot, printed "no paired file" - so a QC
+/// record said a specimen had no such file when it had one that failed.
+pub enum Cell {
+    /// The specimen has no file for this slot.
+    NoFile,
+    Drawn(Drawn),
+    /// The specimen has a file here, and it could not be drawn.
+    Failed {
+        name: String,
+        reason: String,
+    },
 }
 
 /// Write the whole contact sheet.
@@ -129,9 +145,38 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
             for (slot, filled) in sheet.slots.iter().enumerate() {
                 let x = left + slot as f32 * (plot + CELL_GAP);
                 let y = top - TITLE_HEIGHT - plot;
-                let Some(drawn) = filled else {
-                    write_text(&mut content, x, y + plot / 2.0, 7.5, "no paired file", None);
-                    continue;
+                let drawn = match filled {
+                    Cell::Drawn(drawn) => drawn,
+                    Cell::NoFile => {
+                        write_text(&mut content, x, y + plot / 2.0, 7.5, "no paired file", None);
+                        continue;
+                    }
+                    Cell::Failed { name, reason } => {
+                        // Framed like a plot, so it reads as a file that is
+                        // there, with the reason where the plot would be.
+                        let _ = writeln!(
+                            content,
+                            "q 0.6 w 0.85 0.1 0.1 RG {x} {y} {plot} {plot} re S Q"
+                        );
+                        let mut line_y = y + plot - 14.0;
+                        write_text(
+                            &mut content,
+                            x + 4.0,
+                            line_y,
+                            7.5,
+                            "could not be drawn:",
+                            None,
+                        );
+                        for line in wrap(reason, FAILED_LINE_CHARS)
+                            .into_iter()
+                            .take(FAILED_LINES)
+                        {
+                            line_y -= 9.0;
+                            write_text(&mut content, x + 4.0, line_y, 6.5, &line, None);
+                        }
+                        write_text(&mut content, x, y - NAME_HEIGHT + 3.0, 6.5, name, None);
+                        continue;
+                    }
                 };
                 let name = format!("Im{}_{}", at, slot);
                 let id = pdf.add_jpeg(&drawn.jpeg)?;
@@ -186,6 +231,54 @@ const CELL_GAP: f32 = 6.0;
 
 enum Anchor {
     End,
+}
+
+/// How much of a failure's reason fits in the frame of a plot.
+const FAILED_LINE_CHARS: usize = 44;
+const FAILED_LINES: usize = 12;
+
+/// Break `text` into lines of at most `width` characters, at spaces where it
+/// can - an error message is one long line, and a PDF string does not wrap.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word;
+        loop {
+            let used = line.chars().count();
+            let room = if used == 0 {
+                width
+            } else {
+                width.saturating_sub(used + 1)
+            };
+            let len = word.chars().count();
+            if len <= room {
+                if used > 0 {
+                    line.push(' ');
+                }
+                line.push_str(word);
+                break;
+            }
+            if used > 0 {
+                lines.push(std::mem::take(&mut line));
+                continue;
+            }
+            // A word longer than a whole line: cut it.
+            let cut = word
+                .char_indices()
+                .nth(width)
+                .map_or(word.len(), |(at, _)| at);
+            lines.push(word[..cut].to_string());
+            word = &word[cut..];
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// Flattened primitives as page operators.

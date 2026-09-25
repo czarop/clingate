@@ -26,7 +26,7 @@ use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param}
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
 use super::overlay::flatten_gates;
-use super::pdf::{Drawn, Sheet, write_pdf};
+use super::pdf::{Cell, Drawn, Sheet, write_pdf};
 use super::render::{PlotJob, render_plot};
 use super::select;
 use super::window::Card;
@@ -38,16 +38,36 @@ use super::window::Card;
 /// stops looking like pixels on paper.
 const EXPORT_SIZE: u32 = 512;
 
-/// One plot's work, with the pieces the page needs once it is drawn.
+/// One file's place on the sheet, and what to put there.
 pub(super) struct ExportJob {
     /// Which specimen, and which of its files: where the plot goes on the sheet.
     pub(super) card: usize,
     pub(super) slot: usize,
     pub(super) name: String,
+    /// The plot to draw, or why there is none to draw. A paired file that
+    /// cannot be drawn is still on the sheet, saying why, rather than being
+    /// left as an empty slot - which the sheet prints as "no paired file".
+    pub(super) plot: Result<ToDraw, String>,
+}
+
+/// What rendering one plot needs.
+pub(super) struct ToDraw {
     pub(super) job: PlotJob,
     pub(super) drawn: Vec<Arc<dyn DrawableGate>>,
     pub(super) selected: Option<Arc<str>>,
 }
+
+/// A written contact sheet, and the plots it could not draw.
+pub(super) struct ContactSheet {
+    pub(super) pdf: Vec<u8>,
+    /// Each file that could not be drawn, with why - for the message that
+    /// says the sheet was written, which must not read as a clean run.
+    pub(super) failed: Vec<(String, String)>,
+}
+
+/// What the on-screen gallery says for a paired file with no metadata row,
+/// said the same way on paper.
+pub(super) const NO_METADATA: &str = "no metadata for this file";
 
 /// Render every job and lay the plots out as the contact sheet.
 ///
@@ -61,32 +81,38 @@ pub(super) fn contact_sheet(
     jobs: &[ExportJob],
     stop: &AtomicBool,
     done: &AtomicUsize,
-) -> anyhow::Result<Vec<u8>> {
-    let rendered: Vec<Option<(usize, usize, Drawn)>> = jobs
+) -> anyhow::Result<ContactSheet> {
+    let rendered: Vec<Option<(usize, usize, Cell)>> = jobs
         .par_iter()
         .map(|entry| {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
-            let image = render_plot(&entry.job).ok();
-            done.fetch_add(1, Ordering::Relaxed);
-            let image = image?;
-            let shapes = flatten_gates(
-                &entry.drawn,
-                &image.stats,
-                entry.selected.as_ref(),
-                &image.mapper,
-            );
-            Some((
-                entry.card,
-                entry.slot,
-                Drawn {
-                    name: entry.name.clone(),
-                    jpeg: image.jpeg.clone(),
-                    shapes,
-                    rendered_at: entry.job.size as f32,
+            let cell = match &entry.plot {
+                Ok(plot) => match render_plot(&plot.job) {
+                    Ok(image) => Cell::Drawn(Drawn {
+                        name: entry.name.clone(),
+                        jpeg: image.jpeg.clone(),
+                        shapes: flatten_gates(
+                            &plot.drawn,
+                            &image.stats,
+                            plot.selected.as_ref(),
+                            &image.mapper,
+                        ),
+                        rendered_at: plot.job.size as f32,
+                    }),
+                    Err(e) => Cell::Failed {
+                        name: entry.name.clone(),
+                        reason: e.to_string(),
+                    },
                 },
-            ))
+                Err(reason) => Cell::Failed {
+                    name: entry.name.clone(),
+                    reason: reason.clone(),
+                },
+            };
+            done.fetch_add(1, Ordering::Relaxed);
+            Some((entry.card, entry.slot, cell))
         })
         .collect();
 
@@ -98,17 +124,24 @@ pub(super) fn contact_sheet(
         .iter()
         .map(|(title, slots)| Sheet {
             title: title.clone(),
-            slots: (0..*slots).map(|_| None).collect(),
+            slots: (0..*slots).map(|_| Cell::NoFile).collect(),
         })
         .collect();
-    for (card, slot, drawn) in rendered.into_iter().flatten() {
+    let mut failed = Vec::new();
+    for (card, slot, cell) in rendered.into_iter().flatten() {
+        if let Cell::Failed { name, reason } = &cell {
+            failed.push((name.clone(), reason.clone()));
+        }
         if let Some(sheet) = sheets.get_mut(card)
             && let Some(place) = sheet.slots.get_mut(slot)
         {
-            *place = Some(drawn);
+            *place = cell;
         }
     }
-    write_pdf(heading, &sheets)
+    Ok(ContactSheet {
+        pdf: write_pdf(heading, &sheets)?,
+        failed,
+    })
 }
 
 #[component]
@@ -171,10 +204,15 @@ pub fn ExportPdf(
                     let Some(file) = filled else {
                         continue;
                     };
-                    let Some(file_id) = names.get(&file.name).cloned() else {
-                        continue;
-                    };
-                    let Some(groups) = metadata.get(&file_id).cloned() else {
+                    let Some((file_id, groups)) = names.get(&file.name).and_then(|file_id| {
+                        Some((file_id.clone(), metadata.get(file_id)?.clone()))
+                    }) else {
+                        jobs.push(ExportJob {
+                            card: at,
+                            slot,
+                            name: file.label().to_string(),
+                            plot: Err(NO_METADATA.to_string()),
+                        });
                         continue;
                     };
                     let resolver = state.get_current_sample(file_id, &groups);
@@ -187,20 +225,22 @@ pub fn ExportPdf(
                         card: at,
                         slot,
                         name: file.label().to_string(),
-                        job: PlotJob {
-                            path: file.path.clone(),
-                            cofactors: cofactors.clone(),
-                            chain: select::chain_of(&state, &node),
-                            resolver,
-                            x: x.fluoro.clone(),
-                            y: y.fluoro.clone(),
-                            x_axis: x_axis.clone(),
-                            y_axis: y_axis.clone(),
-                            gates: drawn.clone(),
-                            size: EXPORT_SIZE,
-                        },
-                        drawn,
-                        selected: selected.clone(),
+                        plot: Ok(ToDraw {
+                            job: PlotJob {
+                                path: file.path.clone(),
+                                cofactors: cofactors.clone(),
+                                chain: select::chain_of(&state, &node),
+                                resolver,
+                                x: x.fluoro.clone(),
+                                y: y.fluoro.clone(),
+                                x_axis: x_axis.clone(),
+                                y_axis: y_axis.clone(),
+                                gates: drawn.clone(),
+                                size: EXPORT_SIZE,
+                            },
+                            drawn,
+                            selected: selected.clone(),
+                        }),
                     });
                 }
             }
@@ -245,14 +285,33 @@ pub fn ExportPdf(
             progress.set(None);
 
             let written = match outcome {
-                Ok(Ok(bytes)) => std::fs::write(&target, bytes)
-                    .map(|()| target.display().to_string())
+                Ok(Ok(sheet)) => std::fs::write(&target, &sheet.pdf)
+                    .map(|()| (target.display().to_string(), sheet.failed))
                     .map_err(|e| e.to_string()),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(e) => Err(format!("export thread failed: {e}")),
             };
             match written {
-                Ok(where_to) => say(&toasts, format!("Contact sheet written to {where_to}")),
+                Ok((where_to, failed)) if failed.is_empty() => {
+                    say(&toasts, format!("Contact sheet written to {where_to}"))
+                }
+                // Written, but not the clean record the plain message would
+                // claim: say which files are on it without a plot.
+                Ok((where_to, failed)) => warn(
+                    &toasts,
+                    format!(
+                        "Contact sheet written to {where_to} - {} could not be drawn: {}",
+                        match failed.len() {
+                            1 => "1 plot".to_string(),
+                            n => format!("{n} plots"),
+                        },
+                        failed
+                            .iter()
+                            .map(|(name, reason)| format!("{name} ({reason})"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ),
                 Err(why) => warn(&toasts, format!("Could not export: {why}")),
             }
         });
