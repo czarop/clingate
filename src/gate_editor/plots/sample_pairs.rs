@@ -152,3 +152,19 @@ pub fn pair_files(
 pub fn pair_of(pairs: &[Pair], file: usize) -> Option<usize> {
     pairs.iter().position(|p| p.files.contains(&file))
 }
+
+/// The file to select after stepping `steps` specimens on from the one holding
+/// `file`: the first file - the left plot's - of the specimen arrived at.
+/// Wraps at either end. `None` if there is nothing to step through, or the
+/// specimen arrived at has nothing to select.
+///
+/// A file no pair holds steps from the first specimen.
+pub fn step_from(pairs: &[Pair], file: usize, steps: isize) -> Option<usize> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let at = pair_of(pairs, file).unwrap_or(0) as isize;
+    let count = pairs.len() as isize;
+    let next = (at + steps).rem_euclid(count) as usize;
+    pairs[next].left()
+}

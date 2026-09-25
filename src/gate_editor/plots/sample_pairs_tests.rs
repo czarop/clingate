@@ -372,3 +372,62 @@ fn every_file_of_a_well_formed_folder_is_shown() {
         );
     }
 }
+
+// ── stepping through specimens: the editor's Previous and Next ───────────
+
+use crate::gate_editor::plots::sample_pairs::step_from;
+
+#[test]
+fn next_lands_on_the_next_specimens_fmo_and_wraps() {
+    let (keys, names, metadata) = fixture(&[
+        (Some("A"), Some("FS")),
+        (Some("A"), Some("FMX")),
+        (Some("B"), Some("FS")),
+        (Some("B"), Some("FMX")),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    // From either of A's files, Next is B's FMX; from B, it wraps to A's.
+    assert_eq!(step_from(&pairs, 0, 1), Some(3));
+    assert_eq!(step_from(&pairs, 1, 1), Some(3));
+    assert_eq!(step_from(&pairs, 2, 1), Some(1));
+    // Previous wraps the other way, and a whole lap comes back.
+    assert_eq!(step_from(&pairs, 0, -1), Some(3));
+    assert_eq!(step_from(&pairs, 0, 2), Some(1));
+}
+
+#[test]
+fn a_file_no_pair_holds_steps_from_the_first_specimen() {
+    let (keys, names, metadata) = fixture(&[(Some("A"), Some("FMX")), (Some("B"), Some("FMX"))]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    assert_eq!(step_from(&pairs, 99, 1), Some(1));
+    assert_eq!(step_from(&[], 0, 1), None, "nothing to step through");
+}
+
+#[test]
+#[ignore = "known bug B-NAV-1: Next stops dead at a specimen with no FMO"]
+fn next_steps_onto_a_specimen_with_no_fmo() {
+    // B has only its full stain, which keeps the right-hand side (the FMO's
+    // side stays empty - see `the_fmo_holds_its_side_even_...`). Next lands
+    // on a specimen's left file, finds none, and selects nothing: pressing it
+    // again computes the same step from the same place, so the buttons can
+    // never get past B.
+    let (keys, names, metadata) = fixture(&[
+        (Some("A"), Some("FMX")),
+        (Some("A"), Some("FS")),
+        (Some("B"), Some("FS")),
+        (Some("C"), Some("FMX")),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    assert_eq!(pairs[1].left(), None, "B has no FMO, the premise");
+    assert_eq!(step_from(&pairs, 0, 1), Some(2), "Next from A shows B");
+
+    // And whatever the folder, pressing Next as many times as there are
+    // specimens visits every one of them.
+    let mut at = 0;
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..pairs.len() {
+        at = step_from(&pairs, at, 1).unwrap_or(at);
+        seen.insert(pair_of(&pairs, at));
+    }
+    assert_eq!(seen.len(), pairs.len(), "Next visits every specimen");
+}

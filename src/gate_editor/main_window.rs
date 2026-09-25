@@ -6,7 +6,7 @@ use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::axis_store::{index_of_fluoro, resolve_axes};
 use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
-use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of};
+use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of, step_from};
 use crate::gate_editor::workspace_window::Generation;
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataStore;
@@ -122,14 +122,7 @@ pub fn MainWindow() -> Element {
     // Move `steps` specimens along, landing on the first file of the one
     // arrived at. Stepping by file would show the same pair twice.
     let mut step_specimen = move |steps: isize| {
-        let pairs = pairs.read();
-        if pairs.is_empty() {
-            return;
-        }
-        let at = pair_of(&pairs, sample_index()).unwrap_or(0) as isize;
-        let count = pairs.len() as isize;
-        let next = (at + steps).rem_euclid(count) as usize;
-        if let Some(first) = pairs[next].left() {
+        if let Some(first) = step_from(&pairs.read(), sample_index(), steps) {
             sample_index.set(first);
         }
     };
@@ -598,6 +591,83 @@ pub fn MainWindow() -> Element {
                 }
 
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listing_order;
+    use crate::gate_editor::plots::sample_pairs::Pair;
+    use std::sync::Arc;
+
+    fn pair(files: &[usize], slots: &[Option<usize>]) -> Pair {
+        Pair {
+            specimen: Some(Arc::from("s")),
+            files: files.to_vec(),
+            slots: slots.to_vec(),
+        }
+    }
+
+    #[test]
+    fn the_list_follows_the_pairs_slot_by_slot() {
+        // Specimens in pair order, each shown left file then right.
+        let pairs = vec![
+            pair(&[3, 0], &[Some(3), Some(0)]),
+            pair(&[2, 1], &[Some(2), Some(1)]),
+        ];
+        assert_eq!(listing_order(&pairs, 4), vec![3, 0, 2, 1]);
+    }
+
+    #[test]
+    fn a_file_in_no_slot_follows_its_specimen() {
+        // A file the slots leave out is still listed, after its specimen's
+        // slotted files - not dropped, and not moved to the end.
+        let pairs = vec![
+            pair(&[0, 1, 2], &[Some(0), Some(1)]),
+            pair(&[3], &[None, Some(3)]),
+        ];
+        assert_eq!(listing_order(&pairs, 4), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn files_no_pair_mentions_are_listed_last_and_the_total_caps_it() {
+        let pairs = vec![pair(&[1], &[Some(1), None])];
+        assert_eq!(listing_order(&pairs, 3), vec![1, 0, 2]);
+        // An index past the file list - pairs from a longer, older list - is
+        // dropped rather than offered.
+        let stale = vec![pair(&[5, 0], &[Some(5), Some(0)])];
+        assert_eq!(listing_order(&stale, 2), vec![0, 1]);
+        // Uncapped, nothing is added or removed.
+        assert_eq!(listing_order(&stale, usize::MAX), vec![5, 0]);
+    }
+
+    #[test]
+    fn every_file_is_listed_exactly_once() {
+        use rand::prelude::*;
+        for seed in 0..300 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let total = rng.random_range(0..12);
+            let mut indices: Vec<usize> = (0..total).collect();
+            indices.shuffle(&mut rng);
+            // Split a random subset of the files into random pairs; the rest
+            // no pair mentions.
+            let kept = rng.random_range(0..=total);
+            let mut pairs = Vec::new();
+            let mut rest = &indices[..kept];
+            while !rest.is_empty() {
+                let take = rng.random_range(1..=rest.len().min(3));
+                let (files, tail) = rest.split_at(take);
+                let slots = files
+                    .iter()
+                    .map(|f| rng.random_bool(0.7).then_some(*f))
+                    .collect::<Vec<_>>();
+                pairs.push(pair(files, &slots));
+                rest = tail;
+            }
+            let mut listed = listing_order(&pairs, total);
+            listed.sort();
+            assert_eq!(listed, (0..total).collect::<Vec<_>>(), "seed {seed}");
         }
     }
 }

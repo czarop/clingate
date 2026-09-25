@@ -22,8 +22,8 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,046 unit tests and 20 integration tests pass**, plus 11 doctests.
-- **39 known-bug tests (33 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,052 unit tests and 20 integration tests pass**, plus 11 doctests.
+- **40 known-bug tests (34 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -61,6 +61,7 @@ to fix first.
 | B-PAIR-1 | `plots::sample_pairs::pair_files`, shown through `take(2)` in `main_window` and `gallery::window` | A specimen gets one slot per display-order type, filled by the *first* file of that type, and both screens show a pair's first two slots. A second file of one type (a tube re-acquired after a clog), a third file of a specimen with no named type, and every file of a third type typed into "Plot order" are listed in the editor but never drawn - picking one shows the specimen's other files - and never appear in the gallery or its PDF. Nothing warns: the pairing controls count only untyped files and types missing from the order | Medium - a file that cannot be viewed or edited, and a QC record that silently omits it |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
+| B-NAV-1 | `plots::sample_pairs::step_from` (the editor's Previous / Next, moved out of `main_window` to be tested) | Lands on the arrived-at specimen's *left* file; a specimen with no FMO keeps its left side empty, so nothing is selected, and pressing again steps from the same place to the same specimen. The buttons cannot get past it in either direction | Low - the file list still reaches it |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
 | B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
@@ -499,3 +500,11 @@ specimen, some missing one and some unknown to the metadata, passes.
 A re-acquired full stain and a three-file untyped specimen do not
 (B-PAIR-1). The rules run is not affected in the same way: a specimen
 shares one position, read from its highest-ranked file, by design.
+
+Previous and Next were a closure in `main_window`; the step is now
+`sample_pairs::step_from`, beside `pair_of`, and is tested: it lands on
+the next specimen's left file and wraps both ways, and a file no pair
+holds steps from the first specimen. Found B-NAV-1. `listing_order` (the
+editor's file list) had no tests; it now has four, one of them over 300
+random pairings: every file listed exactly once, a file in no slot kept
+beside its specimen, stale indices dropped.
