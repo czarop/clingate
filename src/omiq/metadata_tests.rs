@@ -777,3 +777,82 @@ fn a_metadata_file_that_is_not_there_is_an_error() {
         .is_err()
     );
 }
+
+/// A metadata export opened and saved again in a spreadsheet: Excel adds a
+/// byte-order mark and writes CRLF, and quotes any cell holding a comma. Each
+/// must read as the plain export does - a mark left on the first header would
+/// hide the id column, and a `\r` left on the last cell would make every
+/// file's last column a value no rule could match.
+#[test]
+fn an_export_resaved_by_a_spreadsheet_reads_the_same() {
+    let plain = parse_metadata(METADATA, "meta-plain");
+    for (label, text) in [
+        ("bom", format!("\u{feff}{METADATA}")),
+        ("crlf", METADATA.replace('\n', "\r\n")),
+        (
+            "quoted",
+            METADATA
+                .replace("SampleA.fcs", "\"SampleA.fcs\"")
+                .replace("MyPanel\n", "\"MyPanel\"\n"),
+        ),
+    ] {
+        let parsed = parse_metadata(&text, &format!("meta-{label}"));
+        assert_eq!(parsed.metadata, plain.metadata, "{label}");
+        assert_eq!(
+            parsed.file_name_to_gating_id, plain.file_name_to_gating_id,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn a_quoted_comma_stays_inside_its_cell() {
+    let parsed = parse_metadata(
+        "OmiqID,Filename,Donor\nF1,\"Sample, A.fcs\",\"Smith, J\"\n",
+        "meta-comma",
+    );
+    let id = parsed
+        .file_name_to_gating_id
+        .get("Sample, A.fcs")
+        .expect("the file name keeps its comma");
+    assert_eq!(
+        parsed.metadata.get(id).unwrap().get("Donor").map(|v| &**v),
+        Some("Smith, J")
+    );
+}
+
+#[test]
+fn headers_padded_with_spaces_are_refused_by_name() {
+    // Not something Omiq writes; hand-edited files do. Refused rather than read
+    // with every column after the first unfindable.
+    let path = temp_csv(
+        "meta-padded",
+        "OmiqID, Filename, $VOL\nF1, SampleA.fcs, high\n",
+    );
+    let error = parse_metadata_csv(path, "OmiqID", "Filename", MetaDataOrigin::Omiq)
+        .err()
+        .expect("refused");
+    assert!(error.to_string().contains("Filename"), "{error}");
+}
+
+/// The scaling export after a spreadsheet has saved it again - a byte-order
+/// mark, CRLF, quoted cells. A `\r` left on the last cell of a row, or a
+/// quoted number read as text, would refuse the file or shift a value.
+#[test]
+fn a_scaling_export_resaved_by_a_spreadsheet_reads_the_same() {
+    let plain = parse_scaling(SCALING, "scale-plain");
+    for (label, text) in [
+        ("bom", format!("\u{feff}{SCALING}")),
+        ("crlf", SCALING.replace('\n', "\r\n")),
+        (
+            "quoted",
+            SCALING.replace("BV421-A,CD3", "\"BV421-A\",\"CD3\""),
+        ),
+    ] {
+        assert_eq!(
+            parse_scaling(&text, &format!("scale-{label}")),
+            plain,
+            "{label}"
+        );
+    }
+}

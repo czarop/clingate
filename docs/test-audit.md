@@ -22,7 +22,7 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,052 unit tests and 23 integration tests pass**, plus 11 doctests.
+- **1,056 unit tests and 23 integration tests pass**, plus 11 doctests.
 - **42 known-bug tests (36 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
@@ -457,6 +457,15 @@ panicked. Checking what the scaling reader *accepted* found B-SCALE-1: a
 dropped column was read shifted, not refused. A decimal cofactor or range
 (`150.5`, `-500.5`) refuses the whole file with a polars parse error, since
 every number is read as `Int64` - worth knowing if Omiq ever writes one.
+
+### Exports re-saved by a spreadsheet
+
+Opening an export in Excel and saving it adds a byte-order mark, CRLF line
+endings and quotes around any cell with a comma. The metadata and scaling
+readers are now tested on each against the plain export and read the same;
+a quoted comma stays in its cell. Headers padded with spaces - which Omiq
+does not write, but a hand-edited file might - are refused, naming the
+column that could not be found.
 
 ### The band search, over random populations
 
