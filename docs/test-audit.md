@@ -452,3 +452,12 @@ panicked. Checking what the scaling reader *accepted* found B-SCALE-1: a
 dropped column was read shifted, not refused. A decimal cofactor or range
 (`150.5`, `-500.5`) refuses the whole file with a polars parse error, since
 every number is read as `Int64` - worth knowing if Omiq ever writes one.
+
+### The band search, over random populations
+
+`autogate_tests::the_band_search_lands_in_any_band_a_population_can_satisfy`:
+120 random populations of one to three clusters, a third of them rounded to
+whole numbers so values tie, each given a random band that some edge can
+actually reach. A gate open to either side is slid by `position_by_capture`
+and must land inside the band, and what it reports holding must equal what
+the moved gate holds when asked afresh. It does, every time.

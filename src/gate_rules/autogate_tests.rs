@@ -2947,3 +2947,85 @@ fn the_other_rules_still_take_a_partner() {
             .collect::<Vec<String>>()
     );
 }
+
+// ── the band search, over random populations ─────────────────────────────
+
+/// Random populations - one to three clusters, sometimes rounded to whole
+/// numbers so values tie - and random bands that at least one whole number
+/// of events can satisfy. Sliding a gate open to one side must land it in
+/// the band, whichever side it keeps, and what it reports holding must be
+/// what the gate, asked afresh, holds.
+#[test]
+fn the_band_search_lands_in_any_band_a_population_can_satisfy() {
+    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
+    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::gate_rules::autogate::{admitted_by, position_by_capture};
+    use polars::prelude::*;
+    use rand::prelude::*;
+    use rand_distr::Normal;
+
+    for seed in 0..120u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let n = rng.random_range(200..3_000);
+        let clusters = rng.random_range(1..=3);
+        let whole = rng.random_bool(0.3);
+        let xs: Vec<f32> = (0..n)
+            .map(|i| {
+                let c = (i % clusters) as f32;
+                let v = Normal::new(200.0 + c * 300.0, 40.0 + c * 20.0)
+                    .unwrap()
+                    .sample(&mut rng);
+                if whole { v.round() } else { v }
+            })
+            .collect();
+        let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
+        let frame = Arc::new(df![X => xs.clone(), Y => vec![0.0f32; n]].unwrap());
+        let index = EventIndexMapped {
+            event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+            index_map: Arc::new((0..n).collect()),
+        };
+
+        // A band wide enough to hold a whole number of events - a few
+        // events' worth - somewhere between 0.5% and 60%.
+        let lo = rng.random_range(0.005..0.6);
+        let width = (4.0 / n as f64).max(rng.random_range(0.0..0.05));
+        let band = (lo, (lo + width).min(1.0));
+
+        // With whole-number values, a band can fall inside a tie: no edge
+        // can separate exactly those events. Only bands some edge can reach
+        // are asked for.
+        let mut sorted = values.clone();
+        sorted.sort_by(f64::total_cmp);
+        // `k` events below an edge and `n - k` above it: reachable when the
+        // edge can fall between the k-th and (k+1)-th values.
+        let reachable = |keep_above: bool| {
+            (0..=n).any(|k| {
+                let separable = k == 0 || k == n || sorted[k - 1] < sorted[k];
+                let kept = if keep_above { n - k } else { k };
+                separable && (band.0..=band.1).contains(&(kept as f64 / n as f64))
+            })
+        };
+
+        for (bound, gate) in [
+            (Bound::Above, rect(500.0, -1e16, 1e16, 1e16)),
+            (Bound::Below, rect(-1e16, -1e16, 500.0, 1e16)),
+        ] {
+            if !reachable(bound == Bound::Above) {
+                continue;
+            }
+            let (moved, _, held) = position_by_capture(
+                &gate, X, bound, &index, band, &values, 500.0,
+            )
+            .unwrap_or_else(|| panic!("seed {seed} {bound:?}: no position found for {band:?}"));
+            let asked = admitted_by(&moved, &index).unwrap();
+            assert!(
+                (asked - held).abs() < 1e-9,
+                "seed {seed} {bound:?}: reported {held}, the gate holds {asked}"
+            );
+            assert!(
+                (band.0..=band.1).contains(&held),
+                "seed {seed} {bound:?}: held {held}, band {band:?}, whole numbers {whole}"
+            );
+        }
+    }
+}
