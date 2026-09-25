@@ -628,3 +628,103 @@ fn nothing_is_resolved_before_a_scaling_has_loaded() {
     let empty = AxisStore::default();
     assert!(resolve_axes(&empty.sorted_settings, &param("a", "a"), &param("b", "b")).is_none());
 }
+
+// ─── Rows the export left incomplete ──────────────────────────────────────────
+
+/// BUG (docs/test-audit.md, B-META-1): a row with no file name (or no id) is
+/// skipped when the ids are collected, but the metadata columns are then
+/// read by position in that shortened list - so every file after the
+/// skipped row is given the row before it. Here SampleC would be put in
+/// SampleA's group.
+#[test]
+#[ignore = "known bug B-META-1: a skipped row shifts every later file's metadata by one"]
+fn a_row_without_a_file_name_does_not_shift_the_rows_after_it() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,SampleA.fcs,first
+F2,,second
+F3,SampleC.fcs,third
+",
+        "meta-shift",
+    );
+    let group = |id: &str| {
+        parsed.metadata[&Arc::<str>::from(id)]
+            .get(&Arc::<str>::from("Group"))
+            .map(|g| g.to_string())
+    };
+    assert_eq!(group("1").as_deref(), Some("first"));
+    assert_eq!(group("3").as_deref(), Some("third"));
+}
+
+#[test]
+fn a_row_without_a_file_name_is_left_out() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,SampleA.fcs,first
+F2,,second
+",
+        "meta-noname",
+    );
+    assert!(!parsed.metadata.contains_key(&Arc::<str>::from("2")));
+    assert_eq!(parsed.file_name_to_gating_id.len(), 1);
+}
+
+#[test]
+fn a_blank_metadata_value_is_absent_rather_than_empty() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group,Plate
+F1,SampleA.fcs,,P1
+",
+        "meta-blank",
+    );
+    let row = &parsed.metadata[&Arc::<str>::from("1")];
+    assert_eq!(
+        row.get(&Arc::<str>::from("Plate")).map(|p| &**p),
+        Some("P1")
+    );
+    assert_eq!(row.get(&Arc::<str>::from("Group")), None);
+}
+
+#[test]
+fn a_numeric_looking_column_is_read_as_text() {
+    // Every column is read as a string: a plate numbered 007 must stay 007,
+    // since it is matched against the gating file's group names as text.
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Plate
+F1,SampleA.fcs,007
+",
+        "meta-text",
+    );
+    assert_eq!(
+        parsed.metadata[&Arc::<str>::from("1")]
+            .get(&Arc::<str>::from("Plate"))
+            .map(|p| &**p),
+        Some("007")
+    );
+}
+
+#[test]
+fn a_metadata_file_missing_its_id_column_is_an_error() {
+    let path = temp_csv("meta-noid", "Filename,Group\nSampleA.fcs,g\n");
+    let result = parse_metadata_csv(path.clone(), "OmiqID", "Filename", MetaDataOrigin::Omiq);
+    let _ = std::fs::remove_file(path);
+    let error = result.err().expect("no OmiqID column");
+    assert!(error.to_string().contains("OmiqID"), "{error}");
+}
+
+#[test]
+fn a_metadata_file_that_is_not_there_is_an_error() {
+    assert!(
+        parse_metadata_csv(
+            PathBuf::from("/no/such/metadata.csv"),
+            "OmiqID",
+            "Filename",
+            MetaDataOrigin::Omiq
+        )
+        .is_err()
+    );
+}

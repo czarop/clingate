@@ -27,6 +27,8 @@ the seams the integration tests in the second pass are written against.
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
+| B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
+| B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -96,3 +98,40 @@ collected from sub-folders.
 
 `searchable_select`'s three copies of the search filter are one tested
 predicate, `matches_search`.
+
+### omiq
+
+**Reach.** `deserialise` is driven by `GateState::upload_gates_from_file`
+(`gate_editor::gates::gate_store`), which builds every drawable gate, the
+node tree, the per-group overrides keyed by `MetaDataKey`, and the
+`OmiqRebuildStore` (`rebuild`) the export needs. It reads the axis settings
+(`AxisStore`) for composite ranges and infinite bounds. `serialise` is driven
+by the Workspace tab's *Write gating file* and reads the same three: gates,
+metadata (`MetaDataFileMap`) and axes. `metadata::parse_metadata_csv` feeds
+`MetaDataStore`, whose `file_name_to_gating_id` is the join between an FCS
+file's program name (`workspace::program_name`) and its gating id.
+
+**Weak tests strengthened (9).** Five link/unlink/delete tests asserted only
+`is_err()`; they now also assert the refused edit left every placement and
+registration as it was (`layout`). `a_missing_axis_setting_is_an_error` now
+checks the error names the axis. `every_atomic_container_keeps_its_type`
+checked a type was present, not that it was the same one; it now compares,
+and fails if the fixture gave it nothing to compare. `every_gate_keeps_the_
+label_it_came_in_with` likewise checked presence only; it now compares at f32
+precision (coordinates are held as f32 and written widened, so `51.0513`
+comes back as `51.051300048828125`) - which found B-OMIQ-1.
+
+**Dead code.** `deserialise::validate_metadata_requirements` is never
+called and only prints. Nothing checks that a gating file's groups exist in
+the metadata - see the integration pass.
+
+**Added.** A new skewed quadrant is written as four `AngleGate`s grouped
+`_SKEWEDQUAD0..3`; a new quadrant, skewed quadrant and bisector each come
+back from export and re-import as the same kind with the same pieces. In
+metadata: incomplete rows left out, blank values absent, numbers kept as
+text, a missing id column or file an error; B-META-1.
+
+**Observation.** Two metadata rows with the same file name are accepted
+silently, the later winning. With files now named by their sub-folder path
+that is less likely, but a file would still be given another's group with no
+warning.

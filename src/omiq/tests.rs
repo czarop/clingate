@@ -839,8 +839,15 @@ fn a_missing_axis_setting_is_an_error() {
     let missing: Arc<str> = Arc::from("not-configured");
     let s = settings(vec![axis("FSC-A", 0.0, 100.0, TransformType::Linear)]);
 
-    assert!(extract_axis_range_from_axis_settings(&(&x, &missing), &s).is_err());
-    assert!(extract_axis_range_from_axis_settings(&(&missing, &x), &s).is_err());
+    for pair in [(&x, &missing), (&missing, &x)] {
+        let error = extract_axis_range_from_axis_settings(&pair, &s)
+            .err()
+            .expect("an unconfigured axis");
+        assert!(
+            error.to_string().contains("not-configured"),
+            "the error should name the axis: {error}"
+        );
+    }
 }
 
 // ─── Ellipse handle preservation ──────────────────────────────────────────────
@@ -2779,6 +2786,108 @@ fn a_new_bisector_keeps_its_halves_grouped() {
     assert_eq!(indices, ["0", "1"].into_iter().collect(), "got {groups:?}");
 }
 
+fn one_new(kind: PrimaryGateType) -> (GateState, Arc<str>) {
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(),
+            300.0,
+            300.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            None,
+            None,
+            kind,
+            Some("new".to_string()),
+        )
+        .unwrap();
+    let id = state.registered_ids()[0].clone();
+    (state, id)
+}
+
+/// A skewed quadrant takes its own branch through the export: its corners
+/// are written as angle gates under a `SKEWEDQUAD` group, and the group id
+/// is what tells an import it is skewed rather than plain.
+#[test]
+fn a_new_skewed_quadrant_is_written_as_four_grouped_angle_gates() {
+    let (state, _) = one_new(PrimaryGateType::SkewedQuadrant);
+    let written = export_new(&state);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+
+    let mut indices = std::collections::BTreeSet::new();
+    for container in containers.values() {
+        assert_eq!(container["defaultFilter"]["type"], "AngleGate");
+        let group = container["groupId"].as_str().expect("grouped");
+        let (_, index) = group
+            .rsplit_once("_SKEWEDQUAD")
+            .expect("a SKEWEDQUAD group");
+        indices.insert(index.to_string());
+    }
+    assert_eq!(
+        indices,
+        ["0", "1", "2", "3"].into_iter().map(String::from).collect()
+    );
+}
+
+/// Written, and read back, each new composite is the same kind of gate with
+/// the same corners - what a person drew survives being saved and reopened.
+#[test]
+fn a_new_composite_comes_back_as_the_same_kind_of_gate() {
+    for kind in [
+        PrimaryGateType::Quadrant,
+        PrimaryGateType::SkewedQuadrant,
+        PrimaryGateType::Bisector,
+    ] {
+        let (state, id) = one_new(kind);
+        let before = state.registered_gate(&id).unwrap();
+        let written = export_new(&state);
+
+        let path = std::env::temp_dir().join(format!(
+            "clingate-composite-{kind:?}-{}.omiqgt",
+            std::process::id()
+        ));
+        std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
+        let mut again = GateState::default();
+        again
+            .upload_gates_from_file(
+                path.clone(),
+                &im::HashMap::with_hasher(FxBuildHasher),
+                fixture_axes(),
+            )
+            .unwrap_or_else(|e| panic!("{kind:?} re-imports: {e}"));
+        let _ = std::fs::remove_file(&path);
+
+        let composites: Vec<_> = again
+            .registered_ids()
+            .into_iter()
+            .filter_map(|g| again.registered_gate(&g))
+            .filter(|g| g.is_composite())
+            .collect();
+        let after = composites
+            .first()
+            .unwrap_or_else(|| panic!("{kind:?}: no composite came back"));
+        assert_eq!(
+            after.get_inner_gate_ids().len(),
+            before.get_inner_gate_ids().len(),
+            "{kind:?}: a different number of pieces"
+        );
+        assert_eq!(
+            std::any::type_name_of_val(after.as_any()),
+            std::any::type_name_of_val(before.as_any()),
+        );
+        let is_skewed = |g: &Arc<dyn DrawableGate>| {
+            g.as_any()
+                .downcast_ref::<crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::SkewedQuadrantGate>()
+                .is_some()
+        };
+        assert_eq!(
+            is_skewed(after),
+            is_skewed(&before),
+            "{kind:?} changed kind"
+        );
+    }
+}
+
 #[test]
 fn every_corner_of_a_new_composite_gets_its_own_node() {
     let mut state = GateState::default();
@@ -3252,10 +3361,42 @@ fn deleting_an_instance_takes_that_placements_children_only() {
     );
 }
 
+/// Every position and every registered gate, for checking that an edit that
+/// was refused changed nothing.
+fn layout(state: &GateState) -> (Vec<(String, String, Option<String>)>, Vec<String>) {
+    let mut placements: Vec<_> = state
+        .placements()
+        .map(|(node, _)| {
+            (
+                node.as_str().to_string(),
+                state
+                    .gate_for_node(node)
+                    .map(|g| g.to_string())
+                    .unwrap_or_default(),
+                state.parent_node(node).map(|p| p.as_str().to_string()),
+            )
+        })
+        .collect();
+    placements.sort();
+    let mut gates: Vec<String> = state
+        .registered_ids()
+        .iter()
+        .map(|g| g.to_string())
+        .collect();
+    gates.sort();
+    (placements, gates)
+}
+
 #[test]
 fn deleting_a_position_that_does_not_exist_is_an_error() {
     let mut state = import_json(&linked_gate_json());
+    let before = layout(&state);
     assert!(state.delete_placement(&NodeId::from("nowhere")).is_err());
+    assert_eq!(
+        layout(&state),
+        before,
+        "a refused delete changed the document"
+    );
 }
 
 #[test]
@@ -3296,14 +3437,26 @@ fn linking_keeps_each_position_where_it_was() {
 fn a_position_cannot_be_linked_to_itself() {
     let mut state = import_json(&linked_gate_json());
     let node = state.nodes_for_gate(&Arc::from("g1"))[0].clone();
+    let before = layout(&state);
     assert!(state.link_node_to_gate(&node, &node).is_err());
+    assert_eq!(
+        layout(&state),
+        before,
+        "a refused link changed the document"
+    );
 }
 
 #[test]
 fn linking_two_positions_that_already_share_a_gate_is_an_error() {
     let mut state = import_json(&linked_gate_json());
     let nodes = state.nodes_for_gate(&shared_gate()).to_vec();
+    let before = layout(&state);
     assert!(state.link_node_to_gate(&nodes[0], &nodes[1]).is_err());
+    assert_eq!(
+        layout(&state),
+        before,
+        "a refused link changed the document"
+    );
 }
 
 #[test]
@@ -3384,7 +3537,13 @@ fn an_unlinked_copy_keeps_the_geometry_it_had() {
 fn unlinking_a_gate_applied_once_is_an_error() {
     let mut state = import_json(&linked_gate_json());
     let node = state.nodes_for_gate(&Arc::from("g1"))[0].clone();
+    let before = layout(&state);
     assert!(state.unlink_node(&node).is_err());
+    assert_eq!(
+        layout(&state),
+        before,
+        "a refused unlink changed the document"
+    );
 }
 
 /// The whole point: a link made here has to reach the file.
@@ -4015,7 +4174,13 @@ fn an_unlinked_composite_keeps_its_shape() {
 fn unlinking_an_unlinked_composite_is_an_error() {
     let (mut state, source, _) = two_quadrants();
     let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+    let before = layout(&state);
     assert!(state.unlink_node(&node).is_err());
+    assert_eq!(
+        layout(&state),
+        before,
+        "a refused unlink changed the document"
+    );
 }
 
 #[test]
@@ -4399,16 +4564,29 @@ fn a_file_the_document_does_not_hold_is_never_written() {
 fn every_atomic_container_keeps_its_type() {
     for name in [BEFORE, AFTER] {
         let written = export_with_metadata(name);
+        let source = original(name);
+        let from = objects(&source, &["tree", "filterContainers"]);
         let containers = objects(&written, &["tree", "filterContainers"]);
+        let mut checked = 0;
         for (id, container) in containers.iter() {
             if container["containerType"] != "AtomicFilterContainer" {
                 continue;
             }
+            let now = container.get("type").and_then(|v| v.as_str());
             assert!(
-                container.get("type").and_then(|v| v.as_str()).is_some(),
+                now.is_some(),
                 "{name}: container {id} lost the type Omiq gave it"
             );
+            if let Some(was) = from
+                .get(id)
+                .and_then(|c| c.get("type"))
+                .and_then(|v| v.as_str())
+            {
+                assert_eq!(now, Some(was), "{name}: container {id} changed type");
+                checked += 1;
+            }
         }
+        assert!(checked > 0, "{name}: no atomic container was compared");
     }
 }
 
@@ -4444,21 +4622,70 @@ fn every_gate_keeps_the_label_it_came_in_with() {
         let written = export_with_metadata(name);
         let from = objects(&source, &["tree", "filterContainers"]);
         let to = objects(&written, &["tree", "filterContainers"]);
+        let mut checked = 0;
 
         for (id, container) in from.iter() {
             let Some(was) = container
                 .get("defaultFilter")
                 .and_then(|f| f.get("labelLoc"))
+                // An empty `{}` is covered by B-OMIQ-1 below.
+                .filter(|l| l.as_object().is_some_and(|o| !o.is_empty()))
             else {
                 continue;
             };
             let now = to[id].get("defaultFilter").and_then(|f| f.get("labelLoc"));
+            // Held as f32 and written widened, so 51.0513 comes back as
+            // 51.051300048828125: equal at f32 precision, not byte for byte.
+            let at = |v: Option<&serde_json::Value>, axis: &str| {
+                v.and_then(|l| l.get(axis))
+                    .and_then(|n| n.as_f64())
+                    .map(|n| n as f32)
+            };
+            for axis in ["f1Val", "f2Val"] {
+                assert_eq!(
+                    at(now, axis),
+                    at(Some(was), axis),
+                    "{name}: container {id} lost or moved the label it came in with ({axis})"
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "{name}: no gate in the fixture carries a label"
+        );
+    }
+}
+
+/// BUG (docs/test-audit.md, B-OMIQ-1): Omiq writes `"labelLoc": {}` for a
+/// gate whose label has not been placed. A missing coordinate is read as 0,
+/// so the export writes `{"f1Val": 0, "f2Val": 0}` back - an unedited gate's
+/// label pinned to the plot's origin.
+#[test]
+#[ignore = "known bug B-OMIQ-1: an unset label location is exported as (0, 0)"]
+fn an_unset_label_location_is_exported_unset() {
+    let source = original(BEFORE);
+    let written = export_with_metadata(BEFORE);
+    let from = objects(&source, &["tree", "filterContainers"]);
+    let to = objects(&written, &["tree", "filterContainers"]);
+    let mut checked = 0;
+    for (id, container) in from.iter() {
+        let was = container
+            .get("defaultFilter")
+            .and_then(|f| f.get("labelLoc"));
+        if was
+            .and_then(|l| l.as_object())
+            .is_some_and(|o| o.is_empty())
+        {
+            let now = to[id].get("defaultFilter").and_then(|f| f.get("labelLoc"));
             assert!(
-                now.is_some(),
-                "{name}: container {id} lost the label it came in with ({was})"
+                now.is_none_or(|l| l.as_object().is_some_and(|o| o.is_empty())),
+                "container {id}: unset label written as {now:?}"
             );
+            checked += 1;
         }
     }
+    assert!(checked > 0, "the fixture has an unset label to check");
 }
 
 /// A gate given a position here must export as grouped on the column it was
