@@ -22,11 +22,11 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,056 unit tests and 23 integration tests pass**, plus 11 doctests.
-- **42 known-bug tests (36 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,058 unit tests and 23 integration tests pass**, plus 11 doctests.
+- **41 known-bug tests (35 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. B-RUN-1 is in UI code with
-  nothing to call, and is documented without a test. B-BUILD-1 was fixed
-  outright.
+  nothing to call, and is documented without a test. B-BUILD-1 and B-NAV-1
+  have been fixed.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -66,7 +66,6 @@ to fix first.
 | B-PAIR-1 | `plots::sample_pairs::pair_files`, shown through `take(2)` in `main_window` and `gallery::window` | A specimen gets one slot per display-order type, filled by the *first* file of that type, and both screens show a pair's first two slots. A second file of one type (a tube re-acquired after a clog), a third file of a specimen with no named type, and every file of a third type typed into "Plot order" are listed in the editor but never drawn - picking one shows the specimen's other files - and never appear in the gallery or its PDF. Nothing warns: the pairing controls count only untyped files and types missing from the order | Medium - a file that cannot be viewed or edited, and a QC record that silently omits it |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
-| B-NAV-1 | `plots::sample_pairs::step_from` (the editor's Previous / Next, moved out of `main_window` to be tested) | Lands on the arrived-at specimen's *left* file; a specimen with no FMO keeps its left side empty, so nothing is selected, and pressing again steps from the same place to the same specimen. The buttons cannot get past it in either direction | Low - the file list still reaches it |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
 | B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
@@ -84,6 +83,7 @@ to fix first.
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
 | B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
+| B-NAV-1 (fixed) | `plots::sample_pairs::step_from` (the editor's Previous / Next) | Landed on the arrived-at specimen's *left* file; a specimen with no FMO keeps its left side empty, so nothing was selected and the buttons could not get past it. Fixed: it lands on the first file the specimen shows. `next_steps_onto_a_specimen_with_no_fmo` now passes, and a new test steps both ways through 300 random folders and visits every specimen | - |
 | B-BUILD-1 (fixed) | `Cargo.toml` | The binary needs `dioxus::desktop`, so `cargo test --no-default-features` - documented as the way to test without GTK - failed building it for any target but `--lib`. Fixed: `required-features = ["desktop"]` on the `[[bin]]` | - |
 ## Modules
 

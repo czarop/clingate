@@ -403,14 +403,13 @@ fn a_file_no_pair_holds_steps_from_the_first_specimen() {
     assert_eq!(step_from(&[], 0, 1), None, "nothing to step through");
 }
 
+/// Was B-NAV-1. B has only its full stain, which keeps the right-hand side
+/// (the FMO's side stays empty - see `the_fmo_holds_its_side_even_...`). Next
+/// used to land on a specimen's left file, find none, and select nothing:
+/// pressing it again computed the same step from the same place, so the
+/// buttons could never get past B.
 #[test]
-#[ignore = "known bug B-NAV-1: Next stops dead at a specimen with no FMO"]
 fn next_steps_onto_a_specimen_with_no_fmo() {
-    // B has only its full stain, which keeps the right-hand side (the FMO's
-    // side stays empty - see `the_fmo_holds_its_side_even_...`). Next lands
-    // on a specimen's left file, finds none, and selects nothing: pressing it
-    // again computes the same step from the same place, so the buttons can
-    // never get past B.
     let (keys, names, metadata) = fixture(&[
         (Some("A"), Some("FMX")),
         (Some("A"), Some("FS")),
@@ -421,13 +420,42 @@ fn next_steps_onto_a_specimen_with_no_fmo() {
     assert_eq!(pairs[1].left(), None, "B has no FMO, the premise");
     assert_eq!(step_from(&pairs, 0, 1), Some(2), "Next from A shows B");
 
-    // And whatever the folder, pressing Next as many times as there are
-    // specimens visits every one of them.
-    let mut at = 0;
-    let mut seen = std::collections::BTreeSet::new();
-    for _ in 0..pairs.len() {
-        at = step_from(&pairs, at, 1).unwrap_or(at);
-        seen.insert(pair_of(&pairs, at));
+    assert_eq!(step_from(&pairs, 2, 1), Some(3), "and Next from B moves on");
+    assert_eq!(step_from(&pairs, 3, -1), Some(2), "Previous reaches B too");
+}
+
+#[test]
+fn next_and_previous_visit_every_specimen_of_any_folder() {
+    // Random folders of specimens with and without an FMO, a full stain, or
+    // any file the metadata knows: pressing Next as many times as there are
+    // specimens visits every one, and so does Previous.
+    use rand::prelude::*;
+    const KINDS: [Option<&str>; 4] = [Some("FMX"), Some("FS"), Some("other"), None];
+    for seed in 0..300 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let specimens = ["A", "B", "C", "D", "E"];
+        let folder: Vec<(Option<&str>, Option<&str>)> = (0..rng.random_range(1..12))
+            .map(|_| {
+                let specimen = rng
+                    .random_bool(0.85)
+                    .then(|| specimens[rng.random_range(0..specimens.len())]);
+                (specimen, KINDS[rng.random_range(0..KINDS.len())])
+            })
+            .collect();
+        let (keys, names, metadata) = fixture(&folder);
+        let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+        for steps in [1isize, -1] {
+            let mut at = 0;
+            let mut seen = std::collections::BTreeSet::new();
+            for _ in 0..pairs.len() {
+                at = step_from(&pairs, at, steps).expect("there is always a file to land on");
+                seen.insert(pair_of(&pairs, at));
+            }
+            assert_eq!(
+                seen.len(),
+                pairs.len(),
+                "seed {seed}, step {steps}: {folder:?}"
+            );
+        }
     }
-    assert_eq!(seen.len(), pairs.len(), "Next visits every specimen");
 }

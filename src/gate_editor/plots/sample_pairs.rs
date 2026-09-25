@@ -154,9 +154,13 @@ pub fn pair_of(pairs: &[Pair], file: usize) -> Option<usize> {
 }
 
 /// The file to select after stepping `steps` specimens on from the one holding
-/// `file`: the first file - the left plot's - of the specimen arrived at.
-/// Wraps at either end. `None` if there is nothing to step through, or the
-/// specimen arrived at has nothing to select.
+/// `file`: the first file the specimen arrived at shows, left plot first.
+/// Wraps at either end. `None` only if there is nothing to step through.
+///
+/// The first *shown* file rather than the left one: a specimen with no FMO
+/// keeps its left plot empty, and landing on that empty side selected nothing,
+/// so the next press stepped from the same place to the same specimen and the
+/// buttons could never get past it.
 ///
 /// A file no pair holds steps from the first specimen.
 pub fn step_from(pairs: &[Pair], file: usize, steps: isize) -> Option<usize> {
@@ -165,6 +169,11 @@ pub fn step_from(pairs: &[Pair], file: usize, steps: isize) -> Option<usize> {
     }
     let at = pair_of(pairs, file).unwrap_or(0) as isize;
     let count = pairs.len() as isize;
-    let next = (at + steps).rem_euclid(count) as usize;
-    pairs[next].left()
+    let next = &pairs[(at + steps).rem_euclid(count) as usize];
+    next.slots
+        .iter()
+        .flatten()
+        .next()
+        .or_else(|| next.files.first())
+        .copied()
 }
