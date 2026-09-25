@@ -292,6 +292,40 @@ fn the_import_never_produces_a_biexponential_axis() {
     )));
 }
 
+/// BUG (docs/test-audit.md, B-SCALE-1): the scaling export is read with a
+/// fixed schema, which polars applies by position - the header's names are
+/// ignored. The same export with its columns in another order loads without
+/// complaint and reads the wrong ones: here Min as the cofactor, giving CD3 a
+/// cofactor of -500 (which also crashes quadrants, B-AX-3); with a column
+/// missing, every value after it slides one to the left.
+#[test]
+#[ignore = "known bug B-SCALE-1: scaling columns are read by position, not by name"]
+fn a_scaling_export_is_read_by_its_column_names_not_their_order() {
+    let usual = parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,150,-500,200000,0,0\n",
+        "scale-order-usual",
+    );
+    let reordered = std::panic::catch_unwind(|| {
+        parse_scaling(
+            "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Min,Max,Cofactor,Min Z,Max Z\n\
+             BV421-A,CD3,Arcsinh,-500,200000,150,0,0\n",
+            "scale-order-moved",
+        )
+    });
+    assert_eq!(reordered.ok(), Some(usual));
+
+    // A column missing is refused, not read shifted.
+    let path = temp_csv(
+        "scale-missing",
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,-500,200000,0,0\n",
+    );
+    let missing = read_axis_configs(path.clone(), ScalingInfoSource::Omiq);
+    let _ = std::fs::remove_file(path);
+    assert!(missing.is_err(), "read with a column missing: {missing:?}");
+}
+
 #[test]
 fn a_scaling_export_with_no_rows_parses_to_nothing() {
     let configs = parse_scaling(

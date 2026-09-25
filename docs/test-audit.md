@@ -21,7 +21,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **36 known-bug tests (32 bugs) are pinned as failing tests** (`#[ignore]`d
+- **37 known-bug tests (33 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -49,6 +49,7 @@ to fix first.
 | B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good. The cofactor box applies every keystroke the same way, through the rescale's own clamp | **High** - silent change to gating |
 | B-AX-3 | the same `clamp`, reached from files: `axis_store::read_axis_configs` and the gating import | Nothing validates a scaling file: a range the wrong way round (Min above Max), a cofactor of 0 (infinite bounds, then a NaN in the clamp) or a negative one each crash the app when it replaces the scaling (every quadrant on the channel is relimited) and when a gating file is imported over it | **High** - loading a file crashes the app |
 | B-OMIQ-2 | `GateState::upload_gates_from_file` (the node depth sort) | Walks each node's `parentId` to the root with nothing to notice a node already seen: a gating file in which a node is its own parent never finishes importing - the Workspace tab hangs on "Loading" instead of calling the file damaged | **High** - a damaged file hangs the app |
+| B-SCALE-1 | `plots::axis_store::fetch_axes_from_omiq_csv` | The scaling export is read with a fixed schema, which polars applies by position and ignores the header: an export with its columns in another order loads silently with the wrong ones (the test's CD3 gets cofactor -500 and a range of -6.7 to -0.3), and one with a column missing reads every later value shifted | **High** - silently wrong scaling for every gate on the channel |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
@@ -439,3 +440,13 @@ data-offset digit read as whitespace, so the data segment appeared to hold
 A first draft of the rules-run test cut a file short in its data and
 claimed the run died; it did not - flow_fcs refuses that case cleanly - so
 that claim was dropped and the passing behaviour is now a test of its own.
+
+### Damaged metadata and scaling exports
+
+`tests/csv_robustness.rs` damages each export 500 times - a cell blanked, a
+cell holding a comma, a row cut short, an enormous number, a whole column
+dropped - and requires each to be read or refused without a panic; none
+panicked. Checking what the scaling reader *accepted* found B-SCALE-1: a
+dropped column was read shifted, not refused. A decimal cofactor or range
+(`150.5`, `-500.5`) refuses the whole file with a polars parse error, since
+every number is read as `Int64` - worth knowing if Omiq ever writes one.
