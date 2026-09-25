@@ -183,6 +183,17 @@
 
 ### Fixed
 
+- **The most recent per-specimen position is the one that applies.** A gate
+  can be positioned per group under more than one metadata column - the
+  gating file groups it by one, a rules run by the pairing's Sample ID
+  column, and a run after that column is changed by another. A sample in a
+  group under each used to get whichever column its metadata happened to
+  list first, so a run's answer could be silently ignored. Now the position
+  written last applies, and an older one still holds for the samples nothing
+  newer covers. A save names a grouping column only when grouping by it gives
+  every sample its position; otherwise it writes the positions sample by
+  sample, so reopening the file shows exactly what was saved.
+
 - **A rules run never writes to a workspace it did not measure.** A run
   carries on while another tab is in front, and one that finished after the
   gating file, metadata or scaling was replaced wrote its answers into the new

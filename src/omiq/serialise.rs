@@ -409,17 +409,64 @@ fn container_for(
         group_id: rebuild
             .and_then(|r| r.group_id.clone())
             .or(synthesised.map(|(group_id, _)| group_id)),
-        // Which metadata column drives these positions. The session's own
-        // grouping wins where it has one, because the per-file filters above
-        // were resolved through it: naming a different column - or none -
-        // would have Omiq group them by something the geometry does not
-        // follow. Where the session grouped nothing, whatever the document
+        // Which metadata column drives these positions. Where the session
+        // grouped this gate, a column it grouped by - but only one that gives
+        // every file the position the session gives it (see
+        // `grouping_column`); failing that, none, and the positions stand file
+        // by file. Where the session grouped nothing, whatever the document
         // arrived with stands.
-        md: state
-            .group_override_column(container_id)
-            .or_else(|| rebuild.and_then(|r| r.md.clone())),
+        md: if state.group_columns_newest_first(container_id).is_empty() {
+            rebuild.and_then(|r| r.md.clone())
+        } else {
+            grouping_column(state, container_id, known_files, metadata)
+        },
         per_file_filters,
     }))
+}
+
+/// The metadata column to name as what groups this gate's positions, if one
+/// holds every file's.
+///
+/// Omiq groups a gate by one column, and a file reading the export back takes
+/// one position per group - the first file's of that group it reads. The
+/// session can hold positions under several columns, the newest applying to
+/// each file, and a file can have a position of its own. So a column is named
+/// only if grouping by it gives every file the document knows exactly the
+/// position the session gives it: every file of a group at the same position,
+/// and a file the column says nothing about at the gate's default. The columns
+/// are tried most recently written first. If none holds, the export names
+/// none, and the per-file positions - which are always written as the session
+/// resolves them - are read back file by file, exactly.
+fn grouping_column(
+    state: &GateState,
+    container_id: &GateId,
+    known_files: &rustc_hash::FxHashSet<crate::gate_editor::gates::gate_store::FileId>,
+    metadata: &MetaDataFileMap,
+) -> Option<crate::omiq::metadata::MetaDataParameter> {
+    let default = state.registered_gate(container_id);
+    state
+        .group_columns_newest_first(container_id)
+        .into_iter()
+        .find(|column| {
+            let mut held: rustc_hash::FxHashMap<Arc<str>, Arc<dyn DrawableGate>> =
+                Default::default();
+            known_files.iter().all(|file| {
+                let Some(resolved) = state.gate_for_file(container_id, file, metadata) else {
+                    return true;
+                };
+                match metadata.get(file).and_then(|columns| columns.get(column)) {
+                    Some(group) => {
+                        let first = held
+                            .entry(group.clone())
+                            .or_insert_with(|| resolved.clone());
+                        Arc::ptr_eq(first, &resolved)
+                    }
+                    None => default
+                        .as_ref()
+                        .is_some_and(|default| Arc::ptr_eq(default, &resolved)),
+                }
+            })
+        })
 }
 
 /// Which registry ids are containers in the file.

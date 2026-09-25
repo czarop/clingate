@@ -400,18 +400,15 @@ fn a_position_placed_under_the_files_own_column_replaces_it() {
     }
 }
 
-/// The file groups a gate's positions by one metadata column; the autogater
-/// positions by the pairing's sample id column, which need not be the same
-/// one. Both kinds of position are then kept, and a sample in a group of each
-/// gets whichever column the hash map of its metadata yields first - not the
-/// position just placed, and not by any rule a person could know. The run
-/// reports the gate placed; the plot shows the old position.
+/// Was B-GRP-1. The file groups a gate's positions by one metadata column;
+/// the autogater positions by the pairing's sample id column, which need not
+/// be the same one. Both kinds of position are kept, and a sample in a group
+/// of each got whichever column the hash map of its metadata yielded first -
+/// not the position just placed. Now the newest applies.
 ///
 /// Run both ways round - each gate grouped by one column in the file and
-/// placed by the other - so whichever column hashes first, one of the two
-/// shows it.
+/// placed by the other - so no hash order can make it pass by luck.
 #[test]
-#[ignore = "known bug B-GRP-1: which column's position a sample gets depends on hash order"]
 fn a_position_placed_under_another_column_is_the_one_its_samples_get() {
     for (id, grouped_by, placed_by) in [("QCVn", "Type", "test"), ("0lmI", "test", "Type")] {
         let mut state = import(&fixture(FIXTURE));
@@ -558,4 +555,68 @@ fn a_quadrant_moved_for_one_specimen_comes_back_on_its_samples_only() {
         &quarters_for(&back, &id, "sample1"),
         &before_other
     ));
+}
+
+/// Omiq keeps one grouping column per gate; the session can hold positions
+/// under several. The export must name a column only if grouping by it gives
+/// every file the position the session gives it - otherwise reopening hands a
+/// whole group whichever of its files is read first.
+///
+/// Here both files share a donor. Positions, oldest first: the donor's (both
+/// files), sample1's specimen's under `test`, and another donor's (neither
+/// file). The newest column is Donor, but grouping by it would put sample1
+/// back at the donor's position; `test` separates the two correctly.
+#[test]
+fn the_export_names_a_grouping_column_only_if_it_holds_every_files_position() {
+    let mut metadata = fixture_metadata();
+    for file in ["sample1", "sample2"] {
+        let mut columns = metadata.get(&Arc::from(file) as &Arc<str>).unwrap().clone();
+        columns.insert(Arc::from("Donor"), Arc::from("D"));
+        metadata.insert(Arc::from(file), columns);
+    }
+    let mut state = GateState::default();
+    state
+        .upload_gates_from_file(fixture(FIXTURE), &metadata, fixture_axes())
+        .unwrap();
+    let id: GateId = Arc::from("0lmI");
+    let global = state.registered_gate(&id).unwrap();
+    let x = global.get_params().0;
+    let from = extent_on(&global.get_gate_ref(None).unwrap().geometry, &x)
+        .unwrap()
+        .0;
+    let at = |to: f32| translate_edge_to(&global, &x, Bound::Above, to as f64).unwrap();
+    let key = |column: &str, group: &str| MetaDataKey {
+        parameter: Arc::from(column),
+        group: Arc::from(group),
+    };
+    let (donor, specimen) = (from + 1.0, from + 2.0);
+    place_for_specimen(&mut state, &id, &key("Donor", "D"), &at(donor));
+    place_for_specimen(&mut state, &id, &key("test", "one"), &at(specimen));
+    place_for_specimen(&mut state, &id, &key("Donor", "E"), &at(from + 3.0));
+
+    let edge = |s: &GateState, file: &str| {
+        let g = s.gate_for_file(&id, &Arc::from(file), &metadata).unwrap();
+        extent_on(&g.get_gate_ref(None).unwrap().geometry, &x)
+            .unwrap()
+            .0
+    };
+    assert!(close(edge(&state, "sample1"), specimen), "the premise");
+    assert!(close(edge(&state, "sample2"), donor), "the premise");
+
+    let written = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let path = scratch("grouping-column").join("saved.omiqgt");
+    std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
+    let mut back = GateState::default();
+    back.upload_gates_from_file(path, &metadata, fixture_axes())
+        .unwrap();
+    assert!(
+        close(edge(&back, "sample1"), specimen),
+        "sample1 came back at {}, was at {specimen}",
+        edge(&back, "sample1")
+    );
+    assert!(
+        close(edge(&back, "sample2"), donor),
+        "sample2 came back at {}, was at {donor}",
+        edge(&back, "sample2")
+    );
 }

@@ -99,6 +99,16 @@ pub struct GateSubStore {
     pub primary_and_subgate_registry: GateMap,
     pub sample_position_overrides: SampleGateMap,
     pub group_position_overrides: GroupGateMap,
+    /// When each per-group position was written, as a count of writes: the
+    /// larger, the more recent. See [`GateSubStore::newest_group_position`].
+    ///
+    /// Kept beside the map rather than in it so everything that reads a
+    /// position - filtering, drawing, the export - keeps reading the map it
+    /// always has. Written only by [`GateSubStore::set_group_position`] and
+    /// trimmed only by [`GateSubStore::retain_group_positions`], so the two
+    /// cannot drift.
+    group_written: FxHashMap<(GateId, MetaDataKey), u64>,
+    group_writes: u64,
 }
 
 /// The plain-data half of the gate store.
@@ -107,6 +117,82 @@ pub struct GateSubStore {
 /// exercised without a Dioxus runtime; the store methods are thin wrappers that
 /// keep the same write granularity.
 impl GateSubStore {
+    /// Write one per-group position, as the newest.
+    pub fn set_group_position(&mut self, key: (GateId, MetaDataKey), gate: Arc<dyn DrawableGate>) {
+        self.group_writes += 1;
+        self.group_written.insert(key.clone(), self.group_writes);
+        self.group_position_overrides.insert(key, gate);
+    }
+
+    /// Drop every per-group position `keep` says no to.
+    pub fn retain_group_positions(&mut self, mut keep: impl FnMut(&(GateId, MetaDataKey)) -> bool) {
+        self.group_position_overrides.retain(|key, _| keep(key));
+        self.group_written.retain(|key, _| keep(key));
+    }
+
+    /// Of the per-group positions `gate_id` holds for a file in `groups` - one
+    /// `(column, value)` pair per metadata column the file has - the one
+    /// written last.
+    ///
+    /// A file is in a group under every column it has: its SampleID, its
+    /// Type, its Donor. A gate can hold positions under more than one of them -
+    /// the gating file groups it by one column, a rules run by the pairing's
+    /// sample id column, and a run after that column is changed by another.
+    /// The newest applies, so a file shows the last position anything gave
+    /// it, and an older position still holds for the files nothing newer
+    /// covers. This used to be whichever column the file's metadata hash map
+    /// happened to yield first (B-GRP-1).
+    ///
+    /// A tie is only possible between positions put straight into the map
+    /// rather than through [`GateSubStore::set_group_position`]; it goes to the
+    /// column whose name sorts first, so the answer never depends on hashing.
+    pub fn newest_group_position<'a>(
+        &self,
+        gate_id: &GateId,
+        groups: impl IntoIterator<Item = (&'a MetaDataParameter, &'a GroupId)>,
+    ) -> Option<(MetaDataKey, &Arc<dyn DrawableGate>)> {
+        groups
+            .into_iter()
+            .filter_map(|(parameter, group)| {
+                let key = (
+                    gate_id.clone(),
+                    MetaDataKey {
+                        parameter: parameter.clone(),
+                        group: group.clone(),
+                    },
+                );
+                let gate = self.group_position_overrides.get(&key)?;
+                let written = self.group_written.get(&key).copied().unwrap_or(0);
+                Some((written, key.1, gate))
+            })
+            .max_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| b.1.parameter.cmp(&a.1.parameter))
+            })
+            .map(|(_, key, gate)| (key, gate))
+    }
+
+    /// The metadata columns `gate_id` holds per-group positions under, the
+    /// most recently written first.
+    pub fn group_columns_newest_first(&self, gate_id: &GateId) -> Vec<MetaDataParameter> {
+        let mut newest: FxHashMap<MetaDataParameter, u64> = FxHashMap::default();
+        for (id, key) in self.group_position_overrides.keys() {
+            if id != gate_id {
+                continue;
+            }
+            let written = self
+                .group_written
+                .get(&(id.clone(), key.clone()))
+                .copied()
+                .unwrap_or(0);
+            let at = newest.entry(key.parameter.clone()).or_insert(0);
+            *at = (*at).max(written);
+        }
+        let mut columns: Vec<(MetaDataParameter, u64)> = newest.into_iter().collect();
+        columns.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        columns.into_iter().map(|(column, _)| column).collect()
+    }
+
     /// Every key a gate occupies. A composite is registered under its own id
     /// *and* under each of its subgate ids, all aliased to the same `Arc`.
     pub fn ids_for(gate: &Arc<dyn DrawableGate>, gate_id: &GateId) -> Vec<GateId> {
@@ -139,8 +225,7 @@ impl GateSubStore {
                         .insert(id.clone(), gate.clone());
                 }
                 GateSource::Group((_, group_key)) => {
-                    self.group_position_overrides
-                        .insert((id.clone(), group_key.clone()), gate.clone());
+                    self.set_group_position((id.clone(), group_key.clone()), gate.clone());
                 }
                 GateSource::Sample((_, file_id)) => {
                     self.sample_position_overrides
@@ -658,8 +743,7 @@ impl GateState {
             .sample_position_overrides
             .retain(|(id, _file), _| !dropped.contains(id));
         self.gate_store
-            .group_position_overrides
-            .retain(|(id, _group), _| !dropped.contains(id));
+            .retain_group_positions(|(id, _group)| !dropped.contains(id));
         self.omiq_rebuild
             .gates
             .retain(|id, _| !dropped.contains(id));
@@ -1154,20 +1238,11 @@ impl GateState {
             return Some(gate.clone());
         }
 
-        if let Some(groups) = metadata.get(file_id) {
-            for (parameter, group) in groups {
-                let key = MetaDataKey {
-                    parameter: parameter.clone(),
-                    group: group.clone(),
-                };
-                if let Some(gate) = self
-                    .gate_store
-                    .group_position_overrides
-                    .get(&(gate_id.clone(), key))
-                {
-                    return Some(gate.clone());
-                }
-            }
+        if let Some((_, gate)) = metadata
+            .get(file_id)
+            .and_then(|groups| self.gate_store.newest_group_position(gate_id, groups))
+        {
+            return Some(gate.clone());
         }
 
         self.registered_gate(gate_id)
@@ -1205,15 +1280,24 @@ impl GateState {
     /// positions reads as per-sample even when every file of a specimen holds
     /// the same one, so the same run came back group-specific for containers
     /// that already carried the name and sample-specific for the rest.
+    ///
+    /// A gate can hold positions under more than one column (see
+    /// [`GateSubStore::newest_group_position`]); this is the one written most
+    /// recently, and [`GateState::group_columns_newest_first`] lists them all.
     pub fn group_override_column(
         &self,
         gate_id: &GateId,
     ) -> Option<crate::omiq::metadata::MetaDataParameter> {
-        self.gate_store
-            .group_position_overrides
-            .keys()
-            .find(|(id, _)| id == gate_id)
-            .map(|(_, key)| key.parameter.clone())
+        self.group_columns_newest_first(gate_id).into_iter().next()
+    }
+
+    /// Every column this gate's per-group positions are held under, the most
+    /// recently written first.
+    pub fn group_columns_newest_first(
+        &self,
+        gate_id: &GateId,
+    ) -> Vec<crate::omiq::metadata::MetaDataParameter> {
+        self.gate_store.group_columns_newest_first(gate_id)
     }
 
     pub fn overridden_ids(&self) -> (FxHashSet<GateId>, FxHashSet<GateId>) {
@@ -1429,8 +1513,7 @@ impl GateState {
             .sample_position_overrides
             .retain(|(gid, _file_id), _| !gates_to_delete.contains(gid));
         self.gate_store
-            .group_position_overrides
-            .retain(|(gid, _group_id), _| !gates_to_delete.contains(gid));
+            .retain_group_positions(|(gid, _group_id)| !gates_to_delete.contains(gid));
 
         // A deleted gate must not be written back into an Omiq file, so its
         // rebuild entry goes with it. Ghost containers are untouched: they are
@@ -1632,7 +1715,6 @@ impl GateState {
         {
             let registry = &self.gate_store.primary_and_subgate_registry;
             let sample_overrides = &self.gate_store.sample_position_overrides;
-            let group_overrides = &self.gate_store.group_position_overrides;
 
             for (default_id, base_arc) in &registry.0 {
                 if let Some((key, s_ovr)) =
@@ -1640,15 +1722,14 @@ impl GateState {
                 {
                     active_gates.insert(default_id.clone(), s_ovr.clone().into());
                     gate_origins.insert(default_id.clone(), GateSource::Sample(key.clone()));
-                } else if let Some((key, g_ovr)) = group_ids.iter().find_map(|gid| {
-                    let key = MetaDataKey {
-                        parameter: gid.0.clone(),
-                        group: gid.1.clone(),
-                    };
-                    group_overrides.get_key_value(&(default_id.clone(), key))
-                }) {
+                } else if let Some((key, g_ovr)) =
+                    self.gate_store.newest_group_position(default_id, group_ids)
+                {
                     active_gates.insert(default_id.clone(), g_ovr.clone().into());
-                    gate_origins.insert(default_id.clone(), GateSource::Group(key.clone()));
+                    gate_origins.insert(
+                        default_id.clone(),
+                        GateSource::Group((default_id.clone(), key)),
+                    );
                 } else {
                     active_gates.insert(default_id.clone(), base_arc.clone().into());
                     gate_origins.insert(default_id.clone(), GateSource::Global);
@@ -1884,7 +1965,7 @@ impl GateState {
                         }
                     }
                     GateSource::Group(key) => {
-                        self.gate_store.group_position_overrides.insert(key, gate);
+                        self.gate_store.set_group_position(key, gate);
                     }
                     GateSource::Sample(key) => {
                         self.gate_store.sample_position_overrides.insert(key, gate);
@@ -1936,12 +2017,10 @@ impl GateState {
                     }
                     GateSource::Group(key) => {
                         self.gate_store
-                            .group_position_overrides
-                            .insert(key.clone(), gate.clone());
+                            .set_group_position(key.clone(), gate.clone());
                         for sub_id in subgate_ids {
                             self.gate_store
-                                .group_position_overrides
-                                .insert((sub_id, key.1.clone()), gate.clone());
+                                .set_group_position((sub_id, key.1.clone()), gate.clone());
                         }
                     }
                     GateSource::Sample(key) => {
@@ -2956,6 +3035,126 @@ mod gate_store_tests {
             .iter()
             .map(|(p, g)| (Arc::from(*p) as Arc<str>, Arc::from(*g) as Arc<str>))
             .collect()
+    }
+
+    // ── per-group positions under more than one column: the newest applies ──
+
+    /// A registered gate `r`, and a file in group `one` under both `Type` and
+    /// `SampleID`.
+    fn grouped_twice() -> (GateState, GateId, FxHashMap<MetaDataParameter, GroupId>) {
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state
+            .gate_store
+            .insert_for_source(&[global.get_id()], &global, &GateSource::Global);
+        let groups = groups(&[("Type", "one"), ("SampleID", "one")]);
+        (state, global.get_id(), groups)
+    }
+
+    fn place(
+        state: &mut GateState,
+        id: &GateId,
+        column: &str,
+        group: &str,
+    ) -> Arc<dyn DrawableGate> {
+        let gate = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(id),
+            &gate,
+            &GateSource::Group((id.clone(), group_key(column, group))),
+        );
+        gate
+    }
+
+    fn resolved(
+        state: &GateState,
+        id: &GateId,
+        groups: &FxHashMap<MetaDataParameter, GroupId>,
+    ) -> Arc<dyn DrawableGate> {
+        state
+            .get_current_sample(file("f"), groups)
+            .active_gates
+            .get(id)
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn the_newest_group_position_applies_whichever_column_it_is_under() {
+        // Both orders, so no hash order can make this pass by luck.
+        for (first, second) in [("Type", "SampleID"), ("SampleID", "Type")] {
+            let (mut state, id, groups) = grouped_twice();
+            place(&mut state, &id, first, "one");
+            let newest = place(&mut state, &id, second, "one");
+            assert!(
+                Arc::ptr_eq(&resolved(&state, &id, &groups), &newest),
+                "{first} then {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_older_group_position_still_holds_where_nothing_newer_applies() {
+        let (mut state, id, _) = grouped_twice();
+        let by_type = place(&mut state, &id, "Type", "one");
+        place(&mut state, &id, "SampleID", "one");
+        // Another specimen of the same type: the newer position is not its.
+        let other = groups(&[("Type", "one"), ("SampleID", "two")]);
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &other), &by_type));
+    }
+
+    #[test]
+    fn writing_a_column_again_makes_it_the_newest() {
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "Type", "one");
+        place(&mut state, &id, "SampleID", "one");
+        let again = place(&mut state, &id, "Type", "one");
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &again));
+        assert_eq!(
+            state.group_columns_newest_first(&id),
+            vec![Arc::from("Type"), Arc::from("SampleID")] as Vec<MetaDataParameter>
+        );
+    }
+
+    #[test]
+    fn the_export_and_the_screen_resolve_a_file_the_same_way() {
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "SampleID", "one");
+        place(&mut state, &id, "Type", "one");
+        let mut metadata: crate::omiq::metadata::MetaDataFileMap =
+            im::HashMap::with_hasher(FxBuildHasher);
+        metadata.insert(file("f"), groups.clone());
+        assert!(Arc::ptr_eq(
+            &state.gate_for_file(&id, &file("f"), &metadata).unwrap(),
+            &resolved(&state, &id, &groups)
+        ));
+    }
+
+    #[test]
+    fn positions_written_straight_into_the_map_tie_by_column_name() {
+        // Only tests write the map directly; the rule still must not hash.
+        let (mut state, id, groups) = grouped_twice();
+        let by_sample = rectangle("r");
+        state
+            .gate_store
+            .group_position_overrides
+            .insert((id.clone(), group_key("Type", "one")), rectangle("r"));
+        state.gate_store.group_position_overrides.insert(
+            (id.clone(), group_key("SampleID", "one")),
+            by_sample.clone(),
+        );
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &by_sample));
+    }
+
+    #[test]
+    fn deleting_a_gate_forgets_when_its_positions_were_written() {
+        let (mut state, id, _) = grouped_twice();
+        state.place_new_gate(None, id.clone()).unwrap();
+        place(&mut state, &id, "Type", "one");
+        state.remove_gate(id.clone()).unwrap();
+        assert!(state.group_columns_newest_first(&id).is_empty());
+        assert!(state.gate_store.group_written.is_empty());
     }
 
     // ── GateState::unchanged_since: whether a run's answers still apply ──────
