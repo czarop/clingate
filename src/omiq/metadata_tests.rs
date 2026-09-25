@@ -267,6 +267,31 @@ fn an_unsupported_scaling_type_is_skipped_not_fatal() {
     assert!(configs.iter().all(|a| &*a.param.fluoro != "Odd-A"));
 }
 
+/// Nothing downstream is ready for a biexponential axis: the rescale helpers
+/// treat it as linear, and the skewed quadrant and parts of `AxisInfo` stop
+/// at `todo!()`. The importer is what keeps it out, so this holds it to that
+/// - whatever the export calls a biexponential scale, the axis that comes
+/// back is linear or arcsinh, or there is no axis at all.
+#[test]
+fn the_import_never_produces_a_biexponential_axis() {
+    let configs = parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,150,-500,200000,0,0\n\
+         PE-A,CD4,Logicle,1,0,262144,0,0\n\
+         APC-A,CD8,Biexponential,1,0,262144,0,0\n\
+         FITC-A,CD19,Biex,1,0,262144,0,0\n",
+        "scale-biexponential",
+    );
+
+    let kept: Vec<&str> = configs.iter().map(|a| &*a.param.fluoro).collect();
+    assert_eq!(kept, ["FSC-A", "BV421-A"]);
+    assert!(configs.iter().all(|a| matches!(
+        a.transform,
+        TransformType::Linear | TransformType::Arcsinh { .. }
+    )));
+}
+
 #[test]
 fn a_scaling_export_with_no_rows_parses_to_nothing() {
     let configs = parse_scaling(

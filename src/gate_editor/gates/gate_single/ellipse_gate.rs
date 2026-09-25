@@ -396,60 +396,76 @@ impl DrawableGate for EllipseGate {
         _axis_range: (f32, f32),
     ) -> anyhow::Result<Box<dyn DrawableGate>> {
         let (x_param, y_param) = self.get_params();
-        let points = self.get_points();
-        let c_vis = points[0];
-        let r_vis = points[1]; // The actual vertex in space
-        let t_vis = points[2]; // The actual vertex in space
-
+        let GateGeometry::Ellipse {
+            center,
+            radius_x,
+            radius_y,
+            angle,
+        } = &self.inner.geometry
+        else {
+            return Err(anyhow!(
+                "Ellipse gate {} has no ellipse geometry",
+                self.get_id()
+            ));
+        };
+        let (Some(cx), Some(cy)) = (
+            center.get_coordinate(&x_param),
+            center.get_coordinate(&y_param),
+        ) else {
+            return Err(anyhow!("Ellipse gate {} has no centre", self.get_id()));
+        };
         let is_x = x_param == param;
 
-        // 1. Get the current visual radii (the actual hypotenuse distance)
-        let current_rx = ((r_vis.0 - c_vis.0).powi(2) + (r_vis.1 - c_vis.1).powi(2)).sqrt();
-        let current_ry = ((t_vis.0 - c_vis.0).powi(2) + (t_vis.1 - c_vis.1).powi(2)).sqrt();
+        // An ellipse on one scale is not an ellipse on another, so this keeps
+        // three points exactly - the centre and one end of each principal
+        // axis - and fits the ellipse they imply on the new scale.
+        //
+        // The axis ends are carried as points, not their radii as lengths. A
+        // radius lies along its own principal axis, which is the rescaled
+        // channel only when the ellipse is unrotated; on a marker against a
+        // linear scatter channel the long axis is almost always the scatter
+        // one, and pushing a scatter-sized length through the marker's
+        // transform overflows.
+        //
+        // Of each axis's two ends, the one on the positive side of the
+        // rescaled channel is kept: the canonical form's angle can come back
+        // either way round, and this makes the result not depend on which.
+        let along = |p: (f32, f32)| if is_x { p.0 } else { p.1 };
+        let (sin_a, cos_a) = angle.sin_cos();
+        let towards_positive = |v: (f32, f32)| if along(v) < 0.0 { (-v.0, -v.1) } else { v };
+        let u = towards_positive((radius_x * cos_a, radius_x * sin_a));
+        let v = towards_positive((-radius_y * sin_a, radius_y * cos_a));
 
-        // 2. Determine the "Effective Edge" for round-tripping.
-        // We treat the radius as if it were lying flat on the axis to find its raw equivalent.
-        let (cx_new, rx_new) = if is_x {
-            let cx_raw = old.inverse_transform(&c_vis.0);
-            // We simulate a point that is 'radius' distance away on the RAW scale
-            let rx_edge_raw = old.inverse_transform(&(c_vis.0 + current_rx));
-
-            let cx_transformed = new.transform(&cx_raw);
-            let rx_edge_transformed = new.transform(&rx_edge_raw);
-
-            (cx_transformed, (rx_edge_transformed - cx_transformed).abs())
-        } else {
-            (c_vis.0, current_rx)
+        let carry = |p: (f32, f32)| {
+            let moved = new.transform(&old.inverse_transform(&along(p)));
+            if is_x { (moved, p.1) } else { (p.0, moved) }
         };
+        let c_new = carry((cx, cy));
+        let u_end = carry((cx + u.0, cy + u.1));
+        let v_end = carry((cx + v.0, cy + v.1));
+        if [c_new, u_end, v_end]
+            .iter()
+            .any(|p| !p.0.is_finite() || !p.1.is_finite())
+        {
+            return Err(anyhow!(
+                "Ellipse gate {} cannot be carried to the new scaling of {param}",
+                self.get_id()
+            ));
+        }
 
-        let (cy_new, ry_new) = if !is_x {
-            let cy_raw = old.inverse_transform(&c_vis.1);
-            let ry_edge_raw = old.inverse_transform(&(c_vis.1 + current_ry));
-
-            let cy_transformed = new.transform(&cy_raw);
-            let ry_edge_transformed = new.transform(&ry_edge_raw);
-
-            (cy_transformed, (ry_edge_transformed - cy_transformed).abs())
-        } else {
-            (c_vis.1, current_ry)
-        };
-
-        // 3. Extract Angle
-        let angle = match self.inner.geometry {
-            GateGeometry::Ellipse { angle, .. } => angle,
-            _ => 0.0,
-        };
-
-        let center = GateNode::new(self.get_id())
-            .with_coordinate(x_param, cx_new)
-            .with_coordinate(y_param, cy_new);
-
-        let new_geometry = GateGeometry::Ellipse {
-            center,
-            radius_x: rx_new,
-            radius_y: ry_new,
-            angle,
-        };
+        // The carried axis ends are no longer perpendicular unless the gate
+        // was unrotated, so they are a conjugate pair of the new ellipse
+        // rather than its principal axes - the importer's reconstruction
+        // turns such a pair into centre, radii and angle.
+        let wide = |p: (f32, f32)| (f64::from(p.0), f64::from(p.1));
+        let left = (2.0 * c_new.0 - u_end.0, 2.0 * c_new.1 - u_end.1);
+        let new_geometry = crate::omiq::deserialise::create_omiq_ellipse_geometry(
+            wide(left),
+            wide(u_end),
+            wide(v_end),
+            &x_param,
+            &y_param,
+        )?;
 
         let new_gate = flow_gates::Gate {
             id: self.inner.id.clone(),

@@ -23,3 +23,5 @@ mod gate_paths_tests;
 mod gate_stats_tests;
 #[cfg(test)]
 mod gate_types_tests;
+#[cfg(test)]
+mod rescale_tests;

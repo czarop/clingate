@@ -190,6 +190,88 @@ impl GateSubStore {
         self.sample_position_overrides = samples;
         self.group_position_overrides = groups;
     }
+
+    /// Carry every gate drawn on `marker` from one transform to another.
+    ///
+    /// Gate coordinates are held in the transformed space the plot is drawn
+    /// in, so a new cofactor would otherwise leave each gate at the same place
+    /// on screen and around different cells. Each point goes back to raw data
+    /// through the old transform and out through the new one, so a gate keeps
+    /// admitting the same events.
+    ///
+    /// Every tier - drawn, per specimen, per sample - through [`map_gates`],
+    /// which also makes sure a gate shared between tiers or aliased under a
+    /// composite's several keys is carried once and not compounded.
+    ///
+    /// A gate that cannot be carried keeps its old geometry and its error is
+    /// returned; the others are carried regardless.
+    ///
+    /// [`map_gates`]: GateSubStore::map_gates
+    pub fn rescale_channel(
+        &mut self,
+        marker: &Arc<str>,
+        old: &AxisInfo,
+        new: &AxisInfo,
+    ) -> Result<(), Vec<String>> {
+        let mut errors = vec![];
+        self.map_gates(|gate| {
+            let (x_marker, y_marker) = gate.get_params();
+            if marker != &x_marker && marker != &y_marker {
+                return gate.clone();
+            }
+            match gate.recalculate_gate_for_rescaled_axis(
+                marker.clone(),
+                &old.transform,
+                &new.transform,
+                (new.axis_lower, new.axis_upper),
+            ) {
+                Ok(new_gate) => Arc::from(new_gate),
+                Err(e) => {
+                    errors.push(e.to_string());
+                    gate.clone()
+                }
+            }
+        });
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Carry every gate drawn on `axis` to a new axis range.
+    ///
+    /// Only the gates whose extent comes from the axis range change - the
+    /// quadrants, whose outer edges run to the ends of the axes. Everything
+    /// else answers `None` and is kept as the same gate.
+    pub fn relimit_channel(
+        &mut self,
+        axis: &Arc<str>,
+        lower: f32,
+        upper: f32,
+        transform: &TransformType,
+    ) -> Result<(), Vec<String>> {
+        let mut errors = vec![];
+        self.map_gates(|gate| {
+            let (x_marker, y_marker) = gate.get_params();
+            if axis != &x_marker && axis != &y_marker {
+                return gate.clone();
+            }
+            match gate.recalculate_gate_for_new_axis_limits(axis.clone(), lower, upper, transform) {
+                Ok(Some(new_gate)) => Arc::from(new_gate),
+                Ok(None) => gate.clone(),
+                Err(e) => {
+                    errors.push(e.to_string());
+                    gate.clone()
+                }
+            }
+        });
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -2163,53 +2245,21 @@ impl<Lens> Store<GateState, Lens> {
         Ok(())
     }
 
-    // to do
-
+    /// See [`GateSubStore::rescale_channel`].
     fn rescale_gates(
         &mut self,
         marker: &Arc<str>,
         old_axis_options: &AxisInfo,
         new_axis_options: &AxisInfo,
     ) -> Result<(), Vec<String>> {
-        let mut errors = vec![];
-
+        let mut result = Ok(());
         self.gate_store().with_mut(|s| {
-            s.map_gates(|gate| {
-                let (x_marker, y_marker) = gate.get_params();
-                // let is_x = marker == &x_marker;
-                // let data_range = if is_x {
-                //     (*(plot_map.x_data_min_max().start()), *(plot_map.x_data_min_max().end()))
-                // } else {
-                //     (*(plot_map.y_data_min_max().start()), *(plot_map.y_data_min_max().end()))
-                // };
-
-                if marker == &x_marker || marker == &y_marker {
-                    let new_gate = match gate.recalculate_gate_for_rescaled_axis(
-                        marker.clone(),
-                        &old_axis_options.transform,
-                        &new_axis_options.transform,
-                        // data_range,
-                        (new_axis_options.axis_lower, new_axis_options.axis_upper),
-                    ) {
-                        Ok(new_gate) => Arc::from(new_gate),
-                        Err(e) => {
-                            errors.push(e.to_string());
-                            gate.clone()
-                        }
-                    };
-                    new_gate
-                } else {
-                    gate.clone()
-                }
-            });
+            result = s.rescale_channel(marker, old_axis_options, new_axis_options);
         });
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        result
     }
 
+    /// See [`GateSubStore::relimit_channel`].
     fn set_current_axis_limits(
         &mut self,
         axis_name: Arc<str>,
@@ -2217,37 +2267,11 @@ impl<Lens> Store<GateState, Lens> {
         upper: f32,
         transform: TransformType,
     ) -> Result<(), Vec<String>> {
-        let mut errors = vec![];
-
+        let mut result = Ok(());
         self.gate_store().with_mut(|s| {
-            s.map_gates(|gate| {
-                let (x_marker, y_marker) = gate.get_params();
-                if axis_name == x_marker || axis_name == y_marker {
-                    let new_gate = match gate.recalculate_gate_for_new_axis_limits(
-                        axis_name.clone(),
-                        lower,
-                        upper,
-                        &transform,
-                    ) {
-                        Ok(Some(new_gate)) => Arc::from(new_gate),
-                        Ok(None) => gate.clone(),
-                        Err(e) => {
-                            errors.push(e.to_string());
-                            gate.clone()
-                        }
-                    };
-                    new_gate
-                } else {
-                    gate.clone()
-                }
-            });
+            result = s.relimit_channel(&axis_name, lower, upper, &transform);
         });
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        result
     }
 
     fn get_gate_name(&self, id: GateId) -> Option<String> {

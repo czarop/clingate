@@ -131,6 +131,19 @@
   exported sheet is the page you looked at rather than a second drawing of it.
   Written directly rather than through a PDF library - no new dependency.
 
+- **Tests for carrying gates through a change of scaling** - the change a new
+  cofactor makes, typed in or arriving with a replacement scaling file. Each
+  asks what a person relies on: does the gate hold the same raw events after
+  the rescale as before it. Rectangles, line gates, quadrants and bisectors
+  must match exactly; polygons, ellipses and skewed quadrants, whose slanted
+  edges become curves on the new scale, are held to what was measured (98.4%
+  to 99.7%). Also covered: all three tiers a gate can sit in, a gate shared
+  between tiers or registered under several keys being carried once, a gate
+  on other channels being left alone, a round trip there and back, and a gate
+  drawn after a rescale living in the same space as the ones carried by it.
+  A further test holds the scaling import to producing only linear and
+  arcsinh axes, since the rescale has nothing for a biexponential one.
+
 ### Changed
 
 - **A plot no longer needs every channel the scaling file names.** The cofactors
@@ -150,6 +163,17 @@
   not have.
 
 ### Fixed
+
+- **An ellipse survives a change of scaling.** Rescaling read the ellipse's
+  `radius_x` as if it lay along X. It only does when the ellipse is unrotated
+  and wider than it is tall in data units - and against a linear scatter axis,
+  where SSC-A runs to hundreds of thousands and a marker to about eight, an
+  ellipse is almost always the other way round. The scatter-sized radius went
+  through the marker's transform, overflowed, and the gate came back with an
+  infinite radius admitting everything to one side of it. The centre and one
+  end of each axis are now carried as points and the ellipse is refitted
+  through them, whatever its angle; a gate that still cannot be carried is
+  reported and left as it was, rather than replaced with a broken one.
 
 - **One bad FCS file no longer takes the application down.** The header reader
   `expect`ed every step, and flow_fcs slices the file by its header's offsets
