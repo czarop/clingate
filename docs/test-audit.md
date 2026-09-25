@@ -22,8 +22,8 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,104 unit tests and 31 integration tests pass**, plus 11 doctests.
-- **30 known-bug tests (27 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,105 unit tests and 31 integration tests pass**, plus 11 doctests.
+- **31 known-bug tests (27 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. B-BUILD-1, B-NAV-1, B-RUN-1,
   B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2,
   B-AX-3, B-SCALE-1 and B-OMIQ-2 have been fixed.
@@ -49,7 +49,7 @@ to fix first.
 |---|---|---|---|
 | B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800 | **High** - confidently wrong gating |
 | B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
-| B-AX-4 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` | An axis limit is a view setting, but a quadrant's centre is clamped into the range on every relimit and nothing puts it back: narrowing an axis past a quadrant's centre and widening it again moves the quadrant for good - 1,080 of 2,784 events change quarter in the test. This was how B-AX-2 did its damage; with the boxes now applied on Enter it takes two deliberate edits | Medium - a view change that changes gating |
+| B-AX-4 | quadrant / skewed quadrant `recalculate_gate_for_rescaled_axis` and `recalculate_gate_for_new_axis_limits` | Both clamp the stored centre into the middle 80% of the new axis - a margin meant to keep the centre handle grabbable, applied to the gate itself - and nothing puts it back. A centre in the outer 10% at either end is pulled inwards by any cofactor change or axis-range change on that channel: on a cofactor-6000 axis from -1,000 to 262,144 that is any split below raw ~1,813 or above ~164,854, which an imported Omiq quadrant can easily have. In the tests, 120-264 of 2,784 events change quarter on a cofactor change (150 to 1000) for centres at raw 0-100 or 120,000+; a narrowed range moves up to 1,104. A centre mid-axis is untouched, as are bisectors, rectangles, polygons, ellipses and lines | **High** - rescaling changes gating |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |

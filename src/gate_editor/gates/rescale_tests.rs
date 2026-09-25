@@ -895,3 +895,125 @@ fn narrowing_an_axis_and_widening_it_again_leaves_a_quadrant_where_it_was() {
         was.len()
     );
 }
+
+// ── composites near the ends of the axis ─────────────────────────────────
+
+/// A quadrant or skewed quadrant as the Omiq import builds one: its centre
+/// wherever the file put it, `raw` on X, anywhere inside the axis.
+fn imported_composite(skewed: bool, raw: f32) -> Arc<dyn DrawableGate> {
+    use crate::gate_editor::gates::gate_composite::skewed_quadrant_gate::{
+        DataPoints, get_infinite_bounds,
+    };
+    let points = DataPoints::new_from_data_center(
+        shown(&OLD, raw),
+        500.0,
+        shown(&OLD, RAW_LOW)..=shown(&OLD, RAW_HIGH),
+        0.0..=1000.0,
+    );
+    let infs = (
+        get_infinite_bounds(&OLD),
+        get_infinite_bounds(&TransformType::Linear),
+    );
+    let (x, y) = (Arc::from(X), Arc::from(Y));
+    if skewed {
+        Arc::new(
+            SkewedQuadrantGate::try_new_from_data_points(
+                Arc::from("s"),
+                "s".into(),
+                points,
+                x,
+                y,
+                true,
+                None,
+                None,
+                infs,
+            )
+            .unwrap(),
+        )
+    } else {
+        Arc::new(
+            QuadrantGate::try_new_from_data_points(
+                Arc::from("q"),
+                "q".into(),
+                points,
+                x,
+                y,
+                true,
+                None,
+                None,
+                infs,
+            )
+            .unwrap(),
+        )
+    }
+}
+
+fn moved(before: &[Option<usize>], after: &[Option<usize>]) -> usize {
+    before.iter().zip(after).filter(|(a, b)| a != b).count()
+}
+
+/// BUG (docs/test-audit.md, B-AX-4): a quadrant's rescale clamps its centre
+/// into the middle 80% of the new axis - a margin meant to keep the centre
+/// handle grabbable, applied to the gate itself. A cofactor change moves the
+/// axis ends in display space by a different amount from the centre, so a
+/// centre that was fine near either end of the old axis can land in the new
+/// margin and be pulled inwards: here raw 0 and raw 150,000, on an axis from
+/// -500 to 200,000, going from cofactor 150 to 1000. A centre in the middle of
+/// the axis - where the other rescale tests put it - is untouched.
+#[test]
+#[ignore = "known bug B-AX-4: a cofactor change pulls a quadrant near the end of the axis inwards"]
+fn a_cofactor_change_leaves_a_quadrant_near_the_end_of_the_axis_where_it_was() {
+    for skewed in [false, true] {
+        for raw in [0.0, 150_000.0] {
+            let g = imported_composite(skewed, raw);
+            let before = membership(&g, &OLD);
+            let after = membership(&rescaled(&g), &NEW);
+            assert_eq!(
+                moved(&before, &after),
+                0,
+                "{} centred at raw {raw}: events changed quarter on a cofactor change",
+                if skewed {
+                    "a skewed quadrant"
+                } else {
+                    "a quadrant"
+                }
+            );
+        }
+    }
+}
+
+/// Guard for the test above: the same quadrants mid-axis come through a
+/// cofactor change untouched, so it is the ends of the axis that matter; and
+/// a bisector, which does not clamp, keeps its cells wherever it is.
+#[test]
+fn a_cofactor_change_leaves_mid_axis_quadrants_and_any_bisector_where_they_were() {
+    for skewed in [false, true] {
+        for raw in [300.0, 3_000.0, 60_000.0] {
+            let g = imported_composite(skewed, raw);
+            assert_eq!(
+                moved(&membership(&g, &OLD), &membership(&rescaled(&g), &NEW)),
+                0,
+                "skewed {skewed}, raw {raw}"
+            );
+        }
+    }
+    for raw in [-400.0, 0.0, 3_000.0, 150_000.0, 190_000.0] {
+        let b: Arc<dyn DrawableGate> = Arc::new(
+            BisectorGate::try_new_from_data_center(
+                Arc::from("b"),
+                "b".into(),
+                shown(&OLD, raw),
+                Arc::from(X),
+                Arc::from(Y),
+                (Arc::from("b_L"), Arc::from("b_R")),
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            moved(&membership(&b, &OLD), &membership(&rescaled(&b), &NEW)),
+            0,
+            "bisector at raw {raw}"
+        );
+    }
+}
