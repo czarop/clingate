@@ -183,6 +183,16 @@
 
 ### Fixed
 
+- **A metadata row with no file name no longer shifts the rows after it.**
+  Such a row was left out, but every file after it was then given the row
+  before its own - its group, and so the gates it was given, were wrong
+  without a word. Each row is now read whole. Rows with no id or no file
+  name are left out and named in a warning; an empty row is passed over. Two
+  rows with the same id are refused. Two with the same file name - Omiq allows
+  two plates' `A1.fcs` - are both kept for the gating file, but no file of
+  that name is given either's metadata, and a warning says so; the later row
+  used to win silently.
+
 - **Changing an axis no longer moves a quadrant.** A new cofactor or a new
   axis range pulled a quadrant or skewed quadrant whose centre sat near either
   end of the axis inwards, and snapped a skewed quadrant's slanted arms to the

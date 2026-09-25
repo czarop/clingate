@@ -22,11 +22,11 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,112 unit tests and 31 integration tests pass**, plus 11 doctests.
-- **29 known-bug tests (26 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,122 unit tests and 32 integration tests pass**, plus 11 doctests.
+- **27 known-bug tests (25 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. B-BUILD-1, B-NAV-1, B-RUN-1,
   B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2,
-  B-AX-3, B-AX-4, B-SCALE-1 and B-OMIQ-2 have been fixed.
+  B-AX-3, B-AX-4, B-META-1, B-SCALE-1 and B-OMIQ-2 have been fixed.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -48,7 +48,6 @@ to fix first.
 | Id | Where | What | Severity |
 |---|---|---|---|
 | B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800 | **High** - confidently wrong gating |
-| B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
@@ -73,6 +72,7 @@ to fix first.
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
 | B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
+| B-META-1 (fixed) | `omiq::metadata::parse_metadata_csv` | A row with no id or file name was skipped when ids were collected, but metadata was then read by position in the shortened list: every later file got the previous row's metadata, so its group - and the gates it was given - were wrong. Fixed: each row is read whole - id, file name and metadata together. A row with no id or no file name is left out and reported (`ParsedMetaData::skipped`), by row number and whichever of the two it has, as a warning when the metadata loads; an entirely empty row is passed over. Two rows with one id are refused, naming both. A file name on two rows - Omiq allows two plates' `A1.fcs`, told apart by id - keeps both rows under their ids but ties no file on disk to either, with a warning (`ParsedMetaData::shared_names`); it used to go to whichever row came last, silently | - |
 | B-AX-4 (fixed) | quadrant / skewed quadrant `recalculate_gate_for_rescaled_axis`, `recalculate_gate_for_new_axis_limits`, `DataPoints::new_from_data_center`, `draw_self` | A cofactor change or a new axis range clamped the stored centre (and a skewed quadrant's skew handles) into the middle 80% of the new axis - a margin meant to keep the centre handle grabbable, applied to the gate itself - and snapped the arm ends to the new edges, turning a slanted arm; the Omiq import clamped a centre beyond the axes onto them. A centre in the outer 10% at either end moved: on a cofactor-6000 axis from -1,000 to 262,144 any split below raw ~1,813 or above ~164,854; 120-264 of 2,784 events changed quarter on a cofactor change, up to 1,104 on a narrowed range. Fixed: a rescale carries every point through raw data with nothing clamped or snapped; a range change moves only where the arms end, along their own lines (`gate_composite::arm_to_edge`); the import keeps the file's centre. Where the lines are drawn follows from the centre and the arms' directions, clipped to the plot, and a centre off the plot has its handle drawn at the nearest point of it (`drawn_centre`); picking a line up follows the drawing. The margin is still applied when a person places or drags a centre. Both known-bug tests pass, and a sweep over seven positions, three kinds of quadrant and seven changes of axis moves no event | - |
 | B-AX-1 (fixed) | the editor's axis boxes (`main_window`), `AxisInfo::edited`, `gate_composite::usable_range` | An upper limit typed below the lower one (or a cofactor below 1, or something that is not a number) went into the store and then into every quadrant on the axis, whose `f32::clamp` panicked: the app crashed. Fixed: an edit is checked first (`AxisInfo::edited`), and a refused one raises a warning and the box goes back to the value it had; the quadrant relimit and rescale also refuse an unusable range with an error, as a second line | - |
 | B-AX-2 (fixed) | the editor's axis boxes | Every keystroke was applied, so typing 400000 applied 4, 40, 400 ... and each clamped the quadrants into that range. Fixed: the boxes (`CommittedNumber`) apply a number on Enter or on leaving the box. A deliberate narrowing moved quadrants too, until B-AX-4 was fixed | - |
@@ -181,12 +181,12 @@ the metadata - see the integration pass.
 `_SKEWEDQUAD0..3`; a new quadrant, skewed quadrant and bisector each come
 back from export and re-import as the same kind with the same pieces. In
 metadata: incomplete rows left out, blank values absent, numbers kept as
-text, a missing id column or file an error; B-META-1.
+text, a missing id column or file an error; B-META-1, and random exports
+with random cells blanked, every kept file checked against its own row.
 
-**Observation.** Two metadata rows with the same file name are accepted
-silently, the later winning. With files now named by their sub-folder path
-that is less likely, but a file would still be given another's group with no
-warning.
+**Observation (dealt with under B-META-1).** Two metadata rows with the same
+file name were accepted silently, the later winning. Now neither is tied to a
+file of that name, and a warning names the rows.
 
 ### gate_rules: threshold, confidence
 
@@ -340,7 +340,8 @@ files). Run with `cargo test --no-default-features --tests`.
   for plate sub-folders) -> `parse_metadata_csv` -> each file's row; a
   metadata export using bare well names reaches no file rather than the
   wrong one; a remembered workspace reopens the same files under the same
-  names, without a file removed by hand; B-META-1 end to end.
+  names, without a file removed by hand; B-META-1 end to end; bare well
+  names shared by two plates are reported and tied to neither file.
 - `gate_counting` - every gate type counted by the filter and by the
   on-screen index over the same events: they agree away from edges, the
   quadrant's quarters account for every event once; B-CNT-1 (edges),

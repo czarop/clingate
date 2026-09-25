@@ -733,13 +733,11 @@ fn nothing_is_resolved_before_a_scaling_has_loaded() {
 
 // ─── Rows the export left incomplete ──────────────────────────────────────────
 
-/// BUG (docs/test-audit.md, B-META-1): a row with no file name (or no id) is
-/// skipped when the ids are collected, but the metadata columns are then
-/// read by position in that shortened list - so every file after the
-/// skipped row is given the row before it. Here SampleC would be put in
-/// SampleA's group.
+/// Was B-META-1: a row with no file name (or no id) was skipped when the ids
+/// were collected, but the metadata columns were then read by position in
+/// that shortened list - so every file after the skipped row was given the
+/// row before it. Here SampleC was put in SampleB's group.
 #[test]
-#[ignore = "known bug B-META-1: a skipped row shifts every later file's metadata by one"]
 fn a_row_without_a_file_name_does_not_shift_the_rows_after_it() {
     let parsed = parse_metadata(
         "\
@@ -771,6 +769,257 @@ F2,,second
     );
     assert!(!parsed.metadata.contains_key(&Arc::<str>::from("2")));
     assert_eq!(parsed.file_name_to_gating_id.len(), 1);
+}
+
+fn parse_metadata_result(
+    contents: &str,
+    name: &str,
+) -> anyhow::Result<crate::omiq::metadata::ParsedMetaData> {
+    let path = temp_csv(name, contents);
+    let parsed = parse_metadata_csv(path.clone(), "OmiqID", "Filename", MetaDataOrigin::Omiq);
+    let _ = std::fs::remove_file(path);
+    parsed
+}
+
+fn skipped(parsed: &crate::omiq::metadata::ParsedMetaData) -> Vec<String> {
+    parsed.skipped.iter().map(|r| r.to_string()).collect()
+}
+
+/// A row left out is said so - by its row number as a spreadsheet counts
+/// them, and by whichever of its id and file name it does have.
+#[test]
+fn a_row_left_out_is_reported_by_its_row_and_what_it_has() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,SampleA.fcs,first
+F2,,second
+,SampleC.fcs,third
+,,fourth
+F5,SampleE.fcs,fifth
+",
+        "meta-report",
+    );
+    assert_eq!(
+        skipped(&parsed),
+        [
+            "row 3 (F2) has no Filename",
+            "row 4 (SampleC.fcs) has no OmiqID",
+            "row 5 has no OmiqID or Filename",
+        ]
+    );
+    assert_eq!(parsed.metadata.len(), 2);
+    assert_eq!(
+        parsed.metadata[&Arc::<str>::from("5")]
+            .get(&Arc::<str>::from("Group"))
+            .map(|g| &**g),
+        Some("fifth")
+    );
+}
+
+/// A spreadsheet can leave rows with nothing in them - no id, no name, no
+/// metadata. They describe nothing, are passed over without a word, and shift
+/// nothing.
+#[test]
+fn an_empty_row_is_passed_over_without_a_word() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,SampleA.fcs,first
+,,
+F3,SampleC.fcs,third
+,, 
+",
+        "meta-emptyrow",
+    );
+    assert!(parsed.skipped.is_empty(), "{:?}", skipped(&parsed));
+    assert_eq!(
+        parsed.metadata[&Arc::<str>::from("3")]
+            .get(&Arc::<str>::from("Group"))
+            .map(|g| &**g),
+        Some("third")
+    );
+}
+
+/// An id or a file name of only spaces is no id or name.
+#[test]
+fn a_file_name_of_only_spaces_is_no_file_name() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,  ,first
+",
+        "meta-spaces",
+    );
+    assert!(parsed.metadata.is_empty());
+    assert_eq!(skipped(&parsed), ["row 2 (F1) has no Filename"]);
+}
+
+/// Omiq allows two files of one name - two plates' `A1.fcs` - told apart by
+/// id. Both rows are kept under their ids, for the gating file; but a file on
+/// disk is found by name, and nothing says which row it is, so neither is tied
+/// to it - rather than the later row winning without a word, as it used to.
+#[test]
+fn a_file_name_on_two_rows_ties_no_file_to_either_and_keeps_both_by_id() {
+    let parsed = parse_metadata(
+        "\
+OmiqID,Filename,Group
+F1,SampleA.fcs,first
+F2,SampleB.fcs,second
+F3,SampleA.fcs,third
+",
+        "meta-dupname",
+    );
+    assert!(!parsed.file_name_to_gating_id.contains_key("SampleA.fcs"));
+    assert_eq!(&*parsed.file_name_to_gating_id["SampleB.fcs"], "2");
+    let group = |id: &str| {
+        parsed.metadata[&Arc::<str>::from(id)]
+            .get(&Arc::<str>::from("Group"))
+            .map(|g| g.to_string())
+    };
+    assert_eq!(group("1").as_deref(), Some("first"));
+    assert_eq!(group("3").as_deref(), Some("third"));
+    assert_eq!(
+        parsed.warnings(),
+        [
+            "1 file name is on more than one metadata row, so no file of that name is given metadata: SampleA.fcs (rows 2 and 4)"
+        ]
+    );
+}
+
+#[test]
+fn the_message_for_shared_names_lists_every_row_of_each() {
+    use crate::omiq::metadata::{SharedName, shared_names_message};
+    assert_eq!(shared_names_message(&[]), None);
+    let message = shared_names_message(&[
+        SharedName {
+            name: Arc::from("A1.fcs"),
+            rows: vec![2, 5, 9],
+        },
+        SharedName {
+            name: Arc::from("B1.fcs"),
+            rows: vec![3, 4],
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        message,
+        "2 file names are on more than one metadata row, so no file of that name is given metadata: A1.fcs (rows 2, 5 and 9); B1.fcs (rows 3 and 4)"
+    );
+}
+
+/// A clean export warns of nothing.
+#[test]
+fn a_clean_export_has_no_warnings() {
+    assert!(parse_metadata(METADATA, "meta-clean").warnings().is_empty());
+}
+
+#[test]
+fn two_rows_for_the_same_id_are_refused_naming_both() {
+    for (first, second) in [("F1", "F1"), ("F1", "1")] {
+        let error = parse_metadata_result(
+            &format!(
+                "OmiqID,Filename,Group\n{first},SampleA.fcs,first\n{second},SampleB.fcs,second\n"
+            ),
+            "meta-dupid",
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{first} and {second} are one file, and should be refused"))
+        .to_string();
+        assert!(error.contains("rows 2 and 3"), "{error}");
+        assert!(error.contains(&format!("id {second}:")), "{error}");
+    }
+}
+
+/// Over random exports with random cells blanked, every file kept has its own
+/// row's metadata and no other, and exactly the rows missing an id or a file
+/// name are reported.
+#[test]
+fn every_file_kept_has_its_own_rows_metadata_whichever_rows_are_left_out() {
+    use rand::prelude::*;
+    let mut rng = StdRng::seed_from_u64(11);
+    for trial in 0..40 {
+        let rows = rng.random_range(1..60);
+        let mut csv = String::from("OmiqID,Filename,Group,Plate\n");
+        let mut kept = Vec::new();
+        let mut left_out = Vec::new();
+        for i in 0..rows {
+            let id = if rng.random_bool(0.15) {
+                String::new()
+            } else {
+                format!("F{i}")
+            };
+            let name = if rng.random_bool(0.15) {
+                String::new()
+            } else {
+                format!("S{i}.fcs")
+            };
+            let group = if rng.random_bool(0.2) {
+                String::new()
+            } else {
+                format!("g{i}")
+            };
+            csv.push_str(&format!("{id},{name},{group},p{}\n", i % 7));
+            if id.is_empty() || name.is_empty() {
+                left_out.push(i + 2);
+            } else {
+                kept.push((i, group));
+            }
+        }
+        let parsed = parse_metadata(&csv, "meta-random");
+        assert_eq!(
+            parsed.skipped.iter().map(|r| r.row).collect::<Vec<_>>(),
+            left_out,
+            "trial {trial}"
+        );
+        assert_eq!(parsed.metadata.len(), kept.len(), "trial {trial}");
+        for (i, group) in kept {
+            let id = &parsed.file_name_to_gating_id[&Arc::<str>::from(format!("S{i}.fcs"))];
+            assert_eq!(&**id, i.to_string(), "trial {trial}");
+            let md = &parsed.metadata[id];
+            let get = |c: &str| md.get(&Arc::<str>::from(c)).map(|v| v.to_string());
+            assert_eq!(
+                get("Group"),
+                (!group.is_empty()).then_some(group),
+                "trial {trial}, S{i}"
+            );
+            assert_eq!(
+                get("Plate"),
+                Some(format!("p{}", i % 7)),
+                "trial {trial}, S{i}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_message_for_rows_left_out_names_the_first_few_and_counts_the_rest() {
+    use crate::omiq::metadata::{SkippedRow, skipped_rows_message};
+    assert_eq!(skipped_rows_message(&[]), None);
+    let row = |n: usize| SkippedRow {
+        row: n,
+        has: Some(format!("F{n}")),
+        missing: "Filename".into(),
+    };
+    assert_eq!(
+        skipped_rows_message(&[row(3)]).as_deref(),
+        Some(
+            "1 metadata row could not be tied to a file and was left out: row 3 (F3) has no Filename"
+        )
+    );
+    let many: Vec<SkippedRow> = (2..9).map(row).collect();
+    let message = skipped_rows_message(&many).unwrap();
+    assert!(
+        message.starts_with(
+            "7 metadata rows could not be tied to a file and were left out: row 2 (F2)"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains("row 6 (F6)") && !message.contains("row 7"),
+        "{message}"
+    );
+    assert!(message.ends_with("; and 2 more"), "{message}");
 }
 
 #[test]

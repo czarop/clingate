@@ -75,8 +75,9 @@ fn a_damaged_export_is_refused_or_read_never_a_crash() {
                     e.downcast_ref::<String>()
                 ));
             }
-            // A dropped column is read shifted rather than refused - that is
-            // B-SCALE-1, pinned in the metadata tests. Only a panic fails here.
+            // Refused or read are both fine here - a dropped column is
+            // refused by name, which the metadata tests cover. Only a panic
+            // fails.
             Ok(_) => {}
         }
     }

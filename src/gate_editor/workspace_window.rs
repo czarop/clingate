@@ -335,8 +335,11 @@ impl Handles {
         })
         .await;
         match flatten(result) {
-            Ok(()) => {
+            Ok(warnings) => {
                 self.set_part(Which::Metadata, Part::Loaded(path));
+                for warning in warnings {
+                    warn(&self.toasts, warning);
+                }
                 true
             }
             Err(e) => {

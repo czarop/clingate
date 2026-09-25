@@ -105,13 +105,24 @@ fn a_metadata_export_naming_wells_by_their_bare_names_reaches_neither() {
         .filter(|name| parsed.file_name_to_gating_id.contains_key(name.as_str()))
         .collect();
     assert!(reached.is_empty(), "{reached:?}");
+    // Neither row is tied to a file called A1.fcs either, and that is said:
+    // nothing tells which of the two it would be.
+    assert!(parsed.file_name_to_gating_id.is_empty());
+    assert_eq!(parsed.metadata.len(), 2, "both rows are kept, by id");
+    assert_eq!(
+        parsed
+            .shared_names
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>(),
+        ["A1.fcs (rows 2 and 3)"]
+    );
 }
 
-/// BUG (docs/test-audit.md, B-META-1), end to end: a metadata row the export
-/// left without a file name shifts every later file onto the row before it,
-/// so a file in plate 2 is put in plate 1's group.
+/// Was B-META-1, end to end: a metadata row the export left without a file
+/// name shifted every later file onto the row before it, so a file in plate 2
+/// was put in plate 1's group. The row is now left out, and said so.
 #[test]
-#[ignore = "known bug B-META-1: a row without a file name shifts the rows after it"]
 fn an_incomplete_metadata_row_does_not_move_a_file_into_another_plate() {
     let dir = plate_folder("shifted");
     write_metadata(
@@ -136,6 +147,14 @@ fn an_incomplete_metadata_row_does_not_move_a_file_into_another_plate() {
             .get(&Arc::<str>::from("Plate"))
             .map(|p| &**p),
         Some("P2")
+    );
+    assert_eq!(
+        parsed
+            .skipped
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<_>>(),
+        ["row 3 (F150) has no Filename"]
     );
 }
 
