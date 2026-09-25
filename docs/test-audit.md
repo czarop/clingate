@@ -18,35 +18,55 @@ the seams the integration tests in the second pass are written against.
   like) skip when the variable is unset. That is deliberate and listed here so
   nobody mistakes a green run for coverage of them.
 
+## Where things stand
+
+- **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
+- **25 known bugs are pinned as failing tests** (`#[ignore]`d with their
+  id); all 25 fail today. One more (B-BUILD-1) was fixed outright.
+- **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
+  printed their results and passed whatever happened (40 now assert, one
+  loop over the others deleted), and one FCS equality test that discarded
+  its answer. 15 more that asserted only that *something* was returned, or
+  that an edit was refused, now assert what came back and that a refused
+  edit changed nothing.
+
+Run everything without GTK:
+
+    cargo test --no-default-features                          # the suite
+    cargo test --no-default-features --no-fail-fast -- --ignored   # the known bugs: every one should fail
+
+The table is ordered by severity. The four **High** entries change what a
+person sees or gates without saying so, or crash the app, and are the ones
+to fix first.
+
 ## Summary of bugs
 
 | Id | Where | What | Severity |
 |---|---|---|---|
+| B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800 | **High** - confidently wrong gating |
+| B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
+| B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
+| B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
+| B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
+| B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
+| B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
+| B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
+| B-CNT-1 | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter admits strictly inside a rectangle, the index counts the edge: the percentage on a gate counts events the population drawn under it does not hold (240 vs 246 in the test, the six edge events) | Medium - whole-number scatter values meet round edges |
+| B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
+| B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
+| B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
+| B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
+| B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
+| B-STAT-1 | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100` unguarded: a gate over an empty parent shows NaN% | Low |
+| B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
 | B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
 | B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
-| B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
-| B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
-| B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800 | **High** - confidently wrong gating |
-| B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
-| B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
-| B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
-| B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
-| B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
-| B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
-| B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
-| B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
-| B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
-| B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
-| B-CNT-1 | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter admits strictly inside a rectangle, the index counts the edge: the percentage on a gate counts events the population drawn under it does not hold (240 vs 246 in the test, the six edge events) | Medium - whole-number scatter values meet round edges |
-| B-STAT-1 | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100` unguarded: a gate over an empty parent shows NaN% | Low |
-| B-BUILD-1 (fixed) | `Cargo.toml` | The binary needs `dioxus::desktop`, so `cargo test --no-default-features` - documented as the way to test without GTK - failed building it for any target but `--lib`. Fixed: `required-features = ["desktop"]` on the `[[bin]]` | - |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
-| B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
 | B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
-
+| B-BUILD-1 (fixed) | `Cargo.toml` | The binary needs `dioxus::desktop`, so `cargo test --no-default-features` - documented as the way to test without GTK - failed building it for any target but `--lib`. Fixed: `required-features = ["desktop"]` on the `[[bin]]` | - |
 ## Modules
 
 ### gate_move
@@ -56,7 +76,7 @@ are called from outside the module - by `gate_rules::threshold`. Everything
 else (`density_grid`, `kde_negative_shift`, `analyse_population_shift`) is
 exploratory code with no caller in the application, so its bugs are latent.
 
-**Vacuous tests found and repaired (31).**
+**Vacuous tests found and repaired (41).**
 
 - `density_grid::flow_tests` - 9 scenario tests printed their translation and
   passed whether it was right, wrong or an `Err`. `run` now asserts the shift to
@@ -321,3 +341,13 @@ files). Run with `cargo test --no-default-features --tests`.
   files on disk: an unreadable file is reported by name and the rest run, a
   cancelled run places nothing, the density finder follows a drifted
   negative; B-AUTO-1.
+
+## Leftover output
+
+Debug `println!`s that run in normal use, noted rather than removed since
+removing them is not a test change: `gate_single::rescale_helper` (every
+point of every rescaled gate), `gate_filtering::filter_events_by_hierarchy_to_mask`
+(on every filtered plot), `plots::data_helpers::get_filtered_dataframe` (the
+whole gate chain), `plots::axis_store::read_axis_configs` (skipped channels),
+`deserialise::validate_metadata_requirements` (dead). `main_window`'s axis
+boxes print their errors instead of showing them.

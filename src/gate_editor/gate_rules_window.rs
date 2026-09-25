@@ -2146,6 +2146,108 @@ mod tests {
             );
         }
 
+        /// A marker on arcsinh: the events are transformed with the axis
+        /// store's cofactor before they are measured, so the gate - drawn and
+        /// stored in that transformed space - is positioned in it too.
+        #[test]
+        fn a_run_measures_in_the_arcsinh_space_the_gate_is_drawn_in() {
+            use crate::gate_rules::rule::NegativeFinder;
+            use flow_fcs::Transformable;
+            const M: &str = "BV421-A";
+            let t = flow_fcs::TransformType::Arcsinh { cofactor: 150.0 };
+            let shown = |raw: f32| t.transform(&raw);
+
+            // Raw negatives at 1,000 on the QC and 3,000 on the donor; the
+            // same fraction of positives far above both.
+            let rows = |centre: f32, seed: u64| -> Vec<Vec<f32>> {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+                let neg = Normal::new(centre, centre * 0.1).unwrap();
+                let pos = Uniform::new(60_000.0f32, 90_000.0).unwrap();
+                let mut out: Vec<Vec<f32>> =
+                    (0..9_000).map(|_| vec![neg.sample(&mut rng), 100.0]).collect();
+                out.extend((0..1_000).map(|_| vec![pos.sample(&mut rng), 100.0]));
+                out
+            };
+            let dir = scratch("run-arcsinh");
+            let channels = [(M, Some("CD3")), (Y, None)];
+            write_fcs_rows(&dir.join("fs_qc.fcs"), &channels, &rows(1_000.0, 3), &[]);
+            write_fcs_rows(&dir.join("fs_b.fcs"), &channels, &rows(3_000.0, 4), &[]);
+            let files = vec![
+                (Arc::from("fs_qc.fcs"), dir.join("fs_qc.fcs")),
+                (Arc::from("fs_b.fcs"), dir.join("fs_b.fcs")),
+            ];
+
+            // The gate's edge a little above the QC's negative, in display
+            // units - where a person would have drawn it on that plot.
+            let edge = shown(2_500.0);
+            let mut state = GateState::default();
+            let id: Arc<str> = Arc::from("CD3+");
+            let gate: Arc<dyn DrawableGate> = Arc::new(
+                crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                    flow_gates::Gate {
+                        id: id.clone(),
+                        name: "CD3+".into(),
+                        geometry: flow_gates::create_rectangle_geometry(
+                            vec![(edge, -1e16), (1e16, -1e16), (1e16, 1e16), (edge, 1e16)],
+                            M,
+                            Y,
+                        )
+                        .unwrap(),
+                        mode: flow_gates::GateMode::Global,
+                        parameters: (Arc::from(M), Arc::from(Y)),
+                        label_position: None,
+                    },
+                    true,
+                )
+                .unwrap(),
+            );
+            state.place_gate(&[id.clone()], &gate, &GateSource::Global);
+            state.place_new_gate(None, id.clone()).unwrap();
+
+            let mut store = RuleStore::default();
+            store.insert(
+                RuleTarget::named("CD3+"),
+                GateRule {
+                    parameter: Arc::from(M),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule {
+                        find: NegativeFinder::NegativePeak,
+                        ..AboveTheNegativeRule::default()
+                    }),
+                },
+            );
+            let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+            let outcome = run_solve(
+                state.clone(),
+                files,
+                named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
+                vec![(Arc::from(M), 150.0)],
+                specimens(),
+                store,
+                progress,
+                Arc::new(AtomicBool::new(false)),
+            );
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+
+            let placed = state
+                .gate_for_file(&id, &Arc::from("fs_b"), &specimens())
+                .unwrap();
+            let at = crate::gate_rules::autogate::extent_on(
+                &placed.get_gate_ref(None).unwrap().geometry,
+                M,
+            )
+            .unwrap()
+            .0;
+            // In display space the donor's negative sits shown(3000) -
+            // shown(1000) higher, so the gate should have moved by about as
+            // much, and still be a display coordinate - single digits, not
+            // thousands.
+            let expected = edge + (shown(3_000.0) - shown(1_000.0));
+            assert!(at < 10.0, "the gate was placed in raw units: {at}");
+            assert!((at - expected).abs() < 0.3, "the gate is at {at}, expected about {expected}");
+        }
+
         #[test]
         fn a_cancelled_run_places_nothing() {
             let (state, _) = positive_gate();

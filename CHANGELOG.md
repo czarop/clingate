@@ -144,6 +144,25 @@
   A further test holds the scaling import to producing only linear and
   arcsinh axes, since the rescale has nothing for a biexponential one.
 
+- **A test audit, and the bugs it found as failing tests.** Every test file
+  was read for tests that could not fail - 41 scenario tests in `gate_move`
+  printed their results and passed whatever happened - and every module for
+  code no test reached. `docs/test-audit.md` lists what was repaired, what
+  was added, where each module reaches into the others, and 25 bugs, each
+  pinned as a test that fails today and is `#[ignore]`d with the bug's id:
+  `cargo test --no-default-features --no-fail-fast -- --ignored` runs them.
+  The four most serious: a metadata row without a file name shifts every
+  later file onto the wrong group; typing an axis limit below the lower one
+  crashes the app, and retyping one moves quadrants for good; and with the
+  default finder, above-the-negative puts a gate inside a negative that
+  drifted past it and scores that 0.87.
+
+- **Integration tests** in `tests/`, driving the library with real files:
+  a plate folder to each file's metadata, a document saved and reopened
+  with per-sample positions, a scaling file replaced under drawn gates on
+  real stores, every gate counted by the filter and by the on-screen index,
+  and the rules run from FCS files on disk.
+
 ### Changed
 
 - **A plot no longer needs every channel the scaling file names.** The cofactors
@@ -163,6 +182,10 @@
   not have.
 
 ### Fixed
+
+- **`cargo test --no-default-features` builds.** The binary needs
+  `dioxus::desktop`, so every test target but `--lib` failed to build
+  without GTK. It now declares `required-features = ["desktop"]`.
 
 - **An ellipse survives a change of scaling.** Rescaling read the ellipse's
   `radius_x` as if it lay along X. It only does when the ellipse is unrotated
