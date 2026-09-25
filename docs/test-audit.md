@@ -400,3 +400,15 @@ would otherwise pick different positions each run.
 
 flow_gates prints `🔧 [TRANSFORM]` lines on every pixel conversion; they fill
 the output of any test that adds gates. That is upstream, in `czarop/flow`.
+
+### Random gate edits
+
+`gate_editor::gates::edit_fuzz_tests`, over every gate type: 25 random drags
+each followed by the opposite drag leave the gate holding exactly the cells
+it held (with a guard that a drag moves cells at all - except the bisector,
+whose whole-gate drag slides its handle along the split by design); and 200
+random moves of the handles each gate draws never panic or leave a
+coordinate that is not finite. An early draft pulled handle index 5 on every
+type and hit the skewed quadrant's `unreachable!()` - it draws five handles,
+so that index cannot come from the editor, and the test now pulls only drawn
+handles.

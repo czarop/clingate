@@ -73,7 +73,7 @@ fn raw_of(t: &TransformType, shown: f32) -> f32 {
 /// the plot window builds one. The composites read their constructors' click
 /// in display space from it, and the skewed quadrant takes the reach of its
 /// outer edges from its transforms.
-fn mapper(t: &TransformType) -> PlotMapper {
+pub(super) fn mapper(t: &TransformType) -> PlotMapper {
     let (lo, hi) = (shown(t, RAW_LOW), shown(t, RAW_HIGH));
     PlotMapper::new(
         600.0,
@@ -267,7 +267,7 @@ pub(super) fn events() -> Vec<(f32, f32)> {
 /// Which region of `gate` each raw event lands in, with X shown through `t`.
 /// `None` for an event outside every region. A composite's regions are its
 /// subgates, in order.
-fn membership(gate: &Arc<dyn DrawableGate>, t: &TransformType) -> Vec<Option<usize>> {
+pub(super) fn membership(gate: &Arc<dyn DrawableGate>, t: &TransformType) -> Vec<Option<usize>> {
     let regions: Vec<Option<Arc<str>>> = if gate.is_composite() {
         gate.get_inner_gate_ids().into_iter().map(Some).collect()
     } else {

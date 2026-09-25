@@ -27,3 +27,5 @@ mod gate_types_tests;
 mod rescale_tests;
 #[cfg(test)]
 mod swap_tests;
+#[cfg(test)]
+mod edit_fuzz_tests;

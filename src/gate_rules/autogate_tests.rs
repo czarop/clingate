@@ -2262,8 +2262,7 @@ fn a_dip_inside_the_bar_is_judged_more_kindly_than_one_outside_it() {
             .positioned
             .iter()
             .find(|p| &*p.specimen == "DONOR-B")
-            .expect("placed")
-            .clone();
+            .expect("placed");
         (placed.confidence, placed.weakest)
     };
     let (strict, strict_weakest) = confidence(0.9);
