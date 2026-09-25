@@ -621,6 +621,13 @@ enum Pending {
 }
 
 impl Pending {
+    /// Whether this action throws away the gates now loaded, and so has to be
+    /// confirmed first. Replacing the scaling carries the gates to the new
+    /// transforms rather than discarding them.
+    fn discards_gates(&self) -> bool {
+        !matches!(self, Pending::Replace(Which::Scaling, _))
+    }
+
     fn describe(&self) -> String {
         let consequence = "Every gate position changed since the gating file was loaded - by hand or by the autogater - will be lost. Write the gating file first if you need them.";
         match self {
@@ -646,8 +653,7 @@ impl Pending {
 
 /// Run an action now, or hold it for confirmation if it would discard gates.
 fn act(handles: Handles, mut pending: Signal<Option<Pending>>, action: Pending) {
-    let discards = !matches!(action, Pending::Replace(Which::Scaling, _));
-    if discards && handles.gates_loaded() {
+    if action.discards_gates() && handles.gates_loaded() {
         pending.set(Some(action));
         return;
     }
@@ -1126,5 +1132,104 @@ fn PartRow(which: Which, part: Part, busy: bool, on_choose: EventHandler<PathBuf
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_replacing_the_scaling_goes_ahead_without_asking() {
+        let path = PathBuf::from("/data/run1/new.csv");
+        assert!(!Pending::Replace(Which::Scaling, path.clone()).discards_gates());
+        for action in [
+            Pending::OpenFolder(PathBuf::from("/data/run2")),
+            Pending::Reopen(Remembered::default()),
+            Pending::Replace(Which::Metadata, path.clone()),
+            Pending::Replace(Which::Gating, PathBuf::from("/data/run1/gates.omiqgt")),
+        ] {
+            assert!(action.discards_gates(), "{action:?}");
+            let said = action.describe();
+            assert!(
+                said.contains("will be lost"),
+                "{action:?} does not say what is lost: {said}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_confirmation_names_what_is_being_opened() {
+        let open = Pending::OpenFolder(PathBuf::from("/data/run2")).describe();
+        assert!(
+            open.contains("/data/run2") && open.contains("rules"),
+            "{open}"
+        );
+        let gating =
+            Pending::Replace(Which::Gating, PathBuf::from("/data/run1/gates_v2.omiqgt")).describe();
+        assert!(gating.contains("gates_v2.omiqgt"), "{gating}");
+        let metadata = Pending::Replace(Which::Metadata, PathBuf::from("m.csv")).describe();
+        assert!(metadata.contains("imported again"), "{metadata}");
+    }
+
+    #[test]
+    fn a_part_knows_its_file_whatever_state_it_is_in() {
+        let p = PathBuf::from("/data/metadata.csv");
+        for part in [
+            Part::Loading(p.clone()),
+            Part::Waiting(p.clone(), "the scaling"),
+            Part::Loaded(p.clone()),
+            Part::Failed(p.clone(), "bad".into()),
+        ] {
+            assert_eq!(part.path(), Some(p.as_path()), "{part:?}");
+        }
+        assert_eq!(Part::Absent.path(), None);
+        assert_eq!(
+            Part::Candidates(vec![p.clone()]).path(),
+            None,
+            "none was picked"
+        );
+        assert!(Part::Loaded(p.clone()).is_loaded());
+        assert!(!Part::Loading(p).is_loaded());
+    }
+
+    #[test]
+    fn each_part_is_read_from_its_own_slot_and_offers_its_own_file_type() {
+        let loaded = Loaded {
+            metadata: Part::Loaded(PathBuf::from("m.csv")),
+            scaling: Part::Loaded(PathBuf::from("s.csv")),
+            gating: Part::Loaded(PathBuf::from("g.omiqgt")),
+            ..Loaded::default()
+        };
+        assert_eq!(
+            Which::Metadata.part(&loaded).path(),
+            Some(Path::new("m.csv"))
+        );
+        assert_eq!(
+            Which::Scaling.part(&loaded).path(),
+            Some(Path::new("s.csv"))
+        );
+        assert_eq!(
+            Which::Gating.part(&loaded).path(),
+            Some(Path::new("g.omiqgt"))
+        );
+        assert_eq!(Which::Metadata.filter().1, "csv");
+        assert_eq!(Which::Scaling.filter().1, "csv");
+        assert_eq!(Which::Gating.filter().1, "omiqgt");
+    }
+
+    #[test]
+    fn a_failed_load_says_why_and_a_crashed_worker_says_so() {
+        assert_eq!(flatten(Ok(Ok(3))), Ok(3));
+        assert_eq!(
+            flatten::<()>(Ok(Err(anyhow::anyhow!("no such column")))),
+            Err("no such column".to_string())
+        );
+    }
+
+    #[test]
+    fn a_file_is_named_by_its_file_name() {
+        assert_eq!(file_name(Path::new("/a/b/gates.omiqgt")), "gates.omiqgt");
+        assert_eq!(file_name(Path::new("/")), "/");
     }
 }

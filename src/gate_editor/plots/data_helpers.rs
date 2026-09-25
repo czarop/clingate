@@ -133,3 +133,61 @@ pub fn get_event_mask_from_scaled_df(
         Err(e) => Err(anyhow::anyhow!("{e}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn plotted_points_keep_their_order_and_skip_an_incomplete_event() {
+        let df = df![
+            "x" => [Some(1.0f32), None, Some(3.0), Some(4.0)],
+            "y" => [Some(10.0f32), Some(20.0), None, Some(40.0)]
+        ]
+        .unwrap();
+        let points = zip_cols_from_filtered_df(Arc::new(df), Arc::from("x"), Arc::from("y"))
+            .await
+            .unwrap();
+        assert_eq!(points, vec![(1.0, 10.0), (4.0, 40.0)]);
+    }
+
+    #[tokio::test]
+    async fn a_missing_column_is_an_error_not_an_empty_plot() {
+        let df = df!["x" => [1.0f32], "y" => [2.0f32]].unwrap();
+        let result =
+            zip_cols_from_filtered_df(Arc::new(df), Arc::from("x"), Arc::from("CD3")).await;
+        assert!(result.is_err_and(|e| e.to_string().contains("CD3")));
+    }
+
+    #[test]
+    fn an_index_is_built_over_the_two_named_columns() {
+        let df =
+            df!["x" => [1.0f32, 2.0, 3.0], "y" => [1.0f32, 2.0, 3.0], "z" => [0.0f32; 3]].unwrap();
+        let index =
+            get_event_mask_from_scaled_df(Arc::new(df), Arc::from("x"), Arc::from("y")).unwrap();
+        let gate = flow_gates::Gate {
+            id: Arc::from("g"),
+            name: "g".into(),
+            geometry: flow_gates::create_rectangle_geometry(
+                vec![(1.5, 1.5), (3.5, 1.5), (3.5, 3.5), (1.5, 3.5)],
+                "x",
+                "y",
+            )
+            .unwrap(),
+            mode: flow_gates::GateMode::Global,
+            parameters: (Arc::from("x"), Arc::from("y")),
+            label_position: None,
+        };
+        let mut inside = index.filter_by_gate(&gate).unwrap();
+        inside.sort();
+        assert_eq!(inside, vec![1, 2]);
+    }
+
+    #[test]
+    fn an_index_over_a_column_that_is_not_float32_is_an_error() {
+        let df = df!["x" => [1.0f64], "y" => [1.0f32]].unwrap();
+        assert!(
+            get_event_mask_from_scaled_df(Arc::new(df), Arc::from("x"), Arc::from("y")).is_err()
+        );
+    }
+}

@@ -375,6 +375,21 @@ fn store_with(contents: &str, name: &str) -> AxisStore {
 }
 
 #[test]
+fn a_channels_full_param_carries_the_marker_the_export_gave_it() {
+    let store = store_with(SCALING, "param-marker");
+    let param = store
+        .param_for_fluoro("BV421-A")
+        .expect("the channel is there");
+    assert_eq!(&*param.marker, "CD3");
+    assert_eq!(&*param.fluoro, "BV421-A");
+    assert!(
+        store.param_for_fluoro("CD3").is_none(),
+        "looked up by channel, not marker"
+    );
+    assert!(store.param_for_fluoro("nowhere").is_none());
+}
+
+#[test]
 fn a_channel_is_found_by_name_whatever_its_marker() {
     let store = store_with(SCALING_TIME_FIRST, "idx-marker");
 

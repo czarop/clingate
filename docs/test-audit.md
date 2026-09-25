@@ -35,6 +35,8 @@ the seams the integration tests in the second pass are written against.
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
 | B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
 | B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
+| B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
+| B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -247,3 +249,36 @@ two edges wins.
   they agree; the integration pass does.
 - `filter_events_by_hierarchy_to_mask` and `rescale_helper` print to stdout
   on every call.
+
+### gate_editor: axis_info, plots, gallery, windows
+
+**Reach.** `AxisStore` (`plots::axis_store`) is filled from the scaling file
+(`read_axis_configs`) and edited in the editor's axis boxes
+(`main_window` -> `update_lower` / `update_upper` -> `GateState::set_current_axis_limits`,
+which relimits the composites) and cofactor box (-> `rescale_gates`). Its
+settings reach the import (composite ranges), the export (infinite bounds),
+the plots (`draw_plot`'s `PlotMapper`), the gallery and the rules window
+(`cofactors_carried_by`). The gallery (`select`, `cache`, `render`,
+`overlay`, `pdf`) reads `GateState` through a resolver per file and caches
+pictures by the addresses of the gates they depend on.
+
+**Found.** B-AX-1 and B-AX-2, from reading `main_window`'s limit handlers
+against the quadrant relimit. The handlers also print errors to stdout
+rather than showing them.
+
+**Added.** `data_helpers`: plotted points skip incomplete events and keep
+their order, a missing column is an error, the event index covers the two
+named columns, a non-Float32 column is refused. Gallery: a picture depends
+on its filter chain then its drawn gates (`dependencies`), moving a drawn
+gate on one file stales that file's picture and no other,
+`flatten_gates`. `param_for_fluoro`. `workspace_window` had no tests: the
+rule for which actions discard gates (moved into `Pending::discards_gates`
+so it can be tested beside the text that warns about it), what each
+confirmation names, `Part`, `Which`, `flatten`, `file_name`.
+
+**Not unit-tested, and why.** The Dioxus components themselves -
+`main_window`, `plot_window`, `gate_sidebar`, `route`, the `Handles`
+operations in `workspace_window`, the `components/` widgets - need a
+running runtime with stores and signals. Their logic is tested where it
+has been pulled out into plain functions; the rest was checked by driving
+the app (see the Workspace entries in the changelog).

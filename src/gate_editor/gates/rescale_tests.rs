@@ -828,3 +828,64 @@ fn a_new_range_keeps_a_quadrants_centre_and_sorts_events_the_same() {
         .clone();
     assert_eq!(membership(&after, &OLD), membership(&q, &OLD));
 }
+
+// ── editing a limit in the box, a keystroke at a time ─────────────────────
+
+fn relimited(
+    q: &Arc<dyn DrawableGate>,
+    steps: &[(f32, f32)],
+) -> Result<Arc<dyn DrawableGate>, Vec<String>> {
+    let ids = GateSubStore::ids_for(q, &q.get_id());
+    let mut store = GateSubStore::default();
+    store.insert_for_source(&ids, q, &GateSource::Global);
+    for (lower, upper) in steps {
+        store.relimit_channel(&Arc::from(X), *lower, *upper, &OLD)?;
+    }
+    Ok(store
+        .primary_and_subgate_registry
+        .get(&q.get_id())
+        .unwrap()
+        .clone())
+}
+
+/// BUG (docs/test-audit.md, B-AX-1): the limit boxes apply every keystroke,
+/// so an upper limit below the lower one is reached in ordinary typing - `-5`
+/// on a linear axis whose lower box is fixed at 0. A quadrant's relimit
+/// clamps its centre with `f32::clamp(lower + buffer, upper - buffer)`, which
+/// panics when the minimum exceeds the maximum: the app goes down.
+#[test]
+#[ignore = "known bug B-AX-1: an upper limit below the lower one panics the quadrant relimit"]
+fn an_inverted_range_is_refused_rather_than_crashing() {
+    let q = quadrant("q", &OLD);
+    let (lower, upper) = (shown(&OLD, 1_000.0), shown(&OLD, 5.0));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        relimited(&q, &[(lower, upper)]).is_err()
+    }));
+    assert_eq!(
+        outcome.ok(),
+        Some(true),
+        "panicked, or accepted an inverted axis"
+    );
+}
+
+/// BUG (docs/test-audit.md, B-AX-2): retyping an upper limit of 400,000 goes
+/// through 4, 40, 400 ... on its way, one relimit per keystroke. Each clamps
+/// the quadrant's centre into the middle of that range, and nothing puts it
+/// back, so the finished edit leaves the quadrant somewhere else and its
+/// quarters holding different cells.
+#[test]
+#[ignore = "known bug B-AX-2: typing a limit digit by digit moves a quadrant for good"]
+fn typing_a_limit_digit_by_digit_leaves_a_quadrant_where_it_was() {
+    let q = quadrant("q", &OLD);
+    let lower = shown(&OLD, RAW_LOW);
+    let typed: Vec<(f32, f32)> = [4.0, 40.0, 400.0, 4_000.0, 40_000.0, 400_000.0]
+        .iter()
+        .map(|raw| (lower, shown(&OLD, *raw)))
+        .collect();
+    let after = relimited(&q, &typed).unwrap();
+    assert_eq!(
+        membership(&after, &OLD),
+        membership(&q, &OLD),
+        "the quadrant moved while the limit was being typed"
+    );
+}

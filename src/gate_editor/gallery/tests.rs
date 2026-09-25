@@ -765,3 +765,123 @@ fn a_real_panel_keeps_its_own_channels_and_drops_the_rest() {
     assert_eq!(carried[0].0, real);
     assert_eq!(carried[0].1, 150.0, "the cofactor comes through unchanged");
 }
+
+// ── what a picture depends on ────────────────────────────────────────────
+
+/// A parent gate under the root and a child under it; returns the state and
+/// the parent's node.
+fn parent_and_child() -> (GateState, Arc<str>) {
+    let mut state = GateState::default();
+    for (name, parent) in [("parent", None), ("child", Some("parent"))] {
+        let parent = parent.map(|p| {
+            state
+                .registered_ids()
+                .into_iter()
+                .find(|id| state.registered_gate(id).is_some_and(|g| g.get_name() == p))
+                .unwrap()
+        });
+        state
+            .add_gate(
+                &mapper(),
+                300.0,
+                300.0,
+                Arc::from("FSC-A"),
+                Arc::from("SSC-A"),
+                None,
+                parent.or(Some(ROOTGATE.clone())),
+                PrimaryGateType::Rectangle,
+                Some(name.to_string()),
+            )
+            .unwrap();
+    }
+    let parent = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.get_name() == "parent")
+        })
+        .unwrap();
+    let node = state
+        .primary_node_for_gate(&parent)
+        .unwrap()
+        .as_arc()
+        .clone();
+    (state, node)
+}
+
+#[test]
+fn a_picture_depends_on_its_filters_and_on_what_is_drawn_over_it() {
+    let (state, node) = parent_and_child();
+    let resolver = state.get_current_sample(Arc::from("f1"), &Default::default());
+    let names: Vec<String> = super::select::dependencies(&state, &node, &resolver)
+        .iter()
+        .map(|g| g.get_name().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["parent", "child"],
+        "the chain, then the drawing"
+    );
+}
+
+#[test]
+fn moving_a_gate_drawn_over_a_picture_changes_what_it_depends_on() {
+    // The cache asks "has anything this picture depends on changed", so a
+    // child moved on one file must show up in that file's dependencies -
+    // and only that file's.
+    use crate::gate_editor::gates::gate_store::GateSource;
+    let (mut state, node) = parent_and_child();
+    let child = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.get_name() == "child")
+        })
+        .unwrap();
+    let before_f1 = {
+        let r = state.get_current_sample(Arc::from("f1"), &Default::default());
+        super::select::dependencies(&state, &node, &r)
+    };
+    let moved = gate("child");
+    state.place_gate(
+        &[child.clone()],
+        &moved,
+        &GateSource::Sample((child, Arc::from("f1"))),
+    );
+
+    let after_f1 = {
+        let r = state.get_current_sample(Arc::from("f1"), &Default::default());
+        super::select::dependencies(&state, &node, &r)
+    };
+    let after_f2 = {
+        let r = state.get_current_sample(Arc::from("f2"), &Default::default());
+        super::select::dependencies(&state, &node, &r)
+    };
+    let same = |a: &[Arc<dyn DrawableGate>], b: &[Arc<dyn DrawableGate>]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y))
+    };
+    assert!(!same(&before_f1, &after_f1), "f1's picture must go stale");
+    assert!(same(&before_f1, &after_f2), "f2's picture must not");
+}
+
+#[test]
+fn a_whole_plot_flattens_every_gate_on_it() {
+    use super::overlay::flatten_gates;
+    let gates = vec![gate("a"), gate("b")];
+    let one = |g: &Arc<dyn DrawableGate>| {
+        flatten_gates(
+            std::slice::from_ref(g),
+            &Default::default(),
+            None,
+            &mapper(),
+        )
+        .len()
+    };
+    let both = flatten_gates(&gates, &Default::default(), None, &mapper());
+    assert_eq!(both.len(), one(&gates[0]) + one(&gates[1]));
+    assert!(flatten_gates(&[], &Default::default(), None, &mapper()).is_empty());
+}
