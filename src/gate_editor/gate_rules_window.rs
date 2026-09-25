@@ -2126,6 +2126,76 @@ mod tests {
             );
         }
 
+        /// A run positions a specimen: one position for every file of it, in
+        /// the group tier. A file with a position of its own - a per-file
+        /// filter from the imported document, or a gate dragged on that one
+        /// sample - resolves through the sample tier first, so the run's
+        /// position never reaches it. The report still lists the file as
+        /// positioned, from where it was to where the run put it, beside a
+        /// plot showing neither.
+        #[test]
+        #[ignore = "known bug B-GRP-2: a run reports a file positioned that its own per-sample position hides"]
+        fn a_file_the_run_reports_positioned_is_drawn_where_it_was_put() {
+            use crate::gate_rules::rule::NegativeFinder;
+            let (mut state, id) = positive_gate();
+            let global = state.registered_gate(&id).unwrap();
+            let own = crate::gate_rules::autogate::translate_edge_to(
+                &global,
+                X,
+                crate::gate_rules::rule_store::Bound::Above,
+                450.0,
+            )
+            .unwrap();
+            state.place_gate(
+                &[id.clone()],
+                &own,
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+            assert!(
+                (left_edge(&state, &id, "fs_b") - 450.0).abs() < 1e-3,
+                "the premise: fs_b has its own position"
+            );
+
+            let mut store = rules();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule {
+                        find: NegativeFinder::NegativePeak,
+                        ..AboveTheNegativeRule::default()
+                    }),
+                },
+            );
+            let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+            let outcome = run_solve(
+                state.clone(),
+                workspace("run-own-position"),
+                named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
+                Vec::new(),
+                specimens(),
+                store,
+                progress,
+                Arc::new(AtomicBool::new(false)),
+            );
+            let claimed = outcome
+                .report
+                .positioned
+                .iter()
+                .find(|p| &*p.file == "fs_b")
+                .map(|p| p.to);
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            let shown = left_edge(&state, &id, "fs_b");
+            if let Some(to) = claimed {
+                assert!(
+                    (f64::from(shown) - to).abs() < 1e-3,
+                    "the report has fs_b positioned at {to}; it is drawn at {shown}"
+                );
+            }
+        }
+
         #[test]
         fn an_unreadable_file_is_reported_and_the_rest_still_run() {
             let (state, _) = positive_gate();

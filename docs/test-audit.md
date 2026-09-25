@@ -23,7 +23,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,052 unit tests and 21 integration tests pass**, plus 11 doctests.
-- **41 known-bug tests (35 bugs) are pinned as failing tests** (`#[ignore]`d
+- **42 known-bug tests (36 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -53,6 +53,7 @@ to fix first.
 | B-OMIQ-2 | `GateState::upload_gates_from_file` (the node depth sort) | Walks each node's `parentId` to the root with nothing to notice a node already seen: a gating file in which a node is its own parent never finishes importing - the Workspace tab hangs on "Loading" instead of calling the file damaged | **High** - a damaged file hangs the app |
 | B-SCALE-1 | `plots::axis_store::fetch_axes_from_omiq_csv` | The scaling export is read with a fixed schema, which polars applies by position and ignores the header: an export with its columns in another order loads silently with the wrong ones (the test's CD3 gets cofactor -500 and a range of -6.7 to -0.3), and one with a column missing reads every later value shifted | **High** - silently wrong scaling for every gate on the channel |
 | B-GRP-1 | `GateState::get_current_sample` and `gate_for_file` (group tier), fed by `omiq::deserialise` and `autogate::place_for_specimen` | The import keys a gate's per-group positions by the column the file names (`md`); the autogater keys its positions by the pairing's sample id column. Nothing removes one when the other is written, and a sample in a group of each gets whichever column its metadata hash map yields first. In the test the run's new position for `QCVn` is ignored - the plot, the statistics and the export keep the file's (-1.21 against -0.21 placed), while the run reports the gate placed. The export then names one of the two columns, also by hash order (`group_override_column`) | **High** - a run's result silently not applied |
+| B-GRP-2 | `autogate::apply_placements` (group tier) under `get_current_sample`'s precedence (sample, then group) | A run writes one position per specimen, in the group tier. A file with a position of its own - a per-file filter from the imported document, or a gate dragged on that one sample - resolves through the sample tier first, so the run's position never reaches it, yet the report lists it as positioned: 815.7 in the test, beside a plot drawn at 450 | **High** - a run's result silently not applied, and reported as applied |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
@@ -518,3 +519,9 @@ autogater's own `place_for_specimen`: under the file's column the new
 position replaces the old, on screen and in the export; under the other
 column it is ignored for one of the two gates, whichever way the hash
 falls (B-GRP-1). The test runs both ways round for that reason.
+
+The same precedence hides a run from any file with a position of its own
+(B-GRP-2): `a_run_from_files_on_disk` gives the donor's file a per-sample
+position before the run, and the run then reports that file positioned
+at 815.7 while it is drawn at 450. The test accepts either fix - the file
+drawn where the report says, or the report not claiming it.
