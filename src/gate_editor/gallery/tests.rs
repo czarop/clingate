@@ -11,7 +11,7 @@ use super::pdf::{Drawn, Sheet, write_pdf};
 use super::render::PlotImage;
 use crate::gate_editor::AxisInfo;
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateStateImplExt, ROOTGATE};
+use crate::gate_editor::gates::gate_store::ROOTGATE;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::gates::gate_types::PrimaryGateType;
 use crate::gate_editor::gates::gate_types::{DEFAULT_LINE, GateRenderShape, ShapeType};
@@ -884,4 +884,323 @@ fn a_whole_plot_flattens_every_gate_on_it() {
     let both = flatten_gates(&gates, &Default::default(), None, &mapper());
     assert_eq!(both.len(), one(&gates[0]) + one(&gates[1]));
     assert!(flatten_gates(&[], &Default::default(), None, &mapper()).is_empty());
+}
+
+// ── the file's own structure ─────────────────────────────────────────────
+
+/// Check what a PDF reader relies on before it draws anything: the
+/// cross-reference table points at each object's first byte, every stream is
+/// exactly as long as it says, and no number in a content stream is one a
+/// reader cannot parse. The other tests look for strings in the output; a
+/// file with every string present and one offset wrong still opens as
+/// "damaged" in most readers.
+fn assert_well_formed(bytes: &[u8]) {
+    // Byte offsets, so bytes throughout: the file holds a binary comment and
+    // raw JPEGs, and any conversion to text would move every offset after them.
+    let find = |needle: &[u8], from: usize| -> Option<usize> {
+        bytes[from..]
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .map(|at| from + at)
+    };
+    let rfind =
+        |needle: &[u8]| -> Option<usize> { bytes.windows(needle.len()).rposition(|w| w == needle) };
+    let number_at = |at: usize| -> usize {
+        let digits: Vec<u8> = bytes[at..]
+            .iter()
+            .copied()
+            .take_while(u8::is_ascii_digit)
+            .collect();
+        String::from_utf8(digits)
+            .unwrap()
+            .parse()
+            .unwrap_or_else(|_| panic!("a number at byte {at}"))
+    };
+
+    let startxref = rfind(b"startxref\n").expect("a startxref line");
+    let xref_at = number_at(startxref + b"startxref\n".len());
+    assert!(
+        bytes[xref_at..].starts_with(b"xref\n0 "),
+        "startxref does not point at the table"
+    );
+    let count = number_at(xref_at + b"xref\n0 ".len());
+    let entries = find(b"\n", xref_at + b"xref\n".len()).unwrap() + 1;
+    // Each entry is exactly twenty bytes, the free one first.
+    assert!(bytes[entries..].starts_with(b"0000000000 65535 f \n"));
+    for id in 1..count {
+        let entry = entries + 20 * id;
+        assert!(
+            bytes[entry + 10..].starts_with(b" 00000 n \n"),
+            "entry {id} is not twenty bytes"
+        );
+        let offset = number_at(entry);
+        assert!(
+            bytes[offset..].starts_with(format!("{id} 0 obj\n").as_bytes()),
+            "object {id}'s entry points at {offset}, which is not its start"
+        );
+    }
+    let trailer = find(b"trailer\n", entries).expect("a trailer");
+    assert_eq!(
+        number_at(find(b"/Size ", trailer).expect("a /Size") + b"/Size ".len()),
+        count,
+        "the trailer's /Size disagrees with the table"
+    );
+
+    // Every stream's /Length is its byte count.
+    let mut from = 0;
+    let mut streams = 0;
+    while let Some(found) = find(b"/Length ", from) {
+        let length = number_at(found + b"/Length ".len());
+        let start = find(b"stream\n", found).expect("the stream") + b"stream\n".len();
+        assert!(
+            bytes[start + length..].starts_with(b"\nendstream"),
+            "a stream of stated length {length} does not end there"
+        );
+        from = start + length;
+        streams += 1;
+    }
+    assert!(streams > 0, "every page has a content stream");
+
+    // The content streams are ASCII, so these searches cannot be fooled by
+    // the conversion; a JPEG could only produce a false alarm, never hide one.
+    let text = String::from_utf8_lossy(bytes);
+    for bad in ["NaN", "inf"] {
+        assert!(
+            !text.contains(&format!(" {bad} ")) && !text.contains(&format!("-{bad} ")),
+            "a content stream holds {bad}, which no reader can parse"
+        );
+    }
+}
+
+#[test]
+fn the_cross_reference_table_and_stream_lengths_are_exact() {
+    let sheets: Vec<Sheet> = (0..7).map(|i| sheet(&format!("D{i}"))).collect();
+    assert_well_formed(&write_pdf("heading", &sheets).expect("wrote"));
+}
+
+#[test]
+fn any_name_leaves_the_file_well_formed() {
+    // Names come from folders and metadata: brackets, backslashes, accents
+    // and the odd control character all reach the page. Each has to be
+    // escaped or replaced without moving a byte the table counts.
+    use rand::prelude::*;
+    let alphabet: Vec<char> = "abcXYZ019 ()\\/%<>[]{}+-_.éµ→\t\n\r€'\"".chars().collect();
+    for seed in 0..200 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut name = || -> String {
+            (0..rng.random_range(0..24))
+                .map(|_| alphabet[rng.random_range(0..alphabet.len())])
+                .collect()
+        };
+        let heading = name();
+        let sheets: Vec<Sheet> = (0..3)
+            .map(|_| {
+                let mut s = sheet(&name());
+                s.title = name();
+                s
+            })
+            .collect();
+        let bytes = write_pdf(&heading, &sheets).expect("wrote");
+        assert_well_formed(&bytes);
+        // Every string opened in a content stream is closed on the same line:
+        // an unescaped bracket would leave one running into the operators.
+        let text = String::from_utf8_lossy(&bytes);
+        for line in text.lines().filter(|l| l.starts_with("BT ")) {
+            assert!(line.ends_with(") Tj ET"), "seed {seed}: {line:?}");
+            let body = &line[line.find('(').unwrap() + 1..line.rfind(") Tj").unwrap()];
+            let mut depth = 0i32;
+            let mut escaped = false;
+            for c in body.chars() {
+                match (escaped, c) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '(') => depth += 1,
+                    (false, ')') => {
+                        depth -= 1;
+                        assert!(
+                            depth >= 0,
+                            "seed {seed}: a bracket ends the string: {line:?}"
+                        );
+                    }
+                    _ => {}
+                }
+                assert!(
+                    c.is_ascii() && c >= ' ',
+                    "seed {seed}: {c:?} reached the page"
+                );
+            }
+            assert!(
+                !escaped,
+                "seed {seed}: a trailing backslash escapes the close: {line:?}"
+            );
+        }
+    }
+}
+
+// ── the export: plots from files on disk to a contact sheet ──────────────
+
+mod the_export {
+    use super::*;
+    use crate::file_load_tests::{scratch, write_fcs_rows};
+    use crate::gate_editor::gallery::export::{ExportJob, contact_sheet};
+    use crate::gate_editor::gallery::render::PlotJob;
+    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn small(name: &str) -> AxisInfo {
+        AxisInfo {
+            param: Param {
+                marker: Arc::from(name),
+                fluoro: Arc::from(name),
+            },
+            axis_lower: 0.0,
+            axis_upper: 1000.0,
+            transform: TransformType::Linear,
+        }
+    }
+
+    /// A file of events spread over the plot, some inside `gate`'s square.
+    fn file(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.fcs"));
+        let rows: Vec<Vec<f32>> = (0..400)
+            .map(|i| vec![(i % 20) as f32 * 50.0 + 5.0, (i / 20) as f32 * 50.0 + 5.0])
+            .collect();
+        write_fcs_rows(&path, &[("FSC-A", None), ("SSC-A", None)], &rows, &[]);
+        path
+    }
+
+    fn job(
+        card: usize,
+        slot: usize,
+        name: &str,
+        path: PathBuf,
+        drawn: Vec<Arc<dyn DrawableGate>>,
+    ) -> ExportJob {
+        ExportJob {
+            card,
+            slot,
+            name: name.to_string(),
+            job: PlotJob {
+                path,
+                cofactors: Vec::new(),
+                chain: Vec::new(),
+                resolver: GateOverrideResolver {
+                    active_gates: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+                    gate_origins: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+                },
+                x: Arc::from("FSC-A"),
+                y: Arc::from("SSC-A"),
+                x_axis: small("FSC-A"),
+                y_axis: small("SSC-A"),
+                gates: drawn.clone(),
+                size: 160,
+            },
+            drawn,
+            selected: None,
+        }
+    }
+
+    fn run(titles: &[(String, usize)], jobs: &[ExportJob]) -> (anyhow::Result<Vec<u8>>, usize) {
+        let done = AtomicUsize::new(0);
+        let out = contact_sheet("heading", titles, jobs, &AtomicBool::new(false), &done);
+        (out, done.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn each_plot_lands_in_its_own_specimens_slot() {
+        let dir = scratch("export-slots");
+        // Two specimens of two files; the second has no second file.
+        let titles = vec![("first".to_string(), 2), ("second".to_string(), 2)];
+        let jobs = vec![
+            job(1, 0, "second-a", file(&dir, "s2a"), Vec::new()),
+            job(0, 1, "first-b", file(&dir, "s1b"), Vec::new()),
+            job(0, 0, "first-a", file(&dir, "s1a"), Vec::new()),
+        ];
+        let (pdf, done) = run(&titles, &jobs);
+        let pdf = pdf.expect("the sheet is written");
+        assert_eq!(done, 3, "every plot is counted");
+        assert_well_formed(&pdf);
+
+        let text = String::from_utf8_lossy(&pdf);
+        assert_eq!(text.matches("/Filter /DCTDecode").count(), 3);
+        assert_eq!(text.matches("(no paired file) Tj").count(), 1);
+        // Placed by card and slot, not by the order the jobs came in: each
+        // name is drawn in the column its slot gives it, under its specimen.
+        let x_of = |name: &str| -> f32 {
+            let line = text
+                .lines()
+                .find(|l| l.ends_with(&format!("({name}) Tj ET")))
+                .unwrap_or_else(|| panic!("{name} is on the page"));
+            let td: Vec<&str> = line.split_whitespace().collect();
+            let at = td.iter().position(|t| *t == "Td").unwrap();
+            td[at - 2].parse().unwrap()
+        };
+        assert!(
+            x_of("first-a") < x_of("first-b"),
+            "slot 0 is left of slot 1"
+        );
+        assert!(
+            (x_of("first-a") - x_of("second-a")).abs() > 100.0,
+            "the second specimen is in the next cell across"
+        );
+    }
+
+    #[test]
+    fn the_gates_drawn_come_with_their_percentages() {
+        let dir = scratch("export-gates");
+        let titles = vec![("only".to_string(), 1)];
+        let jobs = vec![job(0, 0, "f", file(&dir, "f"), vec![gate("drawn")])];
+        let (pdf, _) = run(&titles, &jobs);
+        let pdf = pdf.expect("the sheet is written");
+        assert_well_formed(&pdf);
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("BT ") && l.contains("%) Tj")),
+            "the gate's percentage is written as text on the page"
+        );
+        assert!(text.contains(" RG "), "the gate's outline is stroked");
+    }
+
+    #[test]
+    fn a_stopped_export_writes_nothing() {
+        let dir = scratch("export-stop");
+        let titles = vec![("only".to_string(), 1)];
+        let jobs = vec![job(0, 0, "f", file(&dir, "f"), Vec::new())];
+        let done = AtomicUsize::new(0);
+        let out = contact_sheet("h", &titles, &jobs, &AtomicBool::new(true), &done);
+        assert!(out.is_err(), "a stopped run is not a record");
+        assert_eq!(done.load(Ordering::Relaxed), 0, "nothing was rendered");
+    }
+
+    /// On screen a plot that cannot be drawn shows why, in its own frame. The
+    /// export turns the same failure into an empty slot, and an empty slot is
+    /// written as "no paired file" - so the QC record says the specimen had no
+    /// such file when it did, and the run still reports success. (The export
+    /// also skips a paired file with no metadata row before rendering, into
+    /// the same empty slot; the screen says "no metadata for this file".)
+    #[test]
+    #[ignore = "known bug B-PDF-1: a plot that fails to render is exported as 'no paired file'"]
+    fn a_plot_that_fails_to_render_is_not_called_a_missing_file() {
+        let dir = scratch("export-fail");
+        let damaged = dir.join("damaged.fcs");
+        std::fs::write(&damaged, b"not an FCS file").unwrap();
+        let titles = vec![("only".to_string(), 2)];
+        let jobs = vec![
+            job(0, 0, "good", file(&dir, "good"), Vec::new()),
+            job(0, 1, "damaged", damaged, Vec::new()),
+        ];
+        let (pdf, _) = run(&titles, &jobs);
+        let pdf = pdf.expect("one bad file does not stop the sheet");
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(
+            !text.contains("(no paired file) Tj"),
+            "the damaged file was paired; the record says it was not"
+        );
+        assert!(
+            text.contains("(damaged) Tj"),
+            "the slot names the file that could not be drawn"
+        );
+    }
 }

@@ -370,7 +370,10 @@ pub fn with_data_start_damaged(path: &Path) {
     let lead = (26..34)
         .find(|at| bytes[*at] != b' ')
         .expect("the data start has digits");
-    assert!(lead < 33, "the data start has more than one digit to damage");
+    assert!(
+        lead < 33,
+        "the data start has more than one digit to damage"
+    );
     bytes[lead] = 0x0c;
     std::fs::write(path, bytes).unwrap();
 }

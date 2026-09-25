@@ -313,9 +313,16 @@ fn random_per_file_and_per_specimen_positions_survive_a_save() {
         // somewhere, or this would be comparing the defaults with themselves.
         let differs = ids.iter().any(|id| {
             let x = state.registered_gate(id).unwrap().get_params().0;
-            !close(low_edge_for(&state, id, "sample1", &x), low_edge_for(&state, id, "sample2", &x))
+            !close(
+                low_edge_for(&state, id, "sample1", &x),
+                low_edge_for(&state, id, "sample2", &x),
+            )
         });
-        assert!(differs, "seed {seed}: no file got a position of its own\n{}", log.join("\n"));
+        assert!(
+            differs,
+            "seed {seed}: no file got a position of its own\n{}",
+            log.join("\n")
+        );
 
         let back = saved_and_reopened(&state, &format!("random-{seed}"));
         for id in &ids {

@@ -39,13 +39,76 @@ use super::window::Card;
 const EXPORT_SIZE: u32 = 512;
 
 /// One plot's work, with the pieces the page needs once it is drawn.
-struct ExportJob {
-    card: usize,
-    slot: usize,
-    name: String,
-    job: PlotJob,
-    drawn: Vec<Arc<dyn DrawableGate>>,
-    selected: Option<Arc<str>>,
+pub(super) struct ExportJob {
+    /// Which specimen, and which of its files: where the plot goes on the sheet.
+    pub(super) card: usize,
+    pub(super) slot: usize,
+    pub(super) name: String,
+    pub(super) job: PlotJob,
+    pub(super) drawn: Vec<Arc<dyn DrawableGate>>,
+    pub(super) selected: Option<Arc<str>>,
+}
+
+/// Render every job and lay the plots out as the contact sheet.
+///
+/// `titles` is one entry per specimen: its title and how many files it has.
+/// Blocking, and parallel across the jobs; `done` counts finished plots for
+/// the progress bar. A run stopped part-way is an error - a sheet with holes
+/// where the stop landed is not a record of anything.
+pub(super) fn contact_sheet(
+    heading: &str,
+    titles: &[(String, usize)],
+    jobs: &[ExportJob],
+    stop: &AtomicBool,
+    done: &AtomicUsize,
+) -> anyhow::Result<Vec<u8>> {
+    let rendered: Vec<Option<(usize, usize, Drawn)>> = jobs
+        .par_iter()
+        .map(|entry| {
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            let image = render_plot(&entry.job).ok();
+            done.fetch_add(1, Ordering::Relaxed);
+            let image = image?;
+            let shapes = flatten_gates(
+                &entry.drawn,
+                &image.stats,
+                entry.selected.as_ref(),
+                &image.mapper,
+            );
+            Some((
+                entry.card,
+                entry.slot,
+                Drawn {
+                    name: entry.name.clone(),
+                    jpeg: image.jpeg.clone(),
+                    shapes,
+                    rendered_at: entry.job.size as f32,
+                },
+            ))
+        })
+        .collect();
+
+    if stop.load(Ordering::Relaxed) {
+        return Err(anyhow::anyhow!("stopped"));
+    }
+
+    let mut sheets: Vec<Sheet> = titles
+        .iter()
+        .map(|(title, slots)| Sheet {
+            title: title.clone(),
+            slots: (0..*slots).map(|_| None).collect(),
+        })
+        .collect();
+    for (card, slot, drawn) in rendered.into_iter().flatten() {
+        if let Some(sheet) = sheets.get_mut(card)
+            && let Some(place) = sheet.slots.get_mut(slot)
+        {
+            *place = Some(drawn);
+        }
+    }
+    write_pdf(heading, &sheets)
 }
 
 #[component]
@@ -172,54 +235,8 @@ pub fn ExportPdf(
             });
 
             let stopping = stop.clone();
-            let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-                let rendered: Vec<Option<(usize, usize, Drawn)>> = jobs
-                    .par_iter()
-                    .map(|entry| {
-                        if stopping.load(Ordering::Relaxed) {
-                            return None;
-                        }
-                        let image = render_plot(&entry.job).ok();
-                        done.fetch_add(1, Ordering::Relaxed);
-                        let image = image?;
-                        let shapes = flatten_gates(
-                            &entry.drawn,
-                            &image.stats,
-                            entry.selected.as_ref(),
-                            &image.mapper,
-                        );
-                        Some((
-                            entry.card,
-                            entry.slot,
-                            Drawn {
-                                name: entry.name.clone(),
-                                jpeg: image.jpeg.clone(),
-                                shapes,
-                                rendered_at: entry.job.size as f32,
-                            },
-                        ))
-                    })
-                    .collect();
-
-                if stopping.load(Ordering::Relaxed) {
-                    return Err(anyhow::anyhow!("stopped"));
-                }
-
-                let mut sheets: Vec<Sheet> = titles
-                    .iter()
-                    .map(|(title, slots)| Sheet {
-                        title: title.clone(),
-                        slots: (0..*slots).map(|_| None).collect(),
-                    })
-                    .collect();
-                for (card, slot, drawn) in rendered.into_iter().flatten() {
-                    if let Some(sheet) = sheets.get_mut(card)
-                        && let Some(place) = sheet.slots.get_mut(slot)
-                    {
-                        *place = Some(drawn);
-                    }
-                }
-                write_pdf(&heading, &sheets)
+            let outcome = tokio::task::spawn_blocking(move || {
+                contact_sheet(&heading, &titles, &jobs, &stopping, &done)
             })
             .await;
 
