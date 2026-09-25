@@ -140,3 +140,62 @@ pub fn fixture(name: &str) -> PathBuf {
         .join("fixtures")
         .join(name)
 }
+
+/// The axis settings the checked-in gating fixtures were drawn on: scatter
+/// linear, fluorescence arcsinh.
+pub fn fixture_axes() -> clingate::omiq::serialise::AxisSettings {
+    use clingate::gate_editor::AxisInfo;
+    use clingate::gate_editor::plots::axis_store::Param;
+    use flow_fcs::TransformType;
+    use std::sync::Arc;
+
+    let mut settings = im::HashMap::with_hasher(rustc_hash::FxBuildHasher);
+    let mut put = |channel: &str, lower: f32, upper: f32, transform: TransformType| {
+        settings.insert(
+            Arc::from(channel) as Arc<str>,
+            AxisInfo {
+                param: Param {
+                    marker: Arc::from(channel),
+                    fluoro: Arc::from(channel),
+                },
+                axis_lower: lower,
+                axis_upper: upper,
+                transform,
+            },
+        );
+    };
+    for channel in [
+        "BUV661-A",
+        "BV785-A",
+        "Alexa Fluor 700-A",
+        "BUV737-A",
+        "BUV805-A",
+        "BUV563-A",
+        "Alexa Fluor 647-A",
+        "Vio Bright 423-A",
+    ] {
+        put(
+            channel,
+            -1.0,
+            6.0,
+            TransformType::Arcsinh { cofactor: 6000.0 },
+        );
+    }
+    for channel in ["FSC-A", "SSC-A"] {
+        put(channel, 0.0, 4_194_304.0, TransformType::Linear);
+    }
+    settings
+}
+
+/// Metadata for the fixtures' two files, one per group.
+pub fn fixture_metadata() -> clingate::omiq::metadata::MetaDataFileMap {
+    use std::sync::Arc;
+    let mut map = im::HashMap::with_hasher(rustc_hash::FxBuildHasher);
+    for (file, group) in [("sample1", "one"), ("sample2", "two")] {
+        let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
+        columns.insert(Arc::from("test"), Arc::from(group));
+        columns.insert(Arc::from("Type"), Arc::from(group));
+        map.insert(Arc::from(file) as Arc<str>, columns);
+    }
+    map
+}

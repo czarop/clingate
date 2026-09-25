@@ -50,7 +50,7 @@ use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::GateStateImplExt;
 use crate::gate_editor::path_picker::{Chosen, Pick, UNAVAILABLE, choose};
 use crate::gate_editor::plots::axis_store::{
-    AxisStore, AxisStoreStoreExt, ScalingInfoSource, read_axis_configs, scaling_diff,
+    AxisStore, AxisStoreStoreExt, ScalingDiff, ScalingInfoSource, read_axis_configs, scaling_diff,
 };
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::{
@@ -59,9 +59,52 @@ use crate::omiq::metadata::{
 use crate::omiq::serialise::to_omiq_document;
 use crate::workspace::{Found, Remembered, detect};
 
-type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
+pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
 type MetadataStore = Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>;
-type AxesStore = Store<AxisStore, CopyValue<AxisStore, SyncStorage>>;
+pub type AxesStore = Store<AxisStore, CopyValue<AxisStore, SyncStorage>>;
+
+/// What replacing the scaling did to the gates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScalingCarried {
+    /// Which channels changed, and which the new file does not have.
+    pub diff: ScalingDiff,
+    /// Gates that could not be carried, and why. They are left as they were.
+    pub problems: Vec<String>,
+}
+
+/// Replace the scaling, carrying every gate through each channel's change.
+///
+/// Channel by channel, the edits a person could make by hand in the editor -
+/// a new cofactor is a rescale, a new range a relimit - so whatever the gates
+/// hold comes through. Separate from the loading so the whole of it can be run
+/// on real stores without the tab around it.
+pub fn carry_to_scaling(
+    mut axes: AxesStore,
+    mut gates: GateStore,
+    configs: Vec<crate::gate_editor::AxisInfo>,
+) -> ScalingCarried {
+    let diff = scaling_diff(&axes.peek().settings, &configs);
+    axes.with_mut(|s| s.replace_axis_configs(configs));
+    let mut problems: Vec<String> = Vec::new();
+    for change in &diff.changed {
+        if change.transform_changed()
+            && let Err(errors) = gates.rescale_gates(&change.channel, &change.old, &change.new)
+        {
+            problems.extend(errors);
+        }
+        if change.range_changed()
+            && let Err(errors) = gates.set_current_axis_limits(
+                change.channel.clone(),
+                change.new.axis_lower,
+                change.new.axis_upper,
+                change.new.transform.clone(),
+            )
+        {
+            problems.extend(errors);
+        }
+    }
+    ScalingCarried { diff, problems }
+}
 
 /// Where one part of the workspace stands.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -291,30 +334,7 @@ impl Handles {
             }
         };
 
-        // Channel by channel, the edits a person could make by hand in the
-        // editor - so whatever the gates hold comes through.
-        let diff = scaling_diff(&self.axes.peek().settings, &configs);
-        let mut axes = self.axes;
-        axes.with_mut(|s| s.replace_axis_configs(configs));
-        let mut gates = self.gates;
-        let mut problems: Vec<String> = Vec::new();
-        for change in &diff.changed {
-            if change.transform_changed()
-                && let Err(errors) = gates.rescale_gates(&change.channel, &change.old, &change.new)
-            {
-                problems.extend(errors);
-            }
-            if change.range_changed()
-                && let Err(errors) = gates.set_current_axis_limits(
-                    change.channel.clone(),
-                    change.new.axis_lower,
-                    change.new.axis_upper,
-                    change.new.transform.clone(),
-                )
-            {
-                problems.extend(errors);
-            }
-        }
+        let ScalingCarried { diff, problems } = carry_to_scaling(self.axes, self.gates, configs);
         self.set_part(Which::Scaling, Part::Loaded(path));
 
         if self.gates_loaded() && !diff.changed.is_empty() {
