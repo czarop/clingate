@@ -22,7 +22,7 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,052 unit tests and 21 integration tests pass**, plus 11 doctests.
+- **1,052 unit tests and 23 integration tests pass**, plus 11 doctests.
 - **42 known-bug tests (36 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
@@ -525,3 +525,12 @@ The same precedence hides a run from any file with a position of its own
 position before the run, and the run then reports that file positioned
 at 815.7 while it is drawn at 450. The test accepts either fix - the file
 drawn where the report says, or the report not claiming it.
+
+The random save-and-reopen test moves only single gates, because the
+autogater's `translate_edge_to` refuses composites. Composites get
+per-file positions from the import and from a drag on one sample, so
+two tests drag the fixture's quadrant by its centre handle - the
+editor's own `replace_point`, on a plot over the fixture's axes - for one
+sample and for one specimen, save, reopen, and compare every quarter's
+extents on both axes for both files, each quarter resolved through its
+own id as filtering reads it. Both hold.

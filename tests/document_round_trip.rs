@@ -432,3 +432,130 @@ fn a_position_placed_under_another_column_is_the_one_its_samples_get() {
         );
     }
 }
+
+// ── composites: a quadrant moved for one sample, or one specimen ─────────
+
+/// Every quarter's extent on both axes, for one file.
+fn quarters_for(state: &GateState, composite: &GateId, file: &str) -> Vec<(GateId, [f32; 4])> {
+    let gate = state
+        .gate_for_file(composite, &Arc::from(file), &fixture_metadata())
+        .unwrap_or_else(|| panic!("{composite} resolves for {file}"));
+    let (x, y) = gate.get_params();
+    let mut ids = gate.get_inner_gate_ids();
+    ids.sort();
+    ids.into_iter()
+        .map(|sub| {
+            // Resolved through the subgate's own id, as filtering and the
+            // statistics read it - not through the composite's.
+            let piece = state
+                .gate_for_file(&sub, &Arc::from(file), &fixture_metadata())
+                .unwrap_or_else(|| panic!("{sub} resolves for {file}"));
+            let geometry = &piece.get_gate_ref(Some(&sub)).unwrap().geometry;
+            let (x0, x1) = extent_on(geometry, &x).unwrap();
+            let (y0, y1) = extent_on(geometry, &y).unwrap();
+            (sub, [x0, x1, y0, y1])
+        })
+        .collect()
+}
+
+/// Equal, where the axis's own infinite bound counts as equal to itself.
+fn same_quarters(a: &[(GateId, [f32; 4])], b: &[(GateId, [f32; 4])]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|((ia, ea), (ib, eb))| {
+            ia == ib
+                && ea
+                    .iter()
+                    .zip(eb)
+                    .all(|(p, q)| (p.is_infinite() && p == q) || close(*p, *q))
+        })
+}
+
+/// The fixture's quadrant with its centre handle dragged to `to`, as the
+/// editor drags it: on a plot drawn over the fixture's own axes.
+fn dragged_quadrant(state: &GateState, to: (f32, f32)) -> (GateId, Arc<dyn DrawableGate>) {
+    use clingate::gate_editor::plots::axis_store::PlotMapper;
+    let id = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.is_composite() && g.get_id() == *id)
+        })
+        .expect("the fixture holds a composite");
+    let gate = state.registered_gate(&id).unwrap();
+    let (x, y) = gate.get_params();
+    let axes = fixture_axes();
+    let (xa, ya) = (axes.get(&x).unwrap(), axes.get(&y).unwrap());
+    let mapper = PlotMapper::new(
+        600.0,
+        600.0,
+        xa.axis_lower..=xa.axis_upper,
+        ya.axis_lower..=ya.axis_upper,
+        xa.axis_lower..=xa.axis_upper,
+        ya.axis_lower..=ya.axis_upper,
+        xa.transform.clone(),
+        ya.transform.clone(),
+    );
+    let moved = gate
+        .replace_point(to, 0, None, &mapper)
+        .expect("a quadrant's centre can be dragged");
+    (id, Arc::from(moved))
+}
+
+#[test]
+fn a_quadrant_moved_for_one_sample_comes_back_on_that_sample_only() {
+    use clingate::gate_editor::gates::gate_store::GateSubStore;
+    let mut state = import(&fixture(FIXTURE));
+    let (id, moved) = dragged_quadrant(&state, (1.0, 2.0));
+    let before_other = quarters_for(&state, &id, "sample2");
+    state.place_gate(
+        &GateSubStore::ids_for(&moved, &id),
+        &moved,
+        &GateSource::Sample((id.clone(), Arc::from("sample1"))),
+    );
+    let placed = quarters_for(&state, &id, "sample1");
+    assert!(
+        !same_quarters(&placed, &before_other),
+        "the drag must move the quarters, or this compares a quadrant with itself"
+    );
+
+    let back = saved_and_reopened(&state, "quadrant-sample");
+    let (one, two) = (
+        quarters_for(&back, &id, "sample1"),
+        quarters_for(&back, &id, "sample2"),
+    );
+    assert!(
+        same_quarters(&one, &placed),
+        "sample1: {one:?}\nplaced: {placed:?}"
+    );
+    assert!(
+        same_quarters(&two, &before_other),
+        "sample2: {two:?}\nwas: {before_other:?}"
+    );
+}
+
+#[test]
+fn a_quadrant_moved_for_one_specimen_comes_back_on_its_samples_only() {
+    let mut state = import(&fixture(FIXTURE));
+    let (id, moved) = dragged_quadrant(&state, (2.5, 0.5));
+    let before_other = quarters_for(&state, &id, "sample1");
+    place_for_specimen(
+        &mut state,
+        &id,
+        &MetaDataKey {
+            parameter: Arc::from("test"),
+            group: Arc::from("two"),
+        },
+        &moved,
+    );
+    let placed = quarters_for(&state, &id, "sample2");
+    assert!(!same_quarters(&placed, &before_other));
+
+    let back = saved_and_reopened(&state, "quadrant-specimen");
+    assert!(same_quarters(&quarters_for(&back, &id, "sample2"), &placed));
+    assert!(same_quarters(
+        &quarters_for(&back, &id, "sample1"),
+        &before_other
+    ));
+}
