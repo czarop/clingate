@@ -352,7 +352,7 @@ files). Run with `cargo test --no-default-features --tests`.
 Debug `println!`s that run in normal use, noted rather than removed since
 removing them is not a test change: `gate_single::rescale_helper` (every
 point of every rescaled gate), `gate_filtering::filter_events_by_hierarchy_to_mask`
-(on every filtered plot), `plots::data_helpers::get_filtered_dataframe` (the
+(on every filtered plot), `GateState`'s import (a line per gate built), `plots::data_helpers::get_filtered_dataframe` (the
 whole gate chain), `plots::axis_store::read_axis_configs` (skipped channels),
 `deserialise::validate_metadata_requirements` (dead). `main_window`'s axis
 boxes print their errors instead of showing them.
@@ -412,3 +412,12 @@ coordinate that is not finite. An early draft pulled handle index 5 on every
 type and hit the skewed quadrant's `unreachable!()` - it draws five handles,
 so that index cannot come from the editor, and the test now pulls only drawn
 handles.
+
+### Damaged gating files
+
+`tests/import_robustness.rs` imports the fixture with one random damage at a
+time - 600 trials of a key removed, a value nulled, turned into a string, or
+made enormous - and requires each to load or be refused, within five seconds,
+without a panic. None panicked or hung; loops through `parentId` are left
+out as the known B-OMIQ-2. The import also prints `CREATED GLOBAL GATE!` /
+`CREATED FILE-SPECIFIC GATE!` for every gate it builds.
