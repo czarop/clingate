@@ -27,7 +27,7 @@ use crate::gate_editor::gate_sidebar::GateSidebar;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::{NodeId, ROOTGATE};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
-use crate::gate_editor::plots::sample_pairs::{Pair, pair_files};
+use crate::gate_editor::plots::sample_pairs::{Pair, gallery_rows, pair_files};
 use crate::gate_editor::route::Tab;
 use crate::gate_editor::workspace_window::Generation;
 use crate::gate_rules::rule_store::RuleStore;
@@ -150,29 +150,38 @@ pub fn GalleryWindow() -> Element {
         let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
             return Vec::<Card>::new();
         };
+        // One card per row of a specimen's files - a specimen with more files
+        // than one row holds, a re-acquired tube or a third type, gets further
+        // cards, "D1 (2)" and on, rather than having them left undrawn.
         pairs
             .read()
             .iter()
-            .map(|pair| {
-                let slots = pair
-                    .slots
-                    .iter()
-                    .take(2)
-                    .map(|slot| {
-                        slot.and_then(|at| files.get(at)).map(|stub| Slot {
-                            name: stub.name.clone(),
-                            path: stub.get_filepath().to_owned(),
-                        })
+            .flat_map(|pair| {
+                let title = pair
+                    .specimen
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "unnamed specimen".to_string());
+                gallery_rows(pair)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, slots)| Card {
+                        title: if row == 0 {
+                            title.clone()
+                        } else {
+                            format!("{title} ({})", row + 1)
+                        },
+                        slots: slots
+                            .into_iter()
+                            .map(|slot| {
+                                slot.and_then(|at| files.get(at)).map(|stub| Slot {
+                                    name: stub.name.clone(),
+                                    path: stub.get_filepath().to_owned(),
+                                })
+                            })
+                            .collect(),
                     })
-                    .collect::<Vec<_>>();
-                Card {
-                    title: pair
-                        .specimen
-                        .as_ref()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "unnamed specimen".to_string()),
-                    slots,
-                }
+                    .collect::<Vec<_>>()
             })
             .collect()
     });
@@ -245,7 +254,8 @@ pub fn GalleryWindow() -> Element {
         .take(PER_PAGE)
         .map(|(at, card)| (at, card.clone()))
         .collect();
-    let total = cards.read().len();
+    // Specimens, not cards: a specimen with extra rows is still one specimen.
+    let total = pairs.read().len();
 
     rsx! {
         document::Stylesheet { href: GALLERY_STYLE }

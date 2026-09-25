@@ -301,22 +301,31 @@ fn specimens_follow_the_sort_column() {
     assert_eq!(order, ["D4", "D29", "D85"], "not the folder's order");
 }
 
-/// The editor and the gallery both show a pair's first two slots
-/// (`take(2)` in `main_window` and in `gallery::window`), and nothing else of
-/// it: picking any file of a specimen from the list shows that specimen's
-/// slots. So a file reaches the screen only through one of those two.
-fn on_screen(pairs: &[crate::gate_editor::plots::sample_pairs::Pair], file: usize) -> bool {
-    pairs
-        .iter()
-        .any(|p| p.slots.iter().take(2).any(|s| *s == Some(file)))
+// ── every file reaches the screen (was B-PAIR-1) ───────────────────────────
+
+use crate::gate_editor::plots::sample_pairs::{Pair, SecondChoice, gallery_rows, landing, shown};
+
+/// Whether the editor draws `file` when it is the one selected.
+fn drawn_when_selected(pairs: &[Pair], file: usize) -> bool {
+    let on = shown(pairs, file, None);
+    on.left == Some(file) || on.right == Some(file)
 }
 
+/// How many times the gallery draws `file`, across every specimen's rows.
+fn times_in_gallery(pairs: &[Pair], file: usize) -> usize {
+    pairs
+        .iter()
+        .flat_map(gallery_rows)
+        .flatten()
+        .filter(|slot| *slot == Some(file))
+        .count()
+}
+
+/// A tube acquired twice - a re-run after a clog - is two full stains for one
+/// specimen. The list offered both; choosing the re-run showed the first run
+/// beside the FMO, and the gallery and its PDF never drew it at all.
 #[test]
-#[ignore = "known bug B-PAIR-1: a second file of the same type is never shown"]
 fn a_second_file_of_the_same_type_is_shown_somewhere() {
-    // A tube acquired twice - a re-run after a clog - is two full stains for
-    // one specimen. The list offers both; choosing the re-run showed the first
-    // run beside the FMO, and the gallery and its PDF never drew it at all.
     let (keys, names, metadata) = fixture(&[
         (Some("QC-A"), Some("FMX")),
         (Some("QC-A"), Some("FS")),
@@ -324,18 +333,20 @@ fn a_second_file_of_the_same_type_is_shown_somewhere() {
     ]);
     let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
     for file in 0..keys.len() {
-        assert!(
-            on_screen(&pairs, file),
-            "f{file} is never on screen: {pairs:?}"
-        );
+        assert!(drawn_when_selected(&pairs, file), "f{file}: {pairs:?}");
+        assert_eq!(times_in_gallery(&pairs, file), 1, "f{file}: {pairs:?}");
     }
+    // The re-run goes under the full stain, in a row of its own.
+    assert_eq!(
+        gallery_rows(&pairs[0]),
+        vec![vec![Some(0), Some(1)], vec![None, Some(2)]]
+    );
 }
 
 #[test]
-#[ignore = "known bug B-PAIR-1: past two files, a specimen with no named type loses the rest"]
 fn every_file_of_an_untyped_specimen_is_shown_somewhere() {
     // With no type the display order names, a specimen falls back to its
-    // files in order - all of them in its slots, of which two are shown.
+    // files in order - all of them in its slots, of which two are a row.
     let (keys, names, metadata) = fixture(&[
         (Some("QC-A"), Some("other")),
         (Some("QC-A"), Some("other")),
@@ -343,34 +354,179 @@ fn every_file_of_an_untyped_specimen_is_shown_somewhere() {
     ]);
     let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
     for file in 0..keys.len() {
-        assert!(
-            on_screen(&pairs, file),
-            "f{file} is never on screen: {pairs:?}"
-        );
+        assert!(drawn_when_selected(&pairs, file), "f{file}: {pairs:?}");
+        assert_eq!(times_in_gallery(&pairs, file), 1, "f{file}: {pairs:?}");
     }
 }
 
 #[test]
-fn every_file_of_a_well_formed_folder_is_shown() {
-    // What the two tests above hold the pairing to, on the folders it was
-    // built for: one FMX and one FS per specimen, some missing one, some files
-    // the metadata does not know. Every file is on screen.
+fn a_third_type_in_the_plot_order_is_shown() {
     let (keys, names, metadata) = fixture(&[
-        (Some("A"), Some("FS")),
-        (Some("B"), Some("FMX")),
-        (None, None),
         (Some("A"), Some("FMX")),
-        (Some("C"), Some("FS")),
-        (Some("B"), Some("FS")),
-        (None, None),
+        (Some("A"), Some("FS")),
+        (Some("A"), Some("US")),
+    ]);
+    let pairing = SamplePairing {
+        display_order: vec![Arc::from("FMX"), Arc::from("FS"), Arc::from("US")],
+        ..SamplePairing::default()
+    };
+    let pairs = pair_files(&keys, &names, &metadata, &pairing);
+    assert!(drawn_when_selected(&pairs, 2));
+    assert_eq!(times_in_gallery(&pairs, 2), 1);
+    assert_eq!(
+        shown(&pairs, 0, None).choices,
+        vec![1, 2],
+        "the selector offers both"
+    );
+}
+
+#[test]
+fn every_file_of_any_folder_is_shown_once_in_the_gallery_and_when_selected() {
+    use rand::prelude::*;
+    const KINDS: [Option<&str>; 5] = [Some("FMX"), Some("FS"), Some("US"), Some("other"), None];
+    for seed in 0..400 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let specimens = ["A", "B", "C"];
+        let folder: Vec<(Option<&str>, Option<&str>)> = (0..rng.random_range(1..14))
+            .map(|_| {
+                let specimen = rng
+                    .random_bool(0.85)
+                    .then(|| specimens[rng.random_range(0..specimens.len())]);
+                (specimen, KINDS[rng.random_range(0..KINDS.len())])
+            })
+            .collect();
+        let (keys, names, metadata) = fixture(&folder);
+        let pairing = if rng.random_bool(0.5) {
+            SamplePairing::default()
+        } else {
+            SamplePairing {
+                display_order: vec![Arc::from("FMX"), Arc::from("FS"), Arc::from("US")],
+                ..SamplePairing::default()
+            }
+        };
+        let pairs = pair_files(&keys, &names, &metadata, &pairing);
+        for file in 0..keys.len() {
+            assert!(
+                drawn_when_selected(&pairs, file),
+                "seed {seed}, f{file}: {pairs:?}"
+            );
+            assert_eq!(
+                times_in_gallery(&pairs, file),
+                1,
+                "seed {seed}, f{file}: {pairs:?}"
+            );
+        }
+        // No row is empty, and every row is as wide as its specimen's first.
+        for pair in &pairs {
+            let rows = gallery_rows(pair);
+            assert!(
+                rows.iter().all(|r| r.iter().any(Option::is_some)),
+                "seed {seed}"
+            );
+            assert!(rows.iter().all(|r| r.len() == rows[0].len()), "seed {seed}");
+        }
+    }
+}
+
+// ── the second plot's selector, remembered from specimen to specimen ─────
+
+/// Two donors with an FMO, a full stain and an unstained control each; the
+/// second also has a re-acquired full stain.
+fn three_each() -> Vec<Pair> {
+    let (keys, names, metadata) = fixture(&[
+        (Some("A"), Some("FMX")), // 0
+        (Some("A"), Some("FS")),  // 1
+        (Some("A"), Some("US")),  // 2
+        (Some("B"), Some("FMX")), // 3
+        (Some("B"), Some("FS")),  // 4
+        (Some("B"), Some("US")),  // 5
+        (Some("B"), Some("FS")),  // 6
+    ]);
+    pair_files(&keys, &names, &metadata, &SamplePairing::default())
+}
+
+#[test]
+fn the_fmo_keeps_the_first_plot_and_the_selected_file_takes_the_second() {
+    let pairs = three_each();
+    assert_eq!(
+        shown(&pairs, 2, None),
+        crate::gate_editor::plots::sample_pairs::Shown {
+            left: Some(0),
+            right: Some(2),
+            choices: vec![1, 2],
+        }
+    );
+    // Selecting the FMO itself shows the usual pair.
+    assert_eq!(shown(&pairs, 0, None).right, Some(1));
+}
+
+#[test]
+fn the_second_plot_s_choice_carries_to_the_next_specimen() {
+    let pairs = three_each();
+    // Unstained chosen on A; Next lands on B's FMO, and the second plot
+    // shows B's unstained, not its full stain.
+    let choice = pairs[0].choice_of(2).unwrap();
+    assert_eq!(
+        choice,
+        SecondChoice {
+            kind: Some(Arc::from("US")),
+            nth: 0
+        }
+    );
+    let at = landing(&pairs, 2, 1, Some(&choice)).unwrap();
+    assert_eq!(at, 3, "Next lands on B's FMO");
+    assert_eq!(shown(&pairs, at, Some(&choice)).right, Some(5));
+}
+
+#[test]
+fn a_choice_the_next_specimen_cannot_match_falls_back_to_its_nearest() {
+    let pairs = three_each();
+    // B's re-acquired full stain is its second FS; A has only one.
+    let rerun = pairs[1].choice_of(6).unwrap();
+    assert_eq!(rerun.nth, 1);
+    assert_eq!(
+        shown(&pairs, 0, Some(&rerun)).right,
+        Some(1),
+        "A's only full stain"
+    );
+    // And a type A does not have at all falls back to its full stain.
+    let unknown = SecondChoice {
+        kind: Some(Arc::from("CD45")),
+        nth: 0,
+    };
+    assert_eq!(shown(&pairs, 0, Some(&unknown)).right, Some(1));
+    // Coming back to B, the re-run is found again.
+    assert_eq!(shown(&pairs, 3, Some(&rerun)).right, Some(6));
+}
+
+#[test]
+fn a_specimen_with_no_fmo_lands_on_the_remembered_file() {
+    let (keys, names, metadata) = fixture(&[
+        (Some("A"), Some("FMX")), // 0
+        (Some("A"), Some("US")),  // 1
+        (Some("B"), Some("FS")),  // 2
+        (Some("B"), Some("US")),  // 3
     ]);
     let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
-    for file in 0..keys.len() {
-        assert!(
-            on_screen(&pairs, file),
-            "f{file} is never on screen: {pairs:?}"
-        );
-    }
+    let choice = pairs[0].choice_of(1).unwrap();
+    let at = landing(&pairs, 0, 1, Some(&choice)).unwrap();
+    assert_eq!(at, 3, "B's unstained, since it has no FMO to land on");
+    let on = shown(&pairs, at, Some(&choice));
+    assert_eq!((on.left, on.right), (None, Some(3)));
+    // Without a choice it lands where it always has.
+    assert_eq!(landing(&pairs, 0, 1, None), Some(2));
+}
+
+#[test]
+fn a_file_no_pair_holds_is_shown_on_its_own() {
+    assert_eq!(
+        shown(&[], 4, None),
+        crate::gate_editor::plots::sample_pairs::Shown {
+            left: Some(4),
+            right: None,
+            choices: Vec::new(),
+        }
+    );
 }
 
 // ── stepping through specimens: the editor's Previous and Next ───────────

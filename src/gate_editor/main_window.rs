@@ -6,7 +6,9 @@ use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::axis_store::{index_of_fluoro, resolve_axes};
 use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
-use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of, step_from};
+use crate::gate_editor::plots::sample_pairs::{
+    Pair, SecondChoice, landing, pair_files, pair_of, shown,
+};
 use crate::gate_editor::workspace_window::Generation;
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataStore;
@@ -119,10 +121,30 @@ pub fn MainWindow() -> Element {
         )
     });
 
-    // Move `steps` specimens along, landing on the first file of the one
-    // arrived at. Stepping by file would show the same pair twice.
+    // Which of a specimen's other files the second plot shows, as chosen
+    // from the list or the selector above that plot. Kept as a type and a
+    // place among that type's files rather than as a file, so it carries to
+    // the next specimen: see `SecondChoice`.
+    let mut second = use_signal(|| None::<SecondChoice>);
+
+    // Select a file, and if it is not its specimen's first-plot file, make it
+    // the second plot's choice from now on.
+    let mut select_file = move |file: usize| {
+        sample_index.set(file);
+        let pairs = pairs.read();
+        if let Some(pair) = pair_of(&pairs, file).map(|at| &pairs[at])
+            && pair.left() != Some(file)
+        {
+            second.set(pair.choice_of(file));
+        }
+    };
+
+    // Move `steps` specimens along, landing where the second plot's choice
+    // can be shown beside the first. Stepping by file would show the same
+    // pair twice.
     let mut step_specimen = move |steps: isize| {
-        if let Some(first) = step_from(&pairs.read(), sample_index(), steps) {
+        let at = landing(&pairs.read(), sample_index(), steps, second.read().as_ref());
+        if let Some(first) = at {
             sample_index.set(first);
         }
     };
@@ -501,7 +523,7 @@ pub fn MainWindow() -> Element {
                                         items: listed,
                                         on_select: move |(i, _)| {
                                             if let Some(file) = to_file.get(i) {
-                                                sample_index.set(*file);
+                                                select_file(*file);
                                             }
                                         },
                                         placeholder: "Select a file".to_string(),
@@ -521,38 +543,66 @@ pub fn MainWindow() -> Element {
                     }
                     {
                         // The specimen holding the selected file, so both plots
-                        // show the same donor and timepoint.
-                        let shown = filehandler
-                            .read()
-                            .as_ref()
-                            .map(|files| {
-                                let list = files.file_list();
-                                let pairs = pairs.read();
-                                // By slot, not by position: the FMO's side of
-                                // the screen stays the FMO's even for a
-                                // specimen that has none, rather than its full
-                                // stain sliding over to fill the gap.
-                                let slots = pair_of(&pairs, sample_index())
-                                    .map(|at| pairs[at].slots.clone())
-                                    .unwrap_or_else(|| vec![Some(sample_index())]);
-                                slots
-                                    .into_iter()
-                                    .take(2)
-                                    .map(|slot| {
-                                        slot.and_then(|i| list.get(i)).map(|stub| {
-                                            let name =
-                                                stub.name().trim_end_matches(".fcs").to_string();
-                                            (name, stub.clone())
-                                        })
-                                    })
-                                    .collect::<Vec<_>>()
-                            });
+                        // show the same donor and timepoint - and the selected
+                        // file itself, whichever of the specimen's it is. See
+                        // `sample_pairs::shown`.
+                        let label = |stub: &crate::file_load::FcsSampleStub| {
+                            stub.name().trim_end_matches(".fcs").to_string()
+                        };
+                        let shown = filehandler.read().as_ref().map(|files| {
+                            let list = files.file_list();
+                            let on = shown(&pairs.read(), sample_index(), second.read().as_ref());
+                            let plots = [on.left, on.right]
+                                .into_iter()
+                                .map(|slot| {
+                                    slot.and_then(|i| list.get(i))
+                                        .map(|stub| (label(stub), stub.clone()))
+                                })
+                                .collect::<Vec<_>>();
+                            // What the selector above the second plot offers:
+                            // the specimen's other files, when there is more
+                            // than one to choose between.
+                            let choices: Vec<(usize, String)> = if on.choices.len() > 1 {
+                                on.choices
+                                    .iter()
+                                    .filter_map(|i| list.get(*i).map(|stub| (*i, label(stub))))
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
+                            (plots, choices, on.right)
+                        });
                         match shown {
-                            Some(shown) if shown.iter().any(Option::is_some) => rsx! {
+                            Some((shown, choices, right)) if shown.iter().any(Option::is_some) => rsx! {
                                 div { class: "gate-window-container",
                                     for (slot , filled) in shown.into_iter().enumerate() {
                                         if let Some((name , sample_stub)) = filled {
                                         div { class: "gate-window", key: "{name}",
+                                            if slot == 1 && !choices.is_empty() {
+                                                // Which of the specimen's other
+                                                // files this plot shows. The
+                                                // choice is kept for the next
+                                                // specimen too.
+                                                select {
+                                                    class: "gate-window_choice",
+                                                    style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
+                                                    title: "Which of this specimen's other files to show here",
+                                                    value: "{right.unwrap_or_default()}",
+                                                    onchange: move |e| {
+                                                        if let Ok(file) = e.value().parse::<usize>() {
+                                                            select_file(file);
+                                                        }
+                                                    },
+                                                    for (file , name) in choices.iter() {
+                                                        option {
+                                                            key: "{file}",
+                                                            value: "{file}",
+                                                            selected: Some(*file) == right,
+                                                            "{name}"
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             // Centred over the data area rather
                                             // than the image: the plot carries
                                             // a label gutter down its left
@@ -605,6 +655,7 @@ mod tests {
         Pair {
             specimen: Some(Arc::from("s")),
             files: files.to_vec(),
+            kinds: vec![None; files.len()],
             slots: slots.to_vec(),
         }
     }

@@ -845,8 +845,13 @@ pub fn GateRulesWindow() -> Element {
                         value: "{calibrate_on}",
                         onchange: move |e| calibrate_on.set(e.value()),
                         option { value: "", "choose the reference sample" }
+                        // Marked, not only valued: see the gate's list.
                         for (name , id) in files.read().clone() {
-                            option { value: "{id}", "{name}" }
+                            option {
+                                value: "{id}",
+                                selected: calibrate_on() == *id,
+                                "{name}"
+                            }
                         }
                     }
 
@@ -949,8 +954,13 @@ pub fn GateRulesWindow() -> Element {
                         value: "{calibrate_on}",
                         onchange: move |e| calibrate_on.set(e.value()),
                         option { value: "", "choose the reference sample" }
+                        // Marked, not only valued: see the gate's list.
                         for (name , id) in files.read().clone() {
-                            option { value: "{id}", "{name}" }
+                            option {
+                                value: "{id}",
+                                selected: calibrate_on() == *id,
+                                "{name}"
+                            }
                         }
                     }
                     p { class: "gate_rules-hint gate_rules-span",
@@ -986,8 +996,13 @@ pub fn GateRulesWindow() -> Element {
                         value: "{calibrate_on}",
                         onchange: move |e| calibrate_on.set(e.value()),
                         option { value: "", "choose the reference sample" }
+                        // Marked, not only valued: see the gate's list.
                         for (name , id) in files.read().clone() {
-                            option { value: "{id}", "{name}" }
+                            option {
+                                value: "{id}",
+                                selected: calibrate_on() == *id,
+                                "{name}"
+                            }
                         }
                     }
                     p { class: "gate_rules-hint gate_rules-span",
@@ -1115,8 +1130,9 @@ pub fn GateRulesWindow() -> Element {
                     value: "{gated_file}",
                     onchange: move |e| gated_file.set(e.value()),
                     option { value: "", "choose a file" }
+                    // Marked, not only valued: see the gate's list.
                     for (name , id) in files.read().clone() {
-                        option { value: "{id}", "{name}" }
+                        option { value: "{id}", selected: gated_file() == *id, "{name}" }
                     }
                 }
 
@@ -1133,7 +1149,7 @@ pub fn GateRulesWindow() -> Element {
                     onchange: move |e| reference_file.set(e.value()),
                     option { value: "", "choose a file" }
                     for (name , id) in files.read().clone() {
-                        option { value: "{id}", "{name}" }
+                        option { value: "{id}", selected: reference_file() == *id, "{name}" }
                     }
                 }
 

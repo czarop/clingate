@@ -183,6 +183,22 @@
 
 ### Fixed
 
+- **The pairing boxes show the columns actually in use.** The Sample type box
+  read "SampleID" while pairing by SampleType: its options arrive with the
+  metadata, after its value was set, and it fell back to the first. The same
+  fix covers Sort by and the rules form's file pickers.
+
+- **Every file of a specimen can be seen.** A specimen showed one file per
+  type in its plot order, and only two plots: a re-acquired tube, a third
+  file type, or a third file of a specimen with no type was listed in the
+  editor but never drawn, and missing from the gallery and its PDF. The
+  editor now always shows the file you select - the FMO stays in the first
+  plot - and when a specimen has more than one other file, a selector above
+  the second plot picks which. That choice carries over as you step between
+  specimens: pick the unstained control and the next specimen shows its
+  unstained control too. In the gallery, a specimen's extra files get rows of
+  their own, "D1 (2)", under the column of their type.
+
 - **The PDF contact sheet says when a plot could not be drawn.** A paired
   file that failed to render, or had no row in the metadata, was printed as
   "no paired file" - the QC record said the specimen had no such file - and

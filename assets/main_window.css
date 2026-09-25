@@ -113,6 +113,15 @@ button:hover {
     white-space: nowrap;
 }
 
+/* Above the second plot, when its specimen has more than one other file to
+   show there. Sized like the title beneath it, which it sits over. */
+.gate-window_choice {
+    display: block;
+    box-sizing: border-box;
+    margin-bottom: 4px;
+    font-size: 0.8rem;
+}
+
 /* Room to breathe around the gate tools, between the controls above and the
    plots below. */
 .new-gate-pane {

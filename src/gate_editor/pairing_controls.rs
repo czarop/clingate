@@ -132,8 +132,19 @@ pub fn PairingColumns() -> Element {
                 onchange: move |e| {
                     rules.write().pairing.sample_id_column = Arc::from(e.value().as_str());
                 },
+                // `selected` as well as the select's `value`: the options
+                // arrive with the metadata, after the value was set, and a
+                // select given a value before its option exists shows the
+                // first option instead - here, the Sample type box read
+                // "SampleID" while pairing by SampleType. See the gate picker
+                // in `gate_rules_window` for the same fix.
                 for name in offered(&columns.read(), &rules.read().pairing.sample_id_column) {
-                    option { key: "{name}", value: "{name}", "{name}" }
+                    option {
+                        key: "{name}",
+                        value: "{name}",
+                        selected: *name == *rules.read().pairing.sample_id_column,
+                        "{name}"
+                    }
                 }
             }
 
@@ -144,7 +155,12 @@ pub fn PairingColumns() -> Element {
                     rules.write().pairing.sample_type_column = Arc::from(e.value().as_str());
                 },
                 for name in offered(&columns.read(), &rules.read().pairing.sample_type_column) {
-                    option { key: "{name}", value: "{name}", "{name}" }
+                    option {
+                        key: "{name}",
+                        value: "{name}",
+                        selected: *name == *rules.read().pairing.sample_type_column,
+                        "{name}"
+                    }
                 }
             }
 
@@ -175,7 +191,7 @@ pub fn PairingColumns() -> Element {
                         }
                         if !named.is_empty() {
                             trouble.push(format!(
-                                "{} is not in the display order, so it gets no plot of its own",
+                                "{} is not in the plot order, so it is shown only when picked above the second plot, and a rule never gates it",
                                 named
                                     .iter()
                                     .map(|k| k.to_string())
@@ -226,7 +242,12 @@ pub fn PairingColumns() -> Element {
                 },
                 option { key: "", value: "", "the folder's own order" }
                 for name in columns.read().iter() {
-                    option { key: "{name}", value: "{name}", "{name}" }
+                    option {
+                        key: "{name}",
+                        value: "{name}",
+                        selected: rules.read().pairing.sort_column.as_ref() == Some(name),
+                        "{name}"
+                    }
                 }
             }
 
