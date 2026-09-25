@@ -1921,4 +1921,237 @@ mod tests {
         assert!(found.is_empty());
         assert!(problems.is_empty());
     }
+
+    // ── a whole run, from files on disk ──────────────────────────────────────
+    //
+    // What the Run button does: read every workspace file, measure the gates
+    // the rules name, solve against each file's reference, and hand back the
+    // placements. Everything below `run_solve` is tested piece by piece on
+    // frames built in memory; this is the only test that starts from FCS
+    // files, so it is the one that sees the reading, the metadata join and
+    // the solve agree about which file is which.
+
+    mod a_run_from_files_on_disk {
+        use super::*;
+        use crate::file_load_tests::{scratch, write_fcs_rows};
+        use crate::gate_editor::gates::gate_store::GateSource;
+        use crate::gate_editor::gates::gate_traits::DrawableGate;
+        use crate::gate_rules::rule::{AboveTheNegativeRule, Rule};
+        use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleTarget};
+        use rand::SeedableRng;
+        use rand_distr::{Distribution, Normal, Uniform};
+        use std::sync::atomic::AtomicBool;
+
+        const X: &str = "FSC-A";
+        const Y: &str = "SSC-A";
+
+        /// A negative centred at `centre` and a positive well above it.
+        fn population(centre: f32, seed: u64) -> Vec<Vec<f32>> {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let neg = Normal::new(centre, 40.0).unwrap();
+            let pos = Uniform::new(centre + 250.0, centre + 400.0).unwrap();
+            let mut rows: Vec<Vec<f32>> = (0..9_000)
+                .map(|_| vec![neg.sample(&mut rng), 100.0])
+                .collect();
+            rows.extend((0..1_000).map(|_| vec![pos.sample(&mut rng), 100.0]));
+            rows
+        }
+
+        /// A positive gate at the root whose left edge sits at 500 - right
+        /// for a negative at 300.
+        fn positive_gate() -> (GateState, Arc<str>) {
+            let mut state = GateState::default();
+            let geometry = flow_gates::create_rectangle_geometry(
+                vec![(500.0, -1e16), (1e16, -1e16), (1e16, 1e16), (500.0, 1e16)],
+                X,
+                Y,
+            )
+            .unwrap();
+            let id: Arc<str> = Arc::from("CD134+");
+            let gate: Arc<dyn DrawableGate> = Arc::new(
+                crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                    flow_gates::Gate {
+                        id: id.clone(),
+                        name: "CD134+".into(),
+                        geometry,
+                        mode: flow_gates::GateMode::Global,
+                        parameters: (Arc::from(X), Arc::from(Y)),
+                        label_position: None,
+                    },
+                    true,
+                )
+                .unwrap(),
+            );
+            state.place_gate(&[id.clone()], &gate, &GateSource::Global);
+            state.place_new_gate(None, id.clone()).unwrap();
+            (state, id)
+        }
+
+        fn specimens() -> crate::omiq::metadata::MetaDataFileMap {
+            let mut map = im::HashMap::with_hasher(FxBuildHasher);
+            for (file, id) in [("fs_qc", "QC-A"), ("fs_b", "DONOR-B")] {
+                let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
+                columns.insert(Arc::from("SampleID"), Arc::from(id));
+                columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+                map.insert(Arc::from(file) as Arc<str>, columns);
+            }
+            map
+        }
+
+        fn rules() -> RuleStore {
+            let mut store = RuleStore::default();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+                },
+            );
+            store
+        }
+
+        /// The QC's negative at 300; the donor's has drifted to 600.
+        fn workspace(name: &str) -> Vec<(Arc<str>, PathBuf)> {
+            let dir = scratch(name);
+            let channels = [(X, None), (Y, None)];
+            write_fcs_rows(
+                &dir.join("fs_qc.fcs"),
+                &channels,
+                &population(300.0, 1),
+                &[],
+            );
+            write_fcs_rows(&dir.join("fs_b.fcs"), &channels, &population(600.0, 2), &[]);
+            vec![
+                (Arc::from("fs_qc.fcs"), dir.join("fs_qc.fcs")),
+                (Arc::from("fs_b.fcs"), dir.join("fs_b.fcs")),
+            ]
+        }
+
+        fn run(state: &GateState, files: Vec<(Arc<str>, PathBuf)>, cancel: bool) -> RunOutcome {
+            let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+            run_solve(
+                state.clone(),
+                files,
+                named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
+                Vec::new(),
+                specimens(),
+                rules(),
+                progress,
+                Arc::new(AtomicBool::new(cancel)),
+            )
+        }
+
+        fn left_edge(state: &GateState, gate: &Arc<str>, file: &str) -> f32 {
+            let g = state
+                .gate_for_file(gate, &Arc::from(file), &specimens())
+                .unwrap();
+            crate::gate_rules::autogate::extent_on(&g.get_gate_ref(None).unwrap().geometry, X)
+                .unwrap()
+                .0
+        }
+
+        /// BUG (docs/test-audit.md, B-AUTO-1): the default finder,
+        /// `BelowTheGate`, refines from where the gate already sits on the
+        /// sample - the reference's position. The donor's negative has
+        /// drifted from 300 to 600, past that position, so the gate sees only
+        /// the bottom of it, reads it low, and settles at 584: inside the
+        /// negative, admitting 69% of the sample where the reference admits
+        /// 10%. And it is scored 0.87, so a run ranks it among the
+        /// placements least in need of review.
+        #[test]
+        #[ignore = "known bug B-AUTO-1: a negative that drifts past the gate puts it inside the negative, confidently"]
+        fn the_gate_follows_the_donor_s_negative_and_leaves_the_qc_alone() {
+            let (mut state, id) = positive_gate();
+            let outcome = run(&state, workspace("run-follow"), false);
+            assert!(!outcome.cancelled);
+            assert!(
+                outcome.report.skipped.iter().all(|s| &*s.file != "fs_b"),
+                "{:?}",
+                outcome
+                    .report
+                    .skipped
+                    .iter()
+                    .map(|s| &s.reason)
+                    .collect::<Vec<_>>()
+            );
+
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            // The negative moved 300 up, so the gate should too - to within
+            // what reading a noisy negative allows.
+            let moved = left_edge(&state, &id, "fs_b");
+            assert!(
+                (moved - 800.0).abs() < 20.0,
+                "the donor's gate is at {moved}"
+            );
+            assert!((left_edge(&state, &id, "fs_qc") - 500.0).abs() < 20.0);
+        }
+
+        /// The same run with the density finder, which ignores where the
+        /// gate starts: it follows the drift.
+        #[test]
+        fn the_density_finder_follows_a_negative_that_drifted_past_the_gate() {
+            use crate::gate_rules::rule::NegativeFinder;
+            let (mut state, id) = positive_gate();
+            let mut store = rules();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule {
+                        find: NegativeFinder::NegativePeak,
+                        ..AboveTheNegativeRule::default()
+                    }),
+                },
+            );
+            let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+            let outcome = run_solve(
+                state.clone(),
+                workspace("run-density"),
+                named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
+                Vec::new(),
+                specimens(),
+                store,
+                progress,
+                Arc::new(AtomicBool::new(false)),
+            );
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            let moved = left_edge(&state, &id, "fs_b");
+            assert!(
+                (moved - 800.0).abs() < 30.0,
+                "the donor's gate is at {moved}"
+            );
+        }
+
+        #[test]
+        fn an_unreadable_file_is_reported_and_the_rest_still_run() {
+            let (state, _) = positive_gate();
+            let mut files = workspace("run-bad");
+            let bad = files[1].1.with_file_name("broken.fcs");
+            std::fs::write(&bad, b"not an fcs file").unwrap();
+            files[1].1 = bad;
+
+            let outcome = run(&state, files, false);
+            let said: Vec<&str> = outcome.report.skipped.iter().map(|s| &*s.reason).collect();
+            assert!(
+                said.iter().any(|r| r.contains("broken.fcs")),
+                "the broken file should be reported by name: {said:?}"
+            );
+            assert!(
+                outcome.report.positioned.iter().all(|p| &*p.file != "fs_b"),
+                "nothing is placed for a file that could not be read"
+            );
+        }
+
+        #[test]
+        fn a_cancelled_run_places_nothing() {
+            let (state, _) = positive_gate();
+            let outcome = run(&state, workspace("run-cancel"), true);
+            assert!(outcome.cancelled);
+            assert!(outcome.placements.is_empty());
+        }
+    }
 }

@@ -27,6 +27,7 @@ the seams the integration tests in the second pass are written against.
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
+| B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800 | **High** - confidently wrong gating |
 | B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
@@ -301,3 +302,22 @@ files). Run with `cargo test --no-default-features --tests`.
   on-screen index over the same events: they agree away from edges, the
   quadrant's quarters account for every event once; B-CNT-1 (edges),
   B-STAT-1 (empty parent).
+- `document_round_trip` - a real fixture imported with metadata; a position
+  set for one sample, and one set per specimen (as the autogater writes),
+  survive save and reopen on exactly the samples they were set for; a
+  second save changes nothing; every gate keeps its placements and parent.
+  The moves are a tenth of the edge's value: the first draft used a fixed
+  0.5 on an edge near a million, inside any float tolerance, so it could
+  not have failed.
+- `scaling_replace` - scaling files on disk, real stores in a headless
+  `VirtualDom`, and the Workspace tab's own `carry_to_scaling` (moved out of
+  its loader for this): a new cofactor leaves rectangles and quadrants
+  holding exactly the same cells and an ellipse over 98%; the same scaling
+  changes nothing; a channel the new file drops is reported and its gates
+  left alone. A guard asserts the uncarried gates *would* differ, so the
+  fixture can tell carrying from doing nothing.
+- `gate_rules_window::tests::a_run_from_files_on_disk` (in-crate, since
+  `run_solve` is private to the tab) - the Run button's pipeline from FCS
+  files on disk: an unreadable file is reported by name and the rest run, a
+  cancelled run places nothing, the density finder follows a drifted
+  negative; B-AUTO-1.

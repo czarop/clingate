@@ -23,8 +23,30 @@ pub fn write_fcs_with(
     keywords: &[(&str, &str)],
 ) {
     let width = channels.len();
-    let data: Vec<u8> = (0..events * width)
-        .flat_map(|at| (at as f32).to_le_bytes())
+    let rows: Vec<Vec<f32>> = (0..events)
+        .map(|e| (0..width).map(|c| (e * width + c) as f32).collect())
+        .collect();
+    write_fcs_rows(path, channels, &rows, keywords);
+}
+
+/// A minimal valid FCS 3.1 file holding exactly these events, one row per
+/// event and one value per channel.
+pub fn write_fcs_rows(
+    path: &Path,
+    channels: &[(&str, Option<&str>)],
+    rows: &[Vec<f32>],
+    keywords: &[(&str, &str)],
+) {
+    let width = channels.len();
+    let events = rows.len();
+    let data: Vec<u8> = rows
+        .iter()
+        .flat_map(|row| {
+            assert_eq!(row.len(), width, "one value per channel");
+            row.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
+        })
         .collect();
 
     // The text segment's own offsets depend on its length, which depends on
