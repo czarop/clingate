@@ -353,10 +353,12 @@ impl GateHierarchy {
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let mut hierarchy = GateHierarchy::new();
     /// hierarchy.add_child("parent1", "child", 0);
+    /// hierarchy.add_root("parent2");
     /// hierarchy.reparent("child", "parent2")?;
     /// assert_eq!(hierarchy.get_parent("child").map(|s| s.as_ref()), Some("parent2"));
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn reparent(
         &mut self,
@@ -431,10 +433,14 @@ impl GateHierarchy {
     /// let mut hierarchy = GateHierarchy::new();
     /// hierarchy.add_child("parent1", "child", 0);
     /// hierarchy.add_child("child", "grandchild", 0);
+    /// hierarchy.add_root("parent2");
     /// hierarchy.reparent_subtree("child", "parent2")?;
-    /// // Both "child" and "grandchild" are now under "parent2"
+    /// // "child" is now under "parent2", and "grandchild" still under it
+    /// assert_eq!(hierarchy.get_parent("child").map(|s| s.as_ref()), Some("parent2"));
+    /// assert_eq!(hierarchy.get_parent("grandchild").map(|s| s.as_ref()), Some("child"));
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn reparent_subtree(
         &mut self,
@@ -486,7 +492,8 @@ impl GateHierarchy {
     /// A new `GateHierarchy` containing the cloned subtree, or an error if the gate doesn't exist
     ///
     /// # Example
-    /// ```rust
+    /// ```rust,ignore
+    /// // Fails today: see B-HIER-1 in docs/test-audit.md.
     /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -498,6 +505,7 @@ impl GateHierarchy {
     /// // cloned contains "child_copy" -> "grandchild_copy"
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn clone_subtree<F>(&self, gate_id: &str, id_mapper: F) -> Result<Self>
     where
@@ -636,6 +644,7 @@ impl GateHierarchy {
     /// // grandchild1 and grandchild2 are now direct children of "parent"
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn delete_node_keep_children(
         &mut self,
@@ -724,6 +733,7 @@ impl GateHierarchy {
     /// assert!(hierarchy.is_root("grandchild"));
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn delete_node(&mut self, gate_id: &str) -> Result<Vec<Arc<str>>> {
         self.delete_node_keep_children(gate_id, None)
@@ -750,6 +760,7 @@ impl GateHierarchy {
     /// hierarchy.add_gate_child("parent", "child", None)?;
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn add_gate_child(
         &mut self,
@@ -803,6 +814,7 @@ impl GateHierarchy {
     /// let hierarchy = GateHierarchy::from_relationships(&relationships)?;
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn from_relationships(relationships: &[(Arc<str>, Arc<str>, Option<u64>)]) -> Result<Self> {
         let mut hierarchy = Self::new();
@@ -900,6 +912,7 @@ impl GateHierarchy {
     /// hierarchy.validate()?; // Should pass
     /// # Ok(())
     /// # }
+    /// # example().unwrap();
     /// ```
     pub fn validate(&self) -> Result<()> {
         // Check for cycles using topological sort
@@ -1339,6 +1352,25 @@ mod gate_hierarchy_tests {
             (Arc::from("b"), Arc::from("a"), Some(0)),
         ];
         assert!(GateHierarchy::from_relationships(&rels).is_err());
+    }
+
+    /// BUG (docs/test-audit.md, B-HIER-1): both branches of the check after
+    /// `add_child` return an error - the failure branch says "possible
+    /// cycle", the success branch "no order for child" - so cloning any
+    /// subtree with a child in it fails. Nothing calls it yet; its doctest
+    /// never noticed because the example was never run.
+    #[test]
+    #[ignore = "known bug B-HIER-1: clone_subtree fails on every subtree with a child"]
+    fn a_subtree_can_be_cloned_under_new_ids() {
+        let mut h = GateHierarchy::new();
+        h.add_child("parent", "child", 0);
+        h.add_child("child", "grandchild", 0);
+        let cloned = h.clone_subtree("child", |id| format!("{id}_copy")).unwrap();
+        assert_eq!(
+            cloned.get_parent("grandchild_copy").map(|p| p.as_ref()),
+            Some("child_copy")
+        );
+        assert!(cloned.get_parent("child").is_none(), "the originals are not copied");
     }
 
     #[test]

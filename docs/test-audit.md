@@ -21,7 +21,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **27 known-bug tests (26 bugs) are pinned as failing tests** (`#[ignore]`d
+- **28 known-bug tests (27 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -63,6 +63,7 @@ to fix first.
 | B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
 | B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
+| B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
@@ -352,3 +353,14 @@ point of every rescaled gate), `gate_filtering::filter_events_by_hierarchy_to_ma
 whole gate chain), `plots::axis_store::read_axis_configs` (skipped channels),
 `deserialise::validate_metadata_requirements` (dead). `main_window`'s axis
 boxes print their errors instead of showing them.
+
+### Doctests
+
+Eight of `gate_hierarchy`'s twelve doctests wrapped their example in
+`# fn example() -> Result<..> { .. }` and never called it, so rustdoc
+compiled them and ran nothing - their assertions had never executed. Each now
+ends `# example().unwrap();`. Run, three failed: `reparent` and
+`reparent_subtree` moved a gate under a parent that was never added, which
+the functions correctly refuse (the examples were wrong, and now add it);
+`clone_subtree` failed on a real bug, B-HIER-1, and its example is marked
+`ignore` with a pointer here until it is fixed.
