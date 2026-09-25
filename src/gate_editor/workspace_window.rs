@@ -78,11 +78,25 @@ pub struct ScalingCarried {
 /// a new cofactor is a rescale, a new range a relimit - so whatever the gates
 /// hold comes through. Separate from the loading so the whole of it can be run
 /// on real stores without the tab around it.
+///
+/// Refused, with nothing changed, if any channel in `configs` could not be
+/// drawn on (see [`crate::gate_editor::AxisInfo::problem`]): `read_axis_configs` refuses such a
+/// file already, and this is the second line, before either store is touched.
 pub fn carry_to_scaling(
     mut axes: AxesStore,
     mut gates: GateStore,
     configs: Vec<crate::gate_editor::AxisInfo>,
-) -> ScalingCarried {
+) -> Result<ScalingCarried, String> {
+    let unusable: Vec<String> = configs
+        .iter()
+        .filter_map(crate::gate_editor::AxisInfo::problem)
+        .collect();
+    if !unusable.is_empty() {
+        return Err(format!(
+            "the scaling cannot be used: {}",
+            unusable.join("; ")
+        ));
+    }
     let diff = scaling_diff(&axes.peek().settings, &configs);
     axes.with_mut(|s| s.replace_axis_configs(configs));
     let mut problems: Vec<String> = Vec::new();
@@ -103,7 +117,7 @@ pub fn carry_to_scaling(
             problems.extend(errors);
         }
     }
-    ScalingCarried { diff, problems }
+    Ok(ScalingCarried { diff, problems })
 }
 
 /// Where one part of the workspace stands.
@@ -215,6 +229,21 @@ impl Which {
 
 impl Handles {
     fn set_part(mut self, which: Which, part: Part) {
+        // Said as well as shown beside the part: a file refused as damaged -
+        // a scaling with an unusable axis, a gating file whose tree loops - is
+        // otherwise a status line further down a tab the person may not be
+        // looking at. Every loader parses before it touches its store, so
+        // what was loaded before is still what is loaded.
+        if let Part::Failed(path, why) = &part {
+            warn(
+                &self.toasts,
+                format!(
+                    "{} {} was not loaded, and nothing was changed: {why}",
+                    which.title(),
+                    file_name(path)
+                ),
+            );
+        }
         let mut loaded = self.loaded.write();
         match which {
             Which::Metadata => loaded.metadata = part,
@@ -334,7 +363,14 @@ impl Handles {
             }
         };
 
-        let ScalingCarried { diff, problems } = carry_to_scaling(self.axes, self.gates, configs);
+        let ScalingCarried { diff, problems } =
+            match carry_to_scaling(self.axes, self.gates, configs) {
+                Ok(carried) => carried,
+                Err(e) => {
+                    self.set_part(Which::Scaling, Part::Failed(path, e));
+                    return false;
+                }
+            };
         self.set_part(Which::Scaling, Part::Loaded(path));
 
         if self.gates_loaded() && !diff.changed.is_empty() {

@@ -292,14 +292,13 @@ fn the_import_never_produces_a_biexponential_axis() {
     )));
 }
 
-/// BUG (docs/test-audit.md, B-SCALE-1): the scaling export is read with a
-/// fixed schema, which polars applies by position - the header's names are
-/// ignored. The same export with its columns in another order loads without
-/// complaint and reads the wrong ones: here Min as the cofactor, giving CD3 a
-/// cofactor of -500 (which also crashes quadrants, B-AX-3); with a column
-/// missing, every value after it slides one to the left.
+/// Was B-SCALE-1: the scaling export was read with a fixed schema, which
+/// polars applies by position - the header's names were ignored. The same
+/// export with its columns in another order loaded without complaint and read
+/// the wrong ones (CD3 got a cofactor of -500); with a column missing, every
+/// value after it slid one to the left. Now columns are found by name, and a
+/// missing one is refused.
 #[test]
-#[ignore = "known bug B-SCALE-1: scaling columns are read by position, not by name"]
 fn a_scaling_export_is_read_by_its_column_names_not_their_order() {
     let usual = parse_scaling(
         "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
@@ -324,6 +323,60 @@ fn a_scaling_export_is_read_by_its_column_names_not_their_order() {
     let missing = read_axis_configs(path.clone(), ScalingInfoSource::Omiq);
     let _ = std::fs::remove_file(path);
     assert!(missing.is_err(), "read with a column missing: {missing:?}");
+}
+
+#[test]
+fn a_scaling_export_missing_a_column_is_refused_by_name() {
+    let path = temp_csv(
+        "scale-missing-named",
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,-500,200000,0,0\n",
+    );
+    let error = read_axis_configs(path.clone(), ScalingInfoSource::Omiq)
+        .expect_err("refused")
+        .to_string();
+    let _ = std::fs::remove_file(path);
+    assert!(
+        error.contains("\"Cofactor\""),
+        "names the missing column: {error}"
+    );
+}
+
+#[test]
+fn a_decimal_cofactor_or_range_is_read() {
+    // An Int64 schema used to refuse the whole file over one of these.
+    let configs = parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         BV421-A,CD3,Arcsinh,150.5,-500.5,200000,0,0\n",
+        "scale-decimal",
+    );
+    assert_eq!(
+        configs[0].transform,
+        TransformType::Arcsinh { cofactor: 150.5 }
+    );
+}
+
+#[test]
+fn every_unusable_channel_in_a_scaling_export_is_named_at_once() {
+    let path = temp_csv(
+        "scale-unusable",
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,0,-500,200000,0,0\n\
+         PE-A,CD8,Arcsinh,150,200000,-500,0,0\n\
+         APC-A,CD4,Arcsinh,150,,200000,0,0\n",
+    );
+    let error = read_axis_configs(path.clone(), ScalingInfoSource::Omiq)
+        .expect_err("refused")
+        .to_string();
+    let _ = std::fs::remove_file(path);
+    for channel in ["BV421-A", "PE-A", "APC-A"] {
+        assert!(error.contains(channel), "{channel}: {error}");
+    }
+    assert!(
+        !error.contains("FSC-A"),
+        "the usable channel is not blamed: {error}"
+    );
 }
 
 #[test]

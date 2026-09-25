@@ -173,7 +173,6 @@ fn every_gate_and_position_survives_a_save() {
 /// round reaches the same `clamp` - opening the gating file crashes rather
 /// than reporting the scaling.
 #[test]
-#[ignore = "known bug B-AX-3: an inverted axis range crashes the gating import"]
 fn a_gating_file_imported_over_an_inverted_range_is_an_error_not_a_crash() {
     let mut axes = fixture_axes();
     for (_, axis) in axes.iter_mut() {
@@ -213,14 +212,12 @@ fn import_edited(
         .ok()
 }
 
-/// BUG (docs/test-audit.md, B-OMIQ-2): the import sorts nodes by depth by
-/// walking each one's `parentId` up to the root, with nothing to notice a
-/// node it has already seen. A file in which a node is its own parent - or
-/// two are each other's - sends the walk round forever: opening it hangs
-/// the Workspace tab on "Loading" rather than saying the file is damaged.
-/// The hierarchy would then accept the self-edge too (B-HIER-2).
+/// Was B-OMIQ-2: the import sorts nodes by depth by walking each one's
+/// `parentId` up to the root, with nothing to notice a node it had already
+/// seen. A file in which a node is its own parent sent the walk round
+/// forever, hanging the Workspace tab on "Loading". Now it is refused as
+/// damaged.
 #[test]
-#[ignore = "known bug B-OMIQ-2: a node that is its own parent hangs the gating import"]
 fn a_gating_file_whose_tree_loops_is_refused_rather_than_hanging() {
     let outcome = import_edited(
         "loop",
@@ -235,6 +232,36 @@ fn a_gating_file_whose_tree_loops_is_refused_rather_than_hanging() {
         outcome,
         Some(false),
         "the import never finished (None) or accepted it"
+    );
+}
+
+/// Two nodes that are each other's parent, and the error saying so.
+#[test]
+fn a_gating_file_whose_nodes_are_each_others_parents_is_refused_by_name() {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture(FIXTURE)).unwrap()).unwrap();
+    let ids: Vec<String> = doc["tree"]["nodes"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .take(2)
+        .cloned()
+        .collect();
+    doc["tree"]["nodes"][&ids[0]]["parentId"] = serde_json::Value::String(ids[1].clone());
+    doc["tree"]["nodes"][&ids[1]]["parentId"] = serde_json::Value::String(ids[0].clone());
+    let path = scratch("mutual-loop").join("edited.omiqgt");
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+    let error = GateState::default()
+        .upload_gates_from_file(path, &fixture_metadata(), fixture_axes())
+        .expect_err("a looping tree is refused")
+        .to_string();
+    assert!(
+        error.contains("damaged") && error.contains("loops"),
+        "{error}"
+    );
+    assert!(
+        ids.iter().any(|id| error.contains(id.as_str())),
+        "names a node in the loop: {error}"
     );
 }
 

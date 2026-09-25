@@ -496,7 +496,28 @@ pub fn default_axis_params(
     Some((pick("FSC-A", 0)?, pick("SSC-A", 1)?))
 }
 
+/// The columns of an Omiq scaling export this reads, by name.
+const PRIMARY: &str = "Feature Name (Primary)";
+const SECONDARY: &str = "Feature Name (Secondary)";
+const SCALING_TYPE: &str = "Scaling Type";
+const COFACTOR: &str = "Cofactor";
+const MIN: &str = "Min";
+const MAX: &str = "Max";
+const REQUIRED: [&str; 6] = [PRIMARY, SECONDARY, SCALING_TYPE, COFACTOR, MIN, MAX];
+const NUMBERS: [&str; 3] = [COFACTOR, MIN, MAX];
+
 /// Parse a scaling export into axis settings.
+///
+/// Columns are found by their names in the header, so their order does not
+/// matter, and a file without one of them is refused by name. They used to be
+/// read by position under a fixed schema: a file with its columns in another
+/// order loaded without complaint and read the wrong ones, and one with a
+/// column missing read every later value shifted (B-SCALE-1).
+///
+/// A file is refused whole if any channel in it could not be drawn on - a
+/// cofactor of 0 or below, a Min not below its Max, a value missing - rather
+/// than loaded and left to crash the gates laid out against it (B-AX-3).
+/// Everything wrong with it is said at once.
 ///
 /// A row whose scaling type this build does not model is skipped with a warning
 /// rather than aborting: one unrecognised entry should not cost the user every
@@ -509,65 +530,83 @@ pub fn read_axis_configs(
         ScalingInfoSource::Omiq => fetch_axes_from_omiq_csv(path)?,
     };
 
-    let primary_col = df.column("Feature Name (Primary)")?.str()?;
-    let secondary_col = df.column("Feature Name (Secondary)")?.str()?;
-    let scaling_col = df.column("Scaling Type")?.str()?;
-    let cofactor_col = df.column("Cofactor")?.i64()?;
-    let min_col = df.column("Min")?.i64()?;
-    let max_col = df.column("Max")?.i64()?;
+    let primary_col = df.column(PRIMARY)?.str()?;
+    let secondary_col = df.column(SECONDARY)?.str()?;
+    let scaling_col = df.column(SCALING_TYPE)?.str()?;
+    let cofactor_col = df.column(COFACTOR)?.f64()?;
+    let min_col = df.column(MIN)?.f64()?;
+    let max_col = df.column(MAX)?.f64()?;
 
-    let configs: Vec<AxisInfo> = izip!(
+    let mut configs = Vec::new();
+    let mut problems = Vec::new();
+    for (prim_opt, sec_opt, scale_opt, cof_opt, min_opt, max_opt) in izip!(
         primary_col,
         secondary_col,
         scaling_col,
         cofactor_col,
         min_col,
         max_col
-    )
-    .filter_map(
-        |(prim_opt, sec_opt, scale_opt, cof_opt, min_opt, max_opt)| {
-            // A blank secondary column reads back as null, not as "". Using `?`
-            // on it dropped the whole row, which silently lost every channel
-            // with no separate marker name - that is every scatter parameter
-            // (FSC, SSC, Time), leaving them on default axis settings rather
-            // than the ones Omiq exported.
-            let primary = prim_opt?;
-            let marker_name = match sec_opt {
-                Some(marker) if !marker.is_empty() => marker,
-                _ => primary,
-            };
-
-            let param = Param {
-                marker: Arc::from(marker_name),
-                fluoro: Arc::from(primary),
-            };
-            let transform = match scale_opt? {
-                "Arcsinh" => TransformType::Arcsinh {
-                    cofactor: cof_opt? as f32,
+    ) {
+        // A row naming no channel is not a channel: a blank line at the end.
+        let Some(primary) = prim_opt.filter(|p| !p.trim().is_empty()) else {
+            continue;
+        };
+        // A blank secondary column reads back as null, not as "". Using `?`
+        // on it dropped the whole row, which silently lost every channel
+        // with no separate marker name - that is every scatter parameter
+        // (FSC, SSC, Time), leaving them on default axis settings rather
+        // than the ones Omiq exported.
+        let marker_name = match sec_opt {
+            Some(marker) if !marker.is_empty() => marker,
+            _ => primary,
+        };
+        let param = Param {
+            marker: Arc::from(marker_name),
+            fluoro: Arc::from(primary),
+        };
+        let transform = match scale_opt {
+            Some("Arcsinh") => match cof_opt {
+                Some(cofactor) => TransformType::Arcsinh {
+                    cofactor: cofactor as f32,
                 },
-                "None (linear)" => TransformType::Linear,
-                other => {
-                    println!(
-                        "skipping axis {}: unsupported scaling type {other:?}",
-                        param.fluoro
-                    );
-                    return None;
+                None => {
+                    problems.push(format!("{primary} is arcsinh-scaled but has no {COFACTOR}"));
+                    continue;
                 }
-            };
+            },
+            Some("None (linear)") => TransformType::Linear,
+            Some(other) => {
+                println!("skipping axis {primary}: unsupported scaling type {other:?}");
+                continue;
+            }
+            None => {
+                problems.push(format!("{primary} has no {SCALING_TYPE}"));
+                continue;
+            }
+        };
+        let (Some(min), Some(max)) = (min_opt, max_opt) else {
+            problems.push(format!("{primary} is missing its {MIN} or {MAX}"));
+            continue;
+        };
 
-            let lower = transform.transform(&(min_opt? as f32));
-            let upper = transform.transform(&(max_opt? as f32));
+        let axis = AxisInfo {
+            param,
+            axis_lower: transform.transform(&(min as f32)),
+            axis_upper: transform.transform(&(max as f32)),
+            transform,
+        };
+        match axis.problem() {
+            Some(problem) => problems.push(problem),
+            None => configs.push(axis),
+        }
+    }
 
-            Some(AxisInfo {
-                param,
-                axis_lower: lower,
-                axis_upper: upper,
-                transform,
-            })
-        },
-    )
-    .collect();
-
+    if !problems.is_empty() {
+        return Err(anyhow!(
+            "the scaling file cannot be used: {}",
+            problems.join("; ")
+        ));
+    }
     Ok(configs)
 }
 
@@ -576,17 +615,49 @@ pub enum ScalingInfoSource {
 }
 
 fn fetch_axes_from_omiq_csv(path: PathBuf) -> anyhow::Result<DataFrame> {
-    let schema = Schema::from_iter(vec![
-        Field::new("Feature Name (Primary)".into(), DataType::String),
-        Field::new("Feature Name (Secondary)".into(), DataType::String),
-        Field::new("Scaling Type".into(), DataType::String),
-        Field::new("Cofactor".into(), DataType::Int64),
-        Field::new("Min".into(), DataType::Int64),
-        Field::new("Max".into(), DataType::Int64),
-        Field::new("Min Z".into(), DataType::Int64),
-        Field::new("Max Z".into(), DataType::Int64),
-    ]);
+    // The header alone first, to check every column this reads is there and
+    // to type each by name - a schema given by position is what read a
+    // reordered file into the wrong columns.
+    let header = CsvReadOptions::default()
+        .with_has_header(true)
+        .with_n_rows(Some(0))
+        .try_into_reader_with_file_path(Some(path.clone()))?
+        .finish()?;
+    let names: Vec<String> = header
+        .get_column_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let missing: Vec<&str> = REQUIRED
+        .iter()
+        .copied()
+        .filter(|wanted| !names.iter().any(|name| name == wanted))
+        .collect();
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "the scaling file has no {} column{} - an Omiq scaling export has {}; this one has {}",
+            missing
+                .iter()
+                .map(|m| format!("\"{m}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if missing.len() == 1 { "" } else { "s" },
+            REQUIRED.join(", "),
+            names.join(", ")
+        ));
+    }
 
+    // Every column typed, not only the ones read, so nothing is left to
+    // inference. Numbers as decimals: an Int64 column refused a whole file
+    // over one cofactor of 150.5.
+    let schema = Schema::from_iter(names.iter().map(|name| {
+        let dtype = if NUMBERS.contains(&name.as_str()) {
+            DataType::Float64
+        } else {
+            DataType::String
+        };
+        Field::new(name.as_str().into(), dtype)
+    }));
     let csv = CsvReadOptions::default()
         .with_has_header(true)
         .with_schema(Some(Arc::new(schema)))

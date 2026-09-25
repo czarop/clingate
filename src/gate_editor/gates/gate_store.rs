@@ -1845,6 +1845,21 @@ impl GateState {
         metadata: &crate::omiq::metadata::MetaDataFileMap,
         axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
     ) -> anyhow::Result<()> {
+        // Quadrants are built against the axes, by clamping into their range:
+        // an unusable axis would panic partway through the import (B-AX-3).
+        // The scaling reader refuses such a file, so this is the second line.
+        let mut problems: Vec<String> = axis_settings
+            .values()
+            .filter_map(AxisInfo::problem)
+            .collect();
+        if !problems.is_empty() {
+            problems.sort();
+            return Err(anyhow!(
+                "the scaling cannot be used to lay out the gates: {}",
+                problems.join("; ")
+            ));
+        }
+
         // 1. Open the file
         let text = std::fs::read_to_string(&path)?;
 
@@ -1921,26 +1936,41 @@ impl GateState {
                 .push((group_position, container.clone()));
         }
 
-        let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
-
-        // 2. Sort nodes by their depth in the tree
-        // This ensures parents always exist before children
-        sorted_nodes.sort_by_cached_key(|node| {
+        // 2. Sort nodes by their depth in the tree, so parents always exist
+        // before their children.
+        //
+        // Depth is found by walking each node's `parentId` to the root. A tree
+        // has no loops, and Omiq never writes one, so a node that is its own
+        // parent - or two that are each other's - is a damaged file: refused
+        // by name, rather than walked round forever. That walk used to hang
+        // the Workspace tab on "Loading" (B-OMIQ-2).
+        let mut depths: FxHashMap<&str, usize> = FxHashMap::default();
+        for node in experiment.tree.nodes.values() {
             let mut depth = 0;
+            let mut seen: FxHashSet<&str> = FxHashSet::default();
+            seen.insert(&node.id);
             let mut current_parent: &str = &node.parent_id;
-
-            // Walk up the tree to the root to find the depth
-            while current_parent != "" {
-                if let Some(parent) = experiment.tree.nodes.get(current_parent) {
-                    current_parent = &parent.parent_id;
-                    depth += 1;
-                } else {
-                    // Parent ID exists but isn't in the map (shouldn't happen with clean data)
-                    break;
+            while !current_parent.is_empty() {
+                if !seen.insert(current_parent) {
+                    return Err(anyhow!(
+                        "the file is damaged: its gate tree loops - node {} is its own ancestor, by way of node {current_parent}",
+                        node.id
+                    ));
+                }
+                match experiment.tree.nodes.get(current_parent) {
+                    Some(parent) => {
+                        current_parent = &parent.parent_id;
+                        depth += 1;
+                    }
+                    // A parent the file does not contain. It opens anyway, the
+                    // node under the root; see the test of that case.
+                    None => break,
                 }
             }
-            depth
-        });
+            depths.insert(&node.id, depth);
+        }
+        let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
+        sorted_nodes.sort_by_key(|node| depths[&*node.id]);
 
         // Build the tree. The hierarchy is keyed by node, so Omiq's own node ids
         // go in directly and a parent is just `node.parent_id` - no mapping from

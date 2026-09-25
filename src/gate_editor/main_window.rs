@@ -19,6 +19,7 @@ use crate::{
     file_load::FcsFiles,
     gate_editor::{
         AxisInfo,
+        axis_info::AxisEdit,
         gate_sidebar::GateSidebar,
         gates::{
             GateState,
@@ -181,6 +182,69 @@ pub fn MainWindow() -> Element {
         }
     });
 
+    // One of an axis's boxes was committed: check the number, apply it, and
+    // carry the gates on the axis with it. Says whether it was taken; a box
+    // whose number was not goes back to the axis as it is.
+    //
+    // Checked before anything is written. An upper limit below the lower one
+    // used to go straight into the store and then into every quadrant on the
+    // axis, whose layout clamps into the range - and `f32::clamp` panics on a
+    // range the wrong way round, so the app went down (B-AX-1).
+    let mut edit_axis = move |marker: Signal<Param>, edit: AxisEdit, value: f64| -> bool {
+        let channel = marker.peek().fluoro.clone();
+        let Some(current) = axis_store.settings().peek().get(&channel).cloned() else {
+            warn(&toasts, format!("{channel} has no scaling loaded"));
+            return false;
+        };
+        if let Err(why) = current.edited(edit, value) {
+            warn(
+                &toasts,
+                format!(
+                    "The {} was not changed - {why}. It stays at {}.",
+                    edit.name(),
+                    current.shown(edit)
+                ),
+            );
+            return false;
+        }
+        let carried = match edit {
+            AxisEdit::Cofactor => match axis_store.update_cofactor(&channel, value as f32) {
+                Ok((old, new)) => gate_store.rescale_gates(&channel, &old, &new),
+                Err(e) => {
+                    warn(&toasts, e.to_string());
+                    return false;
+                }
+            },
+            AxisEdit::Lower | AxisEdit::Upper => {
+                let updated = if edit == AxisEdit::Lower {
+                    axis_store.update_lower(&channel, value as f32)
+                } else {
+                    axis_store.update_upper(&channel, value as f32)
+                };
+                match updated {
+                    Ok((lower, upper, transform)) => {
+                        gate_store.set_current_axis_limits(channel.clone(), lower, upper, transform)
+                    }
+                    Err(e) => {
+                        warn(&toasts, e.to_string());
+                        return false;
+                    }
+                }
+            }
+        };
+        if let Err(errors) = carried {
+            warn(
+                &toasts,
+                format!(
+                    "Some gates could not follow the new {}: {}",
+                    edit.name(),
+                    errors.join("; ")
+                ),
+            );
+        }
+        true
+    };
+
     // The scaling export arrives asynchronously, so on the first render the
     // store is still empty. These memos must therefore *subscribe* to it:
     // `peek` does not, so the index stayed pinned at its first value - 0 - and
@@ -302,92 +366,25 @@ pub fn MainWindow() -> Element {
 
                         div { class: "input-unit",
                             label { "Cofactor" }
-                            input {
-                                r#type: "number",
-                                value: "{x_axis_limits.read().get_cofactor().unwrap_or_default().round()}",
+                            CommittedNumber {
+                                value: x_axis_limits.read().shown(AxisEdit::Cofactor),
                                 disabled: x_axis_limits.read().is_linear(),
-                                oninput: move |evt| {
-                                    if let Ok(val) = evt.value().parse::<i32>() {
-                                        if val >= 1 {
-                                            let param = x_axis_marker.peek();
-                                            let res = axis_store.update_cofactor(&param.fluoro, val as f32);
-                                            match res {
-                                                Ok((old, new)) => {
-                                                    if let Err(e) = gate_store
-                                                        .rescale_gates(&param.fluoro, &old, &new)
-                                                    {
-                                                        warn(&toasts, e.join("; "));
-                                                    }
-                                                }
-                                                Err(e) => println!("{e}"),
-
-                                            }
-                                        } else {
-                                            warn(
-                                                &toasts,
-                                                "Arcsinh cofactor should be a positive integer",
-                                            );
-                                        }
-                                    }
-                                },
-                                step: "any",
+                                commit: move |v: f64| edit_axis(x_axis_marker, AxisEdit::Cofactor, v),
                             }
                         }
                         div { class: "input-unit",
                             label { "Lower" }
-                            input {
-                                r#type: "number",
-                                value: "{x_axis_limits.read().get_untransformed_lower().round()}",
+                            CommittedNumber {
+                                value: x_axis_limits.read().shown(AxisEdit::Lower),
                                 disabled: x_axis_limits.read().is_linear(),
-                                oninput: move |e| {
-                                    if let Ok(lower) = e.value().parse::<i32>() {
-                                        let param = x_axis_marker.peek();
-                                        match axis_store.update_lower(&param.fluoro, lower as f32) {
-                                            Ok(l_u_t) => {
-                                                match gate_store
-                                                    .set_current_axis_limits(
-                                                        param.fluoro.clone(),
-                                                        l_u_t.0,
-                                                        l_u_t.1,
-                                                        l_u_t.2,
-                                                    )
-                                                {
-                                                    Ok(_) => {}
-                                                    Err(e) => println!("{:#?}", e),
-                                                };
-                                            }
-                                            Err(e) => println!("{e}"),
-                                        };
-                                    }
-                                },
+                                commit: move |v: f64| edit_axis(x_axis_marker, AxisEdit::Lower, v),
                             }
                         }
                         div { class: "input-unit",
                             label { "Upper" }
-                            input {
-                                r#type: "number",
-                                value: "{x_axis_limits.read().get_untransformed_upper().round()}",
-                                oninput: move |e| {
-                                    if let Ok(upper) = e.value().parse::<i32>() {
-                                        let param = x_axis_marker.peek();
-                                        match axis_store.update_upper(&param.fluoro, upper as f32) {
-                                            Ok(l_u_t) => {
-                                                match gate_store
-                                                    .set_current_axis_limits(
-                                                        param.fluoro.clone(),
-                                                        l_u_t.0,
-                                                        l_u_t.1,
-                                                        l_u_t.2,
-                                                    )
-                                                {
-                                                    Ok(_) => {}
-                                                    Err(e) => println!("{:#?}", e),
-                                                };
-                                            }
-                                            Err(e) => println!("{e}"),
-                                        };
-                                    }
-                                },
+                            CommittedNumber {
+                                value: x_axis_limits.read().shown(AxisEdit::Upper),
+                                commit: move |v: f64| edit_axis(x_axis_marker, AxisEdit::Upper, v),
                             }
                         }
 
@@ -405,91 +402,25 @@ pub fn MainWindow() -> Element {
 
                         div { class: "input-unit",
                             label { "Cofactor" }
-                            input {
-                                r#type: "number",
-                                value: "{y_axis_limits.read().get_cofactor().unwrap_or_default().round()}",
+                            CommittedNumber {
+                                value: y_axis_limits.read().shown(AxisEdit::Cofactor),
                                 disabled: y_axis_limits.read().is_linear(),
-                                oninput: move |evt| {
-                                    if let Ok(val) = evt.value().parse::<i32>() {
-                                        if val >= 1 {
-                                            let param = y_axis_marker.peek();
-                                            let res = axis_store.update_cofactor(&param.fluoro, val as f32);
-                                            match res {
-                                                Ok((old, new)) => {
-                                                    if let Err(e) = gate_store
-                                                        .rescale_gates(&param.fluoro, &old, &new)
-                                                    {
-                                                        warn(&toasts, e.join("; "));
-                                                    }
-                                                }
-                                                Err(e) => println!("{e}"),
-                                            }
-                                        } else {
-                                            warn(
-                                                &toasts,
-                                                "Arcsinh cofactor should be a positive integer",
-                                            );
-                                        }
-                                    }
-                                },
-                                step: "any",
+                                commit: move |v: f64| edit_axis(y_axis_marker, AxisEdit::Cofactor, v),
                             }
                         }
                         div { class: "input-unit",
                             label { "Lower" }
-                            input {
-                                r#type: "number",
-                                value: "{y_axis_limits.read().get_untransformed_lower().round()}",
+                            CommittedNumber {
+                                value: y_axis_limits.read().shown(AxisEdit::Lower),
                                 disabled: y_axis_limits.read().is_linear(),
-                                oninput: move |e| {
-                                    if let Ok(lower) = e.value().parse::<i32>() {
-                                        let param = y_axis_marker.peek();
-                                        match axis_store.update_lower(&param.fluoro, lower as f32) {
-                                            Ok(l_u_t) => {
-                                                match gate_store
-                                                    .set_current_axis_limits(
-                                                        param.fluoro.clone(),
-                                                        l_u_t.0,
-                                                        l_u_t.1,
-                                                        l_u_t.2,
-                                                    )
-                                                {
-                                                    Ok(_) => {}
-                                                    Err(e) => println!("{:#?}", e),
-                                                };
-                                            }
-                                            Err(e) => println!("{e}"),
-                                        };
-                                    }
-                                },
+                                commit: move |v: f64| edit_axis(y_axis_marker, AxisEdit::Lower, v),
                             }
                         }
                         div { class: "input-unit",
                             label { "Upper" }
-                            input {
-                                r#type: "number",
-                                value: "{y_axis_limits.read().get_untransformed_upper().round()}",
-                                oninput: move |e| {
-                                    if let Ok(upper) = e.value().parse::<i32>() {
-                                        let param = y_axis_marker.peek();
-                                        match axis_store.update_upper(&param.fluoro, upper as f32) {
-                                            Ok(l_u_t) => {
-                                                match gate_store
-                                                    .set_current_axis_limits(
-                                                        param.fluoro.clone(),
-                                                        l_u_t.0,
-                                                        l_u_t.1,
-                                                        l_u_t.2,
-                                                    )
-                                                {
-                                                    Ok(_) => {}
-                                                    Err(e) => println!("{:#?}", e),
-                                                };
-                                            }
-                                            Err(e) => println!("{e}"),
-                                        };
-                                    }
-                                },
+                            CommittedNumber {
+                                value: y_axis_limits.read().shown(AxisEdit::Upper),
+                                commit: move |v: f64| edit_axis(y_axis_marker, AxisEdit::Upper, v),
                             }
                         }
                     }
@@ -640,6 +571,53 @@ pub fn MainWindow() -> Element {
                     }
                 }
 
+            }
+        }
+    }
+}
+
+/// A number box that is applied when the person has finished with it - on
+/// Enter, or on leaving the box - rather than at every keystroke.
+///
+/// Every keystroke used to be applied. Typing an upper limit of 400000 applied
+/// 4, 40, 400 and on as it went, and each clamped the quadrants on the axis
+/// into that range, where they stayed (B-AX-2). The box's change event fires
+/// on Enter and on leaving the box, which is when a person means the number;
+/// a delay was the other choice, and would still have applied a half-typed
+/// number whenever someone paused mid-way.
+///
+/// `commit` says whether it took the number. When it did not, the box goes
+/// back to `value`. That needs the box remounted: its `value` has not
+/// changed, so it would not be written to the box again, which would go on
+/// showing the number that was refused.
+#[component]
+fn CommittedNumber(
+    value: f64,
+    #[props(default = false)] disabled: bool,
+    commit: Callback<f64, bool>,
+) -> Element {
+    let toasts = use_toast();
+    let mut remounts = use_signal(|| 0u32);
+    rsx! {
+        for key in [remounts()] {
+            input {
+                key: "{key}",
+                r#type: "number",
+                step: "any",
+                value: "{value}",
+                disabled,
+                onchange: move |e| {
+                    let taken = match e.value().trim().parse::<f64>() {
+                        Ok(typed) => commit.call(typed),
+                        Err(_) => {
+                            warn(&toasts, format!("That is not a number - it stays at {value}."));
+                            false
+                        }
+                    };
+                    if !taken {
+                        remounts += 1;
+                    }
+                },
             }
         }
     }

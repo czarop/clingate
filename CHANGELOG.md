@@ -183,6 +183,27 @@
 
 ### Fixed
 
+- **The axis boxes no longer crash the app or move gates while you type.** A
+  limit or cofactor is applied when you press Enter or leave the box, not at
+  every keystroke - typing 400000 used to apply 4, 40, 400 on the way, each
+  pulling any quadrant on the axis with it. A value that would leave the axis
+  unusable (an upper limit below the lower one, a cofactor below 1) is refused
+  with a warning and the box goes back to what it was; an upper limit below
+  the lower one used to crash the app.
+
+- **A scaling file is checked before it is used.** Its columns are found by
+  their names, so their order no longer matters, and a file missing one is
+  refused by name - columns used to be read by position, so a reordered file
+  loaded silently with the wrong values. A file with a channel that cannot be
+  drawn (Min not below Max, a cofactor of 0 or less, a value missing) is
+  refused with a warning naming each one, and nothing is changed; such files
+  used to crash the app. Decimal cofactors and ranges are now accepted.
+
+- **A damaged gating file whose tree loops is refused.** A node that is its
+  own parent, or two that are each other's, used to hang the import on
+  "Loading"; it is now refused as damaged, with a warning naming the node.
+  Every file that fails to load now raises a warning, not only a status line.
+
 - **The pairing boxes show the columns actually in use.** The Sample type box
   read "SampleID" while pairing by SampleType: its options arrive with the
   metadata, after its value was set, and it fell back to the first. The same

@@ -848,13 +848,11 @@ fn relimited(
         .clone())
 }
 
-/// BUG (docs/test-audit.md, B-AX-1): the limit boxes apply every keystroke,
-/// so an upper limit below the lower one is reached in ordinary typing - `-5`
-/// on a linear axis whose lower box is fixed at 0. A quadrant's relimit
-/// clamps its centre with `f32::clamp(lower + buffer, upper - buffer)`, which
-/// panics when the minimum exceeds the maximum: the app goes down.
+/// Was B-AX-1: an upper limit typed below the lower one reached a quadrant's
+/// relimit, whose `f32::clamp(lower + buffer, upper - buffer)` panics when the
+/// minimum exceeds the maximum - the app went down. The editor's boxes now
+/// refuse such an edit (`AxisInfo::edited`); this is the second line.
 #[test]
-#[ignore = "known bug B-AX-1: an upper limit below the lower one panics the quadrant relimit"]
 fn an_inverted_range_is_refused_rather_than_crashing() {
     let q = quadrant("q", &OLD);
     let (lower, upper) = (shown(&OLD, 1_000.0), shown(&OLD, 5.0));
@@ -868,24 +866,32 @@ fn an_inverted_range_is_refused_rather_than_crashing() {
     );
 }
 
-/// BUG (docs/test-audit.md, B-AX-2): retyping an upper limit of 400,000 goes
-/// through 4, 40, 400 ... on its way, one relimit per keystroke. Each clamps
-/// the quadrant's centre into the middle of that range, and nothing puts it
-/// back, so the finished edit leaves the quadrant somewhere else and its
-/// quarters holding different cells.
+/// BUG (docs/test-audit.md, B-AX-4): an axis limit is a view setting, but a
+/// quadrant's centre is clamped into the range on every relimit and nothing
+/// puts it back. So narrowing an axis past a quadrant's centre and widening it
+/// again leaves the quadrant moved, its quarters holding different cells.
+///
+/// This was B-AX-2 when every keystroke of a limit was applied: typing 400000
+/// went through 4, 40, 400 ... and did it by accident. The boxes now apply a
+/// number on Enter or on leaving the box, so it takes two deliberate edits -
+/// which this still shows.
 #[test]
-#[ignore = "known bug B-AX-2: typing a limit digit by digit moves a quadrant for good"]
-fn typing_a_limit_digit_by_digit_leaves_a_quadrant_where_it_was() {
+#[ignore = "known bug B-AX-4: narrowing an axis past a quadrant and widening it again moves the quadrant"]
+fn narrowing_an_axis_and_widening_it_again_leaves_a_quadrant_where_it_was() {
     let q = quadrant("q", &OLD);
     let lower = shown(&OLD, RAW_LOW);
-    let typed: Vec<(f32, f32)> = [4.0, 40.0, 400.0, 4_000.0, 40_000.0, 400_000.0]
+    // An upper limit of 4, applied, then 400,000.
+    let typed: Vec<(f32, f32)> = [4.0, 400_000.0]
         .iter()
         .map(|raw| (lower, shown(&OLD, *raw)))
         .collect();
     let after = relimited(&q, &typed).unwrap();
+    let (was, now) = (membership(&q, &OLD), membership(&after, &OLD));
+    let moved = was.iter().zip(&now).filter(|(a, b)| a != b).count();
     assert_eq!(
-        membership(&after, &OLD),
-        membership(&q, &OLD),
-        "the quadrant moved while the limit was being typed"
+        moved,
+        0,
+        "narrowing the axis and widening it again moved {moved} of {} events to another quarter",
+        was.len()
     );
 }

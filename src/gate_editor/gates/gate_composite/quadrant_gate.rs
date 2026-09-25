@@ -475,6 +475,7 @@ impl DrawableGate for QuadrantGate {
         upper: f32,
         _transform: &TransformType,
     ) -> Result<Option<Box<dyn DrawableGate>>> {
+        super::usable_range(lower, upper)?;
         let is_x = param == self.parameters.0;
         let mut new_points = self.points.clone();
         let buffer = (upper - lower).abs() * 0.1;
@@ -518,6 +519,7 @@ impl DrawableGate for QuadrantGate {
         // Orthogonal quadrants only care about the center and the edges
         let new_lower = axis_range.0;
         let new_upper = axis_range.1;
+        super::usable_range(new_lower, new_upper)?;
         let buffer = (new_upper - new_lower).abs() * 0.1;
 
         if is_x {

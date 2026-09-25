@@ -38,13 +38,23 @@ fn scaling(name: &str, cofactor: i64, rows_for_y: bool) -> Vec<AxisInfo> {
 }
 
 fn scaling_over(name: &str, cofactor: i64, rows_for_y: bool, range: (i64, i64)) -> Vec<AxisInfo> {
+    read_scaling(name, cofactor, rows_for_y, range).expect("the scaling reads")
+}
+
+/// Write a scaling export on disk and read it as the Workspace tab does.
+fn read_scaling(
+    name: &str,
+    cofactor: i64,
+    rows_for_y: bool,
+    range: (i64, i64),
+) -> anyhow::Result<Vec<AxisInfo>> {
     let path = scratch(name).join("scaling.csv");
     let mut rows = vec![(X, "CD3", "Arcsinh", cofactor, range.0, range.1)];
     if rows_for_y {
         rows.push((Y, "", "None (linear)", 1, 0, 262_144));
     }
     write_scaling(&path, &rows);
-    read_axis_configs(path, ScalingInfoSource::Omiq).expect("the scaling reads")
+    read_axis_configs(path, ScalingInfoSource::Omiq)
 }
 
 fn transform_of(configs: &[AxisInfo], channel: &str) -> TransformType {
@@ -170,6 +180,25 @@ fn replace(
     before: Vec<AxisInfo>,
     after: Vec<AxisInfo>,
 ) -> (GateState, ScalingCarried, AxisStore, GateState) {
+    let (drawn, carried, axes, after) = try_replace(before, after);
+    (
+        drawn,
+        carried.expect("the new scaling is usable"),
+        axes,
+        after,
+    )
+}
+
+/// [`replace`], keeping the refusal of a scaling that cannot be used.
+fn try_replace(
+    before: Vec<AxisInfo>,
+    after: Vec<AxisInfo>,
+) -> (
+    GateState,
+    Result<ScalingCarried, String>,
+    AxisStore,
+    GateState,
+) {
     let t = transform_of(&before, X);
     let axis = before
         .iter()
@@ -185,7 +214,7 @@ fn replace(
         drawn.place_gate(&ids, &gate, &GateSource::Global);
     }
 
-    type Out = Rc<RefCell<Option<(ScalingCarried, AxisStore, GateState)>>>;
+    type Out = Rc<RefCell<Option<(Result<ScalingCarried, String>, AxisStore, GateState)>>>;
     let out: Out = Rc::new(RefCell::new(None));
 
     #[derive(Clone)]
@@ -297,36 +326,78 @@ fn a_channel_the_new_file_drops_is_reported_and_its_gates_left_alone() {
     assert_eq!(membership(&before, &t), membership(&after, &t));
 }
 
-/// BUG (docs/test-audit.md, B-AX-3): nothing checks a scaling file's range
-/// is the right way round. Replacing the scaling with one whose Min exceeds
-/// its Max relimits every quadrant on the channel, and the quadrant's
-/// `f32::clamp(lower + buffer, upper - buffer)` panics - loading a file
-/// crashes the app. It should be refused, or the channel reported, with the
-/// gates left as they were.
+/// Was B-AX-3. Nothing checked a scaling file's range was the right way
+/// round: replacing the scaling with one whose Min exceeds its Max relimited
+/// every quadrant on the channel, and the quadrant's clamp panicked - loading
+/// a file crashed the app. Now the file is refused, saying which channel and
+/// why, before anything is changed.
 #[test]
-#[ignore = "known bug B-AX-3: a scaling file with Min above Max crashes the scaling replace"]
 fn a_scaling_file_with_its_range_the_wrong_way_round_is_refused_not_fatal() {
-    let v1 = scaling("inverted-v1", 150, true);
-    let inverted = scaling_over("inverted-v2", 150, true, (200_000, -500));
-    let outcome = std::panic::catch_unwind(|| replace(v1, inverted));
-    assert!(outcome.is_ok(), "replacing the scaling panicked");
+    let error = read_scaling("inverted", 150, true, (200_000, -500))
+        .expect_err("a range the wrong way round is refused")
+        .to_string();
+    assert!(error.contains(X), "names the channel: {error}");
+    assert!(error.contains("lower limit"), "says why: {error}");
 }
 
-/// BUG (docs/test-audit.md, B-AX-3): nor is the cofactor checked. The
-/// editor's box refuses anything below 1, but a scaling file's cofactor goes
-/// straight into the transform: 0 gives infinite axis bounds and a NaN in the
-/// quadrant's clamp, a negative one an axis the wrong way round. Either
-/// crashes the app on loading the file.
+/// Was B-AX-3: nor was the cofactor checked. 0 gave infinite axis bounds and
+/// a NaN in the quadrant's clamp, a negative one an axis the wrong way round;
+/// either crashed the app on loading the file.
 #[test]
-#[ignore = "known bug B-AX-3: a scaling file with a cofactor of 0 or less crashes the scaling replace"]
 fn a_scaling_file_with_a_cofactor_below_one_is_refused_not_fatal() {
     for cofactor in [0i64, -150] {
-        let v1 = scaling(&format!("cofactor-v1-{cofactor}"), 150, true);
-        let bad = scaling(&format!("cofactor-{cofactor}"), cofactor, true);
-        let outcome = std::panic::catch_unwind(|| replace(v1, bad));
-        assert!(
-            outcome.is_ok(),
-            "a cofactor of {cofactor} panicked the replace"
+        let error = read_scaling(
+            &format!("cofactor-{cofactor}"),
+            cofactor,
+            true,
+            (-500, 200_000),
+        )
+        .expect_err("an unusable cofactor is refused")
+        .to_string();
+        assert!(error.contains(X), "{cofactor}: names the channel: {error}");
+        assert!(error.contains("cofactor"), "{cofactor}: says why: {error}");
+    }
+}
+
+/// The second line: an unusable scaling that reaches the replace without
+/// going through the file - built in memory - is refused there, and the axes
+/// and the gates are exactly as they were.
+#[test]
+fn an_unusable_scaling_is_refused_by_the_replace_and_changes_nothing() {
+    let v1 = scaling("unusable-v1", 150, true);
+    let good = scaling("unusable-v2", 400, true);
+    let unusable: Vec<Vec<AxisInfo>> = vec![
+        good.iter()
+            .cloned()
+            .map(|mut a| {
+                if &*a.param.fluoro == X {
+                    std::mem::swap(&mut a.axis_lower, &mut a.axis_upper);
+                }
+                a
+            })
+            .collect(),
+        good.iter()
+            .cloned()
+            .map(|mut a| {
+                if &*a.param.fluoro == X {
+                    a.transform = TransformType::Arcsinh { cofactor: 0.0 };
+                }
+                a
+            })
+            .collect(),
+    ];
+    for bad in unusable {
+        let (drawn, carried, axes, after) = try_replace(v1.clone(), bad);
+        let error = carried.expect_err("an unusable scaling is refused");
+        assert!(error.contains(X), "names the channel: {error}");
+        let mut kept = AxisStore::default();
+        kept.apply_axis_configs(v1.clone());
+        assert_eq!(axes.settings, kept.settings, "the axes are unchanged");
+        let t = transform_of(&v1, X);
+        assert_eq!(
+            membership(&after, &t),
+            membership(&drawn, &t),
+            "the gates are unchanged"
         );
     }
 }

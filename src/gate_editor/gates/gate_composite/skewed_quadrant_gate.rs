@@ -645,6 +645,7 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
         // data_range: (f32, f32),
         axis_range: (f32, f32),
     ) -> anyhow::Result<Box<dyn super::super::gate_traits::DrawableGate>> {
+        super::usable_range(axis_range.0, axis_range.1)?;
         let (x_param, _) = &self.parameters;
         let is_x = x_param == &param;
         let mut c = crate::gate_editor::gates::gate_single::rescale_helper_point(
@@ -914,6 +915,7 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
         upper: f32,
         _transform: &TransformType,
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>> {
+        super::usable_range(lower, upper)?;
         let is_x = param == self.parameters.0;
         let mut new_points = self.points.clone();
 
