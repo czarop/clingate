@@ -25,6 +25,8 @@ the seams the integration tests in the second pass are written against.
 | B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
 | B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
+| B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
+| B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -64,3 +66,33 @@ infinite events, `compute_negative_shift` (follows the negative, not the
 positive; errors with no negative), `compute_total_shift` (recovers a
 translation; an empty test is an error), `kde_negative_shift` errors,
 `quantile`, `extract_region`.
+
+### file_load, workspace, searchable_select
+
+**Reach.** `FcsFiles` is built by the Workspace tab
+(`gate_editor::workspace_window`) and read by every tab through the
+`Shell` context: the sample list and plots (`main_window`, `plot_window`),
+the pairing (`pairing_controls`), the gallery, and the rules window's
+`files_to_read`. `program_name` is the join key for the metadata
+(`omiq::metadata::file_name_to_gating_id`), so a file's program name must be
+what the metadata's file-name column says. `Remembered` is written by
+`workspace_window::remember` and read on start-up.
+
+**Vacuous test found and repaired (1).**
+`comparing_two_files_does_not_need_a_guid` did `let _ = a == b;` - it
+compared two different files and discarded the answer. It now asserts they
+are unequal. Writing the tests beside it found B-FCS-1.
+
+**Added.** The FCS fixture takes channels, labels and extra keywords
+(`write_fcs_with`). Tests for the extension check (any case; `.txt` and none
+refused), a missing file, the program name vs the file's own, the transform
+chosen per channel (scatter and `Time` linear, the rest the default), labels
+falling back to the channel name, case-insensitive `find_parameter` and
+`find_mutable_parameter`, keyword lookup across keyword types, GUID
+equality. In the workspace: `Found::one` for several candidates,
+`Remembered::is_empty`, a corrupt or older remembered file, a failed file
+being retried when added again, a name clash reported once, only `.fcs`
+collected from sub-folders.
+
+`searchable_select`'s three copies of the search filter are one tested
+predicate, `matches_search`.

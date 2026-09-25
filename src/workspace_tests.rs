@@ -355,3 +355,117 @@ fn a_link_that_points_nowhere_is_skipped_not_fatal() {
     let found = detect(&dir).unwrap();
     assert_eq!(found.fcs, vec![dir.join("a.fcs")]);
 }
+
+// ── what is left ─────────────────────────────────────────────────────────
+
+#[test]
+fn several_candidates_are_not_one() {
+    let several = Found::Several(vec![PathBuf::from("a"), PathBuf::from("b")]);
+    assert_eq!(several.one(), None);
+    assert_eq!(Found::Missing.one(), None);
+    assert_eq!(Found::One(PathBuf::from("a")).one(), Some(Path::new("a")));
+}
+
+#[test]
+fn a_remembered_workspace_with_nothing_in_it_is_empty() {
+    assert!(Remembered::default().is_empty());
+    // A folder alone does not make a workspace worth offering to reopen.
+    let folder_only = Remembered {
+        folder: Some(PathBuf::from("/data")),
+        ..Default::default()
+    };
+    assert!(folder_only.is_empty());
+    for part in [
+        Remembered {
+            fcs: vec![PathBuf::from("a.fcs")],
+            ..Default::default()
+        },
+        Remembered {
+            metadata: Some(PathBuf::from("m.csv")),
+            ..Default::default()
+        },
+        Remembered {
+            scaling: Some(PathBuf::from("s.csv")),
+            ..Default::default()
+        },
+        Remembered {
+            gating: Some(PathBuf::from("g.omiqgt")),
+            ..Default::default()
+        },
+    ] {
+        assert!(!part.is_empty(), "{part:?}");
+    }
+}
+
+#[test]
+fn a_corrupt_remembered_workspace_is_an_error_not_a_default() {
+    let dir = scratch("corrupt");
+    let at = dir.join("workspace.json");
+    std::fs::write(&at, "{ not json").unwrap();
+    assert!(Remembered::load_from(&at).is_err());
+    assert!(Remembered::load_from(&dir.join("absent.json")).is_err());
+}
+
+#[test]
+fn a_remembered_workspace_from_an_older_version_still_loads() {
+    // Every field defaults, so a file written before a field existed - or
+    // one that names only the folder - is read rather than refused.
+    let dir = scratch("older");
+    let at = dir.join("workspace.json");
+    std::fs::write(&at, r#"{"folder": "/data/run1"}"#).unwrap();
+    let loaded = Remembered::load_from(&at).unwrap();
+    assert_eq!(loaded.folder, Some(PathBuf::from("/data/run1")));
+    assert!(loaded.fcs.is_empty());
+}
+
+/// BUG (docs/test-audit.md, B-WS-1): a file from outside the workspace keeps
+/// its own name, but "outside" is decided by `strip_prefix`, which compares
+/// components without resolving `..`. A path that climbs out through the
+/// workspace folder counts as inside it and is named `.._elsewhere_A1.fcs`.
+#[test]
+#[ignore = "known bug B-WS-1: a path that climbs out of the workspace is named as if inside it"]
+fn a_path_that_climbs_out_of_the_workspace_keeps_its_own_name() {
+    let root = Path::new("/w");
+    assert_eq!(
+        program_name(Some(root), Path::new("/w/../elsewhere/A1.fcs")),
+        "A1.fcs"
+    );
+}
+
+#[test]
+fn a_file_that_failed_is_tried_again_when_added_again() {
+    let dir = scratch("retry");
+    let path = dir.join("late.fcs");
+    std::fs::write(&path, b"still copying").unwrap();
+    let mut files = FcsFiles::open(Some(&dir), &[path.clone()]);
+    assert_eq!(files.unread().len(), 1);
+
+    write_fcs(&path, 3);
+    files.add(&[path.clone()]);
+    assert_eq!(files.sample_count(), 1);
+    assert!(files.unread().is_empty(), "the old failure is not kept");
+    assert_eq!(files.paths(), vec![path]);
+    assert_eq!(files.root(), Some(dir.as_path()));
+}
+
+#[test]
+fn a_refused_name_clash_is_reported_once_however_often_it_is_added() {
+    let dir = scratch("clashtwice");
+    write_fcs(&dir.join("Plate_1_A1.fcs"), 3);
+    std::fs::create_dir_all(dir.join("Plate_1")).unwrap();
+    write_fcs(&dir.join("Plate_1").join("A1.fcs"), 3);
+    let mut files = FcsFiles::open(Some(&dir), &[dir.join("Plate_1_A1.fcs")]);
+    files.add(&[dir.join("Plate_1").join("A1.fcs")]);
+    files.add(&[dir.join("Plate_1").join("A1.fcs")]);
+    assert_eq!(files.unread().len(), 1);
+}
+
+#[test]
+fn only_fcs_files_are_collected_from_sub_folders() {
+    let dir = scratch("onlyfcs");
+    touch(&dir.join("sub").join("a.fcs"));
+    touch(&dir.join("sub").join("notes.txt"));
+    touch(&dir.join("sub").join("metadata.csv"));
+    let found = fcs_under(&dir).unwrap();
+    assert_eq!(found, vec![dir.join("sub").join("a.fcs")]);
+}

@@ -1,5 +1,41 @@
 use dioxus::prelude::*;
 
+/// Whether an item is shown for what has been typed: its displayed text
+/// contains the search, ignoring case. `lowered` is the search already
+/// lowercased, since it is compared against every item.
+pub(crate) fn matches_search(item: &impl std::fmt::Display, lowered: &str) -> bool {
+    item.to_string().to_lowercase().contains(lowered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_search;
+
+    #[test]
+    fn an_empty_search_shows_everything() {
+        assert!(matches_search(&"CD3", ""));
+        assert!(matches_search(&"", ""));
+    }
+
+    #[test]
+    fn a_search_ignores_case_and_matches_anywhere_in_the_text() {
+        assert!(matches_search(&"BV421-A :: CD3", "cd3"));
+        assert!(matches_search(&"BV421-A :: CD3", "421"));
+        assert!(!matches_search(&"BV421-A :: CD3", "cd4"));
+    }
+
+    #[test]
+    fn a_search_is_matched_against_what_is_displayed() {
+        struct Shown;
+        impl std::fmt::Display for Shown {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "Lymphocytes")
+            }
+        }
+        assert!(matches_search(&Shown, "lymph"));
+    }
+}
+
 #[component]
 pub fn SearchableSelectList<T: Clone + PartialEq + std::fmt::Display + 'static>(
     items: ReadSignal<Vec<T>>,
@@ -18,7 +54,7 @@ pub fn SearchableSelectList<T: Clone + PartialEq + std::fmt::Display + 'static>(
             .read()
             .iter()
             .enumerate() // <--- Get the original index FIRST
-            .filter(|(_, item)| item.to_string().to_lowercase().contains(&q))
+            .filter(|(_, item)| matches_search(*item, &q))
             .map(|(i, item)| (i, item.clone())) // Store both
             .collect::<Vec<(usize, T)>>()
     });
@@ -147,7 +183,7 @@ pub fn SearchableSelectMap<
             .read()
             .iter()
             .enumerate() // Capture the REAL index in the master map
-            .filter(|(_, (_, v))| v.to_string().to_lowercase().contains(&q))
+            .filter(|(_, (_, v))| matches_search(v, &q))
             .map(|(i, (k, v))| (i, k.clone(), v.clone())) // Store (Index, Key, Value)
             .collect::<Vec<(usize, S, T)>>()
     });
@@ -273,7 +309,7 @@ pub fn SearchableSelectSet<
             .read()
             .iter()
             .enumerate()
-            .filter(|(_, v)| v.to_string().to_lowercase().contains(&q))
+            .filter(|(_, v)| matches_search(*v, &q))
             .map(|(i, v)| (i, v.clone()))
             .collect::<Vec<(usize, T)>>()
     });

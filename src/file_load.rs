@@ -165,9 +165,12 @@ impl PartialEq for FcsSampleStub {
     /// The same acquisition, by `$GUID` where both files carry one.
     ///
     /// Falls back to the path rather than panicking. This used to `expect` a
-    /// GUID on both sides, and a file without one - which `validate_guid` does
-    /// not reliably prevent, since it writes `GUID` and this reads `$GUID` -
-    /// took the app down the first time the file list was compared.
+    /// GUID on both sides, which took the app down for a file without one.
+    ///
+    /// In practice every opened file has one, and not its own: flow_fcs's
+    /// `validate_guid` looks for `GUID`, never finds it among keywords stored
+    /// as `$GUID`, and inserts a random `$GUID` over the file's. See B-FCS-1
+    /// in `docs/test-audit.md`.
     fn eq(&self, other: &Self) -> bool {
         match (self.get_guid(), other.get_guid()) {
             (Ok(a), Ok(b)) => a == b,
