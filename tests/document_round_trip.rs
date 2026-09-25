@@ -253,3 +253,84 @@ fn a_gating_file_naming_a_parent_it_does_not_contain_still_opens() {
     );
     assert!(outcome.is_some(), "the import never finished");
 }
+
+/// Random positions per sample and per specimen, on random gates, survive a
+/// save and reopen: every gate resolves, for every file, to where it did.
+#[test]
+fn random_per_file_and_per_specimen_positions_survive_a_save() {
+    use rand::prelude::*;
+    let files = ["sample1", "sample2"];
+    let groups = [("test", "one"), ("test", "two")];
+    for seed in 0..40u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut state = import(&fixture(FIXTURE));
+        let mut ids: Vec<GateId> = state
+            .registered_ids()
+            .into_iter()
+            .filter(|id| {
+                state.registered_gate(id).is_some_and(|g| {
+                    !g.is_composite()
+                        && extent_on(&g.get_gate_ref(None).unwrap().geometry, &g.get_params().0)
+                            .is_some_and(|(lo, _)| lo.is_finite() && lo.abs() < 1e9)
+                })
+            })
+            .collect();
+        ids.sort();
+        let mut log = Vec::new();
+        for _ in 0..6 {
+            let id = ids[rng.random_range(0..ids.len())].clone();
+            let gate = state.registered_gate(&id).unwrap();
+            let x = gate.get_params().0;
+            let (lo, _) = extent_on(&gate.get_gate_ref(None).unwrap().geometry, &x).unwrap();
+            let to = lo + nudge(lo) * rng.random_range(-1.0..1.0);
+            let Ok(moved) = translate_edge_to(&gate, &x, Bound::Above, to as f64) else {
+                continue;
+            };
+            if rng.random_bool(0.5) {
+                let file = files[rng.random_range(0..files.len())];
+                state.place_gate(
+                    &[id.clone()],
+                    &moved,
+                    &GateSource::Sample((id.clone(), Arc::from(file))),
+                );
+                log.push(format!("{id} for {file} at {to}"));
+            } else {
+                let (column, group) = groups[rng.random_range(0..groups.len())];
+                place_for_specimen(
+                    &mut state,
+                    &id,
+                    &MetaDataKey {
+                        parameter: Arc::from(column),
+                        group: Arc::from(group),
+                    },
+                    &moved,
+                );
+                log.push(format!("{id} for group {group} at {to}"));
+            }
+        }
+
+        // Guard: the edits must have given the two files different positions
+        // somewhere, or this would be comparing the defaults with themselves.
+        let differs = ids.iter().any(|id| {
+            let x = state.registered_gate(id).unwrap().get_params().0;
+            !close(low_edge_for(&state, id, "sample1", &x), low_edge_for(&state, id, "sample2", &x))
+        });
+        assert!(differs, "seed {seed}: no file got a position of its own\n{}", log.join("\n"));
+
+        let back = saved_and_reopened(&state, &format!("random-{seed}"));
+        for id in &ids {
+            let x = state.registered_gate(id).unwrap().get_params().0;
+            for file in files {
+                let (before, after) = (
+                    low_edge_for(&state, id, file, &x),
+                    low_edge_for(&back, id, file, &x),
+                );
+                assert!(
+                    close(before, after),
+                    "seed {seed}: {id} on {file} was at {before}, came back at {after}\n{}",
+                    log.join("\n")
+                );
+            }
+        }
+    }
+}
