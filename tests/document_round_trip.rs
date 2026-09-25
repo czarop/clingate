@@ -167,3 +167,23 @@ fn every_gate_and_position_survives_a_save() {
         );
     }
 }
+
+/// BUG (docs/test-audit.md, B-AX-3), on import: a gating file's quadrants are
+/// built against the axis ranges the scaling gave, and a range the wrong way
+/// round reaches the same `clamp` - opening the gating file crashes rather
+/// than reporting the scaling.
+#[test]
+#[ignore = "known bug B-AX-3: an inverted axis range crashes the gating import"]
+fn a_gating_file_imported_over_an_inverted_range_is_an_error_not_a_crash() {
+    let mut axes = fixture_axes();
+    for (_, axis) in axes.iter_mut() {
+        std::mem::swap(&mut axis.axis_lower, &mut axis.axis_upper);
+    }
+    let outcome = std::panic::catch_unwind(|| {
+        let mut state = GateState::default();
+        state
+            .upload_gates_from_file(fixture(FIXTURE), &fixture_metadata(), axes)
+            .is_ok()
+    });
+    assert!(outcome.is_ok(), "importing over an inverted range panicked");
+}

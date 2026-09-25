@@ -34,8 +34,12 @@ const X: &str = "BV421-A";
 const Y: &str = "SSC-A";
 
 fn scaling(name: &str, cofactor: i64, rows_for_y: bool) -> Vec<AxisInfo> {
+    scaling_over(name, cofactor, rows_for_y, (-500, 200_000))
+}
+
+fn scaling_over(name: &str, cofactor: i64, rows_for_y: bool, range: (i64, i64)) -> Vec<AxisInfo> {
     let path = scratch(name).join("scaling.csv");
-    let mut rows = vec![(X, "CD3", "Arcsinh", cofactor, -500, 200_000)];
+    let mut rows = vec![(X, "CD3", "Arcsinh", cofactor, range.0, range.1)];
     if rows_for_y {
         rows.push((Y, "", "None (linear)", 1, 0, 262_144));
     }
@@ -291,4 +295,19 @@ fn a_channel_the_new_file_drops_is_reported_and_its_gates_left_alone() {
         "the scaling is replaced, not merged"
     );
     assert_eq!(membership(&before, &t), membership(&after, &t));
+}
+
+/// BUG (docs/test-audit.md, B-AX-3): nothing checks a scaling file's range
+/// is the right way round. Replacing the scaling with one whose Min exceeds
+/// its Max relimits every quadrant on the channel, and the quadrant's
+/// `f32::clamp(lower + buffer, upper - buffer)` panics - loading a file
+/// crashes the app. It should be refused, or the channel reported, with the
+/// gates left as they were.
+#[test]
+#[ignore = "known bug B-AX-3: a scaling file with Min above Max crashes the scaling replace"]
+fn a_scaling_file_with_its_range_the_wrong_way_round_is_refused_not_fatal() {
+    let v1 = scaling("inverted-v1", 150, true);
+    let inverted = scaling_over("inverted-v2", 150, true, (200_000, -500));
+    let outcome = std::panic::catch_unwind(|| replace(v1, inverted));
+    assert!(outcome.is_ok(), "replacing the scaling panicked");
 }

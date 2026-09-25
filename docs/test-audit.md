@@ -21,8 +21,8 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **25 known bugs are pinned as failing tests** (`#[ignore]`d with their
-  id); all 25 fail today. One more (B-BUILD-1) was fixed outright.
+- **27 known-bug tests (26 bugs) are pinned as failing tests** (`#[ignore]`d
+  with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -35,7 +35,7 @@ Run everything without GTK:
     cargo test --no-default-features                          # the suite
     cargo test --no-default-features --no-fail-fast -- --ignored   # the known bugs: every one should fail
 
-The table is ordered by severity. The four **High** entries change what a
+The table is ordered by severity. The **High** entries change what a
 person sees or gates without saying so, or crash the app, and are the ones
 to fix first.
 
@@ -47,6 +47,7 @@ to fix first.
 | B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
 | B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
 | B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
+| B-AX-3 | the same `clamp`, reached from files: `axis_store::read_axis_configs` and the gating import | Nothing checks a scaling file's range is the right way round. A file with Min above Max crashes the app when it replaces the scaling (every quadrant on the channel is relimited) and when a gating file is imported over it | **High** - loading a file crashes the app |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
