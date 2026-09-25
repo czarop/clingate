@@ -10,7 +10,9 @@ the seams the integration tests in the second pass are written against.
   bug's id below: `#[ignore = "known bug B-KDE-1: ..."]`. `cargo test` stays
   green; `cargo test -- --ignored` runs every known bug, and every one of them
   should fail. One that passes has been fixed - delete its `#[ignore]` and
-  move its entry to *Fixed*.
+  move its entry to *Fixed*. (Doctests are the exception: rustdoc never runs
+  a block marked `ignore`, even under `--ignored`, and reports it as passing.
+  The one such block, `clone_subtree`'s, has a failing unit test beside it.)
 - **A vacuous test** is one that cannot fail whatever the code does: no
   assertion, an assertion that always holds, or an early `return` that turns a
   missing input into a pass. Each one found is listed with what was done.
