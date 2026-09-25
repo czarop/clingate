@@ -37,6 +37,9 @@ the seams the integration tests in the second pass are written against.
 | B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
 | B-AX-1 | quadrant / skewed quadrant `recalculate_gate_for_new_axis_limits` (via `main_window`'s limit boxes) | The boxes apply every keystroke and nothing checks lower < upper; the relimit's `f32::clamp(lower + buffer, upper - buffer)` then panics - typing `-5` in the upper box of a linear axis crashes the app | **High** - crash |
 | B-AX-2 | the same | Each keystroke's intermediate limit (4, 40, 400 ... on the way to 400,000) clamps a quadrant's centre into that range, and nothing restores it: retyping a limit moves the quadrant for good | **High** - silent change to gating |
+| B-CNT-1 | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter admits strictly inside a rectangle, the index counts the edge: the percentage on a gate counts events the population drawn under it does not hold (240 vs 246 in the test, the six edge events) | Medium - whole-number scatter values meet round edges |
+| B-STAT-1 | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100` unguarded: a gate over an empty parent shows NaN% | Low |
+| B-BUILD-1 (fixed) | `Cargo.toml` | The binary needs `dioxus::desktop`, so `cargo test --no-default-features` - documented as the way to test without GTK - failed building it for any target but `--lib`. Fixed: `required-features = ["desktop"]` on the `[[bin]]` | - |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -282,3 +285,19 @@ operations in `workspace_window`, the `components/` widgets - need a
 running runtime with stores and signals. Their logic is tested where it
 has been pulled out into plain functions; the rest was checked by driving
 the app (see the Workspace entries in the changelog).
+
+## Second pass: integration tests
+
+In `tests/`, against the library's public API, with files written to disk
+where the seam is a file (`tests/common` writes FCS, metadata and scaling
+files). Run with `cargo test --no-default-features --tests`.
+
+- `workspace_to_metadata` - folder -> `detect` -> `FcsFiles` (program names
+  for plate sub-folders) -> `parse_metadata_csv` -> each file's row; a
+  metadata export using bare well names reaches no file rather than the
+  wrong one; a remembered workspace reopens the same files under the same
+  names, without a file removed by hand; B-META-1 end to end.
+- `gate_counting` - every gate type counted by the filter and by the
+  on-screen index over the same events: they agree away from edges, the
+  quadrant's quarters account for every event once; B-CNT-1 (edges),
+  B-STAT-1 (empty parent).

@@ -43,3 +43,12 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 [features]
 default = ["desktop"]
 desktop = ["dioxus/desktop"]
+
+# The application is a desktop window and cannot be built without one. Saying
+# so lets `cargo test --no-default-features` build the library and every test
+# target without GTK; without it, cargo builds the binary for the integration
+# tests and fails on `dioxus::desktop`.
+[[bin]]
+name = "clingate"
+path = "src/main.rs"
+required-features = ["desktop"]
