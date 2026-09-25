@@ -219,10 +219,22 @@ fn composite_figures_are_retrievable_by_subgate_id() {
     let ids = quad.get_inner_gate_ids();
     let stats = get_percent_and_counts_gate(quad, &index(), 10.0).unwrap();
 
+    let mut total = 0.0;
+    let mut percent = 0.0;
     for id in ids {
-        assert!(stats.get_count_for_id(id.clone()).is_some());
-        assert!(stats.get_percent_for_id(id).is_some());
+        total += stats
+            .get_count_for_id(id.clone())
+            .expect("a count per quarter");
+        percent += stats
+            .get_percent_for_id(id)
+            .expect("a percentage per quarter");
     }
+    // The quarters tile the plane: every event is in exactly one of them.
+    assert_eq!(total, 10.0, "the ten events split across the quarters");
+    assert!(
+        (percent - 100.0).abs() < 1e-3,
+        "the quarters' percentages sum to {percent}"
+    );
 }
 
 // ─── Draft gates ──────────────────────────────────────────────────────────────

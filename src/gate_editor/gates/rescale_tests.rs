@@ -37,11 +37,11 @@ use flow_gates::{GateGeometry, create_polygon_geometry, create_rectangle_geometr
 use std::sync::Arc;
 
 /// The channel being rescaled: a fluorescence channel, on arcsinh.
-const X: &str = "CD3";
+pub(super) const X: &str = "CD3";
 /// The other axis, which is linear throughout and must never move.
-const Y: &str = "SSC-A";
+pub(super) const Y: &str = "SSC-A";
 
-const OLD: TransformType = TransformType::Arcsinh { cofactor: 150.0 };
+pub(super) const OLD: TransformType = TransformType::Arcsinh { cofactor: 150.0 };
 const NEW: TransformType = TransformType::Arcsinh { cofactor: 1000.0 };
 
 /// The raw range both axes cover, in both scalings.
@@ -61,7 +61,7 @@ fn axis(transform: TransformType) -> AxisInfo {
 }
 
 /// Where a raw value sits on the rescaled axis under `t`.
-fn shown(t: &TransformType, raw: f32) -> f32 {
+pub(super) fn shown(t: &TransformType, raw: f32) -> f32 {
     t.transform(&raw)
 }
 
@@ -100,7 +100,7 @@ fn inner(id: &str, geometry: GateGeometry) -> flow_gates::Gate {
 
 // ── the gates, each placed at raw positions and stored under OLD ─────────
 
-fn rectangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn rectangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let (x1, x2) = (shown(t, 800.0), shown(t, 20_000.0));
     let geometry = create_rectangle_geometry(
         vec![(x1, 200.0), (x2, 200.0), (x2, 700.0), (x1, 700.0)],
@@ -111,7 +111,7 @@ fn rectangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     Arc::new(RectangleGate::try_new(inner(id, geometry), true).unwrap())
 }
 
-fn triangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn triangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let geometry = create_polygon_geometry(
         vec![
             (shown(t, 500.0), 150.0),
@@ -125,7 +125,7 @@ fn triangle(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     Arc::new(PolygonGate::try_new(inner(id, geometry), true).unwrap())
 }
 
-fn ellipse(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn ellipse(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let geometry = crate::omiq::deserialise::create_omiq_ellipse_geometry(
         (f64::from(shown(t, 1_000.0)), 500.0),
         (f64::from(shown(t, 30_000.0)), 500.0),
@@ -138,7 +138,7 @@ fn ellipse(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
 }
 
 /// An ellipse leaning across the plot: neither of its axes lies along X.
-fn tilted_ellipse(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn tilted_ellipse(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let geometry = crate::omiq::deserialise::create_omiq_ellipse_geometry(
         (f64::from(shown(t, 1_000.0)), 300.0),
         (f64::from(shown(t, 30_000.0)), 700.0),
@@ -181,7 +181,7 @@ fn ellipse_form(gate: &Arc<dyn DrawableGate>) -> (f32, f32, f32, f32) {
     }
 }
 
-fn line(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn line(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let (x1, x2) = (shown(t, 2_000.0), shown(t, 90_000.0));
     let geometry =
         create_rectangle_geometry(vec![(x1, -1e16), (x2, -1e16), (x2, 1e16), (x1, 1e16)], X, Y)
@@ -196,7 +196,7 @@ fn pixel_at(t: &TransformType, raw: f32) -> (f32, f32) {
     ((shown(t, raw) - lo) / (hi - lo) * 600.0, 300.0)
 }
 
-fn quadrant(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn quadrant(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     Arc::new(
         QuadrantGate::try_new_from_raw_coord(
             &mapper(t),
@@ -210,7 +210,7 @@ fn quadrant(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     )
 }
 
-fn skewed(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn skewed(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     let map = mapper(t);
     let square = SkewedQuadrantGate::try_new_from_raw_coord(
         &map,
@@ -231,7 +231,7 @@ fn skewed(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     Arc::from(tilted)
 }
 
-fn bisector(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
+pub(super) fn bisector(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
     Arc::new(
         BisectorGate::try_new(
             &mapper(t),
@@ -249,7 +249,7 @@ fn bisector(id: &str, t: &TransformType) -> Arc<dyn DrawableGate> {
 
 /// Raw events across the range, spaced irregularly so none sits exactly on
 /// a boundary by construction.
-fn events() -> Vec<(f32, f32)> {
+pub(super) fn events() -> Vec<(f32, f32)> {
     let mut out = Vec::new();
     let mut x = 37.0_f32;
     while x < 150_000.0 {

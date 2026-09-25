@@ -3160,4 +3160,155 @@ mod gate_store_tests {
         assert!(state.is_ghost(&id), "registered, but nowhere in the tree");
         assert!(!state.is_ghost(&Arc::from("never-existed")));
     }
+
+    // ── which files have a position of their own ──────────────────────────────
+
+    fn metadata_for(files: &[(&str, &[(&str, &str)])]) -> crate::omiq::metadata::MetaDataFileMap {
+        let mut map = im::HashMap::with_hasher(FxBuildHasher);
+        for (f, columns) in files {
+            map.insert(file(f), groups(columns));
+        }
+        map
+    }
+
+    #[test]
+    fn only_files_whose_gate_resolves_differently_have_their_own_position() {
+        // The export writes a per-file position only for these, so a file
+        // listed here that has none - or one missed that has one - is a gate
+        // written to the wrong place.
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state.place_gate(&[global.get_id()], &global, &GateSource::Global);
+        state.place_gate(
+            &[global.get_id()],
+            &rectangle("r"),
+            &GateSource::Sample((global.get_id(), file("s1"))),
+        );
+        state.place_gate(
+            &[global.get_id()],
+            &rectangle("r"),
+            &GateSource::Group((global.get_id(), group_key("Plate", "P2"))),
+        );
+        let metadata = metadata_for(&[
+            ("s1", &[("Plate", "P1")]),
+            ("s2", &[("Plate", "P1")]),
+            ("s3", &[("Plate", "P2")]),
+        ]);
+
+        let mut own = state.files_with_own_position(&global.get_id(), &metadata);
+        own.sort();
+        assert_eq!(own, vec![file("s1"), file("s3")]);
+    }
+
+    #[test]
+    fn a_gate_with_no_overrides_has_no_file_of_its_own() {
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state.place_gate(&[global.get_id()], &global, &GateSource::Global);
+        let metadata = metadata_for(&[("s1", &[]), ("s2", &[])]);
+        assert!(
+            state
+                .files_with_own_position(&global.get_id(), &metadata)
+                .is_empty()
+        );
+    }
+
+    // ── ghosts ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_gate_nothing_reaches_is_collected_and_one_on_a_plot_is_kept() {
+        let mut state = GateState::default();
+        let placed = add_rect(&mut state, None);
+        let ghost = rectangle("ghost");
+        state.place_gate(&[ghost.get_id()], &ghost, &GateSource::Global);
+
+        let dropped = state.collect_stranded_ghosts();
+        assert_eq!(dropped, vec![ghost.get_id()]);
+        assert!(!state.is_registered(&ghost.get_id()));
+        assert!(state.is_registered(&placed));
+        assert!(
+            state.collect_stranded_ghosts().is_empty(),
+            "nothing left to collect"
+        );
+    }
+
+    // ── walking the tree ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_tree_can_be_walked_from_the_root_down_and_back_up() {
+        let mut state = GateState::default();
+        let parent = add_rect(&mut state, None);
+        let parent_node = state.primary_node_for_gate(&parent).expect("placed");
+        let child = {
+            state
+                .add_gate(
+                    &mapper(),
+                    300.0,
+                    300.0,
+                    Arc::from(X),
+                    Arc::from(Y),
+                    None,
+                    Some(parent.clone()),
+                    PrimaryGateType::Rectangle,
+                    Some("the child".to_string()),
+                )
+                .unwrap();
+            state
+                .registered_ids()
+                .into_iter()
+                .find(|id| {
+                    state
+                        .registered_gate(id)
+                        .is_some_and(|g| g.get_name() == "the child")
+                })
+                .unwrap()
+        };
+        let child_node = state.primary_node_for_gate(&child).unwrap();
+
+        assert_eq!(state.root_nodes(), vec![NodeId::from(ROOTGATE.clone())]);
+        assert!(
+            state
+                .child_nodes(&NodeId::from(ROOTGATE.clone()))
+                .contains(&parent_node)
+        );
+        assert_eq!(state.child_nodes(&parent_node), vec![child_node.clone()]);
+        assert_eq!(state.parent_node(&child_node), Some(parent_node.clone()));
+        assert_eq!(
+            state.gate_chain_for_node(&child_node),
+            vec![parent.clone(), child]
+        );
+        assert!(state.node_order(&child_node).is_some());
+    }
+
+    #[test]
+    fn an_id_from_the_ui_is_read_as_a_tree_position() {
+        let mut state = GateState::default();
+        let gate = add_rect(&mut state, None);
+        let node = state.primary_node_for_gate(&gate).unwrap();
+
+        // A node id, a gate id, and the root all resolve; an unknown id
+        // falls back to the root rather than inventing a position.
+        assert_eq!(state.as_parent_node(node.as_arc()), node);
+        assert_eq!(state.as_parent_node(&gate), node);
+        assert_eq!(
+            state.as_parent_node(&ROOTGATE),
+            NodeId::from(ROOTGATE.clone())
+        );
+        assert_eq!(
+            state.as_parent_node(&Arc::from("nowhere")),
+            NodeId::from(ROOTGATE.clone())
+        );
+    }
+
+    #[test]
+    fn a_new_gate_is_placed_at_its_own_node() {
+        let mut state = GateState::default();
+        let g = rectangle("fresh");
+        state.place_gate(&[g.get_id()], &g, &GateSource::Global);
+        let node = state.place_new_gate(None, g.get_id()).unwrap();
+
+        assert_eq!(node, NodeId::from(g.get_id()));
+        assert_eq!(state.gate_for_node(&node), Some(&g.get_id()));
+        assert_eq!(state.placement_count(&g.get_id()), 1);
+    }
 }

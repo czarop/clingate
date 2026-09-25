@@ -209,3 +209,41 @@ assert nothing: `shape_fit_tests::a_fitted_shape_can_be_looked_at`
   since those rules take their own branch.
 - `RuleStore::save` writes in place; `Remembered::save_to` writes beside and
   renames. A crash mid-save loses the rules file.
+
+### gate_editor/gates
+
+**Reach.** `GateState` (`gate_store`) is the document: the three-tier gate
+store (global registry, per-group and per-sample overrides keyed by
+`MetaDataKey` / file id), the node tree (`gate_hierarchy`), and the Omiq
+rebuild data. It is written by the import (`omiq::deserialise`), the editor
+(drag, rotate, draw - `gate_single`, `gate_composite`, `gate_drag`), the
+autogater (`place_gate`, per-file overrides), the rescale (`rescale_channel`,
+`relimit_channel`, from `axis_store` and the Workspace tab) and link/unlink.
+It is read by filtering (`gate_filtering`, a polars mask), the on-screen
+statistics (`gate_stats`, an R-tree `EventIndex`), drawing (`draw_gates`),
+the gallery, and the export (`omiq::serialise`).
+
+**Weak tests strengthened (2).** `an_ellipse_can_be_rotated` only checked a
+rotation returned something; it now checks the angle changed and the size
+and centre did not. `composite_figures_are_retrievable_by_subgate_id` only
+checked each quarter had a figure; it now checks the quarters' counts tile
+the ten events and their percentages sum to 100.
+
+**Added.** `swap_tests`: every gate type transposed onto swapped axes holds
+exactly the same events - in the same named piece for a composite - and
+transposing twice gives the gate back; the ellipse, line gate, skewed
+quadrant and bisector had no swap test. `gate_store`: which files have a
+position of their own (what the export writes per file), collecting a
+stranded ghost, walking the tree (`root_nodes`, `child_nodes`,
+`parent_node`, `gate_chain_for_node`, `node_order`), reading a UI id as a
+position (`as_parent_node`), `place_new_gate`. `draw_gates::was_gate_clicked`:
+an edge selects its gate, the interior and empty space do not, the nearer of
+two edges wins.
+
+**Observations.**
+- The same question - which events a gate holds - is answered two ways: a
+  polars mask in `gate_filtering` (used for the plotted population) and an
+  R-tree in `gate_stats` (used for the percentage shown). Nothing checked
+  they agree; the integration pass does.
+- `filter_events_by_hierarchy_to_mask` and `rescale_helper` print to stdout
+  on every call.

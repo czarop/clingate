@@ -306,9 +306,22 @@ fn an_axis_aligned_ellipse_has_no_rotation() {
 #[test]
 fn an_ellipse_can_be_rotated() {
     let g = ellipse("e");
+    let (centre, rx, ry, angle) = ellipse_parts(&g);
+    let turned = g
+        .rotate_gate((300.0, 300.0))
+        .unwrap()
+        .expect("an ellipse should accept a rotation");
+    let (c2, rx2, ry2, angle2) = ellipse_parts(turned.as_ref());
+    // Turned about its centre: it points somewhere new, and is the same size
+    // in the same place.
     assert!(
-        g.rotate_gate((300.0, 300.0)).unwrap().is_some(),
-        "an ellipse should accept a rotation"
+        (angle2 - angle).abs() > 1e-3,
+        "the angle did not change: {angle} -> {angle2}"
+    );
+    assert_eq!(c2, centre);
+    assert!(
+        (rx2 - rx).abs() < 1e-3 && (ry2 - ry).abs() < 1e-3,
+        "{rx}x{ry} -> {rx2}x{ry2}"
     );
 }
 
