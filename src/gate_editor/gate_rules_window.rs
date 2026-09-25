@@ -2163,8 +2163,9 @@ mod tests {
                 let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
                 let neg = Normal::new(centre, centre * 0.1).unwrap();
                 let pos = Uniform::new(60_000.0f32, 90_000.0).unwrap();
-                let mut out: Vec<Vec<f32>> =
-                    (0..9_000).map(|_| vec![neg.sample(&mut rng), 100.0]).collect();
+                let mut out: Vec<Vec<f32>> = (0..9_000)
+                    .map(|_| vec![neg.sample(&mut rng), 100.0])
+                    .collect();
                 out.extend((0..1_000).map(|_| vec![pos.sample(&mut rng), 100.0]));
                 out
             };
@@ -2245,7 +2246,46 @@ mod tests {
             // thousands.
             let expected = edge + (shown(3_000.0) - shown(1_000.0));
             assert!(at < 10.0, "the gate was placed in raw units: {at}");
-            assert!((at - expected).abs() < 0.3, "the gate is at {at}, expected about {expected}");
+            assert!(
+                (at - expected).abs() < 0.3,
+                "the gate is at {at}, expected about {expected}"
+            );
+        }
+
+        /// BUG (docs/test-audit.md, B-FCS-2): a file whose header's data
+        /// offset is damaged passes the workspace's check, and reading its
+        /// events trips an assertion inside flow_fcs. Files are read in
+        /// parallel, so that panic takes the whole run with it - the donor's
+        /// gate is never placed because of a different file.
+        #[test]
+        #[ignore = "known bug B-FCS-2: one file with a damaged data offset ends the whole run"]
+        fn a_file_with_a_damaged_data_offset_is_reported_and_the_rest_still_run() {
+            let (state, _) = positive_gate();
+            let mut files = workspace("run-damaged");
+            let damaged = files[0].1.with_file_name("damaged.fcs");
+            crate::file_load_tests::with_data_start_damaged(&damaged);
+            files.push((Arc::from("damaged.fcs"), damaged));
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+                let mut names = named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]);
+                names.insert(Arc::from("damaged.fcs"), Arc::from("damaged"));
+                run_solve(
+                    state.clone(),
+                    files,
+                    names,
+                    Vec::new(),
+                    specimens(),
+                    rules(),
+                    progress,
+                    Arc::new(AtomicBool::new(false)),
+                )
+            }));
+            let outcome = outcome.expect("the run finished");
+            assert!(
+                outcome.report.positioned.iter().any(|p| &*p.file == "fs_b"),
+                "the donor was still placed"
+            );
         }
 
         #[test]

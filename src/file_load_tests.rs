@@ -358,3 +358,54 @@ fn a_keyword_is_read_as_text_whatever_its_type() {
     assert_eq!(stub.get_fil_keyword().unwrap(), "a.fcs");
     assert!(stub.get_keyword_string_value("$NOSUCH").is_err());
 }
+
+/// A file whose header places its data segment somewhere other than where
+/// its events are - the leading digit of the data-start offset damaged to a
+/// form feed, which reads as whitespace, so `313` reads as `13` - with every
+/// event byte still present.
+pub fn with_data_start_damaged(path: &Path) {
+    write_fcs(path, 50);
+    let mut bytes = std::fs::read(path).unwrap();
+    // The header's third offset, the data start, is bytes 26..34.
+    let lead = (26..34)
+        .find(|at| bytes[*at] != b' ')
+        .expect("the data start has digits");
+    assert!(lead < 33, "the data start has more than one digit to damage");
+    bytes[lead] = 0x0c;
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// BUG (docs/test-audit.md, B-FCS-2): the workspace checks a file's header
+/// and keywords but not that its data segment holds the `$TOT` events its
+/// keywords promise. A file whose header offsets are damaged is accepted, and
+/// reading its events then trips an assertion inside flow_fcs ("Parameter 1
+/// should have 50 events, got 88").
+#[test]
+#[ignore = "known bug B-FCS-2: a file whose data segment does not hold $TOT events is accepted"]
+fn a_file_whose_data_segment_does_not_match_its_event_count_is_refused() {
+    let dir = scratch("datamismatch");
+    let path = dir.join("damaged.fcs");
+    with_data_start_damaged(&path);
+    assert!(
+        FcsSampleStub::open(path.to_str().unwrap()).is_err(),
+        "accepted a file whose data segment holds 88 events' worth for 50"
+    );
+}
+
+/// A file cut short in its events is accepted by the workspace today, but
+/// reading its events is refused cleanly ("Data end offset ... is beyond
+/// mmap length"), so it costs an error on that file and nothing more.
+#[test]
+fn reading_the_events_of_a_file_cut_short_is_an_error() {
+    let dir = scratch("cutdata");
+    let path = dir.join("cut.fcs");
+    write_fcs(&path, 100);
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() - 200]).unwrap();
+    let read = std::panic::catch_unwind(|| flow_fcs::Fcs::open(path.to_str().unwrap()).is_err());
+    assert_eq!(
+        read.ok(),
+        Some(true),
+        "a panic, or events read from a file cut short"
+    );
+}

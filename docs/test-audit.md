@@ -21,7 +21,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **33 known-bug tests (30 bugs) are pinned as failing tests** (`#[ignore]`d
+- **36 known-bug tests (32 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -55,6 +55,7 @@ to fix first.
 | B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
 | B-CNT-1 | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter admits strictly inside a rectangle, the index counts the edge: the percentage on a gate counts events the population drawn under it does not hold (240 vs 246 in the test, the six edge events) | Medium - whole-number scatter values meet round edges |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
+| B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
 | B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
@@ -67,6 +68,7 @@ to fix first.
 | B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
 | B-HIER-2 | `gate_hierarchy::GateHierarchy::would_create_cycle` (used by `add_child`, `reparent`, `delete_node_keep_children`) | Checks whether the parent is among the child's descendants; a gate is not its own, so a gate can be made its own parent - directly, or by deleting a gate and handing its children to one of them. `get_ancestors` then loops forever. Found by the random edit sequences | Medium - reachable from a damaged file (B-OMIQ-2) |
 | B-DOC-1 | `GateState::link_node_to_gate` / `link_composite` | Re-pointing a position keeps the gate it replaced registered "since a boolean may still reference it", whether one does or not; deleting collects such a gate (`collect_stranded_ghosts`) because it accumulates and is exported as a container on no plot. Found by the random document edits | Low - file bloat, invisible containers in Omiq |
+| B-FCS-3 | flow_fcs `Fcs::open` (upstream, `czarop/flow`) | Slices by the header's offsets and asserts event counts without checking them: damaged or truncated files panic ("range end index 312 out of range for slice of length 110"). Every caller runs it on a worker thread, so the app survives; files the workspace refuses never reach it; B-FCS-2 is the case that does | Low here - upstream |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
@@ -421,3 +423,19 @@ made enormous - and requires each to load or be refused, within five seconds,
 without a panic. None panicked or hung; loops through `parentId` are left
 out as the known B-OMIQ-2. The import also prints `CREATED GLOBAL GATE!` /
 `CREATED FILE-SPECIFIC GATE!` for every gate it builds.
+
+### Damaged FCS files
+
+`tests/fcs_robustness.rs` changes random bytes in a valid file's header and
+keywords (400 trials) and cuts files short at random (200), and requires the
+workspace's reader, `FcsSampleStub::open`, to refuse each without a panic -
+it does. flow_fcs's full reader panics on many of the same files (B-FCS-3,
+pinned there). What matters is the overlap: of 3,000 damaged files, one was
+accepted by the workspace and then panicked the event reader - a header
+data-offset digit read as whitespace, so the data segment appeared to hold
+88 events for 50. That is B-FCS-2, reproduced deterministically in
+`file_load_tests` and, for its consequence, in the rules run tests.
+
+A first draft of the rules-run test cut a file short in its data and
+claimed the run died; it did not - flow_fcs refuses that case cleanly - so
+that claim was dropped and the passing behaviour is now a test of its own.
