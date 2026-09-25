@@ -22,8 +22,8 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,045 unit tests and 20 integration tests pass**, plus 11 doctests.
-- **37 known-bug tests (32 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,046 unit tests and 20 integration tests pass**, plus 11 doctests.
+- **39 known-bug tests (33 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -58,6 +58,7 @@ to fix first.
 | B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
 | B-CNT-1 | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter admits strictly inside a rectangle, the index counts the edge: the percentage on a gate counts events the population drawn under it does not hold (240 vs 246 in the test, the six edge events) | Medium - whole-number scatter values meet round edges |
 | B-PDF-1 | `gallery::export::contact_sheet` (the Export PDF button) | A plot that fails to render (`render_plot(..).ok()`) and a paired file with no metadata row (skipped while the jobs are built) both leave an empty slot, and an empty slot is printed "no paired file". On screen the same plot shows why it failed. The QC record says a specimen had no such file when it did, and the run is reported as written | Medium - a QC record that misstates what was checked |
+| B-PAIR-1 | `plots::sample_pairs::pair_files`, shown through `take(2)` in `main_window` and `gallery::window` | A specimen gets one slot per display-order type, filled by the *first* file of that type, and both screens show a pair's first two slots. A second file of one type (a tube re-acquired after a clog), a third file of a specimen with no named type, and every file of a third type typed into "Plot order" are listed in the editor but never drawn - picking one shows the specimen's other files - and never appear in the gallery or its PDF. Nothing warns: the pairing controls count only untyped files and types missing from the order | Medium - a file that cannot be viewed or edited, and a QC record that silently omits it |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
@@ -488,3 +489,13 @@ builds each column from one `Vec`), so the ellipse and polygon filters'
 contiguous-slice requirement always holds; a rotation handle's angle wraps
 at +/-180 degrees, but the rotation itself is taken from the pointer's
 absolute position, so the wrap only affects the preview and is invisible.
+
+### Which files reach the screen
+
+`sample_pairs_tests::on_screen` states the rule both screens follow - a
+file is drawn only from one of its pair's first two slots - and the tests
+hold every file of a folder to it. A folder of one FMX and one FS per
+specimen, some missing one and some unknown to the metadata, passes.
+A re-acquired full stain and a three-file untyped specimen do not
+(B-PAIR-1). The rules run is not affected in the same way: a specimen
+shares one position, read from its highest-ranked file, by design.

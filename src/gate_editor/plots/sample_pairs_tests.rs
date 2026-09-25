@@ -300,3 +300,75 @@ fn specimens_follow_the_sort_column() {
         .collect();
     assert_eq!(order, ["D4", "D29", "D85"], "not the folder's order");
 }
+
+/// The editor and the gallery both show a pair's first two slots
+/// (`take(2)` in `main_window` and in `gallery::window`), and nothing else of
+/// it: picking any file of a specimen from the list shows that specimen's
+/// slots. So a file reaches the screen only through one of those two.
+fn on_screen(pairs: &[crate::gate_editor::plots::sample_pairs::Pair], file: usize) -> bool {
+    pairs
+        .iter()
+        .any(|p| p.slots.iter().take(2).any(|s| *s == Some(file)))
+}
+
+#[test]
+#[ignore = "known bug B-PAIR-1: a second file of the same type is never shown"]
+fn a_second_file_of_the_same_type_is_shown_somewhere() {
+    // A tube acquired twice - a re-run after a clog - is two full stains for
+    // one specimen. The list offers both; choosing the re-run showed the first
+    // run beside the FMO, and the gallery and its PDF never drew it at all.
+    let (keys, names, metadata) = fixture(&[
+        (Some("QC-A"), Some("FMX")),
+        (Some("QC-A"), Some("FS")),
+        (Some("QC-A"), Some("FS")),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    for file in 0..keys.len() {
+        assert!(
+            on_screen(&pairs, file),
+            "f{file} is never on screen: {pairs:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "known bug B-PAIR-1: past two files, a specimen with no named type loses the rest"]
+fn every_file_of_an_untyped_specimen_is_shown_somewhere() {
+    // With no type the display order names, a specimen falls back to its
+    // files in order - all of them in its slots, of which two are shown.
+    let (keys, names, metadata) = fixture(&[
+        (Some("QC-A"), Some("other")),
+        (Some("QC-A"), Some("other")),
+        (Some("QC-A"), Some("other")),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    for file in 0..keys.len() {
+        assert!(
+            on_screen(&pairs, file),
+            "f{file} is never on screen: {pairs:?}"
+        );
+    }
+}
+
+#[test]
+fn every_file_of_a_well_formed_folder_is_shown() {
+    // What the two tests above hold the pairing to, on the folders it was
+    // built for: one FMX and one FS per specimen, some missing one, some files
+    // the metadata does not know. Every file is on screen.
+    let (keys, names, metadata) = fixture(&[
+        (Some("A"), Some("FS")),
+        (Some("B"), Some("FMX")),
+        (None, None),
+        (Some("A"), Some("FMX")),
+        (Some("C"), Some("FS")),
+        (Some("B"), Some("FS")),
+        (None, None),
+    ]);
+    let pairs = pair_files(&keys, &names, &metadata, &SamplePairing::default());
+    for file in 0..keys.len() {
+        assert!(
+            on_screen(&pairs, file),
+            "f{file} is never on screen: {pairs:?}"
+        );
+    }
+}
