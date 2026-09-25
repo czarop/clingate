@@ -183,6 +183,16 @@
 
 ### Fixed
 
+- **Changing an axis no longer moves a quadrant.** A new cofactor or a new
+  axis range pulled a quadrant or skewed quadrant whose centre sat near either
+  end of the axis inwards, and snapped a skewed quadrant's slanted arms to the
+  new edges, turning them - the quarters held different cells afterwards, and
+  widening the axis again did not put them back. An imported Omiq quadrant
+  whose centre lay beyond the axes was moved onto them. The centre and the
+  direction of every arm now stay exactly where they were; only where the
+  lines are drawn changes, and a centre left off the plot by a narrowed axis
+  has its handle drawn at the plot's edge, where it can still be grabbed.
+
 - **The axis boxes no longer crash the app or move gates while you type.** A
   limit or cofactor is applied when you press Enter or leave the box, not at
   every keystroke - typing 400000 used to apply 4, 40, 400 on the way, each

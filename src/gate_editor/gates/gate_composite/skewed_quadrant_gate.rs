@@ -1,6 +1,5 @@
 use flow_fcs::TransformType;
 
-use flow_gates::transforms::{raw_to_transformed, transformed_to_raw};
 use flow_gates::{Gate, GateGeometry};
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
@@ -100,23 +99,23 @@ impl DataPoints {
         let (xmin, xmax) = (*x_axis_range.start(), *x_axis_range.end());
         let (ymin, ymax) = (*y_axis_range.start(), *y_axis_range.end());
 
-        // 1. Clamp the center to the VISUAL axis boundaries
-        // This prevents the center handle from being lost if Omiq data is off-plot
-        let safe_cx = cx.clamp(xmin, xmax);
-        let safe_cy = cy.clamp(ymin, ymax);
-
-        // 2. Derive handles based on Axis limits to ensure lines hit the plot edges
-        let left = (xmin, safe_cy);
-        let right = (xmax, safe_cy);
-        let bottom = (safe_cx, ymin);
-        let top = (safe_cx, ymax);
+        // The centre is where the file put it, on the plot or not: it is what
+        // splits the events, and clamping it onto the axes gated a centre
+        // beyond them differently from the file (B-AX-4). A centre off the
+        // plot is drawn at the nearest point of it - see `drawn_centre`.
+        // Each arm runs level from the centre to the axis edge on its side,
+        // or a plot's width past the centre when the centre is beyond that
+        // edge, so it still points the right way.
+        let (x_span, y_span) = ((xmax - xmin).abs().max(1.0), (ymax - ymin).abs().max(1.0));
+        let below = |c: f32, edge: f32, span: f32| if edge < c { edge } else { c - span };
+        let above = |c: f32, edge: f32, span: f32| if edge > c { edge } else { c + span };
 
         Self {
-            center: (safe_cx, safe_cy),
-            left,
-            bottom,
-            right,
-            top,
+            center: (cx, cy),
+            left: (below(cx, xmin, x_span), cy),
+            bottom: (cx, below(cy, ymin, y_span)),
+            right: (above(cx, xmax, x_span), cy),
+            top: (cx, above(cy, ymax, y_span)),
         }
     }
 }
@@ -334,13 +333,7 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
             (*axis.start(), *axis.end())
         };
 
-        let (mut left, mut right, mut top, mut bottom, mut center) = (
-            self.points.left,
-            self.points.right,
-            self.points.top,
-            self.points.bottom,
-            self.points.center,
-        );
+        let mut points = self.points.clone();
 
         if let Some(dd) = drag_point {
             let x_span = (xmax - xmin).abs();
@@ -352,20 +345,21 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
             let x_max_safe = xmax - x_buffer;
             let y_min_safe = ymin + y_buffer;
             let y_max_safe = ymax - y_buffer;
+            // The same points `replace_point` will store for this drag.
             match dd.point_index() {
                 0 => {
-                    center = (
+                    points.center = (
                         dd.loc().0.clamp(x_min_safe, x_max_safe),
                         dd.loc().1.clamp(y_min_safe, y_max_safe),
                     );
                 }
                 // Left/Right: X is fixed to axis edge, clamp Y skew
-                1 => left.1 = dd.loc().1.clamp(y_min_safe, y_max_safe),
-                3 => right.1 = dd.loc().1.clamp(y_min_safe, y_max_safe),
+                1 => points.left = (xmin, dd.loc().1.clamp(y_min_safe, y_max_safe)),
+                3 => points.right = (xmax, dd.loc().1.clamp(y_min_safe, y_max_safe)),
 
                 // Bottom/Top: Y is fixed to axis edge, clamp X skew
-                2 => bottom.0 = dd.loc().0.clamp(x_min_safe, x_max_safe),
-                4 => top.0 = dd.loc().0.clamp(x_min_safe, x_max_safe),
+                2 => points.bottom = (dd.loc().0.clamp(x_min_safe, x_max_safe), ymin),
+                4 => points.top = (dd.loc().0.clamp(x_min_safe, x_max_safe), ymax),
                 _ => unreachable!(),
             }
         };
@@ -376,79 +370,43 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
             &DEFAULT_LINE
         };
 
-        let main = {
-            let left = GateRenderShape::Line {
-                x1: xmin,
-                y1: left.1,
-                x2: center.0,
-                y2: center.1,
-                style,
-                shape_type: ShapeType::UndraggableLine,
-            };
-            let right = GateRenderShape::Line {
-                x1: center.0,
-                y1: center.1,
-                x2: xmax,
-                y2: right.1,
-                style,
-                shape_type: ShapeType::UndraggableLine,
-            };
+        let arms = arms_on_plot(&points, (xmin, xmax), (ymin, ymax));
 
-            let bottom = GateRenderShape::Line {
-                x1: bottom.0,
-                y1: ymin,
-                x2: center.0,
-                y2: center.1,
-                style,
-                shape_type: ShapeType::UndraggableLine,
-            };
-
-            let top = GateRenderShape::Line {
-                x1: center.0,
-                y1: center.1,
-                x2: top.0,
-                y2: ymax,
-                style,
-                shape_type: ShapeType::UndraggableLine,
-            };
-
-            Some(vec![left, right, top, bottom])
-        };
+        let main = Some(
+            arms.iter()
+                .flatten()
+                .map(|&(from, to)| GateRenderShape::Line {
+                    x1: from.0,
+                    y1: from.1,
+                    x2: to.0,
+                    y2: to.1,
+                    style,
+                    shape_type: ShapeType::UndraggableLine,
+                })
+                .collect::<Vec<_>>(),
+        );
 
         let selected = if is_selected {
-            let c = GateRenderShape::Circle {
-                center,
+            // The centre handle stays grabbable when a narrowed axis has left
+            // the centre off the plot; an arm's handle is where it leaves the
+            // plot, and an arm that never crosses the plot has none.
+            let mut handles = vec![GateRenderShape::Circle {
+                center: super::drawn_centre(points.center, (xmin, xmax), (ymin, ymax)),
                 radius: 3.0,
                 fill: "red",
                 shape_type: ShapeType::UndraggablePoint(0),
-            };
-            let l = GateRenderShape::Circle {
-                center: (xmin, left.1),
-                radius: 3.0,
-                fill: "red",
-                shape_type: ShapeType::UndraggablePoint(1),
-            };
-            let b = GateRenderShape::Circle {
-                center: (bottom.0, ymin),
-                radius: 3.0,
-                fill: "red",
-                shape_type: ShapeType::UndraggablePoint(2),
-            };
-            let r = GateRenderShape::Circle {
-                center: (xmax, right.1),
-                radius: 3.0,
-                fill: "red",
-                shape_type: ShapeType::UndraggablePoint(3),
-            };
-
-            let t = GateRenderShape::Circle {
-                center: (top.0, ymax),
-                radius: 3.0,
-                fill: "red",
-                shape_type: ShapeType::UndraggablePoint(4),
-            };
-
-            Some(vec![c, l, b, r, t])
+            }];
+            for (i, arm) in arms.iter().enumerate() {
+                if let Some((_, end)) = arm {
+                    handles.push(GateRenderShape::Circle {
+                        center: *end,
+                        radius: 3.0,
+                        fill: "red",
+                        shape_type: ShapeType::UndraggablePoint(i + 1),
+                    });
+                }
+            }
+            Some(handles)
         } else {
             None
         };
@@ -583,30 +541,12 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
             (*axis.start(), *axis.end())
         };
 
-        let (left, bottom, right, top, center) = {
-            (
-                (xmin, self.points.left),
-                (self.points.bottom, ymin),
-                (xmax, self.points.right),
-                (self.points.top, ymax),
-                self.points.center,
-            )
-        };
-
-        let mut closest = f32::INFINITY;
-
-        if let Some(dis) = self.is_near_segment(point, left.1, center, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, right.1, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, bottom.0, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, top.0, tolerance) {
-            closest = closest.min(dis);
-        }
+        // The lines as drawn - see `arms_on_plot`.
+        let closest = arms_on_plot(&self.points, (xmin, xmax), (ymin, ymax))
+            .iter()
+            .flatten()
+            .filter_map(|&(from, to)| self.is_near_segment(point, from, to, tolerance))
+            .fold(f32::INFINITY, f32::min);
 
         if closest == f32::INFINITY {
             None
@@ -648,94 +588,22 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
         super::usable_range(axis_range.0, axis_range.1)?;
         let (x_param, _) = &self.parameters;
         let is_x = x_param == &param;
-        let mut c = crate::gate_editor::gates::gate_single::rescale_helper_point(
-            self.points.center,
-            &param,
-            x_param,
-            old_transform,
-            new_transform,
-        )?;
-
-        let (mut l, mut b, mut r, mut t) = {
-            (
-                rescale_helper_point(
-                    self.points.left,
-                    &param,
-                    x_param,
-                    old_transform,
-                    new_transform,
-                )?,
-                rescale_helper_point(
-                    self.points.bottom,
-                    &param,
-                    x_param,
-                    old_transform,
-                    new_transform,
-                )?,
-                rescale_helper_point(
-                    self.points.right,
-                    &param,
-                    x_param,
-                    old_transform,
-                    new_transform,
-                )?,
-                rescale_helper_point(
-                    self.points.top,
-                    &param,
-                    x_param,
-                    old_transform,
-                    new_transform,
-                )?,
-            )
+        // Every point goes back to raw data through the old transform and out
+        // through the new one - nothing clamped, nothing snapped - so the
+        // quarters split the same events they did. The centre and the skew
+        // handles used to be clamped into the middle 80% of the new axis and
+        // the edge handles snapped to its ends, which moved a quadrant near
+        // either end of the axis and turned a slanted arm (B-AX-4). Where the
+        // arms end matters only for drawing, which follows their direction.
+        let convert = |point: (f32, f32)| {
+            rescale_helper_point(point, &param, x_param, old_transform, new_transform)
         };
-
-        let x_spec = match new_transform {
-            TransformType::Linear => {
-                let min = axis_range.0;
-                let max = axis_range.1;
-                let (nice_min, nice_max) = nice_bounds(min, max);
-                nice_min..nice_max
-            }
-            TransformType::Arcsinh { cofactor: _ } | TransformType::Biexponential { .. } => {
-                axis_range.0..axis_range.1
-            }
-        };
-
-        let new_lower = x_spec.start;
-        let new_upper = x_spec.end;
-
-        let span = (new_upper - new_lower).abs();
-        let buffer = span * 0.1;
-        let min_safe = new_lower + buffer;
-        let max_safe = new_upper - buffer;
-
-        // 3. Apply the Clamping Logic
-        if is_x {
-            // Center and Skew handles must stay in the middle 80% of the NEW X-scale
-            c.0 = c.0.clamp(min_safe, max_safe);
-            t.0 = t.0.clamp(min_safe, max_safe);
-            b.0 = b.0.clamp(min_safe, max_safe);
-
-            // Snap edge handles strictly to the new axis limits
-            l.0 = new_lower;
-            r.0 = new_upper;
-        } else {
-            // Center and Skew handles must stay in the middle 80% of the NEW Y-scale
-            c.1 = c.1.clamp(min_safe, max_safe);
-            l.1 = l.1.clamp(min_safe, max_safe);
-            r.1 = r.1.clamp(min_safe, max_safe);
-
-            // Snap edge handles strictly to the new axis limits
-            t.1 = new_upper;
-            b.1 = new_lower;
-        }
-
         let new = DataPoints {
-            center: c,
-            left: l,
-            bottom: b,
-            right: r,
-            top: t,
+            center: convert(self.points.center)?,
+            left: convert(self.points.left)?,
+            bottom: convert(self.points.bottom)?,
+            right: convert(self.points.right)?,
+            top: convert(self.points.top)?,
         };
         let infs = {
             let new_inf = get_infinite_bounds(&new_transform);
@@ -916,45 +784,21 @@ impl super::super::gate_traits::DrawableGate for SkewedQuadrantGate {
         _transform: &TransformType,
     ) -> anyhow::Result<Option<Box<dyn DrawableGate>>> {
         super::usable_range(lower, upper)?;
+        // An axis range says what is shown, not what is gated. The arms that
+        // reach this axis's ends are carried along their own lines to the new
+        // ends; the centre and every arm's direction, and so every event's
+        // quarter, stay put. The centre and skew handles used to be clamped
+        // into the middle 80% of the new range and the edge handles snapped
+        // to it, which moved and turned the gate (B-AX-4).
         let is_x = param == self.parameters.0;
         let mut new_points = self.points.clone();
-
-        // Calculate the 10% safety buffers
-        let span = (upper - lower).abs();
-        let buffer = span * 0.1;
-        let min_safe = lower + buffer;
-        let max_safe = upper - buffer;
-
+        let c = new_points.center;
         if is_x {
-            // --- X-AXIS UPDATED ---
-
-            // 1. Clamp Center X (Keep it in the middle 80%)
-            new_points.center.0 = new_points.center.0.clamp(min_safe, max_safe);
-
-            // 2. Clamp Top and Bottom handles so they don't drift into the X-axis margins
-            // These handles live at the top/bottom Y edges, but their X position
-            // determines the vertical skew.
-            new_points.top.0 = new_points.top.0.clamp(min_safe, max_safe);
-            new_points.bottom.0 = new_points.bottom.0.clamp(min_safe, max_safe);
-
-            // 3. Fix Left/Right handles to the new axis edges
-            new_points.left.0 = lower;
-            new_points.right.0 = upper;
+            new_points.left = super::arm_to_edge(c, new_points.left, true, lower);
+            new_points.right = super::arm_to_edge(c, new_points.right, true, upper);
         } else {
-            // --- Y-AXIS UPDATED ---
-
-            // 1. Clamp Center Y (Keep it in the middle 80%)
-            new_points.center.1 = new_points.center.1.clamp(min_safe, max_safe);
-
-            // 2. Clamp Left and Right handles so they don't drift into the Y-axis margins
-            // These handles live at the left/right X edges, but their Y position
-            // determines the horizontal skew.
-            new_points.left.1 = new_points.left.1.clamp(min_safe, max_safe);
-            new_points.right.1 = new_points.right.1.clamp(min_safe, max_safe);
-
-            // 3. Fix Top/Bottom handles to the new axis edges
-            new_points.top.1 = upper;
-            new_points.bottom.1 = lower;
+            new_points.bottom = super::arm_to_edge(c, new_points.bottom, false, lower);
+            new_points.top = super::arm_to_edge(c, new_points.top, false, upper);
         }
 
         let new_self = self.clone_with_point(new_points, None)?;
@@ -1218,22 +1062,56 @@ pub fn project_to_boundary(
     (center.0 + t * dx, center.1 + t * dy)
 }
 
-fn nice_bounds(min: f32, max: f32) -> (f32, f32) {
-    if min.is_infinite() || max.is_infinite() || min.is_nan() || max.is_nan() {
-        return (0.0, 1.0); // Fallback for invalid ranges
-    }
-
-    let range = max - min;
-    if range == 0.0 {
-        return (min - 0.5, min + 0.5); // Handle single-point case
-    }
-
-    // Find nice step size
-    let step_size = 10_f32.powf((range.log10()).floor());
-    let nice_min = (min / step_size).floor() * step_size;
-    let nice_max = (max / step_size).ceil() * step_size;
-
-    (nice_min, nice_max)
+/// Where each arm of a skewed quadrant crosses a plot with these axis
+/// ranges, in the order left, bottom, right, top: the part of the arm's own
+/// line, from the centre outwards, that lies on the plot - or `None` for an
+/// arm that never crosses it.
+///
+/// The quarters are built from the centre and each arm's direction, so this
+/// is what the plot must show. Where an arm's stored end sits along its line
+/// is left behind by changes of axis and says nothing on its own; nor does a
+/// centre off the plot, which a narrowed axis can leave, move the lines -
+/// they are drawn where they really cross the plot.
+fn arms_on_plot(
+    points: &DataPoints,
+    x: (f32, f32),
+    y: (f32, f32),
+) -> [Option<((f32, f32), (f32, f32))>; 4] {
+    let c = points.center;
+    let crossing = |arm: (f32, f32)| {
+        let d = (arm.0 - c.0, arm.1 - c.1);
+        if d == (0.0, 0.0) {
+            return None;
+        }
+        // Liang-Barsky, on the ray c + t.d for t >= 0.
+        let (mut enter, mut leave) = (0f32, f32::INFINITY);
+        for (p, q) in [
+            (-d.0, c.0 - x.0),
+            (d.0, x.1 - c.0),
+            (-d.1, c.1 - y.0),
+            (d.1, y.1 - c.1),
+        ] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return None;
+                }
+            } else if p < 0.0 {
+                enter = enter.max(q / p);
+            } else {
+                leave = leave.min(q / p);
+            }
+        }
+        (enter <= leave).then(|| {
+            let at = |t: f32| (c.0 + t * d.0, c.1 + t * d.1);
+            (at(enter), at(leave))
+        })
+    };
+    [
+        crossing(points.left),
+        crossing(points.bottom),
+        crossing(points.right),
+        crossing(points.top),
+    ]
 }
 
 pub fn get_infinite_bounds(transform: &TransformType) -> f32 {

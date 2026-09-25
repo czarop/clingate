@@ -262,7 +262,9 @@ impl DrawableGate for QuadrantGate {
             (*a.start(), *a.end())
         };
 
-        let mut center = self.points.center;
+        // Drawn on the plot even when a narrowed axis has left the real centre
+        // off it; see `drawn_centre`.
+        let mut center = super::drawn_centre(self.points.center, (xmin, xmax), (ymin, ymax));
 
         if let Some(dd) = drag_point {
             let x_span = (xmax - xmin).abs();
@@ -476,25 +478,20 @@ impl DrawableGate for QuadrantGate {
         _transform: &TransformType,
     ) -> Result<Option<Box<dyn DrawableGate>>> {
         super::usable_range(lower, upper)?;
+        // An axis range says what is shown, not what is gated. Only where the
+        // arms end moves; the centre, and so every event's quarter, stays put.
+        // It used to be clamped into the middle 80% of the new range, which
+        // moved any quadrant near the end of the axis (B-AX-4).
         let is_x = param == self.parameters.0;
-        let mut new_points = self.points.clone();
-        let buffer = (upper - lower).abs() * 0.1;
-
+        let mut p = self.points.clone();
         if is_x {
-            new_points.center.0 = new_points.center.0.clamp(lower + buffer, upper - buffer);
-            new_points.left.0 = lower;
-            new_points.right.0 = upper;
-            new_points.top.0 = new_points.center.0;
-            new_points.bottom.0 = new_points.center.0;
+            p.left = super::arm_to_edge(p.center, p.left, true, lower);
+            p.right = super::arm_to_edge(p.center, p.right, true, upper);
         } else {
-            new_points.center.1 = new_points.center.1.clamp(lower + buffer, upper - buffer);
-            new_points.top.1 = upper;
-            new_points.bottom.1 = lower;
-            new_points.left.1 = new_points.center.1;
-            new_points.right.1 = new_points.center.1;
+            p.bottom = super::arm_to_edge(p.center, p.bottom, false, lower);
+            p.top = super::arm_to_edge(p.center, p.top, false, upper);
         }
-
-        Ok(Some(Box::new(self.clone_with_point(new_points, None)?)))
+        Ok(Some(Box::new(self.clone_with_point(p, None)?)))
     }
 
     fn recalculate_gate_for_rescaled_axis(
@@ -505,42 +502,24 @@ impl DrawableGate for QuadrantGate {
         // data_range: (f32, f32),
         axis_range: (f32, f32),
     ) -> Result<Box<dyn DrawableGate>> {
+        super::usable_range(axis_range.0, axis_range.1)?;
         let (x_param, _) = &self.parameters;
         let is_x = x_param == &param;
-
-        let mut c = rescale_helper_point(
-            self.points.center,
-            &param,
-            x_param,
-            old_transform,
-            new_transform,
-        )?;
-
-        // Orthogonal quadrants only care about the center and the edges
-        let new_lower = axis_range.0;
-        let new_upper = axis_range.1;
-        super::usable_range(new_lower, new_upper)?;
-        let buffer = (new_upper - new_lower).abs() * 0.1;
-
-        if is_x {
-            c.0 = c.0.clamp(new_lower + buffer, new_upper - buffer);
-        } else {
-            c.1 = c.1.clamp(new_lower + buffer, new_upper - buffer);
-        }
-
+        // Every point goes back to raw data through the old transform and out
+        // through the new one - nothing clamped, nothing snapped - so the
+        // quadrant splits the same events it did. The centre used to be
+        // clamped into the middle 80% of the new axis, which moved a quadrant
+        // near either end of it (B-AX-4). A change of range, if the new
+        // scaling has one, is the range change's to carry.
+        let convert = |point: (f32, f32)| {
+            rescale_helper_point(point, &param, x_param, old_transform, new_transform)
+        };
         let new_pts = DataPoints {
-            center: c,
-            left: (if is_x { new_lower } else { self.points.left.0 }, c.1),
-            right: (if is_x { new_upper } else { self.points.right.0 }, c.1),
-            bottom: (
-                c.0,
-                if !is_x {
-                    new_lower
-                } else {
-                    self.points.bottom.1
-                },
-            ),
-            top: (c.0, if !is_x { new_upper } else { self.points.top.1 }),
+            center: convert(self.points.center)?,
+            left: convert(self.points.left)?,
+            right: convert(self.points.right)?,
+            bottom: convert(self.points.bottom)?,
+            top: convert(self.points.top)?,
         };
         let infs = {
             let new_inf = get_infinite_bounds(&new_transform);
@@ -601,30 +580,14 @@ impl DrawableGate for QuadrantGate {
             (*axis.start(), *axis.end())
         };
 
-        let (left, bottom, right, top, center) = {
-            (
-                (xmin, self.points.left),
-                (self.points.bottom, ymin),
-                (xmax, self.points.right),
-                (self.points.top, ymax),
-                self.points.center,
-            )
-        };
-
-        let mut closest = f32::INFINITY;
-
-        if let Some(dis) = self.is_near_segment(point, left.1, center, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, right.1, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, bottom.0, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, top.0, tolerance) {
-            closest = closest.min(dis);
-        }
+        // The lines as drawn: level and upright through the drawn centre,
+        // across the whole plot. The arms' stored ends are left wherever the
+        // last change of axis put them and say nothing about where they show.
+        let c = super::drawn_centre(self.points.center, (xmin, xmax), (ymin, ymax));
+        let closest = [((xmin, c.1), (xmax, c.1)), ((c.0, ymin), (c.0, ymax))]
+            .iter()
+            .filter_map(|&(from, to)| self.is_near_segment(point, from, to, tolerance))
+            .fold(f32::INFINITY, f32::min);
 
         if closest == f32::INFINITY {
             None

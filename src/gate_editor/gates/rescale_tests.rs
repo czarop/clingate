@@ -835,11 +835,21 @@ fn relimited(
     q: &Arc<dyn DrawableGate>,
     steps: &[(f32, f32)],
 ) -> Result<Arc<dyn DrawableGate>, Vec<String>> {
+    relimited_on(q, X, &OLD, steps)
+}
+
+/// `q` after each of `steps` is applied, in turn, as the range of `channel`.
+fn relimited_on(
+    q: &Arc<dyn DrawableGate>,
+    channel: &str,
+    transform: &TransformType,
+    steps: &[(f32, f32)],
+) -> Result<Arc<dyn DrawableGate>, Vec<String>> {
     let ids = GateSubStore::ids_for(q, &q.get_id());
     let mut store = GateSubStore::default();
     store.insert_for_source(&ids, q, &GateSource::Global);
     for (lower, upper) in steps {
-        store.relimit_channel(&Arc::from(X), *lower, *upper, &OLD)?;
+        store.relimit_channel(&Arc::from(channel), *lower, *upper, transform)?;
     }
     Ok(store
         .primary_and_subgate_registry
@@ -866,17 +876,15 @@ fn an_inverted_range_is_refused_rather_than_crashing() {
     );
 }
 
-/// BUG (docs/test-audit.md, B-AX-4): an axis limit is a view setting, but a
-/// quadrant's centre is clamped into the range on every relimit and nothing
-/// puts it back. So narrowing an axis past a quadrant's centre and widening it
-/// again leaves the quadrant moved, its quarters holding different cells.
+/// Was B-AX-4: an axis limit is a view setting, but a quadrant's centre was
+/// clamped into the range on every relimit and nothing put it back. So
+/// narrowing an axis past a quadrant's centre and widening it again left the
+/// quadrant moved, its quarters holding different cells.
 ///
 /// This was B-AX-2 when every keystroke of a limit was applied: typing 400000
 /// went through 4, 40, 400 ... and did it by accident. The boxes now apply a
-/// number on Enter or on leaving the box, so it takes two deliberate edits -
-/// which this still shows.
+/// number on Enter or on leaving the box, so it took two deliberate edits.
 #[test]
-#[ignore = "known bug B-AX-4: narrowing an axis past a quadrant and widening it again moves the quadrant"]
 fn narrowing_an_axis_and_widening_it_again_leaves_a_quadrant_where_it_was() {
     let q = quadrant("q", &OLD);
     let lower = shown(&OLD, RAW_LOW);
@@ -952,16 +960,14 @@ fn moved(before: &[Option<usize>], after: &[Option<usize>]) -> usize {
     before.iter().zip(after).filter(|(a, b)| a != b).count()
 }
 
-/// BUG (docs/test-audit.md, B-AX-4): a quadrant's rescale clamps its centre
-/// into the middle 80% of the new axis - a margin meant to keep the centre
-/// handle grabbable, applied to the gate itself. A cofactor change moves the
-/// axis ends in display space by a different amount from the centre, so a
-/// centre that was fine near either end of the old axis can land in the new
-/// margin and be pulled inwards: here raw 0 and raw 150,000, on an axis from
-/// -500 to 200,000, going from cofactor 150 to 1000. A centre in the middle of
-/// the axis - where the other rescale tests put it - is untouched.
+/// Was B-AX-4: a quadrant's rescale clamped its centre into the middle 80% of
+/// the new axis - a margin meant to keep the centre handle grabbable, applied
+/// to the gate itself. A cofactor change moves the axis ends in display space
+/// by a different amount from the centre, so a centre that was fine near
+/// either end of the old axis could land in the new margin and be pulled
+/// inwards: here raw 0 and raw 150,000, on an axis from -500 to 200,000,
+/// going from cofactor 150 to 1000.
 #[test]
-#[ignore = "known bug B-AX-4: a cofactor change pulls a quadrant near the end of the axis inwards"]
 fn a_cofactor_change_leaves_a_quadrant_near_the_end_of_the_axis_where_it_was() {
     for skewed in [false, true] {
         for raw in [0.0, 150_000.0] {
@@ -982,9 +988,95 @@ fn a_cofactor_change_leaves_a_quadrant_near_the_end_of_the_axis_where_it_was() {
     }
 }
 
-/// Guard for the test above: the same quadrants mid-axis come through a
-/// cofactor change untouched, so it is the ends of the axis that matter; and
-/// a bisector, which does not clamp, keeps its cells wherever it is.
+/// A slanted skewed quadrant with its centre at raw `raw` on X: the top and
+/// right handles dragged, as a person would, so neither arm is level.
+fn tilted_composite(raw: f32) -> Arc<dyn DrawableGate> {
+    let map = mapper(&OLD);
+    Arc::from(
+        imported_composite(true, raw)
+            .replace_point((shown(&OLD, 20_000.0), 0.0), 4, None, &map)
+            .unwrap()
+            .replace_point((0.0, 800.0), 3, None, &map)
+            .unwrap(),
+    )
+}
+
+/// No change of axis - of cofactor, of either axis's range, narrower or wider,
+/// past the centre or not, there and back - moves any event to another
+/// quarter, wherever on the axis the quadrant sits. A slanted skewed quadrant
+/// is held to this for every change of range; a cofactor change bends its
+/// straight arms into curves, so it is held to that separately, in
+/// `a_skewed_quadrant_sorts_nearly_every_event_into_the_same_quarter`.
+#[test]
+fn no_change_of_axis_moves_an_event_to_another_quarter_wherever_the_quadrant_sits() {
+    type Change = fn(&Arc<dyn DrawableGate>) -> Arc<dyn DrawableGate>;
+    let ranges: [(&str, Change); 6] = [
+        ("a wider X axis", |g| {
+            relimited_on(
+                g,
+                X,
+                &OLD,
+                &[(shown(&OLD, -5_000.0), shown(&OLD, 400_000.0))],
+            )
+            .unwrap()
+        }),
+        ("a narrow X axis short of the centre", |g| {
+            relimited_on(g, X, &OLD, &[(shown(&OLD, 1_000.0), shown(&OLD, 5_000.0))]).unwrap()
+        }),
+        ("an X axis narrowed and widened again", |g| {
+            let (lo, hi) = (shown(&OLD, RAW_LOW), shown(&OLD, RAW_HIGH));
+            relimited_on(g, X, &OLD, &[(lo, shown(&OLD, 4.0)), (lo, hi)]).unwrap()
+        }),
+        ("a narrow Y axis", |g| {
+            relimited_on(g, Y, &TransformType::Linear, &[(600.0, 700.0)]).unwrap()
+        }),
+        ("a Y axis narrowed and widened again", |g| {
+            relimited_on(
+                g,
+                Y,
+                &TransformType::Linear,
+                &[(600.0, 700.0), (-50.0, 2_000.0)],
+            )
+            .unwrap()
+        }),
+        ("a Y axis moved wholly past the centre", |g| {
+            relimited_on(
+                g,
+                Y,
+                &TransformType::Linear,
+                &[(800.0, 900.0), (0.0, 1_000.0)],
+            )
+            .unwrap()
+        }),
+    ];
+    for raw in [-400.0, 0.0, 50.0, 3_000.0, 60_000.0, 150_000.0, 190_000.0] {
+        let gates = [
+            ("a quadrant", imported_composite(false, raw)),
+            ("a skewed quadrant", imported_composite(true, raw)),
+            ("a slanted skewed quadrant", tilted_composite(raw)),
+        ];
+        for (kind, g) in &gates {
+            let before = membership(g, &OLD);
+            for (change, apply) in &ranges {
+                let n = moved(&before, &membership(&apply(g), &OLD));
+                assert_eq!(
+                    n, 0,
+                    "{kind} at raw {raw}, {change}: {n} events changed quarter"
+                );
+            }
+            if *kind != "a slanted skewed quadrant" {
+                let n = moved(&before, &membership(&rescaled(g), &NEW));
+                assert_eq!(
+                    n, 0,
+                    "{kind} at raw {raw}, a cofactor change: {n} events changed quarter"
+                );
+            }
+        }
+    }
+}
+
+/// The same quadrants mid-axis come through a cofactor change untouched, as
+/// does a bisector wherever it is.
 #[test]
 fn a_cofactor_change_leaves_mid_axis_quadrants_and_any_bisector_where_they_were() {
     for skewed in [false, true] {

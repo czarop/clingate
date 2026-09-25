@@ -184,13 +184,222 @@ fn data_points_derive_their_arms_from_the_centre() {
     assert_eq!(p.top, (400.0, 1000.0));
 }
 
-/// An imported centre outside the plot would put the handles off-screen and be
-/// ungrabbable, so it is clamped to the axis bounds.
+/// Was B-AX-4: an imported centre outside the plot was clamped onto the axis
+/// bounds, so the gate split the events somewhere other than the file said.
+/// The centre is kept; each arm still points away from it, reaching the axis
+/// edge on its side where there is one.
 #[test]
-fn a_centre_outside_the_axes_is_clamped_onto_them() {
+fn an_imported_centre_outside_the_axes_is_kept_and_its_arms_point_away_from_it() {
     let p = DataPoints::new_from_data_center(5000.0, -900.0, 0.0..=1000.0, 0.0..=1000.0);
 
-    assert_eq!(p.center, (1000.0, 0.0));
+    assert_eq!(p.center, (5000.0, -900.0));
+    assert!(p.left.0 < 5000.0 && p.left.1 == -900.0, "{:?}", p.left);
+    assert!(p.right.0 > 5000.0 && p.right.1 == -900.0, "{:?}", p.right);
+    assert!(
+        p.bottom.1 < -900.0 && p.bottom.0 == 5000.0,
+        "{:?}",
+        p.bottom
+    );
+    assert_eq!(p.top, (5000.0, 1000.0), "the top edge is above the centre");
+    assert_eq!(p.left, (0.0, -900.0), "the left edge is left of the centre");
+}
+
+fn imported(skewed: bool, centre: (f32, f32)) -> Box<dyn DrawableGate> {
+    let points = DataPoints::new_from_data_center(centre.0, centre.1, 0.0..=1000.0, 0.0..=1000.0);
+    let (id, x, y) = (Arc::from("g"), Arc::from(X), Arc::from(Y));
+    let infs = (1e8, 1e8);
+    if skewed {
+        Box::new(
+            SkewedQuadrantGate::try_new_from_data_points(
+                id,
+                "g".into(),
+                points,
+                x,
+                y,
+                true,
+                None,
+                None,
+                infs,
+            )
+            .unwrap(),
+        )
+    } else {
+        Box::new(
+            QuadrantGate::try_new_from_data_points(
+                id,
+                "g".into(),
+                points,
+                x,
+                y,
+                true,
+                None,
+                None,
+                infs,
+            )
+            .unwrap(),
+        )
+    }
+}
+
+/// Which quarter - 0 BL, 1 BR, 2 TR, 3 TL - holds a point.
+fn quarter(g: &dyn DrawableGate, at: (f32, f32)) -> Option<usize> {
+    g.get_inner_gate_ids().iter().position(|id| {
+        g.get_gate_ref(Some(id)).is_some_and(|inner| {
+            inner
+                .geometry
+                .contains_point(at.0, at.1, X, Y)
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// The file's centre is beyond the right of the plot, so everything on the
+/// plot is left of it. Clamped onto the plot's right edge, the centre used to
+/// put whatever lies between that edge and the real centre in the right-hand
+/// quarters.
+#[test]
+fn a_quadrant_imported_with_its_centre_beyond_the_axes_gates_as_the_file_said() {
+    for skewed in [false, true] {
+        let g = imported(skewed, (5000.0, 400.0));
+        assert_eq!(
+            quarter(&*g, (3000.0, 600.0)),
+            Some(3),
+            "skewed {skewed}: top left"
+        );
+        assert_eq!(
+            quarter(&*g, (3000.0, 200.0)),
+            Some(0),
+            "skewed {skewed}: bottom left"
+        );
+        assert_eq!(
+            quarter(&*g, (6000.0, 600.0)),
+            Some(2),
+            "skewed {skewed}: top right"
+        );
+    }
+}
+
+fn lines(
+    shapes: &[crate::gate_editor::gates::gate_types::GateRenderShape],
+) -> Vec<((f32, f32), (f32, f32))> {
+    use crate::gate_editor::gates::gate_types::GateRenderShape;
+    shapes
+        .iter()
+        .filter_map(|s| match s {
+            GateRenderShape::Line { x1, y1, x2, y2, .. } => Some(((*x1, *y1), (*x2, *y2))),
+            _ => None,
+        })
+        .collect()
+}
+
+fn handles(shapes: &[crate::gate_editor::gates::gate_types::GateRenderShape]) -> Vec<(f32, f32)> {
+    use crate::gate_editor::gates::gate_types::GateRenderShape;
+    shapes
+        .iter()
+        .filter_map(|s| match s {
+            GateRenderShape::Circle { center, .. } => Some(*center),
+            _ => None,
+        })
+        .collect()
+}
+
+fn on_plot(p: (f32, f32)) -> bool {
+    (0.0..=1000.0).contains(&p.0) && (0.0..=1000.0).contains(&p.1)
+}
+
+/// A narrowed axis can leave a quadrant's centre off the plot. Its lines and
+/// handles are still drawn on the plot - the centre handle at the nearest
+/// point of it, where it can be grabbed.
+#[test]
+fn a_quadrant_with_its_centre_off_the_plot_is_drawn_on_the_plot() {
+    for skewed in [false, true] {
+        let g = imported(skewed, (5000.0, 400.0));
+        let shapes = g.draw_self(true, None, &mapper(), &None);
+        let drawn = lines(&shapes);
+        assert!(!drawn.is_empty(), "skewed {skewed}: no lines drawn");
+        for (a, b) in drawn {
+            assert!(on_plot(a) && on_plot(b), "skewed {skewed}: {a:?} to {b:?}");
+        }
+        let grips = handles(&shapes);
+        assert!(
+            grips.contains(&(1000.0, 400.0)),
+            "skewed {skewed}: {grips:?}"
+        );
+        assert!(
+            grips.iter().all(|h| on_plot(*h)),
+            "skewed {skewed}: {grips:?}"
+        );
+    }
+}
+
+/// A line can be picked up where it is drawn - here the level line through a
+/// centre beyond the right of the plot - and not where it is not.
+#[test]
+fn a_quadrant_is_picked_up_by_the_lines_it_draws() {
+    for skewed in [false, true] {
+        let g = imported(skewed, (5000.0, 400.0));
+        let m = mapper();
+        assert!(
+            g.is_point_on_perimeter((500.0, 402.0), (5.0, 5.0), &m)
+                .is_some(),
+            "skewed {skewed}: missed the drawn line"
+        );
+        assert!(
+            g.is_point_on_perimeter((500.0, 700.0), (5.0, 5.0), &m)
+                .is_none(),
+            "skewed {skewed}: picked up off the lines"
+        );
+    }
+}
+
+/// A skewed quadrant's lines are drawn where its quarters really meet: just
+/// either side of the middle of each drawn line lie two different quarters.
+/// Checked on a slanted gate after its X axis is narrowed, which used to snap
+/// the ends of the left and right arms to the new edges and turn them.
+#[test]
+fn a_skewed_quadrants_lines_are_drawn_where_its_quarters_meet() {
+    let m = mapper();
+    let tilted = skewed("s")
+        .replace_point((700.0, 1000.0), 4, None, &m)
+        .unwrap()
+        .replace_point((1000.0, 700.0), 3, None, &m)
+        .unwrap();
+    let narrowed = tilted
+        .recalculate_gate_for_new_axis_limits(Arc::from(X), 200.0, 900.0, &TransformType::Linear)
+        .unwrap()
+        .expect("a quadrant answers a new range");
+    let view = PlotMapper::new(
+        600.0,
+        600.0,
+        200.0..=900.0,
+        0.0..=1000.0,
+        200.0..=900.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    for gate in [&tilted, &narrowed] {
+        let drawn = lines(&gate.draw_self(false, None, &view, &None));
+        assert_eq!(drawn.len(), 4);
+        for (a, b) in drawn {
+            let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+            let len = ((b.0 - a.0).hypot(b.1 - a.1)).max(f32::EPSILON);
+            let normal = (-(b.1 - a.1) / len, (b.0 - a.0) / len);
+            let side = |k: f32| quarter(&**gate, (mid.0 + k * normal.0, mid.1 + k * normal.1));
+            assert_ne!(
+                side(2.0),
+                side(-2.0),
+                "the line {a:?} to {b:?} divides nothing"
+            );
+        }
+    }
+    // And the quarters themselves are those of the gate before the change.
+    for x in (0..=1000).step_by(37) {
+        for y in (0..=1000).step_by(41) {
+            let at = (x as f32, y as f32);
+            assert_eq!(quarter(&*tilted, at), quarter(&*narrowed, at), "{at:?}");
+        }
+    }
 }
 
 #[test]
