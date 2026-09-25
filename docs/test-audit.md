@@ -29,6 +29,9 @@ the seams the integration tests in the second pass are written against.
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-META-1 | `omiq::metadata::parse_metadata_csv` | A row with no id or file name is skipped when ids are collected, but metadata is then read by position in the shortened list: every later file gets the previous row's metadata, so its group - and the gates it is given - are wrong | **High** - silent wrong gating |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
+| B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
+| B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
+| B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -135,3 +138,28 @@ text, a missing id column or file an error; B-META-1.
 silently, the later winning. With files now named by their sub-folder path
 that is less likely, but a file would still be given another's group with no
 warning.
+
+### gate_rules: threshold, confidence
+
+**Reach.** `threshold` is plain arithmetic over `&[f64]`, used by `rule`
+(`Rule::solve`, which picks the axis and builds each gate's *shadow* for
+`negative_below` / `refine_from`) and through it `autogate`. It borrows
+`kde_1d`, `silverman_bandwidth` and `kde_peak` from `gate_move::kde`.
+`confidence` scores `Threshold`s for `rule` and `MatchEvidence` for the
+phenotype rule (`autogate`); its `ConfidenceLimits` are serialised in the
+rules sidecar (`rule_store`).
+
+**Weak tests strengthened (4).** The four "no boundary" valley tests asserted
+only `is_err()`; each now names the refusal it expects (`OnlyOnePeak` for a
+merged hump and a smear, `NothingDeepEnough` at the right place for a
+shoulder wobble and a tail ripple), so a fixture that fails for another
+reason no longer passes.
+
+**Added.** `negative_below` and `refine_from` had no direct test: the
+negative under a gate, sliding the gate, too little below it, refining from a
+gate set too high, not running off the axis from one set too low, and a gate
+already in place staying put. `interquartile_spread`, the count swing in a gap
+and in a continuum, `first_valley`'s refusals of bad input. `assess_match`
+- the whole phenotype confidence model - had no test; it now has six, plus
+clamping, empty confidence, the zero `swing_half` guard and the limits'
+round trip through serde.

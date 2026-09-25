@@ -352,3 +352,187 @@ fn a_comfortable_split_still_scores_well() {
     let even = model.assess(&holding(20_000, 40_000), None);
     assert!(even.get(ADMITTED).unwrap().score > 0.99);
 }
+
+// ─── An unmeasurable component ───────────────────────────────────────────────
+
+/// BUG (docs/test-audit.md, B-CONF-1): `Component::new` clamps its score,
+/// and clamping NaN gives NaN; `from_components` then folds with `f64::min`,
+/// which returns the other operand when one is NaN. A component that could
+/// not be measured is dropped from the overall instead of dragging it down,
+/// so a gate is ranked as trustworthy for exactly the reason it should be
+/// looked at.
+#[test]
+#[ignore = "known bug B-CONF-1: a NaN component is ignored by the overall score"]
+fn a_component_that_could_not_be_measured_counts_against_the_gate() {
+    let c = Confidence::from_components(vec![
+        Component::new("fine", 0.9, ""),
+        Component::new("unmeasured", f64::NAN, ""),
+    ]);
+    assert!(c.score <= 0.0, "overall {}", c.score);
+    assert_eq!(c.weakest().unwrap().name, "unmeasured");
+}
+
+/// BUG (docs/test-audit.md, B-CONF-2): the limits are read from the rules
+/// file, and `displacement_score` divides by `displacement_limit` where
+/// `stability_score` guards its own divisor. A limit of 0 scores a gate that
+/// did not move at all as 0 / 0.
+#[test]
+#[ignore = "known bug B-CONF-2: a displacement limit of 0 scores an unmoved gate as NaN"]
+fn a_zero_displacement_limit_still_scores_an_unmoved_gate() {
+    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
+    let model = CountAndSeparation {
+        limits: ConfidenceLimits {
+            displacement_limit: 0.0,
+            ..ConfidenceLimits::default()
+        },
+    };
+    let c = model.assess(&t, Some(t.x));
+    let moved = part(&c, DISPLACEMENT);
+    assert!(moved.is_finite(), "displacement scored {moved}");
+}
+
+#[test]
+fn scores_are_clamped_into_zero_to_one() {
+    assert_eq!(Component::new("x", 1.7, "").score, 1.0);
+    assert_eq!(Component::new("x", -0.3, "").score, 0.0);
+}
+
+#[test]
+fn nothing_to_judge_is_full_confidence_with_nothing_weakest() {
+    let c = Confidence::from_components(Vec::new());
+    assert_eq!(c.score, 1.0);
+    assert!(c.weakest().is_none());
+    assert!(c.get(EVENTS).is_none());
+}
+
+#[test]
+fn a_zero_swing_scale_falls_back_rather_than_dividing_by_zero() {
+    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
+    let model = CountAndSeparation {
+        limits: ConfidenceLimits {
+            swing_half: 0.0,
+            ..ConfidenceLimits::default()
+        },
+    };
+    let s = part(&model.assess(&t, None), STABILITY);
+    assert!(s.is_finite() && s > 0.0, "{s}");
+}
+
+#[test]
+fn limits_survive_the_rules_file() {
+    let limits = ConfidenceLimits {
+        events_full: 5_000.0,
+        events_floor: 50.0,
+        swing_half: 0.5,
+        displacement_limit: 0.25,
+    };
+    let text = serde_json::to_string(&CountAndSeparation {
+        limits: limits.clone(),
+    })
+    .unwrap();
+    let back: CountAndSeparation = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.limits, limits);
+}
+
+// ─── The phenotype model ─────────────────────────────────────────────────────
+
+fn evidence() -> MatchEvidence {
+    MatchEvidence {
+        matched: 2_000,
+        parent: 20_000,
+        reference_matched: 1_800,
+        reference_parent: 20_000,
+        purity: 0.95,
+        caught: 0.9,
+        pieces: 1,
+    }
+}
+
+#[test]
+fn a_clean_match_scores_well_on_every_count() {
+    let c = assess_match(evidence());
+    for name in [MATCHED, PURITY, CAUGHT, ONE_CLOUD, ABUNDANCE] {
+        assert!(part(&c, name) > 0.8, "{name}: {}", part(&c, name));
+    }
+    assert!(c.score > 0.8, "{c:?}");
+}
+
+#[test]
+fn purity_and_catch_are_their_own_scores() {
+    let c = assess_match(MatchEvidence {
+        purity: 0.4,
+        caught: 0.6,
+        ..evidence()
+    });
+    assert_eq!(part(&c, PURITY), 0.4);
+    assert_eq!(part(&c, CAUGHT), 0.6);
+    assert_eq!(c.weakest().unwrap().name, PURITY);
+}
+
+#[test]
+fn an_unmeasured_purity_or_catch_scores_nothing() {
+    let c = assess_match(MatchEvidence {
+        purity: f64::NAN,
+        caught: f64::INFINITY,
+        ..evidence()
+    });
+    assert_eq!(part(&c, PURITY), 0.0);
+    assert_eq!(part(&c, CAUGHT), 0.0);
+    assert_eq!(c.score, 0.0);
+}
+
+#[test]
+fn several_clouds_divide_the_one_cloud_score() {
+    let score = |pieces| {
+        part(
+            &assess_match(MatchEvidence {
+                pieces,
+                ..evidence()
+            }),
+            ONE_CLOUD,
+        )
+    };
+    assert_eq!(score(0), 0.0, "nothing matched is no cloud at all");
+    assert_eq!(score(1), 1.0);
+    assert_eq!(score(2), 0.5);
+    assert_eq!(score(4), 0.25);
+}
+
+#[test]
+fn abundance_is_judged_by_ratio_either_way_round() {
+    let with = |matched| {
+        part(
+            &assess_match(MatchEvidence {
+                matched,
+                ..evidence()
+            }),
+            ABUNDANCE,
+        )
+    };
+    // The reference is 9%. A third of that and three times it score the same,
+    // and both score a half - the tolerance.
+    assert!((with(600) - 0.5).abs() < 1e-9, "{}", with(600));
+    assert!((with(5_400) - 0.5).abs() < 1e-9, "{}", with(5_400));
+    assert_eq!(with(1_800), 1.0);
+    assert!(with(18) < 0.05, "a hundredfold is evidence: {}", with(18));
+}
+
+#[test]
+fn nothing_matched_on_either_side_leaves_nothing_to_compare() {
+    let none_here = assess_match(MatchEvidence {
+        matched: 0,
+        ..evidence()
+    });
+    assert_eq!(part(&none_here, ABUNDANCE), 0.0);
+    assert_eq!(part(&none_here, MATCHED), 0.0);
+    let none_there = assess_match(MatchEvidence {
+        reference_matched: 0,
+        ..evidence()
+    });
+    assert_eq!(part(&none_there, ABUNDANCE), 0.0);
+    let no_parent = assess_match(MatchEvidence {
+        reference_parent: 0,
+        ..evidence()
+    });
+    assert_eq!(part(&no_parent, ABUNDANCE), 0.0);
+}
