@@ -311,3 +311,22 @@ fn a_scaling_file_with_its_range_the_wrong_way_round_is_refused_not_fatal() {
     let outcome = std::panic::catch_unwind(|| replace(v1, inverted));
     assert!(outcome.is_ok(), "replacing the scaling panicked");
 }
+
+/// BUG (docs/test-audit.md, B-AX-3): nor is the cofactor checked. The
+/// editor's box refuses anything below 1, but a scaling file's cofactor goes
+/// straight into the transform: 0 gives infinite axis bounds and a NaN in the
+/// quadrant's clamp, a negative one an axis the wrong way round. Either
+/// crashes the app on loading the file.
+#[test]
+#[ignore = "known bug B-AX-3: a scaling file with a cofactor of 0 or less crashes the scaling replace"]
+fn a_scaling_file_with_a_cofactor_below_one_is_refused_not_fatal() {
+    for cofactor in [0i64, -150] {
+        let v1 = scaling(&format!("cofactor-v1-{cofactor}"), 150, true);
+        let bad = scaling(&format!("cofactor-{cofactor}"), cofactor, true);
+        let outcome = std::panic::catch_unwind(|| replace(v1, bad));
+        assert!(
+            outcome.is_ok(),
+            "a cofactor of {cofactor} panicked the replace"
+        );
+    }
+}
