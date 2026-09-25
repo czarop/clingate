@@ -21,7 +21,7 @@ the seams the integration tests in the second pass are written against.
 ## Where things stand
 
 - **1,034 unit tests and 12 integration tests pass**, plus 12 doctests.
-- **31 known-bug tests (29 bugs) are pinned as failing tests** (`#[ignore]`d
+- **32 known-bug tests (30 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. One more (B-BUILD-1) was fixed outright.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
@@ -66,6 +66,7 @@ to fix first.
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
 | B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
 | B-HIER-2 | `gate_hierarchy::GateHierarchy::would_create_cycle` (used by `add_child`, `reparent`, `delete_node_keep_children`) | Checks whether the parent is among the child's descendants; a gate is not its own, so a gate can be made its own parent - directly, or by deleting a gate and handing its children to one of them. `get_ancestors` then loops forever. Found by the random edit sequences | Medium - reachable from a damaged file (B-OMIQ-2) |
+| B-DOC-1 | `GateState::link_node_to_gate` / `link_composite` | Re-pointing a position keeps the gate it replaced registered "since a boolean may still reference it", whether one does or not; deleting collects such a gate (`collect_stranded_ghosts`) because it accumulates and is exported as a container on no plot. Found by the random document edits | Low - file bloat, invisible containers in Omiq |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
@@ -377,3 +378,25 @@ seed, and on seed 21 a 25-step sequence that shrinks (by removing steps while
 it still fails) to two: `add_child(g6, g7); delete_node_keep_children(g6,
 Some(g7))`. Both routes are pinned by the B-HIER-2 test and stepped around
 in the random sequences, which otherwise pass.
+
+### Random document edits
+
+`tests/document_fuzz.rs` applies seeded random sequences of the edits the
+editor makes - add a gate of every kind (rectangle, ellipse, polygon, line,
+quadrant, bisector, skewed quadrant) under any position or the root, delete a
+position, link one position to another's gate, unlink - to an empty document
+or to the checked-in fixture (which brings a boolean and the ghost it keeps
+alive). After every edit: every position names a registered gate, every
+parent is a position, every chain is as long as the position is deep, and
+nothing is registered that nothing reaches. After a sequence, the document is
+exported and re-imported and must come back identical. 600 sequences of 30
+edits and 150 round trips; over 200 seeds every add and delete succeeded,
+about a third of the links (the rest correctly refused), and unlinks are
+aimed at linked positions.
+
+It found B-DOC-1 on its second seed. Positions are chosen by a key built from
+gate names rather than ids, since gates are given random UUIDs and a seed
+would otherwise pick different positions each run.
+
+flow_gates prints `🔧 [TRANSFORM]` lines on every pixel conversion; they fill
+the output of any test that adds gates. That is upstream, in `czarop/flow`.

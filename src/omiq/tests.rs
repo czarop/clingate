@@ -3433,6 +3433,31 @@ fn linking_keeps_each_position_where_it_was() {
     assert_eq!(state.parent_node(&node), before, "the tree did not move");
 }
 
+/// BUG (docs/test-audit.md, B-DOC-1): linking re-points a position at
+/// another gate and keeps the gate it used to show "as a ghost ... since a
+/// boolean may still reference it" - whether or not one does. Deleting the
+/// last position of a gate collects it when nothing references it
+/// (`collect_stranded_ghosts`), because such gates accumulate and are written
+/// out on export as containers on no plot. Linking leaves exactly that.
+#[test]
+#[ignore = "known bug B-DOC-1: linking leaves the replaced gate registered when nothing references it"]
+fn linking_away_from_an_unreferenced_gate_collects_it() {
+    let mut state = GateState::default();
+    let a = add(&mut state, PrimaryGateType::Rectangle, "a", None);
+    let b = add(&mut state, PrimaryGateType::Rectangle, "b", None);
+    let (na, nb) = (
+        state.nodes_for_gate(&a)[0].clone(),
+        state.nodes_for_gate(&b)[0].clone(),
+    );
+    state.link_node_to_gate(&na, &nb).unwrap();
+
+    assert_eq!(state.placement_count(&a), 0, "a is on no plot now");
+    assert!(
+        !state.is_registered(&a),
+        "and no boolean reaches it, so there is nothing to keep it for"
+    );
+}
+
 #[test]
 fn a_position_cannot_be_linked_to_itself() {
     let mut state = import_json(&linked_gate_json());
