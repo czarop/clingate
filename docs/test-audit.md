@@ -32,6 +32,9 @@ the seams the integration tests in the second pass are written against.
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
 | B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
 | B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
+| B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05 | Medium - a setting that does nothing |
+| B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
+| B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
@@ -163,3 +166,46 @@ and in a continuum, `first_valley`'s refusals of bad input. `assess_match`
 - the whole phenotype confidence model - had no test; it now has six, plus
 clamping, empty confidence, the zero `swing_half` guard and the limits'
 round trip through serde.
+
+### gate_rules: rule, rule_store, shape_fit, phenotype, autogate
+
+**Reach.** `autogate` is where the rules meet everything else: it reads the
+FCS files (`file_load`, through `measure_file` into `parent_values` and the
+event index `flow_gates` builds), the gate store (`GateState::gate_for_file`,
+`resolve_drawable`, the per-file overrides), the metadata
+(`MetaDataFileMap`, for specimens and sample types via `rule_store`'s
+pairing), and writes placements back with `apply_placements`
+(`GateState::set_gate_for_file`). The Gate Rules tab
+(`gate_editor::gate_rules_window`) drives it through `files_to_read`,
+`measure_all` and `run_solve`, and saves `RuleStore` as JSON.
+
+**Found.** B-RULE-1: the test that claims to check a shallow valley is
+flagged against the bar (`a_shallow_valley_is_placed_and_flagged_rather_than_refused`)
+passes 0.9 as the bar, but its "shallower than the bar" assertion checks the
+fixture, not the code - with the bar at 0 the result is identical. The new
+test shows it.
+
+**Added.** `ValleyRule::calibrate` and `place` directly (the offset from the
+bottom, following a shifted dip, refusing one hump), `describe`,
+`accepted_band` for every kind, calibrated rules refusing to solve alone,
+every threshold rule being assessable. `simplify` (the contour thinning that
+makes a traced outline a drawable gate) had no test: corners kept, area kept,
+small outlines untouched, never below a triangle, degenerate input.
+`Rows::select`, `z_into`. `human_order` on case and prefixes.
+
+**Env-gated, and pass when unset.** `harness_tests::a_real_workflow_shows_what_the_manual_gates_capture`
+(`OMIQ_GATING_FILE`, `OMIQ_METADATA_FILE`, `OMIQ_SCALING_FILE`,
+`OMIQ_FCS_DIR`), and two tools that write a file for looking at by hand and
+assert nothing: `shape_fit_tests::a_fitted_shape_can_be_looked_at`
+(`SHAPE_FIT_OUT`) and `rule_store_tests::a_phenotype_sidecar_can_be_written_for_trying_the_app`.
+
+**Observations.**
+- `RuleStore::reference_file` takes "the one file" of the wanted type in a
+  specimen; with two it returns whichever the map yields first. Refusing, as
+  the workspace does with two candidate files, would be consistent.
+- `Rule::solve` / `Rule::apply` refuse the calibrated rules with
+  `SolveError::BadBand { band: (0, 0) }`, whose message ("a band of 0 to 0 is
+  not a fraction range") names the wrong reason. `autogate` never reaches it,
+  since those rules take their own branch.
+- `RuleStore::save` writes in place; `Remembered::save_to` writes beside and
+  renames. A crash mid-save loses the rules file.

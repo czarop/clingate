@@ -394,3 +394,63 @@ fn an_untrimmed_baseline_would_have_moved_it() {
         "untrimmed read {rare:.2} at 1% and {common:.2} at 20% - too close for this to be the reason trimming exists"
     );
 }
+
+// ── values a real file can hold ───────────────────────────────────────────
+
+/// BUG (docs/test-audit.md, B-PHEN-1): `Baseline::of` does not drop
+/// non-finite values. The first, untrimmed median is sorted with the NaNs in
+/// it (by `partial_cmp().unwrap_or(Equal)`, which is not an order) and lands
+/// on one; every z is then NaN, the trimming pass keeps nothing, and the NaN
+/// estimate is returned - `median: NaN, spread: 1e-6`. One corrupt event
+/// disables that marker for the whole phenotype match.
+#[test]
+#[ignore = "known bug B-PHEN-1: a NaN value makes a marker's baseline NaN"]
+fn a_nan_among_the_values_does_not_move_the_baseline() {
+    // A corrupt event or a transform of a negative that went wrong: one NaN
+    // in a marker's column. It is not a value, so it should not count - and
+    // it must not take the sort down with it.
+    let clean: Vec<f64> = (0..1_001).map(|i| (i as f64) / 100.0).collect();
+    let mut dirty = clean.clone();
+    dirty.insert(500, f64::NAN);
+    dirty.insert(0, f64::NAN);
+
+    let (a, b) = (Baseline::of(&clean), Baseline::of(&dirty));
+    assert!(b.median.is_finite() && b.spread.is_finite(), "{b:?}");
+    assert!(
+        (a.median - b.median).abs() < 0.02,
+        "{} vs {}",
+        a.median,
+        b.median
+    );
+    assert!(
+        (a.spread - b.spread).abs() / a.spread < 0.02,
+        "{} vs {}",
+        a.spread,
+        b.spread
+    );
+}
+
+#[test]
+fn rows_are_copied_out_in_the_order_asked_for() {
+    let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let rows = Rows::new(&values, 2).expect("whole rows");
+    assert_eq!(rows.select(&[2, 0]), vec![5.0, 6.0, 1.0, 2.0]);
+    assert!(rows.select(&[]).is_empty());
+}
+
+#[test]
+fn an_event_is_put_into_z_space_marker_by_marker() {
+    let bases = [
+        Baseline {
+            median: 1.0,
+            spread: 2.0,
+        },
+        Baseline {
+            median: -3.0,
+            spread: 0.5,
+        },
+    ];
+    let mut out = vec![99.0; 7];
+    z_into(&[5.0, -2.0], &bases, &mut out);
+    assert_eq!(out, vec![2.0, 2.0], "the buffer is cleared, then filled");
+}

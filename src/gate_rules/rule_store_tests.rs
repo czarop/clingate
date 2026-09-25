@@ -700,6 +700,38 @@ fn digits_inside_a_name_compare_as_numbers() {
     assert_eq!(human_order("abc", "abc"), Ordering::Equal);
 }
 
+/// BUG (docs/test-audit.md, B-RS-1): the comparison reads `D02` and `D2` as
+/// the same number and `a1` and `A1` as the same text, and so calls two
+/// different names Equal. A sort then leaves them in whatever order they
+/// arrived - and the files arrive from a hash map - so two tabs, or two runs,
+/// can list the same samples differently. Distinct names need a tie-break.
+#[test]
+#[ignore = "known bug B-RS-1: human_order calls distinct names equal"]
+fn distinct_names_never_compare_equal() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    for (a, b) in [("D02", "D2"), ("a1", "A1"), ("Plate_007", "plate_7")] {
+        assert_ne!(human_order(a, b), Ordering::Equal, "{a} vs {b}");
+        assert_eq!(human_order(a, b), human_order(b, a).reverse(), "{a} vs {b}");
+    }
+}
+
+#[test]
+fn case_does_not_decide_the_order_of_different_names() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("apple", "Banana"), Ordering::Less);
+    assert_eq!(human_order("Apple", "banana"), Ordering::Less);
+}
+
+#[test]
+fn a_shorter_name_that_is_a_prefix_comes_first() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("D1", "D1_repeat"), Ordering::Less);
+    assert_eq!(human_order("", "a"), Ordering::Less);
+}
+
 #[test]
 fn an_id_too_long_for_a_number_still_compares() {
     // A gating id is a long run of digits. Parsing it would overflow, so it

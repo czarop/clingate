@@ -598,3 +598,113 @@ fn a_phenotype_rule_has_no_band_to_be_already_inside() {
             .is_none()
     );
 }
+
+// ── the valley rule on its own ────────────────────────────────────────────
+
+fn two_humps(seed: u64, gap: f64) -> Vec<f64> {
+    let mut v = gaussian(seed, 20_000, 0.0, 0.4);
+    v.extend(gaussian(seed + 1, 8_000, gap, 0.5));
+    v
+}
+
+#[test]
+fn a_valley_calibration_records_how_far_the_gate_sat_from_the_bottom() {
+    let reference = two_humps(21, 3.0);
+    let rule = ValleyRule::default();
+    let read = rule.calibrate(&reference, 1.9).unwrap();
+
+    assert_eq!(read.at, 1.9, "the position a person drew");
+    assert!((read.offset - (1.9 - read.bottom)).abs() < 1e-12);
+    assert!(
+        read.bottom > 0.8 && read.bottom < 2.2,
+        "bottom {}",
+        read.bottom
+    );
+    assert!(read.depth > 0.5, "a clean dip: {}", read.depth);
+}
+
+#[test]
+fn a_valley_placement_keeps_the_reference_s_offset_from_the_bottom() {
+    // The whole sample slid by 0.6: the dip moves with it, and the gate sits
+    // the same distance from the new bottom as it did from the old.
+    let rule = ValleyRule::default();
+    let reference = rule.calibrate(&two_humps(22, 3.0), 1.9).unwrap();
+    let shifted: Vec<f64> = two_humps(22, 3.0).iter().map(|v| v + 0.6).collect();
+    let here = rule.place(&shifted, reference.offset).unwrap();
+
+    assert_eq!(here.offset, reference.offset);
+    assert!((here.at - (here.bottom + reference.offset)).abs() < 1e-12);
+    assert!(
+        (here.bottom - reference.bottom - 0.6).abs() < 0.05,
+        "the dip moved 0.6: {} -> {}",
+        reference.bottom,
+        here.bottom
+    );
+}
+
+#[test]
+fn a_valley_rule_refuses_a_population_with_no_dip() {
+    let rule = ValleyRule::default();
+    let one_hump = gaussian(23, 20_000, 0.0, 0.4);
+    assert!(rule.calibrate(&one_hump, 1.0).is_err());
+    assert!(rule.place(&one_hump, 0.0).is_err());
+}
+
+#[test]
+fn a_valley_rule_says_when_it_is_smoothed() {
+    assert!(!ValleyRule::default().describe().contains("smoothed"));
+    let smoothed = ValleyRule {
+        smoothing: 1.5,
+        ..ValleyRule::default()
+    };
+    assert!(
+        smoothed.describe().contains("smoothed x1.50"),
+        "{}",
+        smoothed.describe()
+    );
+}
+
+#[test]
+fn only_a_tail_fraction_has_a_band_to_be_already_inside() {
+    assert_eq!(
+        Rule::TailFraction(TailFractionRule::new((0.1, 0.2))).accepted_band(),
+        Some((0.1, 0.2))
+    );
+    for rule in [
+        Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.1)),
+        Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+        Rule::InTheValley(ValleyRule::default()),
+    ] {
+        assert_eq!(rule.accepted_band(), None, "{}", rule.kind());
+    }
+}
+
+#[test]
+fn a_calibrated_rule_cannot_be_solved_from_one_population() {
+    // It needs a reference to calibrate against, so solving it alone is
+    // refused rather than answered.
+    for rule in [
+        Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+        Rule::InTheValley(ValleyRule::default()),
+    ] {
+        assert!(rule.solve(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
+        assert!(
+            rule.apply(&[1.0, 2.0, 3.0], None).is_err(),
+            "{}",
+            rule.kind()
+        );
+    }
+}
+
+#[test]
+fn every_rule_but_the_phenotype_is_judged_on_its_threshold() {
+    let t = super::threshold::tail_fraction(&population(900, 100), (0.09, 0.11)).unwrap();
+    for rule in [
+        Rule::TailFraction(TailFractionRule::new((0.09, 0.11))),
+        Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.1)),
+        Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+        Rule::InTheValley(ValleyRule::default()),
+    ] {
+        assert!(rule.assess(&t, None).is_some(), "{}", rule.kind());
+    }
+}

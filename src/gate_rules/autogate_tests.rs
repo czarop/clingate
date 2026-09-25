@@ -2238,6 +2238,43 @@ fn a_shallow_valley_is_placed_and_flagged_rather_than_refused() {
     );
 }
 
+/// BUG (docs/test-audit.md, B-RULE-1): `ValleyRule::min_depth_fraction` is
+/// documented as how shallow a sample's dip may be, against the reference's,
+/// before the placement is flagged - and nothing reads it. The Gate Rules tab
+/// edits it and the rules file saves it, but the depth component is added
+/// the same way whatever it says, so a dip well inside a lenient bar is
+/// flagged exactly as hard as one far outside a strict one.
+#[test]
+#[ignore = "known bug B-RULE-1: min_depth_fraction has no effect"]
+fn a_dip_inside_the_bar_is_judged_more_kindly_than_one_outside_it() {
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let shallow = two_populations(400.0, 130.0);
+    let confidence = |bar: f64| {
+        let (mut state, _) = one_positive_gate();
+        let report = sweep_frames(
+            &mut state,
+            &valley_rule("fs_qc", bar),
+            &map,
+            &[("fs_qc", &here), ("fs_b", &shallow)],
+        );
+        let placed = report
+            .positioned
+            .iter()
+            .find(|p| &*p.specimen == "DONOR-B")
+            .expect("placed")
+            .clone();
+        (placed.confidence, placed.weakest)
+    };
+    let (strict, strict_weakest) = confidence(0.9);
+    let (lenient, lenient_weakest) = confidence(0.05);
+    assert_eq!(strict_weakest, Some(crate::gate_rules::confidence::VALLEY));
+    assert!(
+        lenient > strict || lenient_weakest != strict_weakest,
+        "the bar changed nothing: {strict} at 0.9, {lenient} at 0.05"
+    );
+}
+
 #[test]
 fn a_density_with_no_dip_at_all_is_still_refused() {
     // The other side: flagging is for a dip that is shallow, not for one that

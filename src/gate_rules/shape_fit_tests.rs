@@ -365,3 +365,69 @@ fn a_stray_cell_does_not_set_the_size_of_the_gate() {
         with_strays.0
     );
 }
+
+// ── thinning an outline ───────────────────────────────────────────────────
+
+/// A square traced with `per_side` points along each edge, as a contour
+/// tracer returns it: many nearly-collinear points and four that matter.
+fn traced_square(per_side: usize) -> Vec<(f64, f64)> {
+    let mut ring = Vec::new();
+    let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+    for i in 0..4 {
+        let (a, b) = (corners[i], corners[(i + 1) % 4]);
+        for k in 0..per_side {
+            let t = k as f64 / per_side as f64;
+            ring.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+        }
+    }
+    ring
+}
+
+#[test]
+fn thinning_keeps_the_corners_and_drops_the_points_between() {
+    let ring = traced_square(50);
+    let thin = simplify(&ring, 8);
+    assert!(thin.len() <= 8, "{} points", thin.len());
+    for corner in [(10.0, 0.0), (10.0, 10.0), (0.0, 10.0)] {
+        assert!(thin.contains(&corner), "lost {corner:?}: {thin:?}");
+    }
+    // The shape survives: same area to within a sliver.
+    let shoelace = |r: &[(f64, f64)]| {
+        (0..r.len())
+            .map(|i| {
+                let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                a.0 * b.1 - b.0 * a.1
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.0
+    };
+    assert!(
+        (shoelace(&thin) - 100.0).abs() < 1.0,
+        "area {}",
+        shoelace(&thin)
+    );
+}
+
+#[test]
+fn an_outline_already_small_enough_is_left_alone() {
+    let ring = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    assert_eq!(simplify(&ring, 10), ring);
+    assert_eq!(simplify(&ring, 4), ring);
+}
+
+#[test]
+fn thinning_never_collapses_an_outline_below_a_triangle() {
+    // Asking for fewer points than any polygon has gives back something
+    // that is still a polygon, not a line.
+    let thin = simplify(&traced_square(20), 1);
+    assert!(thin.len() >= 3, "{thin:?}");
+}
+
+#[test]
+fn a_degenerate_outline_does_not_break_thinning() {
+    let ring = vec![(1.0, 1.0); 30];
+    let thin = simplify(&ring, 5);
+    assert!(!thin.is_empty());
+    assert!(thin.iter().all(|p| *p == (1.0, 1.0)));
+}
