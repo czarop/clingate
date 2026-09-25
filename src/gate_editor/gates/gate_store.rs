@@ -421,6 +421,47 @@ pub struct GateState {
 
 impl GateState {
     /// What the imported Omiq file carried, for writing a new one.
+    /// Whether the document is still the one `earlier` was taken from: the
+    /// same gates at the same positions - global, per group and per sample -
+    /// in the same tree.
+    ///
+    /// What a rules run needs to know before it writes its answers. It solves
+    /// against a snapshot, and answers worked out on one document mean nothing
+    /// in another - a moved gate, a new file's gating, a whole document loaded
+    /// over it. Every edit replaces the `Arc` of the gate it touches, so gates
+    /// are compared by identity: cheap, and a gate moved away and back again
+    /// still counts as changed, which is the safe answer. Which gate is
+    /// selected, and which tree nodes are folded, say nothing about the
+    /// gating and are not compared.
+    pub fn unchanged_since(&self, earlier: &GateState) -> bool {
+        fn same<K: Eq + std::hash::Hash>(
+            a: &FxHashMap<K, Arc<dyn DrawableGate>>,
+            b: &FxHashMap<K, Arc<dyn DrawableGate>>,
+        ) -> bool {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, g)| b.get(k).is_some_and(|h| Arc::ptr_eq(g, h)))
+        }
+        let (now, then) = (&self.gate_store, &earlier.gate_store);
+        same(
+            &now.primary_and_subgate_registry.0,
+            &then.primary_and_subgate_registry.0,
+        ) && same(
+            &now.sample_position_overrides,
+            &then.sample_position_overrides,
+        ) && same(
+            &now.group_position_overrides,
+            &then.group_position_overrides,
+        ) && self.placements.len() == earlier.placements.len()
+            && self.placements.iter().all(|(node, placed)| {
+                earlier
+                    .placements
+                    .get(node)
+                    .is_some_and(|was| was.gate_id == placed.gate_id)
+                    && self.parent_node(node) == earlier.parent_node(node)
+            })
+    }
+
     pub fn omiq_rebuild(&self) -> &crate::omiq::rebuild::OmiqRebuildStore {
         &self.omiq_rebuild
     }
@@ -1958,6 +1999,16 @@ impl GateState {
 
 #[store(pub name = GateStateImplExt)]
 impl<Lens> Store<GateState, Lens> {
+    /// Subscribe the caller to every change in the gating - the gates at
+    /// every tier, and the tree - and to nothing else. Selecting a gate writes
+    /// the store as well, and a caller asking whether the gating changed should
+    /// not wake for that.
+    fn subscribe_to_gating(&self) {
+        let _ = self.gate_store().read();
+        let _ = self.hierarchy().read();
+        let _ = self.placements().read();
+    }
+
     fn get_current_sample(
         &mut self,
         file_id: FileId,
@@ -2235,6 +2286,14 @@ impl<Lens> Store<GateState, Lens> {
                     }
                 }
             }
+        }
+        // Almost always nothing to do: a gate needs writing only when the plot
+        // shows its axes the other way round. Writing regardless notified
+        // everything subscribed to the gates on every change of file or plot -
+        // re-rendering what had not changed, and stopping a rules run as if
+        // the gating had been edited.
+        if updates.is_empty() {
+            return Ok(());
         }
         self.gate_store().with_mut(|s| {
             for (id, gate, origin) in updates {
@@ -2897,6 +2956,96 @@ mod gate_store_tests {
             .iter()
             .map(|(p, g)| (Arc::from(*p) as Arc<str>, Arc::from(*g) as Arc<str>))
             .collect()
+    }
+
+    // ── GateState::unchanged_since: whether a run's answers still apply ──────
+
+    /// A document with one gate drawn at the root, and that gate's id.
+    fn drawn() -> (GateState, GateId) {
+        let mut state = GateState::default();
+        let g = rectangle("r");
+        state
+            .gate_store
+            .insert_for_source(&[g.get_id()], &g, &GateSource::Global);
+        state.place_new_gate(None, g.get_id()).unwrap();
+        (state, g.get_id())
+    }
+
+    #[test]
+    fn a_snapshot_is_unchanged_since_itself() {
+        let (state, _) = drawn();
+        let snapshot = state.clone();
+        assert!(state.unchanged_since(&snapshot));
+    }
+
+    #[test]
+    fn any_edit_to_the_gating_is_a_change() {
+        let (before, id) = drawn();
+        let edits: Vec<(&str, Box<dyn Fn(&mut GateState)>)> = vec![
+            (
+                "the gate moved",
+                Box::new(|s: &mut GateState| {
+                    let moved = rectangle("r");
+                    s.gate_store
+                        .insert_for_source(&[moved.get_id()], &moved, &GateSource::Global);
+                }),
+            ),
+            (
+                "a sample given its own position",
+                Box::new(|s: &mut GateState| {
+                    let own = rectangle("r");
+                    s.place_gate(
+                        &[own.get_id()],
+                        &own,
+                        &GateSource::Sample((own.get_id(), file("s1"))),
+                    );
+                }),
+            ),
+            (
+                "a specimen given its own position",
+                Box::new(|s: &mut GateState| {
+                    let own = rectangle("r");
+                    s.place_gate(
+                        &[own.get_id()],
+                        &own,
+                        &GateSource::Group((own.get_id(), group_key("SampleID", "A"))),
+                    );
+                }),
+            ),
+            (
+                "a gate added",
+                Box::new(|s: &mut GateState| {
+                    let other = rectangle("q");
+                    s.gate_store
+                        .insert_for_source(&[other.get_id()], &other, &GateSource::Global);
+                    s.place_new_gate(None, other.get_id()).unwrap();
+                }),
+            ),
+            (
+                "the gate deleted",
+                Box::new({
+                    let id = id.clone();
+                    move |s: &mut GateState| s.remove_gate(id.clone()).unwrap()
+                }),
+            ),
+            (
+                "the whole document replaced",
+                Box::new(|s: &mut GateState| *s = drawn().0),
+            ),
+        ];
+        for (what, edit) in edits {
+            let mut after = before.clone();
+            edit(&mut after);
+            assert!(!after.unchanged_since(&before), "{what}");
+        }
+    }
+
+    #[test]
+    fn selecting_a_gate_is_not_a_change() {
+        let (before, id) = drawn();
+        let mut after = before.clone();
+        after.selected_gate = Some(id);
+        assert!(after.unchanged_since(&before));
     }
 
     #[test]

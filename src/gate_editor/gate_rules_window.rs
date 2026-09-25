@@ -7,7 +7,7 @@
 use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
-use crate::gate_editor::gates::gate_store::GateId;
+use crate::gate_editor::gates::gate_store::{GateId, GateStateImplExt};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
@@ -262,6 +262,57 @@ fn loaded_files(map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>) -> Vec<(Arc<st
     out
 }
 
+/// Everything a run reads apart from the gates, as it stood when it started.
+///
+/// Compared again before the run's answers are written. A run is measured on
+/// these, and answers measured on one workspace mean nothing in another: a new
+/// gating file under the same gate ids, a metadata export that groups the files
+/// differently, a new cofactor, an edited rule.
+#[derive(Clone, PartialEq)]
+struct RunInputs {
+    files: Vec<(Arc<str>, PathBuf)>,
+    names: HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    axes: crate::omiq::serialise::AxisSettings,
+    metadata: crate::omiq::metadata::MetaDataFileMap,
+    rules: RuleStore,
+}
+
+/// Raise a running solve's stop flag the moment anything it reads changes:
+/// the gates, the files, the metadata, the scaling or the rules.
+///
+/// A run works on a snapshot and writes its answers when it finishes. The tabs
+/// are hidden rather than unmounted, so it carries on while the Workspace tab
+/// loads another document or the editor moves a gate, and its answers would
+/// then land on a document it never measured. Raising the flag stops it at
+/// the next file instead of finishing work that will be thrown away.
+///
+/// This is only the early stop. Whether to write is decided when the run
+/// ends, by comparing what it started from with what is there now - an
+/// effect runs after the change that fires it, and a run can finish in
+/// between.
+///
+/// Subscribes to the parts of the gate store that hold the gating, not to its
+/// root: selecting a gate writes the store too, and that is not a change.
+/// ([`GateStateImplExt::subscribe_to_gating`] is where that line is drawn.)
+pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic::AtomicBool>>>) {
+    let gates = use_context::<crate::gate_editor::workspace_window::GateStore>();
+    let metadata = use_context::<crate::gate_editor::workspace_window::MetadataStore>();
+    let axes = use_context::<crate::gate_editor::workspace_window::AxesStore>();
+    let rules = use_context::<Signal<RuleStore>>();
+    let files = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
+    use_effect(move || {
+        gates.subscribe_to_gating();
+        let _ = metadata.metadata().read();
+        let _ = metadata.file_name_to_gating_id().read();
+        let _ = axes.settings().read();
+        let _ = rules.read();
+        let _ = files.read();
+        if let Some(flag) = cancel.peek().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
 #[component]
 pub fn GateRulesWindow() -> Element {
     let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
@@ -319,6 +370,7 @@ pub fn GateRulesWindow() -> Element {
     let mut progress = use_signal(|| None::<Progress>);
     // Set while a run is in flight, so the Stop button has something to raise.
     let mut cancel = use_signal(|| None::<Arc<std::sync::atomic::AtomicBool>>);
+    use_stop_run_on_change(cancel);
 
     // Picking a gate offers only the parents and parameters that gate is drawn
     // with, so the form cannot name a combination the document does not have.
@@ -1131,50 +1183,68 @@ pub fn GateRulesWindow() -> Element {
                         report.set(None);
                         progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
 
-                        // Each file with the name the metadata knows it by.
-                        let files: Vec<(Arc<str>, PathBuf)> = filehandler
-                            .read()
-                            .as_ref()
-                            .map(|f| {
-                                f.file_list()
-                                    .iter()
-                                    .map(|stub| (stub.name.clone(), stub.get_filepath().to_owned()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        if files.is_empty() {
+                        // Everything the run reads, as it stands now. Read
+                        // again before anything is written: see `RunInputs`.
+                        let inputs_now = move || RunInputs {
+                            // Each file with the name the metadata knows it by.
+                            files: filehandler
+                                .read()
+                                .as_ref()
+                                .map(|f| {
+                                    f.file_list()
+                                        .iter()
+                                        .map(|stub| (stub.name.clone(), stub.get_filepath().to_owned()))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            names: metadata_store.file_name_to_gating_id().read().clone(),
+                            axes: axis_store.settings().read().clone(),
+                            metadata: metadata_store.metadata().read().clone(),
+                            rules: rules.read().clone(),
+                        };
+                        let started = inputs_now();
+                        if started.files.is_empty() {
                             warn(&toasts, "No FCS files are loaded - open a workspace on the first tab");
                             running.set(false);
                             progress.set(None);
                             return;
                         }
-                        let names = metadata_store.file_name_to_gating_id().read().clone();
                         let mut arcsinh: Vec<(Arc<str>, f32)> = Vec::new();
-                        for (param, info) in axis_store.settings().read().iter() {
+                        for (param, info) in started.axes.iter() {
                             if info.is_arcsinh()
                                 && let Some(cofactor) = info.get_cofactor()
                             {
                                 arcsinh.push((param.clone(), cofactor));
                             }
                         }
-                        let metadata = metadata_store.metadata().read().clone();
-                        let rules_now = rules.read().clone();
 
                         // A snapshot, not a lock. Every gate is behind an Arc,
                         // so this is a refcount bump rather than a copy, and
                         // the store is free for the rest of the editor the
                         // moment it is taken.
                         let snapshot = gate_store.read().clone();
+                        let started_gates = snapshot.clone();
 
                         let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
                         cancel.set(Some(flag.clone()));
+                        let stopped = flag.clone();
                         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
 
-                        let worker = tokio::task::spawn_blocking(move || {
-                            run_solve(
-                                snapshot, files, names, arcsinh, metadata, rules_now, tx, flag,
-                            )
-                        });
+                        let worker = {
+                            let started = started.clone();
+                            tokio::task::spawn_blocking(move || {
+                                run_solve(
+                                    snapshot,
+                                    started.files,
+                                    started.names,
+                                    arcsinh,
+                                    started.metadata,
+                                    started.rules,
+                                    tx,
+                                    flag,
+                                )
+                            })
+                        };
 
                         // The worker's sender drops when it returns, which ends
                         // this loop - no sentinel message to get wrong.
@@ -1194,14 +1264,26 @@ pub fn GateRulesWindow() -> Element {
                                 return;
                             }
                         };
-                        if outcome.cancelled {
+                        // Answers measured on one workspace mean nothing in
+                        // another, whatever stopped or did not stop the run.
+                        // Checked here rather than trusted to the stop flag:
+                        // the flag is raised by an effect, which runs after the
+                        // change that fires it, and the run can finish first.
+                        if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
+                            warn(
+                                &toasts,
+                                "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now",
+                            );
+                            return;
+                        }
+                        if outcome.cancelled || stopped.load(std::sync::atomic::Ordering::Relaxed) {
                             note(&toasts, "Stopped - no gates were moved");
                             return;
                         }
 
                         // Writing happens here, on the one thread that owns the
-                        // store, and only the answers are written: a gate moved
-                        // by hand while this ran keeps its position.
+                        // store, and only once the document is known to be the
+                        // one the run measured.
                         crate::gate_rules::autogate::apply_placements(
                             &mut gate_store.write(),
                             &outcome.placements,
@@ -1930,6 +2012,240 @@ mod tests {
     // frames built in memory; this is the only test that starts from FCS
     // files, so it is the one that sees the reading, the metadata join and
     // the solve agree about which file is which.
+
+    /// B-RUN-1: a run must stop when anything it read changes. Driven through
+    /// the real hook, in a headless `VirtualDom` holding the same stores and
+    /// signals the app provides.
+    mod a_run_stops_when_anything_it_read_changes {
+        use super::*;
+        use crate::gate_editor::gates::gate_store::{GateSource, GateStateStoreExt};
+        use crate::gate_editor::gates::gate_types::PrimaryGateType;
+        use crate::gate_editor::plots::axis_store::PlotMapper;
+        use crate::gate_editor::workspace_window::{AxesStore, GateStore, MetadataStore};
+        use dioxus::stores::use_store_sync;
+        use dioxus_core::{NoOpMutations, generation};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// Everything the hook watches, handed to the change under test.
+        #[derive(Clone, Copy)]
+        struct Held {
+            gates: GateStore,
+            metadata: MetadataStore,
+            axes: AxesStore,
+            rules: Signal<RuleStore>,
+            files: Signal<Option<crate::file_load::FcsFiles>>,
+        }
+
+        #[derive(Clone)]
+        struct Setup {
+            change: Rc<dyn Fn(Held)>,
+            flag: Arc<AtomicBool>,
+        }
+        impl PartialEq for Setup {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        use std::rc::Rc;
+
+        fn mapper() -> PlotMapper {
+            PlotMapper::new(
+                600.0,
+                600.0,
+                0.0..=1000.0,
+                0.0..=1000.0,
+                0.0..=1000.0,
+                0.0..=1000.0,
+                flow_fcs::TransformType::Linear,
+                flow_fcs::TransformType::Linear,
+            )
+        }
+
+        /// A document with one rectangle at the root, as the editor draws it.
+        fn document() -> GateState {
+            let mut state = GateState::default();
+            state
+                .add_gate(
+                    &mapper(),
+                    300.0,
+                    300.0,
+                    Arc::from("FSC-A"),
+                    Arc::from("SSC-A"),
+                    None,
+                    None,
+                    PrimaryGateType::Rectangle,
+                    Some("r".to_string()),
+                )
+                .unwrap();
+            state
+        }
+
+        /// Mount the hook with nothing running, start a run, make `change`,
+        /// and say whether the run's stop flag went up.
+        fn stops_for(change: impl Fn(Held) + 'static) -> bool {
+            let flag = Arc::new(AtomicBool::new(false));
+            let mut dom = VirtualDom::new_with_props(
+                |setup: Setup| {
+                    let gates = use_store_sync(document);
+                    let metadata = use_store_sync(MetaDataStore::default);
+                    let axes = use_store_sync(AxisStore::default);
+                    let rules = use_signal(RuleStore::default);
+                    let files = use_signal(|| None::<crate::file_load::FcsFiles>);
+                    use_context_provider(|| gates);
+                    use_context_provider(|| metadata);
+                    use_context_provider(|| axes);
+                    use_context_provider(|| rules);
+                    use_context_provider(|| files);
+                    let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
+                    use_stop_run_on_change(cancel);
+                    // Pass 1 starts the run; pass 2 makes the change.
+                    if generation() == 1 {
+                        cancel.set(Some(setup.flag.clone()));
+                    }
+                    if generation() == 2 {
+                        (setup.change)(Held {
+                            gates,
+                            metadata,
+                            axes,
+                            rules,
+                            files,
+                        });
+                    }
+                    rsx! {}
+                },
+                Setup {
+                    change: Rc::new(change),
+                    flag: flag.clone(),
+                },
+            );
+            // Effects run from `wait_for_work`, not from a render, so each pass
+            // renders and then lets the queued effects run.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            let settle = |dom: &mut VirtualDom| {
+                runtime.block_on(async {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(20),
+                        dom.wait_for_work(),
+                    )
+                    .await;
+                });
+                dom.render_immediate(&mut NoOpMutations);
+            };
+            dom.rebuild_in_place();
+            settle(&mut dom);
+            for _ in 0..3 {
+                dom.mark_dirty(ScopeId::APP);
+                dom.render_immediate(&mut NoOpMutations);
+                settle(&mut dom);
+            }
+            flag.load(Ordering::Relaxed)
+        }
+
+        #[test]
+        fn nothing_changing_does_not_stop_it() {
+            // Guard for every test below: mounting, starting the run and
+            // re-rendering are not changes, or they would all pass for free.
+            assert!(!stops_for(|_| {}));
+        }
+
+        #[test]
+        fn a_gate_moved_in_the_editor_stops_it() {
+            assert!(stops_for(|held| {
+                let mut gates = held.gates;
+                let id = gates.peek().registered_ids()[0].clone();
+                let moved = gates.peek().registered_gate(&id).unwrap();
+                gates.write().place_gate(
+                    std::slice::from_ref(&id),
+                    &moved,
+                    &GateSource::Sample((id.clone(), Arc::from("s1"))),
+                );
+            }));
+        }
+
+        #[test]
+        fn a_gating_file_loaded_over_the_document_stops_it() {
+            assert!(stops_for(|held| {
+                let mut gates = held.gates;
+                *gates.write() = GateState::default();
+            }));
+        }
+
+        #[test]
+        fn new_metadata_stops_it() {
+            assert!(stops_for(|held| {
+                let metadata = held.metadata;
+                metadata
+                    .metadata()
+                    .write()
+                    .insert(Arc::from("f1"), Default::default());
+            }));
+        }
+
+        #[test]
+        fn a_new_scaling_stops_it() {
+            assert!(stops_for(|held| {
+                let mut axes = held.axes;
+                axes.with_mut(|a| {
+                    a.replace_axis_configs(vec![crate::gate_editor::AxisInfo::default()])
+                });
+            }));
+        }
+
+        #[test]
+        fn an_edited_rule_stops_it() {
+            assert!(stops_for(|held| {
+                let mut rules = held.rules;
+                rules.write().pairing.sample_id_column = Arc::from("Donor");
+            }));
+        }
+
+        #[test]
+        fn a_changed_file_list_stops_it() {
+            assert!(stops_for(|held| {
+                let mut files = held.files;
+                files.set(Some(crate::file_load::FcsFiles::default()));
+            }));
+        }
+
+        #[test]
+        fn selecting_a_gate_does_not_stop_it() {
+            assert!(!stops_for(|held| {
+                let gates = held.gates;
+                let id = gates.peek().registered_ids()[0].clone();
+                *gates.selected_gate().write() = Some(id);
+            }));
+        }
+
+        #[test]
+        fn showing_another_file_in_the_editor_does_not_stop_it() {
+            // The editor re-matches its gates to the plot whenever the file
+            // changes. With nothing to transpose that must not write.
+            assert!(!stops_for(|held| {
+                use crate::gate_editor::gates::gate_store::GateStateImplExt as _;
+                let mut gates = held.gates;
+                let resolver = gates
+                    .peek()
+                    .get_current_sample(Arc::from("f2"), &Default::default());
+                let parent =
+                    gates
+                        .peek()
+                        .parent_node(&crate::gate_editor::gates::gate_store::NodeId::from(
+                            gates.peek().registered_ids()[0].clone(),
+                        ));
+                gates
+                    .match_gates_to_plot(
+                        Arc::<str>::from("FSC-A"),
+                        Arc::<str>::from("SSC-A"),
+                        parent.map(|p| p.as_arc().clone()),
+                        &resolver,
+                    )
+                    .expect("the gate is on this plot");
+            }));
+        }
+    }
 
     mod a_run_from_files_on_disk {
         use super::*;

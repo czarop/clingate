@@ -183,6 +183,19 @@
 
 ### Fixed
 
+- **A rules run never writes to a workspace it did not measure.** A run
+  carries on while another tab is in front, and one that finished after the
+  gating file, metadata or scaling was replaced wrote its answers into the new
+  document. A run now stops as soon as the gates, files, metadata, scaling or
+  rules change, and before writing anything it checks that all of them are
+  still what it started from; if not, it says so and moves nothing. Selecting a
+  gate or looking at another file does not count as a change.
+
+- **Previous and Next get past a specimen with no FMO.** They landed on the
+  specimen's left-hand file, which such a specimen does not have, so nothing
+  was selected and the buttons stuck there. They now land on the first file
+  the specimen shows.
+
 - **`cargo test --no-default-features` builds.** The binary needs
   `dioxus::desktop`, so every test target but `--lib` failed to build
   without GTK. It now declares `required-features = ["desktop"]`.

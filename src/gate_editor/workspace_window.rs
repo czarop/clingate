@@ -60,7 +60,7 @@ use crate::omiq::serialise::to_omiq_document;
 use crate::workspace::{Found, Remembered, detect};
 
 pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
-type MetadataStore = Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>;
+pub type MetadataStore = Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>;
 pub type AxesStore = Store<AxisStore, CopyValue<AxisStore, SyncStorage>>;
 
 /// What replacing the scaling did to the gates.
