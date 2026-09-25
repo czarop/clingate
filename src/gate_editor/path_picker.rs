@@ -35,6 +35,93 @@ pub enum Pick {
     Folder,
 }
 
+/// What a dialog came back with.
+pub enum Chosen {
+    Picked(Vec<std::path::PathBuf>),
+    /// The person pressed Cancel.
+    Cancelled,
+    /// No dialog could be shown. See [`choose`].
+    Unavailable,
+}
+
+/// Show a dialog and wait for it.
+///
+/// `start` is where it opens: the folder itself for [`Pick::Folder`], the
+/// file's folder otherwise, and for [`Pick::SaveFile`] the file's name is
+/// offered too. `many` lets [`Pick::OpenFile`] return several files.
+///
+/// Where no portal is running rfd reports exactly what it reports for
+/// Cancel - nothing - so the two are told apart by how long it took: nobody
+/// dismisses a dialog in under 300ms. Saying so beats a button that appears
+/// to do nothing.
+pub async fn choose(
+    mode: Pick,
+    start: &std::path::Path,
+    label: &str,
+    extensions: &[String],
+    many: bool,
+) -> Chosen {
+    let opened = std::time::Instant::now();
+    let mut dialog = rfd::AsyncFileDialog::new();
+    if !extensions.is_empty() {
+        let refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
+        dialog = dialog
+            .add_filter(label, &refs)
+            .add_filter("Every file", &["*"]);
+    }
+    let folder = match mode {
+        Pick::Folder => Some(start.to_path_buf()),
+        _ => start.parent().map(|p| p.to_path_buf()),
+    };
+    if let Some(folder) = folder.filter(|p| p.is_dir()) {
+        dialog = dialog.set_directory(folder);
+    }
+    if mode == Pick::SaveFile
+        && let Some(name) = start.file_name().and_then(|n| n.to_str())
+    {
+        dialog = dialog.set_file_name(name);
+    }
+
+    let picked: Vec<std::path::PathBuf> = match mode {
+        Pick::OpenFile if many => dialog
+            .pick_files()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|h| h.path().to_path_buf())
+            .collect(),
+        Pick::OpenFile => dialog
+            .pick_file()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+        Pick::SaveFile => dialog
+            .save_file()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+        Pick::Folder => dialog
+            .pick_folder()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+    };
+
+    if !picked.is_empty() {
+        Chosen::Picked(picked)
+    } else if opened.elapsed() < std::time::Duration::from_millis(300) {
+        Chosen::Unavailable
+    } else {
+        Chosen::Cancelled
+    }
+}
+
+/// What to say when a dialog could not be shown.
+pub const UNAVAILABLE: &str = "Could not open the file dialog - type or paste the path instead";
+
 #[component]
 pub fn PickPath(
     /// The field to fill in. Left alone if the dialog is cancelled.
@@ -53,56 +140,21 @@ pub fn PickPath(
     let toasts = use_toast();
 
     let browse = move |_| {
-        let current = path();
+        let current = std::path::PathBuf::from(path().trim());
         let label = label.clone();
         let extensions = extensions.clone();
         spawn(async move {
-            let opened = std::time::Instant::now();
-            let current = std::path::PathBuf::from(current.trim());
-            let mut dialog = rfd::AsyncFileDialog::new();
-            if !extensions.is_empty() {
-                let refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
-                dialog = dialog
-                    .add_filter(&label, &refs)
-                    .add_filter("Every file", &["*"]);
-            }
-            // Open where the box already points, so the dialog starts beside
-            // the last file rather than in the home directory.
-            let start = match mode {
-                Pick::Folder => Some(current.clone()),
-                _ => current.parent().map(|p| p.to_path_buf()),
-            };
-            if let Some(start) = start.filter(|p| p.is_dir()) {
-                dialog = dialog.set_directory(start);
-            }
-            if mode == Pick::SaveFile
-                && let Some(name) = current.file_name().and_then(|n| n.to_str())
-            {
-                dialog = dialog.set_file_name(name);
-            }
-
-            let chosen = match mode {
-                Pick::OpenFile => dialog.pick_file().await,
-                Pick::SaveFile => dialog.save_file().await,
-                Pick::Folder => dialog.pick_folder().await,
-            };
-
-            // `None` is the person pressing Cancel, which is not a failure and
-            // should leave what they had typed alone.
-            if let Some(handle) = chosen {
-                path.set(handle.path().display().to_string());
-                return;
-            }
-            // Unless it came back faster than anyone could have pressed Cancel.
-            // Where no portal is running rfd reports exactly what it reports
-            // for Cancel - nothing - so the two are told apart by how long it
-            // took. Saying so beats a button that appears to do nothing, and
-            // the box beside it still takes a typed or pasted path.
-            if opened.elapsed() < std::time::Duration::from_millis(300) {
-                warn(
-                    &toasts,
-                    "Could not open the file dialog - type or paste the path instead",
-                );
+            // Opens where the box already points, so the dialog starts beside
+            // the last file rather than in the home directory. Cancel leaves
+            // what was typed alone.
+            match choose(mode, &current, &label, &extensions, false).await {
+                Chosen::Picked(mut chosen) => {
+                    if let Some(first) = chosen.drain(..).next() {
+                        path.set(first.display().to_string());
+                    }
+                }
+                Chosen::Cancelled => {}
+                Chosen::Unavailable => warn(&toasts, UNAVAILABLE),
             }
         });
     };

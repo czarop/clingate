@@ -287,15 +287,92 @@ impl<Lens> Store<AxisStore, Lens> {
         }
     }
 
+    /// Load a scaling file, replacing whatever scaling was loaded before.
+    ///
+    /// Replacing rather than merging: see [`AxisStore::replace_axis_configs`].
+    /// Read and parsed before the store is touched, so a file that fails to
+    /// parse leaves the previous scaling exactly as it was.
     fn set_axes_from_file(
         &mut self,
         path: PathBuf,
         source: ScalingInfoSource,
     ) -> anyhow::Result<()> {
         let configs = read_axis_configs(path, source)?;
-        self.with_mut(|s| s.apply_axis_configs(configs));
+        self.with_mut(|s| s.replace_axis_configs(configs));
         Ok(())
     }
+}
+
+/// How one channel's scaling differs between what is loaded and a new file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelChange {
+    pub channel: Arc<str>,
+    pub old: AxisInfo,
+    pub new: AxisInfo,
+}
+
+impl ChannelChange {
+    /// The gates on this channel have to be carried through the new
+    /// transform - `rescale_gates`, what the editor's cofactor box does.
+    pub fn transform_changed(&self) -> bool {
+        self.old.transform != self.new.transform
+    }
+
+    /// The channel's range moved - `set_current_axis_limits`, what the
+    /// editor's lower and upper boxes do. Only the composite gates, whose
+    /// extent comes from the axis range, actually change.
+    pub fn range_changed(&self) -> bool {
+        self.old.axis_lower != self.new.axis_lower || self.old.axis_upper != self.new.axis_upper
+    }
+}
+
+/// What replacing the loaded scaling with `new` would change.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ScalingDiff {
+    /// Channels in both whose settings differ, in channel order.
+    pub changed: Vec<ChannelChange>,
+    /// Channels the loaded scaling has and the new file does not. Gates on
+    /// these cannot be carried across - there is no new transform to carry
+    /// them to - so they are left as they are and reported.
+    pub dropped: Vec<Arc<str>>,
+}
+
+/// Compare the loaded scaling with a new file's.
+///
+/// Replacing the scaling is then exactly the edits a person could make by
+/// hand in the editor, channel by channel: the same `rescale_gates` and
+/// `set_current_axis_limits` calls, so gate positions - drawn, per specimen
+/// and per sample - come across rather than being re-imported and lost.
+pub fn scaling_diff(
+    loaded: &im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    new: &[AxisInfo],
+) -> ScalingDiff {
+    let mut changed: Vec<ChannelChange> = new
+        .iter()
+        .filter_map(|incoming| {
+            let channel = &incoming.param.fluoro;
+            let current = loaded.get(channel)?;
+            let change = ChannelChange {
+                channel: channel.clone(),
+                old: current.clone(),
+                new: incoming.clone(),
+            };
+            (change.transform_changed() || change.range_changed()).then_some(change)
+        })
+        .collect();
+    changed.sort_by(|a, b| a.channel.cmp(&b.channel));
+
+    let mut dropped: Vec<Arc<str>> = loaded
+        .keys()
+        .filter(|channel| {
+            !new.iter()
+                .any(|incoming| incoming.param.fluoro == **channel)
+        })
+        .cloned()
+        .collect();
+    dropped.sort();
+
+    ScalingDiff { changed, dropped }
 }
 
 /// The plain-data half of the axis store, so the scaling import can be tested
@@ -303,11 +380,40 @@ impl<Lens> Store<AxisStore, Lens> {
 impl AxisStore {
     /// Register a batch of axis settings, replacing any existing entry for the
     /// same channel and recording the display order.
+    ///
+    /// Merges: a channel not in `configs` keeps whatever it had. That suits a
+    /// store fed from more than one source - the original design had per-file
+    /// defaults overlaid by the scaling export - and it is what loading a
+    /// replacement scaling file must *not* do. Use
+    /// [`AxisStore::replace_axis_configs`] for that.
     pub fn apply_axis_configs(&mut self, configs: Vec<AxisInfo>) {
         for ai in configs {
             self.sorted_settings.insert(ai.param.clone());
             self.settings.insert(ai.param.fluoro.clone(), ai);
         }
+    }
+
+    /// Discard the current scaling and take `configs` as the whole of it.
+    ///
+    /// What loading a scaling file means. Merging - which is what this store
+    /// did from the start, when the scaling was only ever loaded once - would
+    /// keep channels the new file does not mention, carrying the old file's
+    /// cofactors and ranges for them into a workspace that never had them; and
+    /// it would keep the old display order for every channel the two files
+    /// share.
+    ///
+    /// Also discards any cofactor or range edited in the editor since the last
+    /// load. That is what replacing the scaling asks for.
+    ///
+    /// Not safe on its own under loaded gates: quadrant and skewed-quadrant
+    /// gates take their extent from the axis range and transform *when they
+    /// are imported*, and the import fails outright for a gate on an axis the
+    /// scaling does not carry. Whoever replaces the scaling has to re-import
+    /// the gating file after it.
+    pub fn replace_axis_configs(&mut self, configs: Vec<AxisInfo>) {
+        self.settings.clear();
+        self.sorted_settings.clear();
+        self.apply_axis_configs(configs);
     }
 
     /// Position of a channel in the display order, matched on the channel alone.
@@ -343,6 +449,31 @@ pub fn index_of_fluoro(
     fluoro: &str,
 ) -> Option<usize> {
     sorted.iter().position(|p| &*p.fluoro == fluoro)
+}
+
+/// The axes to show once a scaling has loaded, given the ones showing now.
+///
+/// Each keeps its channel if the scaling still has it - taking the scaling's
+/// own `Param` for it, since the marker name comes from the export and the one
+/// held may be a placeholder - and falls back to [`default_axis_params`] if
+/// not. So replacing the scaling keeps the axes a person chose, and a channel
+/// the new file dropped does not leave an axis pointing at nothing.
+///
+/// `None` while no scaling has loaded.
+pub fn resolve_axes(
+    sorted: &indexmap::IndexSet<Param, FxBuildHasher>,
+    x: &Param,
+    y: &Param,
+) -> Option<(Param, Param)> {
+    let (default_x, default_y) = default_axis_params(sorted)?;
+    let keep = |current: &Param, fallback: Param| -> Param {
+        sorted
+            .iter()
+            .find(|p| p.fluoro == current.fluoro)
+            .cloned()
+            .unwrap_or(fallback)
+    };
+    Some((keep(x, default_x), keep(y, default_y)))
 }
 
 /// The two channels a freshly loaded file should open on: the scatter pair if

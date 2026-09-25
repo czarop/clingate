@@ -1,0 +1,84 @@
+/* The Workspace tab. Kept to the look of the rules tab next to it: the same
+   hint weight, the same bordered sections, the same field padding - two tabs of
+   forms that looked different would read as two different programs. */
+
+.workspace {
+    max-width: 70rem;
+    padding: 0.5rem 1rem 2rem;
+}
+.workspace h2 { margin: 0.25rem 0 0.75rem; }
+.workspace h3 {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+}
+
+.workspace-hint { margin: 0 0 0.75rem; opacity: 0.75; font-size: 0.85rem; }
+.workspace-dim { opacity: 0.6; }
+
+.workspace-row {
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.workspace-status { font-weight: normal; font-size: 0.85rem; opacity: 0.75; }
+.workspace-problem { color: #b45309; opacity: 1; }
+.workspace-waiting { font-style: italic; }
+
+.workspace-path,
+.workspace-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.35rem;
+}
+.workspace-path input { flex: 1; min-width: 12rem; padding: 0.2rem 0.35rem; }
+.workspace-path select { flex: 1; padding: 0.2rem 0.35rem; }
+.workspace button { padding: 0.2rem 0.7rem; white-space: nowrap; }
+.workspace-primary { font-weight: 600; }
+
+.workspace-busy { font-style: italic; opacity: 0.8; }
+
+/* The confirmation that stands between a click and discarded gates. Loud on
+   purpose: it is the only thing between a person and an afternoon's gating. */
+.workspace-confirm {
+    border: 2px solid #b45309;
+    border-radius: 4px;
+    padding: 0.6rem 1rem;
+    margin-bottom: 1rem;
+}
+.workspace-confirm p { margin: 0 0 0.5rem; }
+
+.workspace-last {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+/* A plate is ninety-six files; the parts below should not sit a page away. */
+.workspace-files {
+    max-height: 18rem;
+    overflow-y: auto;
+    margin-top: 0.5rem;
+}
+.workspace-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.85rem;
+}
+.workspace-table th,
+.workspace-table td {
+    text-align: left;
+    padding: 0.2rem 0.5rem;
+    border-bottom: 1px solid #3a3a3a;
+    overflow-wrap: anywhere;
+}
+.workspace-unread td:nth-child(2) { color: #b45309; }
+/* The action column takes only what its button needs, so a long path cannot
+   squeeze "remove" into a column of single letters. */
+.workspace-table td:last-child { width: 1%; }

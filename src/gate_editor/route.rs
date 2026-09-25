@@ -21,6 +21,7 @@ use crate::gate_editor::gate_rules_window::GateRulesWindow;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
 use crate::gate_editor::plots::axis_store::AxisStore;
+use crate::gate_editor::workspace_window::{Generation, Loaded, WorkspaceWindow};
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::MetaDataStore;
 use dioxus::prelude::*;
@@ -29,6 +30,7 @@ use dioxus::stores::use_store_sync;
 /// Which tab is in front. Every tab is mounted whatever this says.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
+    Workspace,
     Editor,
     Rules,
     Gallery,
@@ -37,6 +39,7 @@ pub enum Tab {
 impl Tab {
     fn icon(self) -> &'static str {
         match self {
+            Tab::Workspace => "📁",
             Tab::Editor => "🏠",
             Tab::Rules => "📐",
             Tab::Gallery => "🖼",
@@ -45,6 +48,7 @@ impl Tab {
 
     fn title(self) -> &'static str {
         match self {
+            Tab::Workspace => "Workspace",
             Tab::Editor => "Gate editor",
             Tab::Rules => "Gate rules",
             Tab::Gallery => "Gate gallery",
@@ -52,7 +56,7 @@ impl Tab {
     }
 }
 
-const TABS: [Tab; 3] = [Tab::Editor, Tab::Rules, Tab::Gallery];
+const TABS: [Tab; 4] = [Tab::Workspace, Tab::Editor, Tab::Rules, Tab::Gallery];
 
 /// Every panel is mounted; only the one in front is displayed.
 fn panel_class(active: Tab, tab: Tab) -> &'static str {
@@ -82,7 +86,17 @@ pub fn Shell() -> Element {
     let filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
     use_context_provider(|| filehandler);
 
-    let mut active = use_signal(|| Tab::Editor);
+    // What the workspace holds besides the files, and the counts the other
+    // tabs reset their own state on. The Workspace tab writes both; the rest
+    // only read them.
+    let loaded = use_signal(Loaded::default);
+    use_context_provider(|| loaded);
+    let generation = use_signal(Generation::default);
+    use_context_provider(|| generation);
+
+    // The workspace first: nothing else has anything to show until it has
+    // loaded something.
+    let mut active = use_signal(|| Tab::Workspace);
     // Offered to the tabs themselves, so an expensive one can tell whether it
     // is worth drawing.
     use_context_provider(|| active);
@@ -99,6 +113,7 @@ pub fn Shell() -> Element {
         // window. A class is a value the renderer always replaces wholesale.
         //
         // Hiding, not unmounting: that difference is the whole point.
+        div { class: panel_class(active(), Tab::Workspace), WorkspaceWindow {} }
         div { class: panel_class(active(), Tab::Editor), MainWindow {} }
         div { class: panel_class(active(), Tab::Rules), GateRulesWindow {} }
         div { class: panel_class(active(), Tab::Gallery), GalleryWindow {} }

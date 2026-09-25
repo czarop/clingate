@@ -29,6 +29,7 @@ use crate::gate_editor::gates::gate_store::{NodeId, ROOTGATE};
 use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use crate::gate_editor::plots::sample_pairs::{Pair, pair_files};
 use crate::gate_editor::route::Tab;
+use crate::gate_editor::workspace_window::Generation;
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
@@ -45,10 +46,30 @@ const PER_PAGE: usize = 10;
 #[derive(Clone, PartialEq)]
 pub struct Card {
     pub title: String,
-    /// One entry per display slot - FMX then FS - holding that file's name and
-    /// path where the specimen has one. `None` leaves the slot empty rather
-    /// than sliding the other plot across, the same rule the editor follows.
-    pub slots: Vec<Option<(String, PathBuf)>>,
+    /// One entry per display slot - FMX then FS - where the specimen has that
+    /// file. `None` leaves the slot empty rather than sliding the other plot
+    /// across, the same rule the editor follows.
+    pub slots: Vec<Option<Slot>>,
+}
+
+/// One file's place in a card.
+///
+/// A struct rather than a `(name, path)` pair, because there are two names in
+/// play and mixing them up fails silently. `name` is the file's name in the
+/// program, which is what the metadata is searched for; `label` is the same
+/// without its extension, for reading. The path is only ever used to open the
+/// file - never to work out its name, which for a file from a sub-folder is
+/// not the name on disk.
+#[derive(Clone, PartialEq)]
+pub struct Slot {
+    pub name: Arc<str>,
+    pub path: PathBuf,
+}
+
+impl Slot {
+    pub fn label(&self) -> &str {
+        self.name.trim_end_matches(".fcs")
+    }
 }
 
 #[component]
@@ -64,7 +85,7 @@ pub fn GalleryWindow() -> Element {
     // This tab's own selection. Sharing the editor's would mean looking at a
     // gate here moved the editor's plots out from under the person, and would
     // make the back button between tabs mean something different each time.
-    let selected_node: Signal<Option<Arc<str>>> = use_signal(|| Some(ROOTGATE.clone()));
+    let mut selected_node: Signal<Option<Arc<str>>> = use_signal(|| Some(ROOTGATE.clone()));
     let x_axis_marker: Signal<Param> = use_signal(|| {
         let p: Arc<str> = Arc::from("FSC-A");
         Param {
@@ -83,6 +104,24 @@ pub fn GalleryWindow() -> Element {
     let mut page = use_signal(|| 0usize);
     let mut plot_size = use_signal(|| 260u32);
 
+    // What names the old workspace. The selected gate is a node id from a
+    // document that has gone, and a page number from a longer list may now be
+    // past the end of it. The picture cache needs nothing: its key holds every
+    // cofactor and the identity of every gate a picture depends on, and both
+    // change when the workspace does.
+    let generation = use_context::<Signal<Generation>>();
+    let document = use_memo(move || generation.read().document);
+    let file_list = use_memo(move || generation.read().files);
+    use_effect(move || {
+        document();
+        selected_node.set(Some(ROOTGATE.clone()));
+        page.set(0);
+    });
+    use_effect(move || {
+        file_list();
+        page.set(0);
+    });
+
     // Shared by every plot on the page. The cache holds the pictures; the
     // permits stop twenty files being opened at once, which is a memory spike
     // rather than a speed-up - the work is mostly one core each anyway.
@@ -94,17 +133,8 @@ pub fn GalleryWindow() -> Element {
         let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
             return Vec::<Pair>::new();
         };
-        let keys: Vec<Arc<str>> = files
-            .iter()
-            .map(|f| {
-                Arc::from(
-                    f.get_filepath()
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
+        // Each file's name in the program - what the metadata is searched for.
+        let keys: Vec<Arc<str>> = files.iter().map(|f| f.name.clone()).collect();
         pair_files(
             &keys,
             &metadata_store.file_name_to_gating_id().read(),
@@ -129,15 +159,9 @@ pub fn GalleryWindow() -> Element {
                     .iter()
                     .take(2)
                     .map(|slot| {
-                        slot.and_then(|at| files.get(at)).map(|stub| {
-                            let path = stub.get_filepath().to_owned();
-                            let name = path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or_default()
-                                .trim_end_matches(".fcs")
-                                .to_string();
-                            (name, path)
+                        slot.and_then(|at| files.get(at)).map(|stub| Slot {
+                            name: stub.name.clone(),
+                            path: stub.get_filepath().to_owned(),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -292,9 +316,9 @@ pub fn GalleryWindow() -> Element {
                                 div { class: "gallery-card_plots",
                                     for (slot , filled) in card.slots.iter().enumerate() {
                                         match filled {
-                                            Some((name , path)) => rsx! {
+                                            Some(file) => rsx! {
                                                 div { class: "gallery-plot", key: "{slot}",
-                                                    div { class: "gallery-plot_name", title: "{name}", "{name}" }
+                                                    div { class: "gallery-plot_name", title: "{file.name}", "{file.label()}" }
                                                     // Only the page in front renders. A hidden
                                                     // tab is still mounted - that is how the
                                                     // shell keeps state - and twenty plots
@@ -303,7 +327,8 @@ pub fn GalleryWindow() -> Element {
                                                     // comment warns about.
                                                     if active() == Tab::Gallery {
                                                         GalleryPlot {
-                                                            path: path.clone(),
+                                                            name: file.name.clone(),
+                                                            path: file.path.clone(),
                                                             node: showing_node().unwrap_or_else(|| ROOTGATE.clone()),
                                                             x: x_axis_marker(),
                                                             y: y_axis_marker(),

@@ -417,3 +417,189 @@ fn a_single_channel_file_opens_on_that_channel_for_both_axes() {
     assert_eq!(&*x.fluoro, "BV421-A");
     assert_eq!(&*y.fluoro, "BV421-A", "falls back rather than failing");
 }
+
+// ─── Replacing the scaling ────────────────────────────────────────────────────
+
+#[test]
+fn replacing_the_scaling_drops_channels_the_new_file_does_not_carry() {
+    // Merging would carry the old file's settings for these into a workspace
+    // that never had them.
+    let mut store = AxisStore::default();
+    store.apply_axis_configs(parse_scaling(SCALING_TIME_FIRST, "replace-first"));
+    assert!(store.settings.contains_key(&Arc::from("Time") as &Arc<str>));
+
+    store.replace_axis_configs(parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n",
+        "replace-second",
+    ));
+    assert_eq!(store.settings.len(), 1);
+    assert_eq!(store.sorted_settings.len(), 1);
+    assert!(!store.settings.contains_key(&Arc::from("Time") as &Arc<str>));
+}
+
+#[test]
+fn replacing_the_scaling_takes_the_new_files_order() {
+    // Merging kept the old order for every channel the two files shared.
+    let mut store = AxisStore::default();
+    store.apply_axis_configs(parse_scaling(SCALING_TIME_FIRST, "order-first"));
+    store.replace_axis_configs(parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         SSC-A,,None (linear),1,0,4194304,0,0\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n",
+        "order-second",
+    ));
+    assert_eq!(store.index_of_fluoro("SSC-A"), Some(0));
+    assert_eq!(store.index_of_fluoro("FSC-A"), Some(1));
+}
+
+#[test]
+fn merging_still_merges() {
+    // The replace is new; the merge keeps its meaning for anything that feeds
+    // the store from more than one source.
+    let mut store = AxisStore::default();
+    store.apply_axis_configs(parse_scaling(SCALING_TIME_FIRST, "merge-first"));
+    store.apply_axis_configs(parse_scaling(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         PE-A,CD8,Arcsinh,6000,-1000,4194304,0,0\n",
+        "merge-second",
+    ));
+    assert!(store.settings.contains_key(&Arc::from("Time") as &Arc<str>));
+    assert!(store.settings.contains_key(&Arc::from("PE-A") as &Arc<str>));
+}
+
+// ─── What replacing the scaling changes ───────────────────────────────────────
+
+const SCALING_A: &str = "\
+Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z
+FSC-A,,None (linear),1,0,4194304,0,0
+BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0
+PE-A,CD8,Arcsinh,6000,-1000,4194304,0,0
+";
+
+fn diff_to(new: &str) -> crate::gate_editor::plots::axis_store::ScalingDiff {
+    let loaded = store_with(SCALING_A, "diff-loaded");
+    crate::gate_editor::plots::axis_store::scaling_diff(
+        &loaded.settings,
+        &parse_scaling(new, "diff-new"),
+    )
+}
+
+#[test]
+fn identical_scaling_changes_nothing() {
+    let diff = diff_to(SCALING_A);
+    assert!(diff.changed.is_empty());
+    assert!(diff.dropped.is_empty());
+}
+
+#[test]
+fn a_new_cofactor_is_a_transform_change() {
+    let diff = diff_to(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,250,-1000,4194304,0,0\n\
+         PE-A,CD8,Arcsinh,6000,-1000,4194304,0,0\n",
+    );
+    assert_eq!(diff.changed.len(), 1);
+    assert_eq!(&*diff.changed[0].channel, "BV421-A");
+    assert!(diff.changed[0].transform_changed());
+}
+
+#[test]
+fn a_new_range_is_a_range_change_only() {
+    let diff = diff_to(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,6000,-5000,4194304,0,0\n\
+         PE-A,CD8,Arcsinh,6000,-1000,4194304,0,0\n",
+    );
+    assert_eq!(diff.changed.len(), 1);
+    assert!(diff.changed[0].range_changed());
+    assert!(!diff.changed[0].transform_changed());
+}
+
+#[test]
+fn a_channel_the_new_file_drops_is_reported_not_changed() {
+    let diff = diff_to(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0\n",
+    );
+    assert!(diff.changed.is_empty());
+    assert_eq!(diff.dropped, vec![Arc::<str>::from("PE-A")]);
+}
+
+#[test]
+fn a_channel_only_the_new_file_has_changes_nothing() {
+    // No gate can be on a channel the old scaling did not carry - the import
+    // would have refused it - so there is nothing to carry across.
+    let diff = diff_to(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),1,0,4194304,0,0\n\
+         BV421-A,CD3,Arcsinh,6000,-1000,4194304,0,0\n\
+         PE-A,CD8,Arcsinh,6000,-1000,4194304,0,0\n\
+         APC-A,CD4,Arcsinh,6000,-1000,4194304,0,0\n",
+    );
+    assert!(diff.changed.is_empty());
+    assert!(diff.dropped.is_empty());
+}
+
+// ─── Keeping the axes across a scaling replace ────────────────────────────────
+
+fn param(marker: &str, fluoro: &str) -> crate::gate_editor::plots::axis_store::Param {
+    crate::gate_editor::plots::axis_store::Param {
+        marker: Arc::from(marker),
+        fluoro: Arc::from(fluoro),
+    }
+}
+
+#[test]
+fn the_chosen_axes_are_kept_when_the_scaling_still_has_them() {
+    use crate::gate_editor::plots::axis_store::resolve_axes;
+    let store = store_with(SCALING_A, "resolve-keep");
+    let (x, y) = resolve_axes(
+        &store.sorted_settings,
+        &param("CD3", "BV421-A"),
+        &param("CD8", "PE-A"),
+    )
+    .expect("a scaling is loaded");
+    assert_eq!(&*x.fluoro, "BV421-A");
+    assert_eq!(&*y.fluoro, "PE-A");
+}
+
+#[test]
+fn a_placeholder_marker_is_replaced_by_the_scalings_own() {
+    // The editor starts on "FSC-A" with no marker name; the scaling export
+    // carries the real one, and the axis should show it.
+    use crate::gate_editor::plots::axis_store::resolve_axes;
+    let store = store_with(SCALING_TIME_FIRST, "resolve-marker");
+    let (x, _) = resolve_axes(
+        &store.sorted_settings,
+        &param("FSC-A", "FSC-A"),
+        &param("SSC-A", "SSC-A"),
+    )
+    .unwrap();
+    assert_eq!(&*x.marker, "Forward Scatter");
+}
+
+#[test]
+fn an_axis_on_a_dropped_channel_falls_back_to_the_default() {
+    use crate::gate_editor::plots::axis_store::{default_axis_params, resolve_axes};
+    let store = store_with(SCALING_A, "resolve-dropped");
+    let (default_x, _) = default_axis_params(&store.sorted_settings).unwrap();
+    let (x, y) = resolve_axes(
+        &store.sorted_settings,
+        &param("CD4", "APC-A"),
+        &param("CD8", "PE-A"),
+    )
+    .unwrap();
+    assert_eq!(x, default_x, "APC-A is not in this scaling");
+    assert_eq!(&*y.fluoro, "PE-A", "the other axis is kept");
+}
+
+#[test]
+fn nothing_is_resolved_before_a_scaling_has_loaded() {
+    use crate::gate_editor::plots::axis_store::resolve_axes;
+    let empty = AxisStore::default();
+    assert!(resolve_axes(&empty.sorted_settings, &param("a", "a"), &param("b", "b")).is_none());
+}

@@ -13,3 +13,4 @@ pub mod main_window;
 pub mod pairing_controls;
 pub mod path_picker;
 pub mod plots;
+pub mod workspace_window;

@@ -303,7 +303,10 @@ pub fn GateRulesWindow() -> Element {
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
-    let mut fcs_dir = use_signal(default_fcs_dir);
+    // The workspace's files: what a run measures. The same list the editor and
+    // the gallery show, so the three cannot be looking at different
+    // experiments.
+    let filehandler = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
@@ -341,6 +344,27 @@ pub fn GateRulesWindow() -> Element {
     // than only removed and retyped. Duplicate leaves this empty, which is the
     // quick way to cover a second population with the same rule.
     let mut editing = use_signal(|| None::<RuleTarget>);
+
+    // The last run's report names gate positions in a document that has gone
+    // once the gates are replaced, and is cleared with it.
+    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
+    let document = use_memo(move || generation.read().document);
+    use_effect(move || {
+        document();
+        report.set(None);
+    });
+    // A rule being edited that is no longer in the store - a new workspace
+    // starts without rules - leaves the form claiming to edit nothing.
+    use_effect(move || {
+        let gone = editing
+            .read()
+            .as_ref()
+            .is_some_and(|target| rules.read().get(target).is_none());
+        if gone {
+            editing.set(None);
+            editing_note.set(None);
+        }
+    });
 
     let mut load = move |entry: RuleEntry, replacing: bool| {
         parent.set(
@@ -1089,15 +1113,11 @@ pub fn GateRulesWindow() -> Element {
                     "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored."
                 }
 
-                label { "FCS folder" }
-                // The field and its browse button share one cell, so the form's
-                // two-column grid stays two columns.
-                div { class: "gate_rules-path",
-                    input {
-                        value: "{fcs_dir}",
-                        oninput: move |e| fcs_dir.set(e.value()),
+                p { class: "gate_rules-hint gate_rules-span",
+                    match filehandler.read().as_ref().map(|f| f.sample_count()) {
+                        Some(n) if n > 0 => format!("Runs over the {n} FCS files in the workspace."),
+                        _ => "No FCS files are loaded - open a workspace on the first tab.".to_string(),
                     }
-                    PickPath { path: fcs_dir, mode: Pick::Folder }
                 }
 
                 button {
@@ -1111,7 +1131,23 @@ pub fn GateRulesWindow() -> Element {
                         report.set(None);
                         progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
 
-                        let dir = fcs_dir();
+                        // Each file with the name the metadata knows it by.
+                        let files: Vec<(Arc<str>, PathBuf)> = filehandler
+                            .read()
+                            .as_ref()
+                            .map(|f| {
+                                f.file_list()
+                                    .iter()
+                                    .map(|stub| (stub.name.clone(), stub.get_filepath().to_owned()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if files.is_empty() {
+                            warn(&toasts, "No FCS files are loaded - open a workspace on the first tab");
+                            running.set(false);
+                            progress.set(None);
+                            return;
+                        }
                         let names = metadata_store.file_name_to_gating_id().read().clone();
                         let mut arcsinh: Vec<(Arc<str>, f32)> = Vec::new();
                         for (param, info) in axis_store.settings().read().iter() {
@@ -1136,7 +1172,7 @@ pub fn GateRulesWindow() -> Element {
 
                         let worker = tokio::task::spawn_blocking(move || {
                             run_solve(
-                                snapshot, dir, names, arcsinh, metadata, rules_now, tx, flag,
+                                snapshot, files, names, arcsinh, metadata, rules_now, tx, flag,
                             )
                         });
 
@@ -1571,27 +1607,6 @@ pub fn GateRulesWindow() -> Element {
     }
 }
 
-/// Where the app was last told to find its FCS files.
-///
-/// The same `file_paths.txt` the main window reads, so the tab opens pointing
-/// at the files already loaded rather than at nothing.
-fn default_fcs_dir() -> String {
-    std::fs::read_to_string("file_paths.txt")
-        .ok()
-        .and_then(|c| {
-            c.lines()
-                .find(|l| !l.trim().is_empty())
-                .map(|l| l.trim().to_string())
-        })
-        .unwrap_or_default()
-}
-
-/// Read every FCS in `dir` and scale it exactly as the plots do.
-///
-/// The gates live in scaled coordinates, so measuring raw events would put
-/// every threshold in a different space from the gate it is meant to move.
-/// Returns the files it could read, paired with the id the gating document
-/// knows them by, and a line per file it could not.
 /// What a run is doing, for the progress line.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Progress {
@@ -1627,37 +1642,33 @@ impl Progress {
     }
 }
 
-/// Read each FCS file, hand it to `visit`, and drop it before opening the next.
+/// The workspace's FCS files, each paired with the gating id the metadata
+/// gives it.
 ///
-/// One frame is alive at a time. Reading all of them up front held the whole
-/// experiment in memory for no gain - nothing here ever needs two files at
-/// once - and it also meant no progress could be reported until every one had
-/// been read.
-/// The FCS files in `dir`, paired with the gating id the metadata gives them.
+/// Takes the files the workspace holds rather than reading a folder. The rules
+/// tab used to walk its own folder field, which could point somewhere other
+/// than the files the editor had open - two tabs measuring two different
+/// experiments with nothing to say so.
+///
+/// Each file is looked up by its name in the program, not its name on disk:
+/// for a file from a sub-folder those differ, and it is the program name the
+/// metadata is written against.
 fn files_to_read(
-    dir: &str,
+    files: &[(Arc<str>, PathBuf)],
     names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
 ) -> (Vec<(PathBuf, Arc<str>)>, Vec<String>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => return (Vec::new(), vec![format!("{dir}: {e}")]),
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcs")))
-        .collect();
-    paths.sort();
+    let mut files = files.to_vec();
+    // Measuring runs in parallel and the results are flattened in this order,
+    // so it has to be fixed - see `measure_all`.
+    files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut problems = Vec::new();
     let mut found = Vec::new();
-    for path in paths {
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
+    for (name, path) in files {
         // The metadata export's name, exactly. Matching on a stem instead is
         // how one donor's gates came to be scored against another's population.
-        match names.get(name) {
-            Some(id) => found.push((path.clone(), id.clone())),
+        match names.get(&name) {
+            Some(id) => found.push((path, id.clone())),
             None => problems.push(format!("{name}: no metadata row with this name")),
         }
     }
@@ -1681,7 +1692,7 @@ fn files_to_read(
 #[allow(clippy::too_many_arguments)]
 fn measure_all(
     snapshot: &GateState,
-    dir: &str,
+    files: &[(Arc<str>, PathBuf)],
     names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     arcsinh: &[(Arc<str>, f32)],
     metadata: &crate::omiq::metadata::MetaDataFileMap,
@@ -1697,7 +1708,7 @@ fn measure_all(
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (files, mut problems) = files_to_read(dir, names);
+    let (files, mut problems) = files_to_read(files, names);
     let total = files.len();
     let done = AtomicUsize::new(0);
 
@@ -1770,7 +1781,7 @@ struct RunOutcome {
 #[allow(clippy::too_many_arguments)]
 fn run_solve(
     snapshot: GateState,
-    dir: String,
+    files: Vec<(Arc<str>, PathBuf)>,
     names: HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     arcsinh: Vec<(Arc<str>, f32)>,
     metadata: crate::omiq::metadata::MetaDataFileMap,
@@ -1782,7 +1793,7 @@ fn run_solve(
 
     let (measured, unmeasured, mut problems) = measure_all(
         &snapshot,
-        &dir,
+        &files,
         &names,
         &arcsinh,
         &metadata,
@@ -1833,23 +1844,6 @@ fn run_solve(
 mod tests {
     use super::*;
 
-    /// A directory of empty files with these names, cleaned up on drop.
-    struct Dir(PathBuf);
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    fn dir_of(tag: &str, names: &[&str]) -> Dir {
-        let path = std::env::temp_dir().join(format!("clingate_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        for name in names {
-            std::fs::write(path.join(name), b"").unwrap();
-        }
-        Dir(path)
-    }
-
     fn named(pairs: &[(&str, &str)]) -> HashMap<Arc<str>, Arc<str>, FxBuildHasher> {
         let mut map = HashMap::with_hasher(FxBuildHasher);
         for (file, id) in pairs {
@@ -1858,13 +1852,24 @@ mod tests {
         map
     }
 
+    fn workspace(pairs: &[(&str, &str)]) -> Vec<(Arc<str>, PathBuf)> {
+        pairs
+            .iter()
+            .map(|(name, path)| (Arc::from(*name), PathBuf::from(path)))
+            .collect()
+    }
+
     #[test]
     fn files_are_read_in_sorted_order() {
         // Measuring runs in parallel and the results are flattened in this
         // order, so two identical runs agree only if this order is fixed.
-        let dir = dir_of("sorted", &["c.fcs", "a.fcs", "b.fcs"]);
+        let files = workspace(&[
+            ("c.fcs", "/w/c.fcs"),
+            ("a.fcs", "/w/a.fcs"),
+            ("b.fcs", "/w/b.fcs"),
+        ]);
         let names = named(&[("a.fcs", "A"), ("b.fcs", "B"), ("c.fcs", "C")]);
-        let (found, problems) = files_to_read(dir.0.to_str().unwrap(), &names);
+        let (found, problems) = files_to_read(&files, &names);
 
         let ids: Vec<&str> = found.iter().map(|(_, id)| id.as_ref()).collect();
         assert_eq!(ids, ["A", "B", "C"]);
@@ -1875,9 +1880,12 @@ mod tests {
     fn a_file_with_no_metadata_row_is_reported_not_guessed() {
         // Matching on a stem rather than the exact name is how one donor's
         // gates came to be scored against another's population.
-        let dir = dir_of("unmatched", &["known.fcs", "stranger.fcs"]);
+        let files = workspace(&[
+            ("known.fcs", "/w/known.fcs"),
+            ("stranger.fcs", "/w/stranger.fcs"),
+        ]);
         let names = named(&[("known.fcs", "A")]);
-        let (found, problems) = files_to_read(dir.0.to_str().unwrap(), &names);
+        let (found, problems) = files_to_read(&files, &names);
 
         assert_eq!(found.len(), 1);
         assert_eq!(problems.len(), 1);
@@ -1885,18 +1893,32 @@ mod tests {
     }
 
     #[test]
-    fn only_fcs_files_are_read() {
-        let dir = dir_of("exts", &["a.fcs", "notes.txt", "b.FCS"]);
-        let names = named(&[("a.fcs", "A"), ("b.FCS", "B"), ("notes.txt", "N")]);
-        let (found, _) = files_to_read(dir.0.to_str().unwrap(), &names);
-        let ids: Vec<&str> = found.iter().map(|(_, id)| id.as_ref()).collect();
-        assert_eq!(ids, ["A", "B"], "the .txt should not be opened as an FCS");
+    fn a_file_from_a_sub_folder_is_looked_up_by_its_program_name() {
+        // Plate_10/A1.fcs is known as Plate_10_A1.fcs, and that is the name
+        // the metadata has to carry. Looking it up by the name on disk would
+        // find another plate's A1.
+        let files = workspace(&[("Plate_10_A1.fcs", "/w/Plate_10/A1.fcs")]);
+        let found_by_program_name = files_to_read(&files, &named(&[("Plate_10_A1.fcs", "P10")]));
+        assert_eq!(found_by_program_name.0.len(), 1);
+        assert_eq!(&*found_by_program_name.0[0].1, "P10");
+
+        let by_disk_name = files_to_read(&files, &named(&[("A1.fcs", "WRONG")]));
+        assert!(by_disk_name.0.is_empty(), "matched on the name on disk");
+        assert_eq!(by_disk_name.1.len(), 1);
     }
 
     #[test]
-    fn a_directory_that_is_not_there_is_a_problem_not_a_panic() {
-        let (found, problems) = files_to_read("/no/such/directory", &named(&[]));
+    fn the_path_that_is_read_is_the_real_one() {
+        // The name is for the metadata; opening the file needs its path.
+        let files = workspace(&[("Plate_10_A1.fcs", "/w/Plate_10/A1.fcs")]);
+        let (found, _) = files_to_read(&files, &named(&[("Plate_10_A1.fcs", "P10")]));
+        assert_eq!(found[0].0, PathBuf::from("/w/Plate_10/A1.fcs"));
+    }
+
+    #[test]
+    fn no_files_is_nothing_to_do_rather_than_a_problem() {
+        let (found, problems) = files_to_read(&[], &named(&[]));
         assert!(found.is_empty());
-        assert_eq!(problems.len(), 1);
+        assert!(problems.is_empty());
     }
 }

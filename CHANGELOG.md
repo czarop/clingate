@@ -49,6 +49,37 @@
   readable while you act on it: which rule is being edited, how a pairing column
   resolves, how far through a run the solver is.
 
+- **A Workspace tab, first, in place of `file_paths.txt`.** The FCS files, the
+  metadata, the scaling and the gating file are chosen in the app instead of
+  named by line number in a text file beside the binary and read once at
+  startup. Open a folder and each part is recognised: FCS files anywhere under
+  it, sub-folders included; the gating file (`.omiqgt`) and the two CSVs (with
+  "metadata" and "scaling" in their names) at the top level only. A part that
+  is missing, or that more than one file could be, is reported and chosen by
+  hand - nothing is guessed. Each part can be replaced on its own, FCS files
+  added and removed one at a time, and the gating file written from the same
+  tab. Every path has a box beside its dialog, because the dialog is a service
+  a machine may not be running.
+
+  A file from a sub-folder is known in the program by its folders and its name
+  joined with underscores - `Plate_10/A1.fcs` is `Plate_10_A1.fcs` - so two
+  plates' `A1.fcs` cannot be confused. Nothing on disk is renamed, but the
+  metadata has to use that name; a file it has no row for is flagged on the
+  Workspace tab and says so in place of its plot.
+
+  The last workspace is remembered - in the user's configuration folder, not
+  beside the binary - and offered at the next launch rather than opened.
+  Rules are not carried from one workspace to the next: they, and the sample
+  pairing that travels with them, are exported and imported on the rules tab.
+
+  Replacing the scaling carries the gates across: every channel whose
+  transform or range changed goes through the same rescale the editor's
+  cofactor and range boxes use, so drawn, per-specimen and per-sample positions
+  all come through. Replacing the metadata re-imports the gating file, because
+  it defines the groups per-specimen positions are keyed by. Both that and
+  replacing the gating file, or opening another workspace, discard gate
+  positions changed since the import, and ask first.
+
 - **Browse buttons beside every path field**, on all three tabs: the gating file
   to load and to write, the rules sidecar to load and to save, the FCS folder,
   and the exported contact sheet. The OS file dialog, through `rfd` - already in
@@ -119,6 +150,22 @@
   not have.
 
 ### Fixed
+
+- **One bad FCS file no longer takes the application down.** The header reader
+  `expect`ed every step, and flow_fcs slices the file by its header's offsets
+  without checking them, so an empty, truncated or mislabelled file panicked.
+  Each is now an error naming the file and the reason, and the rest of the
+  folder still loads. Comparing two files also stopped panicking on one without
+  a GUID.
+
+- **Loading a second scaling file replaces the first rather than merging
+  into it.** Merging - how the store behaved when the scaling could only load
+  once - would have kept the old file's settings for every channel the new one
+  does not mention, and the old display order for every channel they share.
+
+- **The axes survive a scaling replace.** They were picked once, when the
+  first scaling arrived, and never again. Each now keeps its channel when the
+  new scaling has it and falls back to the default when it does not.
 
 - **Edit on a rule brings back the gate and the parameter.** Both were coming
   back empty, so editing a rule meant re-picking them, and a threshold rule

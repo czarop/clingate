@@ -55,21 +55,33 @@ pub fn PlotWindow(
 
     let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
+    // Whether the metadata has a row for this file under its name in the
+    // program. Without one nothing below can load - the file is never read -
+    // and the plot would sit as an empty square that looks like it is still
+    // working. Said instead, since a file from a sub-folder whose metadata was
+    // written without the folder in its name is exactly this.
+    let unmatched = use_memo(move || {
+        let name = sample_stub.read().name.clone();
+        (!metadata_store
+            .file_name_to_gating_id()
+            .read()
+            .contains_key(&name))
+        .then_some(name)
+    });
+
     // RESOURCE 1: Load FCS File
     let mut fcs_file: SyncSignal<Option<flow_fcs::Fcs>> = use_signal_sync(|| None);
     let _ = use_resource(move || async move {
-        let sample_path = sample_stub.read().get_filepath().to_owned();
-
-        let Some(file_name) = sample_path.file_name() else {
-            return;
+        let (sample_path, file_name) = {
+            let stub = sample_stub.read();
+            (stub.get_filepath().to_owned(), stub.name.clone())
         };
-        let Some(file_name) = file_name.to_str() else {
-            return;
-        };
+        // Looked up by the file's name in the program, not the name on disk -
+        // for a file from a sub-folder the two differ.
         let Some(id) = metadata_store
             .file_name_to_gating_id()
             .read()
-            .get(file_name)
+            .get(&file_name)
             .cloned()
         else {
             return;
@@ -344,6 +356,14 @@ pub fn PlotWindow(
 
         *plot_store.event_index_map().write() = data;
     });
+
+    if let Some(name) = unmatched() {
+        return rsx! {
+            div { class: "spinner-container", style: plot_box(),
+                "The metadata has no file called {name}, so this file cannot be matched to a sample and is not drawn. For a file in a sub-folder, the metadata has to use the folder in the name as well."
+            }
+        };
+    }
 
     match &*event_index.read() {
         Some(Ok(_)) => {}

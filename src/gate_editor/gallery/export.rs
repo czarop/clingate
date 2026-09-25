@@ -105,16 +105,10 @@ pub fn ExportPdf(
             for (at, card) in cards.iter().enumerate() {
                 titles.push((card.title.clone(), card.slots.len()));
                 for (slot, filled) in card.slots.iter().enumerate() {
-                    let Some((name, file_path)) = filled else {
+                    let Some(file) = filled else {
                         continue;
                     };
-                    let key: Arc<str> = Arc::from(
-                        file_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or_default(),
-                    );
-                    let Some(file_id) = names.get(&key).cloned() else {
+                    let Some(file_id) = names.get(&file.name).cloned() else {
                         continue;
                     };
                     let Some(groups) = metadata.get(&file_id).cloned() else {
@@ -129,9 +123,9 @@ pub fn ExportPdf(
                     jobs.push(ExportJob {
                         card: at,
                         slot,
-                        name: name.clone(),
+                        name: file.label().to_string(),
                         job: PlotJob {
-                            path: file_path.clone(),
+                            path: file.path.clone(),
                             cofactors: cofactors.clone(),
                             chain: select::chain_of(&state, &node),
                             resolver,

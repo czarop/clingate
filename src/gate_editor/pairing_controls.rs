@@ -78,10 +78,7 @@ pub fn PairingColumns() -> Element {
             .iter()
             .filter(|stub| {
                 // The same name plot_window and the pairing look a file up by.
-                stub.get_filepath()
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(|name| ids.get(name))
+                ids.get(&stub.name)
                     .and_then(|id| metadata.get(id))
                     .is_some_and(|columns| columns.contains_key(&wanted))
             })
@@ -111,11 +108,8 @@ pub fn PairingColumns() -> Element {
         let mut counts: Vec<(Arc<str>, usize)> = Vec::new();
         let mut untyped = 0usize;
         for stub in &files {
-            let found = stub
-                .get_filepath()
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|name| ids.get(name))
+            let found = ids
+                .get(&stub.name)
                 .and_then(|id| metadata.get(id))
                 .and_then(|columns| pairing.sample_type_of(columns));
             match found {

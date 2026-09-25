@@ -3,7 +3,6 @@ use flow_fcs::keyword::StringableKeyword;
 use flow_fcs::parameter::ParameterBuilder;
 use flow_fcs::{Header, Metadata, Parameter, ParameterMap, TransformType};
 use std::borrow::Cow;
-use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -27,71 +26,123 @@ pub enum FileError {
 //     }
 // }
 
-#[derive(PartialEq, Clone)]
+/// The FCS files a workspace holds.
+///
+/// A list of files rather than a folder. They can come from sub-folders of
+/// the workspace, and more can be added from anywhere, so there is no one
+/// directory that contains them all - nothing may rebuild a file's path from
+/// a folder and its name.
+#[derive(PartialEq, Clone, Default)]
 pub struct FcsFiles {
-    directory: PathBuf,
+    /// The workspace folder, which names inside the program are taken
+    /// relative to. See [`crate::workspace::program_name`].
+    root: Option<PathBuf>,
     file_list: Vec<FcsSampleStub>,
+    /// Files that were asked for and could not be used, and why - kept so the
+    /// workspace can show them, rather than printed to a console nobody reads.
+    unread: Vec<Unread>,
+}
+
+/// A file that was asked for and could not be used.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Unread {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 impl FcsFiles {
-    pub fn create(path: &str) -> Result<Self> {
-        let buf = PathBuf::from(path);
+    /// Open `paths` as the files of a workspace rooted at `root`.
+    ///
+    /// Never fails as a whole. One unreadable file is one entry in
+    /// [`FcsFiles::unread`], not a workspace that will not open.
+    pub fn open(root: Option<&Path>, paths: &[PathBuf]) -> Self {
+        let mut files = Self {
+            root: root.map(Path::to_path_buf),
+            ..Self::default()
+        };
+        files.add(paths);
+        files
+    }
 
-        let all_files = fs::read_dir(&buf).map_err(|_| anyhow!("Invalid directory: {}", path))?;
+    /// Add files, skipping any already here.
+    ///
+    /// A file whose name inside the program is already taken is refused
+    /// rather than loaded: the metadata matches files by that name, so the
+    /// second would silently be given the first one's sample.
+    pub fn add(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            if self.file_list.iter().any(|f| f.filepath == *path) {
+                continue;
+            }
+            // Asked for again: whatever was wrong last time is re-tried, not
+            // reported twice.
+            self.unread.retain(|u| u.path != *path);
 
-        let files: Vec<FcsSampleStub> = all_files
-            .map(|entry| {
-                let entry = entry?;
-                let name = entry.file_name();
-                let name_str = name
-                    .to_str()
-                    .ok_or_else(|| anyhow!("Invalid UTF-8 in filename"))?;
-                if name_str.ends_with(".fcs") {
-                    let full_path = buf.join(name_str);
-                    match FcsSampleStub::open(full_path.to_str().unwrap_or_default()) {
-                        Ok(s) => Ok(Some(s)),
-                        Err(e) => {
-                            println!("error in file {e}");
-                            Ok(None)
-                        }
-                    }
-                } else {
-                    Ok(None)
-                }
-            })
-            .collect::<anyhow::Result<Vec<Option<FcsSampleStub>>>>()?
-            .into_iter()
-            .flatten() // Removes the Nones, leaving just the Strings
-            .collect();
+            let name = crate::workspace::program_name(self.root.as_deref(), path);
+            if let Some(taken) = self.file_list.iter().find(|f| *f.name == *name) {
+                self.unread.push(Unread {
+                    path: path.clone(),
+                    reason: format!(
+                        "its name in the program, {name}, is already used by {}. Files are \
+                         matched to their metadata by that name, so this one would be given \
+                         the other's sample",
+                        taken.filepath.display()
+                    ),
+                });
+                continue;
+            }
+            match FcsSampleStub::open(&path.to_string_lossy()) {
+                Ok(stub) => self.file_list.push(stub.named(name)),
+                Err(e) => self.unread.push(Unread {
+                    path: path.clone(),
+                    reason: e.to_string(),
+                }),
+            }
+        }
+        // By name, so the list reads the same whatever order the disk or the
+        // dialog handed the files over in.
+        self.file_list.sort_by(|a, b| a.name.cmp(&b.name));
+        self.unread.sort_by(|a, b| a.path.cmp(&b.path));
+    }
 
-        Ok(FcsFiles {
-            directory: buf,
-            file_list: files,
-        })
+    /// Take a file out, whether it loaded or not. Says whether it was here.
+    pub fn remove(&mut self, path: &Path) -> bool {
+        let before = self.file_list.len() + self.unread.len();
+        self.file_list.retain(|f| f.filepath != path);
+        self.unread.retain(|u| u.path != path);
+        before != self.file_list.len() + self.unread.len()
+    }
+
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
     }
 
     pub fn file_list(&self) -> &[FcsSampleStub] {
         &self.file_list
     }
 
-    pub fn get_file_names(&self) -> Vec<String> {
-        self.file_list
-            .iter()
-            .map(|f| match f.get_fil_keyword() {
-                Ok(n) => n.to_string(),
-                Err(_) => f.get_filepath().to_string_lossy().to_string(),
-            })
-            .collect()
+    pub fn unread(&self) -> &[Unread] {
+        &self.unread
     }
 
-    pub fn directory_path(&self) -> &str {
-        self.directory.to_str().unwrap_or("")
+    /// Every file that loaded, for remembering the workspace.
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.file_list.iter().map(|f| f.filepath.clone()).collect()
+    }
+
+    /// The names the sample list shows: each file's name in the program.
+    pub fn get_file_names(&self) -> Vec<String> {
+        self.file_list.iter().map(|f| f.name.to_string()).collect()
     }
 
     pub fn sample_count(&self) -> usize {
         self.file_list.len()
     }
 }
+
+/// The fixed-width HEADER segment every FCS version starts with: the version,
+/// four spaces, and six eight-character offsets.
+const HEADER_LEN: usize = 58;
 
 #[derive(Debug, Clone)]
 pub struct FcsSampleStub {
@@ -103,11 +154,25 @@ pub struct FcsSampleStub {
     pub parameters: ParameterMap,
 
     pub filepath: PathBuf,
+
+    /// What the program calls this file, and what the metadata is searched
+    /// for. Its own file name unless it came from a sub-folder of the
+    /// workspace - see [`crate::workspace::program_name`].
+    pub name: std::sync::Arc<str>,
 }
 
 impl PartialEq for FcsSampleStub {
+    /// The same acquisition, by `$GUID` where both files carry one.
+    ///
+    /// Falls back to the path rather than panicking. This used to `expect` a
+    /// GUID on both sides, and a file without one - which `validate_guid` does
+    /// not reliably prevent, since it writes `GUID` and this reads `$GUID` -
+    /// took the app down the first time the file list was compared.
     fn eq(&self, other: &Self) -> bool {
-        self.get_guid().expect("should be a guid") == other.get_guid().expect("should be a guid")
+        match (self.get_guid(), other.get_guid()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => self.filepath == other.filepath,
+        }
     }
 }
 
@@ -118,37 +183,83 @@ impl FcsSampleStub {
             metadata: Metadata::new(),
             parameters: ParameterMap::default(),
             filepath: PathBuf::new(),
+            name: std::sync::Arc::from(""),
         })
     }
 
+    /// Read a file's header and keywords, without its events.
+    ///
+    /// Every step returns an error rather than panicking. This used to
+    /// `expect` each one, so a single truncated, corrupt or mislabelled file
+    /// in a folder took the whole application down - and with files now added
+    /// one at a time from a dialog, "one bad file" stops being unusual.
     pub fn open(path: &str) -> Result<Self> {
-        // Attempt to open the file path
         let file_access = flow_fcs::file::AccessWrapper::new(path)
-            .expect("Should be able make new access wrapper");
+            .map_err(|e| anyhow!("could not open it: {e}"))?;
 
-        // Validate the file extension
-        Self::validate_fcs_extension(&file_access.path)
-            .expect("Should have a valid file extension");
+        Self::validate_fcs_extension(&file_access.path)?;
 
-        // Create header and metadata structs from a memory map of the file
+        // `Header::from_mmap` slices the first 58 bytes without checking the
+        // file has them, so an empty or tiny file panics inside flow_fcs.
+        if file_access.mmap.len() < HEADER_LEN {
+            return Err(anyhow!(
+                "it is {} bytes long, shorter than an FCS header",
+                file_access.mmap.len()
+            ));
+        }
         let header = Header::from_mmap(&file_access.mmap)
-            .expect("Should be able to create header from mmap");
+            .map_err(|e| anyhow!("its header is not an FCS header: {e}"))?;
+
+        // `Metadata::from_mmap` indexes the file by the header's offsets
+        // without checking them, so a truncated file - or one whose header
+        // merely looks right - panics inside flow_fcs. Checked here, where it
+        // can still be reported.
+        let text = &header.text_offset;
+        if text.is_empty() || *text.end() >= file_access.mmap.len() {
+            return Err(anyhow!(
+                "its header places the text segment at bytes {}-{}, but the file is only {} \
+                 bytes long - it is truncated or not an FCS file",
+                text.start(),
+                text.end(),
+                file_access.mmap.len()
+            ));
+        }
         let mut metadata = Metadata::from_mmap(&file_access.mmap, &header);
 
         metadata
             .validate_text_segment_keywords(&header)
-            .expect("Should have valid text segment keywords");
+            .map_err(|e| anyhow!("its keywords are incomplete: {e}"))?;
         metadata.validate_guid();
 
-        let fcs = Self {
-            parameters: Self::generate_parameter_map(&metadata)
-                .expect("Should be able to generate parameter map"),
+        let parameters = Self::generate_parameter_map(&metadata)
+            .map_err(|e| anyhow!("its parameters could not be read: {e}"))?;
+
+        let filepath = PathBuf::from(path);
+        let name = std::sync::Arc::from(
+            filepath
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+                .as_str(),
+        );
+        Ok(Self {
+            parameters,
             header,
             metadata,
-            filepath: PathBuf::from(path),
-        };
+            filepath,
+            name,
+        })
+    }
 
-        Ok(fcs)
+    /// The same file under the name the program will know it by.
+    pub fn named(mut self, name: impl Into<std::sync::Arc<str>>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// The name the program knows this file by.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Validates that the file extension is `.fcs`

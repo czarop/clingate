@@ -82,7 +82,17 @@ impl PartialEq for Setup {
 }
 
 #[component]
-pub fn GalleryPlot(path: PathBuf, node: Arc<str>, x: Param, y: Param, size: u32) -> Element {
+pub fn GalleryPlot(
+    /// The file's name in the program, which is what the metadata is searched
+    /// for. Passed rather than taken from `path`: for a file from a sub-folder
+    /// the two differ.
+    name: Arc<str>,
+    path: PathBuf,
+    node: Arc<str>,
+    x: Param,
+    y: Param,
+    size: u32,
+) -> Element {
     let gate_store = use_context::<SyncStore<GateState>>();
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
@@ -92,15 +102,11 @@ pub fn GalleryPlot(path: PathBuf, node: Arc<str>, x: Param, y: Param, size: u32)
 
     let setup = use_memo({
         let path = path.clone();
+        let file_name = name.clone();
         let node = node.clone();
         let x = x.clone();
         let y = y.clone();
         move || {
-            let file_name: Arc<str> = Arc::from(
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default(),
-            );
             let file_id = metadata_store
                 .file_name_to_gating_id()
                 .read()

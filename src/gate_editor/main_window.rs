@@ -1,19 +1,15 @@
-use crate::components::toast::{say, use_toast, warn};
+use crate::components::toast::{use_toast, warn};
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
 use crate::gate_editor::pairing_controls::PairingColumns;
-use crate::gate_editor::path_picker::{Pick, PickPath};
 use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
 use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
-use crate::gate_editor::plots::axis_store::ScalingInfoSource;
-use crate::gate_editor::plots::axis_store::{default_axis_params, index_of_fluoro};
+use crate::gate_editor::plots::axis_store::{index_of_fluoro, resolve_axes};
 use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
 use crate::gate_editor::plots::sample_pairs::{Pair, pair_files, pair_of};
+use crate::gate_editor::workspace_window::Generation;
 use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::MetaDataImplExt;
-use crate::omiq::metadata::MetaDataOrigin;
 use crate::omiq::metadata::MetaDataStore;
-use crate::omiq::serialise::to_omiq_document;
 
 use crate::omiq::metadata::MetaDataStoreStoreExt;
 use crate::searchable_select::SearchableSelectSet;
@@ -33,7 +29,6 @@ use crate::{
 };
 use dioxus::prelude::*;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/main_window.css");
@@ -45,200 +40,6 @@ static PLOT_AREA: std::sync::LazyLock<(u32, u32)> = std::sync::LazyLock::new(|| 
     let (x, _) = flow_gates::transforms::get_plotting_area(PLOT_SIZE, PLOT_SIZE);
     (x.start, x.end - x.start)
 });
-
-/// The gating file the session started with, so the Load box opens showing
-/// what is currently loaded rather than empty.
-///
-/// The same third line of `file_paths.txt` the startup import reads. A failure
-/// here is not worth reporting - it only means the box starts empty, and the
-/// startup import will have said so already.
-fn loaded_gating_file() -> String {
-    std::fs::read_to_string("file_paths.txt")
-        .ok()
-        .and_then(|content| {
-            content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .nth(2)
-                .map(|l| l.trim().to_string())
-        })
-        .unwrap_or_default()
-}
-
-/// Loading and writing gating files, side by side.
-///
-/// One row rather than two stacked boxes: they are the same kind of action on
-/// the same kind of file, and the sample list below needs the height more than
-/// either of them does.
-#[component]
-fn GatingFiles(parental_gate: Signal<Option<Arc<str>>>) -> Element {
-    rsx! {
-        div { class: "gating-files",
-            LoadGatingFile { parental_gate }
-            ExportGatingFile {}
-        }
-    }
-}
-
-/// Replace every gate with the ones in another Omiq gating file.
-///
-/// A replacement, not an addition - see
-/// [`GateState::replace_gates_from_file`](crate::gate_editor::gates::gate_store::GateState::replace_gates_from_file).
-/// The store builds the new document separately and swaps it in only once it
-/// has parsed, so a mistyped path leaves what is on screen alone.
-///
-/// The selected position is sent back to the root afterwards. It is a node id
-/// from the document being discarded, and nothing in the new one answers to it:
-/// left alone it would leave every plot filtering through a chain that no longer
-/// exists.
-#[component]
-fn LoadGatingFile(parental_gate: Signal<Option<Arc<str>>>) -> Element {
-    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
-    let metadata_store =
-        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
-    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
-
-    let toasts = use_toast();
-    let mut path = use_signal(loaded_gating_file);
-    let mut busy = use_signal(|| false);
-
-    let load = move |_| {
-        if busy() {
-            return;
-        }
-        let target = PathBuf::from(path().trim().to_string());
-        let metadata = metadata_store.metadata().peek().clone();
-        let axes = axis_store.settings().peek().clone();
-        if metadata.is_empty() || axes.is_empty() {
-            warn(
-                &toasts,
-                "Load the metadata and scaling files first - gates cannot be placed without them",
-            );
-            return;
-        }
-        busy.set(true);
-
-        // Parsed on a worker thread and applied here. A real gating file is
-        // hundreds of kilobytes over a few hundred containers, which is long
-        // enough to freeze the window if it runs on the renderer.
-        spawn(async move {
-            let parsed = tokio::task::spawn_blocking(move || {
-                GateState::from_gating_file(target.clone(), &metadata, axes)
-                    .map(|fresh| (fresh, target))
-            })
-            .await;
-
-            match parsed {
-                Ok(Ok((fresh, target))) => {
-                    let count = fresh.gate_count();
-                    // The selection has to go before the gates it names do,
-                    // so no plot renders against a chain from the old document.
-                    parental_gate.set(Some(ROOTGATE.clone()));
-                    gate_store.set(fresh);
-                    say(
-                        &toasts,
-                        format!(
-                            "Loaded {count} gates from {}",
-                            target
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("the file")
-                        ),
-                    );
-                }
-                Ok(Err(e)) => warn(&toasts, format!("Could not load: {e}")),
-                Err(e) => warn(&toasts, format!("The load thread failed: {e}")),
-            }
-            busy.set(false);
-        });
-    };
-
-    rsx! {
-        div { class: "export-gating",
-            label { "Load from" }
-            input {
-                value: "{path}",
-                disabled: busy(),
-                oninput: move |e| path.set(e.value()),
-            }
-            PickPath {
-                path,
-                mode: Pick::OpenFile,
-                label: "Omiq gating file",
-                extensions: vec!["omiqgt".to_string()],
-                disabled: busy(),
-            }
-            button {
-                class: "export-gating_go",
-                disabled: busy(),
-                title: "Replace every gate with the ones in this file. The positions on screen are discarded.",
-                onclick: load,
-                if busy() {
-                    "Loading..."
-                } else {
-                    "Replace gates"
-                }
-            }
-        }
-    }
-}
-
-/// Write the current gates back out as an Omiq gating file.
-///
-/// Everything the document needs is already held: the geometry comes from the
-/// gates as they stand - per-specimen and per-sample positions included, since
-/// the exporter resolves each file through `gate_for_file` - and the dataset,
-/// workflow and task ids from the header captured on import. A session that
-/// never imported a file has no header, and the error says so rather than
-/// writing a document Omiq would reject.
-#[component]
-fn ExportGatingFile() -> Element {
-    let gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
-    let metadata_store =
-        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
-    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
-
-    let toasts = use_toast();
-    let mut path = use_signal(|| "gating_export.omiqgt".to_string());
-
-    rsx! {
-        div { class: "export-gating",
-            label { "Export to" }
-            input {
-                value: "{path}",
-                oninput: move |e| path.set(e.value()),
-            }
-            PickPath {
-                path,
-                mode: Pick::SaveFile,
-                label: "Omiq gating file",
-                extensions: vec!["omiqgt".to_string()],
-            }
-            button {
-                class: "export-gating_go",
-                onclick: move |_| {
-                    let target = PathBuf::from(path());
-                    let written = (|| -> anyhow::Result<String> {
-                        let document = to_omiq_document(
-                            &gate_store.read(),
-                            &metadata_store.metadata().read(),
-                            &axis_store.settings().read(),
-                        )?;
-                        // Pretty-printed: the first thing anyone does with a
-                        // file Omiq rejects is open it and look.
-                        std::fs::write(&target, serde_json::to_string_pretty(&document)?)?;
-                        Ok(target.display().to_string())
-                    })();
-                    match written {
-                        Ok(where_to) => say(&toasts, format!("Written to {where_to}")),
-                        Err(e) => warn(&toasts, format!("Could not write: {e}")),
-                    }
-                },
-                "Write gating file"
-            }
-        }
-    }
-}
 
 /// File indices in the order the pairs put their specimens, so the list and the
 /// Next button agree about what comes next.
@@ -275,34 +76,15 @@ pub fn MainWindow() -> Element {
     // Created by the NavBar layout: which files are open describes the
     // document, and the gate rules tab counts them to say whether the pairing
     // column actually reaches them.
-    let mut filehandler = use_context::<Signal<Option<FcsFiles>>>();
+    let filehandler = use_context::<Signal<Option<FcsFiles>>>();
     // Reports of what just happened. This used to be a signal that nothing
     // rendered, so an axis rescale that failed said nothing at all.
     let toasts = use_toast();
 
     // Also created by the NavBar layout: the loaded metadata describes the
     // document, and the gate rules tab reads the same file list.
-    let mut metadata_store =
+    let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
-
-    let meta_result = use_resource(move || async move {
-        let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
-            let content = std::fs::read_to_string("file_paths.txt")?;
-            let second_line = content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .nth(1)
-                .ok_or_else(|| anyhow::anyhow!("File does not have a second non-empty line"))?;
-            let path = PathBuf::from(second_line);
-            metadata_store.set_metadata_from_file(path, "OmiqID", "Filename", MetaDataOrigin::Omiq)
-        })
-        .await;
-
-        match result {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!("Failed to load metadata from file {}", e)),
-        }
-    });
 
     // Created by the NavBar layout and shared with every route under it: the
     // gates are the document, not a property of one screen.
@@ -316,56 +98,6 @@ pub fn MainWindow() -> Element {
     // plots do or the coordinates would not agree.
     let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
-    let axis_result = use_resource(move || async move {
-        let result = tokio::task::spawn_blocking(move || -> Result<(), anyhow::Error> {
-            let content = std::fs::read_to_string("file_paths.txt")?;
-            let forth_line = content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .nth(3)
-                .ok_or_else(|| anyhow::anyhow!("File does not have a forth non-empty line"))?;
-            let path = PathBuf::from(forth_line);
-            axis_store.set_axes_from_file(path, ScalingInfoSource::Omiq)
-        })
-        .await;
-
-        match result {
-            Ok(r) => r,
-            Err(e) => Err(anyhow::anyhow!(
-                "Failed to load axis settings from file {}",
-                e
-            )),
-        }
-    });
-
-    let file_result = use_resource(move || async move {
-        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<FcsFiles> {
-            let content = std::fs::read_to_string("file_paths.txt")?;
-            let path = content
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("No path found"))?;
-
-            FcsFiles::create(path.trim())
-        })
-        .await;
-
-        match result {
-            Ok(Ok(files)) => {
-                filehandler.set(Some(files));
-                Ok(())
-            }
-            Ok(Err(e)) => {
-                warn(&toasts, format!("Could not open the FCS folder: {e}"));
-                Err(e)
-            }
-            Err(e) => {
-                warn(&toasts, format!("Could not open the FCS folder: {e}"));
-                Err(anyhow::anyhow!("Failed to load files from path {}", e))
-            }
-        }
-    });
-
     let mut sample_index = use_signal(|| 0);
 
     // The folder grouped into the pairs a person actually compares - the FMO
@@ -378,17 +110,7 @@ pub fn MainWindow() -> Element {
             return Vec::<Pair>::new();
         };
         // The name plot_window looks a file up by, so the two agree.
-        let keys: Vec<Arc<str>> = files
-            .iter()
-            .map(|f| {
-                Arc::from(
-                    f.get_filepath()
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
+        let keys: Vec<Arc<str>> = files.iter().map(|f| f.name.clone()).collect();
         pair_files(
             &keys,
             &metadata_store.file_name_to_gating_id().read(),
@@ -465,97 +187,79 @@ pub fn MainWindow() -> Element {
     // Pick the opening axes once, when the scaling export lands. Only while the
     // user has not chosen any: switching files must keep the axes and the
     // selected gate where they are, so this deliberately never runs again.
-    let mut axes_initialised = use_signal(|| false);
+    // Settle the axes whenever the scaling changes: keep each one's channel if
+    // the new scaling has it, and fall back to the defaults if not. This used
+    // to be a latch that picked the defaults once and never ran again, which
+    // was right while the scaling could only load once. It can be replaced
+    // now, and a replacement must neither throw away the axes a person chose
+    // nor leave one pointing at a channel that is gone. See `resolve_axes`.
+    //
+    // Subscribes to the channel list only: the markers are peeked, so this
+    // does not re-run on its own writes, or when a person picks an axis.
     use_effect(move || {
-        // `peek` on the latch deliberately: this must not re-fire on its own
-        // write, only when the channel list changes.
-        if *axes_initialised.peek() {
-            return;
-        }
-        let Some((x, y)) = default_axis_params(&axis_store.sorted_settings().read()) else {
+        let Some((x, y)) = resolve_axes(
+            &axis_store.sorted_settings().read(),
+            &x_axis_marker.peek(),
+            &y_axis_marker.peek(),
+        ) else {
             return;
         };
-        x_axis_marker.set(x);
-        y_axis_marker.set(y);
-        axes_initialised.set(true);
-    });
-
-    let mut upload_succeded = use_signal(|| false);
-    let gate_resource = use_resource(move || {
-        // cheap im clones
-        let metadata = metadata_store.metadata().read().clone();
-        let axis_settings = axis_store.settings().read().clone();
-        async move {
-            if *upload_succeded.peek() {
-                return Ok(());
-            }
-
-            if metadata.is_empty() || axis_settings.is_empty() {
-                return Err(anyhow::anyhow!("Metadata or Axis settings are empty"));
-            }
-
-            let result = tokio::task::spawn_blocking(move || {
-                let content = std::fs::read_to_string("file_paths.txt")
-                    .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
-
-                let path_str = content
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .nth(2)
-                    .ok_or_else(|| anyhow::anyhow!("File does not have a third line"))?;
-
-                let path = PathBuf::from(path_str);
-
-                gate_store
-                    .upload_gates_from_file(path, &metadata, axis_settings)
-                    .map_err(|e| anyhow::anyhow!("Upload failed: {}", e))
-            })
-            .await;
-
-            // 5. Handle the thread result and update UI signals
-            match result {
-                Ok(Ok(_)) => {
-                    upload_succeded.set(true);
-                    Ok(())
-                }
-                Ok(Err(e)) => {
-                    println!("{e}");
-                    Err(e)
-                }
-                Err(e) => Err(anyhow::anyhow!("Thread joined with error: {}", e)),
-            }
+        if *x_axis_marker.peek() != x {
+            x_axis_marker.set(x);
+        }
+        if *y_axis_marker.peek() != y {
+            y_axis_marker.set(y);
         }
     });
 
-    let parental_gate: Signal<Option<Arc<str>>> = use_signal(|| Some(ROOTGATE.clone()));
+    let mut parental_gate: Signal<Option<Arc<str>>> = use_signal(|| Some(ROOTGATE.clone()));
+
+    // What this tab holds that names the old workspace. Memos first, so each
+    // reset fires only on its own count - a file added to the list must not
+    // throw away the gate a person is looking at.
+    let generation = use_context::<Signal<Generation>>();
+    let document = use_memo(move || generation.read().document);
+    let file_list = use_memo(move || generation.read().files);
+    // The selected gate is a node id from the document just discarded, and
+    // nothing in the new one answers to it: left alone, every plot would
+    // filter through a chain that no longer exists.
+    use_effect(move || {
+        document();
+        parental_gate.set(Some(ROOTGATE.clone()));
+    });
+    // An index into a list that has changed may name another file, or none.
+    use_effect(move || {
+        file_list();
+        sample_index.set(0);
+    });
+
+    // Nothing to edit until the workspace has files and the metadata that
+    // says which sample each one is. Said, rather than left as a spinner that
+    // never finishes.
+    if filehandler
+        .read()
+        .as_ref()
+        .is_none_or(|f| f.sample_count() == 0)
+    {
+        return rsx! {
+            document::Stylesheet { href: CSS_STYLE }
+            div { class: "spinner-container",
+                "No FCS files are loaded - open a workspace on the first tab."
+            }
+        };
+    }
+    if metadata_store.metadata().read().is_empty() {
+        return rsx! {
+            document::Stylesheet { href: CSS_STYLE }
+            div { class: "spinner-container",
+                "No metadata is loaded - choose it on the first tab. The editor finds each file's sample through it."
+            }
+        };
+    }
 
     rsx! {
         document::Stylesheet { href: CSS_STYLE }
         div { class: "sidebar-local",
-
-            match &*meta_result.read() {
-                Some(Ok(())) => {}
-                Some(Err(e)) => return rsx! {
-                    div { class: "spinner-container", "{e}" }
-                },
-                None => return rsx! {
-                    div { class: "spinner-container",
-                        div { class: "spinner" }
-                    }
-                },
-            }
-
-            match &*file_result.read() {
-                Some(Ok(())) => {}
-                Some(Err(e)) => return rsx! {
-                    div { class: "spinner-container", "{e}" }
-                },
-                None => return rsx! {
-                    div { class: "spinner-container",
-                        div { class: "spinner" }
-                    }
-                },
-            }
 
             GateSidebar {
                 selected_id: parental_gate,
@@ -776,7 +480,6 @@ pub fn MainWindow() -> Element {
                     }
                     div { class: "file-info",
                         PairingColumns {}
-                        GatingFiles { parental_gate }
                         div { class: "file-info_button-panel",
                             button { onclick: move |_| step_specimen(-1), "Prev" }
                             button { onclick: move |_| step_specimen(1), "Next" }
@@ -844,13 +547,8 @@ pub fn MainWindow() -> Element {
                                     .take(2)
                                     .map(|slot| {
                                         slot.and_then(|i| list.get(i)).map(|stub| {
-                                            let name = stub
-                                                .get_filepath()
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or_default()
-                                                .trim_end_matches(".fcs")
-                                                .to_string();
+                                            let name =
+                                                stub.name().trim_end_matches(".fcs").to_string();
                                             (name, stub.clone())
                                         })
                                     })
