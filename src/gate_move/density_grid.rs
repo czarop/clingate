@@ -883,19 +883,21 @@ mod flow_tests {
             2.0,
         );
 
-        match result {
-            Ok(t) => println!(
-                "[{label}]\n  translation: dx={:.4}, dy={:.4}\n  expected:    dx={:.4}, dy={:.4}\n  error:       dx={:.4}, dy={:.4}\n  peak:        {:.2}\n",
-                t.dx_data,
-                t.dy_data,
-                expected_dx,
-                expected_dy,
-                (t.dx_data - expected_dx).abs(),
-                (t.dy_data - expected_dy).abs(),
-                t.peak_strength
-            ),
-            Err(e) => println!("[{label}] returned Err: {e}\n"),
-        }
+        // The translation is read off the correlation peak's cell, with no
+        // sub-cell refinement, so it can only be as fine as one bin: 5.5 / 64.
+        let bin = (axis.0.1 - axis.0.0) / 64.0;
+        let t = result.unwrap_or_else(|e| panic!("[{label}] returned Err: {e}"));
+        assert!(
+            (t.dx_data - expected_dx).abs() <= bin && (t.dy_data - expected_dy).abs() <= bin,
+            "[{label}] moved ({:.4}, {:.4}); expected ({expected_dx:.4}, {expected_dy:.4}) to within {bin:.4}",
+            t.dx_data,
+            t.dy_data,
+        );
+        assert!(
+            t.peak_strength.is_finite() && t.peak_strength > 0.0,
+            "[{label}] peak {}",
+            t.peak_strength
+        );
     }
 
     #[test]
@@ -955,5 +957,19 @@ mod flow_tests {
         // Positive shift is biological and should NOT influence the result.
         let (qc, test) = positive_shifted_in_test(42);
         run("positive_shifted_in_test", &qc, &test, 0.0, 0.0);
+    }
+
+    #[test]
+    fn a_gaussian_kernel_sums_to_one_and_is_symmetric() {
+        for sigma in [0.5f32, 1.0, 2.5] {
+            let k = make_gaussian_kernel(sigma);
+            assert_eq!(k.len(), 2 * (3.0 * sigma).ceil() as usize + 1);
+            assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+            let mid = k.len() / 2;
+            assert!(k.iter().all(|&w| w <= k[mid]));
+            for i in 0..mid {
+                assert_eq!(k[i], k[k.len() - 1 - i]);
+            }
+        }
     }
 }

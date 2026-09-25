@@ -1,9 +1,11 @@
 //! Asserting tests for the gate-movement maths.
 //!
-//! The pre-existing `flow_tests` modules in this directory are exploratory: they
-//! print their results and pass unconditionally, including when the call under
-//! test returns `Err`. They are useful for eyeballing a scenario by hand, but
-//! they cannot fail, so they cannot catch a regression. Everything here asserts.
+//! The `flow_tests` modules beside each file hold the synthetic QC/test
+//! scenarios - a widened negative, a smeared positive, drift on one axis - and
+//! assert what each should report. This file covers the functions one at a
+//! time. Known bugs are `#[ignore]`d with an id from `docs/test-audit.md`;
+//! `cargo test gate_move -- --ignored` runs them, and each should fail until
+//! its bug is fixed.
 //!
 //! cargo test gate_move -- --nocapture
 
@@ -438,6 +440,37 @@ fn a_tight_cluster_scores_lower_than_a_uniform_smear() {
     );
 }
 
+/// BUG (docs/test-audit.md, B-KDE-3): the score is documented as 0 for a
+/// tight cluster and 1 for a smear with no peak, and the shift analysis
+/// trusts it to choose between a population's peak and its median. Half its
+/// weight is the density's entropy normalised by the log of the number of
+/// grid points - a figure that depends on how finely the density was
+/// sampled, not on the data. A tight cluster cannot score near 0, a uniform
+/// smear cannot score near 1, and the same events score differently on a
+/// finer grid.
+#[test]
+#[ignore = "known bug B-KDE-3: the smear score depends on the KDE grid and never nears its ends"]
+fn the_smear_score_reaches_its_documented_ends_and_ignores_the_grid() {
+    let mut rng = StdRng::seed_from_u64(27);
+    let tight: Vec<f64> = (0..2000)
+        .map(|_| Normal::new(2.5, 0.08).unwrap().sample(&mut rng))
+        .collect();
+    let flat: Vec<f64> = (0..2000).map(|_| rng.random_range(1.2..4.5)).collect();
+    let score = |values: &[f64], points: usize| {
+        let (_, d) = kde_1d(values, (1.2, 4.5), points, silverman_bandwidth(values));
+        compute_smear_score(values, &d, 3.3)
+    };
+
+    let (tight_coarse, tight_fine) = (score(&tight, 256), score(&tight, 1024));
+    let (flat_coarse, flat_fine) = (score(&flat, 256), score(&flat, 1024));
+    assert!(tight_coarse < 0.2, "a tight cluster scores {tight_coarse}");
+    assert!(flat_coarse > 0.8, "a uniform smear scores {flat_coarse}");
+    assert!(
+        (tight_coarse - tight_fine).abs() < 0.02 && (flat_coarse - flat_fine).abs() < 0.02,
+        "the grid moved the scores: tight {tight_coarse} -> {tight_fine}, flat {flat_coarse} -> {flat_fine}"
+    );
+}
+
 #[test]
 fn the_smear_score_stays_within_its_documented_bounds() {
     let mut rng = StdRng::seed_from_u64(26);
@@ -632,4 +665,301 @@ fn max_translation_leaves_a_short_move_untouched() {
     let t = apply_constraints(translation(0.6, 0.8), &rules);
 
     assert_eq!((t.dx_data, t.dy_data), (0.6, 0.8));
+}
+
+// ─── DensityGrid: edge cases ──────────────────────────────────────────────────
+
+/// BUG (docs/test-audit.md, B-GRID-1): `from_column` finds a cell with
+/// `((x - lo) * scale) as isize`, and a NaN cast to an integer is 0, so an
+/// event with a NaN coordinate is counted in the corner cell instead of being
+/// dropped with the other unplaceable events.
+#[test]
+#[ignore = "known bug B-GRID-1: a NaN event is counted in cell (0, 0)"]
+fn density_grid_drops_an_event_with_a_nan_coordinate() {
+    let df = frame((vec![f64::NAN, 0.5], vec![0.5, f64::NAN]));
+    let (xs, ys) = cols(&df);
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+
+    assert_eq!(grid.counts.iter().sum::<f32>(), 0.0, "{:?}", grid.counts);
+}
+
+#[test]
+fn density_grid_drops_infinite_events() {
+    let df = frame((
+        vec![f64::INFINITY, f64::NEG_INFINITY, 0.5],
+        vec![0.5, 0.5, 0.5],
+    ));
+    let (xs, ys) = cols(&df);
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+
+    assert_eq!(grid.counts.iter().sum::<f32>(), 1.0);
+}
+
+#[test]
+fn density_grid_bins_are_half_open() {
+    // The lower edge is in, the upper edge is out - an event at the top of
+    // the range has no cell to go in.
+    let df = frame((vec![0.0, 1.0], vec![0.0, 0.0]));
+    let (xs, ys) = cols(&df);
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+
+    assert_eq!(grid.counts[0], 1.0);
+    assert_eq!(grid.counts.iter().sum::<f32>(), 1.0);
+}
+
+/// BUG (docs/test-audit.md, B-GRID-2): `from_column` unwraps `.f64()`, and
+/// event data read from FCS files is Float32, so it panics instead of
+/// binning - `kde_negative_shift` maps the same mismatch to an `Err`.
+#[test]
+#[ignore = "known bug B-GRID-2: a Float32 column panics"]
+fn density_grid_bins_float32_columns() {
+    let df = df!["x" => [0.1f32, 0.6], "y" => [0.1f32, 0.6]].unwrap();
+    let (xs, ys) = cols(&df);
+    let grid = DensityGrid::from_column(xs, ys, 2, (0.0, 1.0), (0.0, 1.0));
+
+    assert_eq!(grid.counts, vec![1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn the_lower_quadrant_peak_ignores_a_bigger_positive() {
+    // The positive has more events than the negative, and still the peak
+    // search locks onto the negative, which is the reference for alignment.
+    let mut rng = StdRng::seed_from_u64(40);
+    let df = frame(join(
+        blob(0.0, 0.0, 0.2, 0.2, 500, &mut rng),
+        blob(3.0, 3.0, 0.1, 0.1, 3000, &mut rng),
+    ));
+    let (xs, ys) = cols(&df);
+    let grid = DensityGrid::from_column(xs, ys, 32, (-2.0, 4.0), (-2.0, 4.0));
+
+    let (row, col) = grid.find_lower_quadrant_peak();
+    // 0.0 on a -2..4 axis in 32 bins is bin 10.
+    assert!(
+        row.abs_diff(10) <= 1 && col.abs_diff(10) <= 1,
+        "({row}, {col})"
+    );
+}
+
+#[test]
+fn isolating_a_peak_keeps_its_centre_and_fades_the_rest() {
+    let mut grid = DensityGrid {
+        counts: vec![1.0; 16 * 16],
+        n_bins: 16,
+        x_range: (0.0, 1.0),
+        y_range: (0.0, 1.0),
+    };
+    grid.isolate_peak_elliptical(4, 4, 1.0, 2.0);
+
+    assert_eq!(grid.counts[4 * 16 + 4], 1.0);
+    // Two bins away along each axis: e^-2 along the rows (sigma 1), e^-0.5
+    // along the columns (sigma 2) - the ellipse is wider in X.
+    assert!((grid.counts[6 * 16 + 4] - (-2.0f32).exp()).abs() < 1e-6);
+    assert!((grid.counts[4 * 16 + 6] - (-0.5f32).exp()).abs() < 1e-6);
+    assert!(grid.counts[15 * 16 + 15] < 1e-6);
+}
+
+#[test]
+fn a_blur_keeps_the_mass_of_a_point_away_from_the_edges() {
+    let mut grid = DensityGrid {
+        counts: vec![0.0; 32 * 32],
+        n_bins: 32,
+        x_range: (0.0, 1.0),
+        y_range: (0.0, 1.0),
+    };
+    grid.counts[16 * 32 + 16] = 1.0;
+    crate::gate_move::density_grid::gaussian_blur(&mut grid, 2.0);
+
+    let total: f32 = grid.counts.iter().sum();
+    assert!((total - 1.0).abs() < 1e-4, "mass {total}");
+    // Spread evenly: symmetric about the point it came from.
+    assert_eq!(grid.counts[16 * 32 + 14], grid.counts[16 * 32 + 18]);
+    assert_eq!(grid.counts[14 * 32 + 16], grid.counts[18 * 32 + 16]);
+    assert!(grid.counts[16 * 32 + 16] < 1.0);
+}
+
+/// BUG (docs/test-audit.md, B-GRID-4): a sigma of 0 - no blur - builds a
+/// one-tap kernel of `exp(-0 / 0)`, which is NaN, and the blur turns every
+/// count into NaN. `cross_correlate` then panics comparing NaNs.
+#[test]
+#[ignore = "known bug B-GRID-4: a zero-sigma blur fills the grid with NaN"]
+fn a_blur_of_zero_leaves_the_grid_alone() {
+    let mut grid = DensityGrid {
+        counts: vec![0.0, 1.0, 2.0, 3.0],
+        n_bins: 2,
+        x_range: (0.0, 1.0),
+        y_range: (0.0, 1.0),
+    };
+    crate::gate_move::density_grid::gaussian_blur(&mut grid, 0.0);
+
+    assert_eq!(grid.counts, vec![0.0, 1.0, 2.0, 3.0]);
+}
+
+/// BUG (docs/test-audit.md, B-GRID-3): capping a move scales its data-space
+/// components but leaves the bin components at the uncapped move, so the
+/// result describes two different translations.
+#[test]
+#[ignore = "known bug B-GRID-3: a capped move keeps its uncapped bin counts"]
+fn a_capped_move_keeps_its_bins_consistent_with_its_distance() {
+    let rules = GateRules {
+        lock_x: false,
+        lock_y: false,
+        max_translation: Some(0.5),
+    };
+    // 10 bins each way at 0.1 a bin (length 1.41), capped to 0.5: about
+    // 3.5 bins each way, which rounds to 4.
+    let t = apply_constraints(translation(1.0, 1.0), &rules);
+
+    let half = 0.5 / 2.0f64.sqrt();
+    assert!((t.dx_data - half).abs() < 1e-9 && (t.dy_data - half).abs() < 1e-9);
+    assert_eq!(
+        (t.dx_bins, t.dy_bins),
+        (4, 4),
+        "{} x {} bins for {:.3} x {:.3}",
+        t.dx_bins,
+        t.dy_bins,
+        t.dx_data,
+        t.dy_data
+    );
+}
+
+// ─── compute_negative_shift / compute_total_shift ─────────────────────────────
+
+fn free() -> GateRules {
+    GateRules {
+        lock_x: false,
+        lock_y: false,
+        max_translation: None,
+    }
+}
+
+#[test]
+fn the_negative_shift_follows_the_negative_not_the_positive() {
+    // The negative moved right; the positive moved up. Alignment follows the
+    // negative.
+    let mut rng = StdRng::seed_from_u64(41);
+    let qc = frame(join(
+        blob(0.4, 0.4, 0.12, 0.12, 3000, &mut rng),
+        blob(2.5, 2.5, 0.2, 0.2, 800, &mut rng),
+    ));
+    let test = frame(join(
+        blob(0.8, 0.4, 0.12, 0.12, 3000, &mut rng),
+        blob(2.5, 3.2, 0.2, 0.2, 800, &mut rng),
+    ));
+    let t = crate::gate_move::density_grid::compute_negative_shift(
+        cols(&qc),
+        cols(&test),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    )
+    .unwrap();
+    let bin = (AXIS.1 - AXIS.0) / 64.0;
+
+    assert!((t.dx_data - 0.4).abs() <= bin, "dx {}", t.dx_data);
+    assert!(t.dy_data.abs() <= bin, "dy {}", t.dy_data);
+}
+
+#[test]
+fn a_qc_with_no_negative_is_an_error() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let only_positive = frame(blob(3.0, 3.0, 0.2, 0.2, 2000, &mut rng));
+    let err = crate::gate_move::density_grid::compute_negative_shift(
+        cols(&only_positive),
+        cols(&only_positive),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    )
+    .err();
+
+    assert!(err.is_some_and(|e| e.contains("no clear negative")));
+}
+
+/// BUG (docs/test-audit.md, B-GRID-5): the "this is noise, not a cluster"
+/// guard in `calculate_dynamic_radii` rejects a spread above 25% of the axis,
+/// but it measures only events already confined to the lower half of the
+/// axis, whose spread cannot reach that - uniform noise there is about 8%.
+/// It also looks only at X. So the guard never fires, and a QC whose lower
+/// quadrant is uniform noise is aligned as if it had a population.
+#[test]
+#[ignore = "known bug B-GRID-5: the noise guard cannot fire"]
+fn a_qc_whose_negative_is_uniform_noise_is_an_error() {
+    let mut rng = StdRng::seed_from_u64(43);
+    let noise: (Vec<f64>, Vec<f64>) = (0..3000)
+        .map(|_| (rng.random_range(-1.0..1.75), rng.random_range(-1.0..1.75)))
+        .unzip();
+    let qc = frame(noise);
+    let result = crate::gate_move::density_grid::compute_negative_shift(
+        cols(&qc),
+        cols(&qc),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    );
+
+    assert!(result.is_err(), "noise was aligned");
+}
+
+#[test]
+fn the_total_shift_recovers_a_whole_sample_translation() {
+    let (qc, test) = (sample(44, 0.0, 0.0), sample(44, -0.5, 0.25));
+    let t = crate::gate_move::density_grid::compute_total_shift(
+        cols(&qc),
+        cols(&test),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    )
+    .unwrap();
+    let bin = (AXIS.1 - AXIS.0) / 64.0;
+
+    assert!((t.dx_data + 0.5).abs() <= bin, "dx {}", t.dx_data);
+    assert!((t.dy_data - 0.25).abs() <= bin, "dy {}", t.dy_data);
+}
+
+#[test]
+fn the_total_shift_of_an_empty_test_is_an_error_not_a_zero() {
+    let qc = sample(45, 0.0, 0.0);
+    let empty = frame((Vec::new(), Vec::new()));
+    let result = crate::gate_move::density_grid::compute_total_shift(
+        cols(&qc),
+        cols(&empty),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    );
+
+    assert!(result.is_err());
+}
+
+// ─── kde_negative_shift ───────────────────────────────────────────────────────
+
+#[test]
+fn too_few_negative_events_for_the_kde_shift_is_an_error() {
+    let qc = sample(46, 0.0, 0.0);
+    let sparse = frame((vec![0.1, 0.2], vec![0.1, 0.2]));
+    let result =
+        crate::gate_move::kde::kde_negative_shift(cols(&qc), cols(&sparse), AXIS, AXIS, 512, 50);
+
+    assert!(result.is_err_and(|e| e.contains("Test negative quadrant")));
+}
+
+#[test]
+fn a_float32_column_is_an_error_for_the_kde_shift_not_a_panic() {
+    let qc = sample(47, 0.0, 0.0);
+    let f32s = df!["x" => [0.1f32; 100], "y" => [0.1f32; 100]].unwrap();
+    let result =
+        crate::gate_move::kde::kde_negative_shift(cols(&qc), cols(&f32s), AXIS, AXIS, 512, 50);
+
+    assert!(result.is_err());
 }

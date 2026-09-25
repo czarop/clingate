@@ -662,45 +662,57 @@ mod flow_tests {
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
-    fn run(label: &str, qc: &DataFrame, test: &DataFrame, expected_dx: f64, expected_dy: f64) {
+    /// What a scenario should report: the peak shift, how closely, and
+    /// which axes should be flagged as widened (at the 1.5 ratio the
+    /// module suggests).
+    struct Expect {
+        dx: f64,
+        dy: f64,
+        within: f64,
+        widened: (bool, bool),
+    }
+
+    /// The KDE grid is 512 points over 5.5 units, about 0.011 apart; a
+    /// shift is expected to within a few of those.
+    const PEAK: f64 = 0.05;
+
+    fn run(label: &str, qc: &DataFrame, test: &DataFrame, expect: Expect) {
         let axis = ((-1.0f64, 4.5f64), (-1.0f64, 4.5f64));
 
-        let result = kde_negative_shift(
+        let s = kde_negative_shift(
             (qc.column("x").unwrap(), qc.column("y").unwrap()),
             (test.column("x").unwrap(), test.column("y").unwrap()),
             axis.0,
             axis.1,
             512, // kde resolution
             50,  // min events
-        );
+        )
+        .unwrap_or_else(|e| panic!("[{label}] Err: {e}"));
 
-        match result {
-            Ok(s) => println!(
-                "[{label}]\n  shift:       dx={:.4}, dy={:.4}\n  expected:    dx={:.4}, dy={:.4}\n  error:       dx={:.4}, dy={:.4}\n  qc width:    x={:.4}, y={:.4}\n  test width:  x={:.4}, y={:.4}\n  width ratio: x={:.2}, y={:.2}{}{}\n",
-                s.dx,
-                s.dy,
-                expected_dx,
-                expected_dy,
-                (s.dx - expected_dx).abs(),
-                (s.dy - expected_dy).abs(),
-                s.qc_width_x,
-                s.qc_width_y,
-                s.test_width_x,
-                s.test_width_y,
-                s.width_ratio_x,
-                s.width_ratio_y,
-                if s.width_warning_x(1.5) {
-                    "  ⚠ x width increased"
-                } else {
-                    ""
-                },
-                if s.width_warning_y(1.5) {
-                    "  ⚠ y width increased"
-                } else {
-                    ""
-                },
-            ),
-            Err(e) => println!("[{label}] Err: {e}\n"),
+        assert!(
+            (s.dx - expect.dx).abs() <= expect.within && (s.dy - expect.dy).abs() <= expect.within,
+            "[{label}] shift ({:.4}, {:.4}); expected ({:.4}, {:.4}) to within {}",
+            s.dx,
+            s.dy,
+            expect.dx,
+            expect.dy,
+            expect.within,
+        );
+        assert_eq!(
+            (s.width_warning_x(1.5), s.width_warning_y(1.5)),
+            expect.widened,
+            "[{label}] width ratios ({:.2}, {:.2})",
+            s.width_ratio_x,
+            s.width_ratio_y,
+        );
+    }
+
+    fn still(widened: (bool, bool)) -> Expect {
+        Expect {
+            dx: 0.0,
+            dy: 0.0,
+            within: PEAK,
+            widened,
         }
     }
 
@@ -709,50 +721,108 @@ mod flow_tests {
         // Negative is in same position — expect near-zero shift.
         // The wider spread is a diagnostic signal, not a translation.
         let (qc, test) = wider_negative_x(42);
-        run("wider_negative_x", &qc, &test, 0.0, 0.0);
+        // Widening leaves the peak where it was, but estimating it from a
+        // wider cloud with the QC's narrower bandwidth is noisier: allow
+        // half the widened spread (0.35).
+        run(
+            "wider_negative_x",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.0,
+                within: 0.175,
+                widened: (true, false),
+            },
+        );
     }
 
     #[test]
     fn test_wider_negative_y() {
         let (qc, test) = wider_negative_y(42);
-        run("wider_negative_y", &qc, &test, 0.0, 0.0);
+        run(
+            "wider_negative_y",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.0,
+                within: 0.175,
+                widened: (false, true),
+            },
+        );
     }
 
     #[test]
     fn test_negative_shifted_x() {
         let (qc, test) = negative_shifted_x(42);
-        run("negative_shifted_x", &qc, &test, 0.3, 0.0);
+        run(
+            "negative_shifted_x",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.3,
+                dy: 0.0,
+                within: PEAK,
+                widened: (false, false),
+            },
+        );
     }
 
     #[test]
     fn test_negative_shifted_y() {
         let (qc, test) = negative_shifted_y(42);
-        run("negative_shifted_y", &qc, &test, 0.0, 0.3);
+        run(
+            "negative_shifted_y",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.3,
+                within: PEAK,
+                widened: (false, false),
+            },
+        );
     }
 
     #[test]
     fn test_positive_only_in_qc() {
         // Negative identical — expect near-zero shift, no crash from missing positive.
         let (qc, test) = positive_only_in_qc(42);
-        run("positive_only_in_qc", &qc, &test, 0.0, 0.0);
+        run("positive_only_in_qc", &qc, &test, still((false, false)));
     }
 
     #[test]
     fn test_positive_only_in_test() {
         let (qc, test) = positive_only_in_test(42);
-        run("positive_only_in_test", &qc, &test, 0.0, 0.0);
+        run("positive_only_in_test", &qc, &test, still((false, false)));
     }
 
     #[test]
     fn test_smeared_positive_only_in_qc() {
         let (qc, test) = smeared_positive_only_in_qc(42);
-        run("smeared_positive_only_in_qc", &qc, &test, 0.0, 0.0);
+        run(
+            "smeared_positive_only_in_qc",
+            &qc,
+            &test,
+            still((false, false)),
+        );
     }
 
+    /// BUG (docs/test-audit.md, B-KDE-1): the width is the std-dev of every
+    /// event below the axis midpoint, so positives smeared down into that
+    /// quadrant read as a widened negative - ratios of about 2.15 on both
+    /// axes here, where the negative is identical.
     #[test]
+    #[ignore = "known bug B-KDE-1: a smeared positive inflates the negative's width"]
     fn test_smeared_positive_only_in_test() {
         let (qc, test) = smeared_positive_only_in_test(42);
-        run("smeared_positive_only_in_test", &qc, &test, 0.0, 0.0);
+        run(
+            "smeared_positive_only_in_test",
+            &qc,
+            &test,
+            still((false, false)),
+        );
     }
 
     #[test]
@@ -760,6 +830,11 @@ mod flow_tests {
         // Negative identical — alignment should report near-zero shift.
         // Positive shift is biological and should NOT influence the result.
         let (qc, test) = positive_shifted_in_test(42);
-        run("positive_shifted_in_test", &qc, &test, 0.0, 0.0);
+        run(
+            "positive_shifted_in_test",
+            &qc,
+            &test,
+            still((false, false)),
+        );
     }
 }
