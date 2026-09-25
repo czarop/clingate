@@ -341,3 +341,94 @@ fn random_per_file_and_per_specimen_positions_survive_a_save() {
         }
     }
 }
+
+// ── a gate positioned by two metadata columns ────────────────────────────
+
+/// Place a new position for sample1's specimen on `id`, grouped by `column`,
+/// and return (the x channel, where the edge was put).
+fn place_by(state: &mut GateState, id: &GateId, column: &str) -> (Arc<str>, f32) {
+    let current = state
+        .gate_for_file(id, &Arc::from("sample1"), &fixture_metadata())
+        .expect("the gate resolves for sample1");
+    let (x, _) = current.get_params();
+    let from = extent_on(&current.get_gate_ref(None).unwrap().geometry, &x)
+        .unwrap()
+        .0;
+    let to = from + nudge(from);
+    let moved = translate_edge_to(&current, &x, Bound::Above, to as f64).unwrap();
+    // sample1 is "one" under both of the fixture's columns.
+    place_for_specimen(
+        state,
+        id,
+        &MetaDataKey {
+            parameter: Arc::from(column),
+            group: Arc::from("one"),
+        },
+        &moved,
+    );
+    (x, to)
+}
+
+/// What sample1 is drawn and filtered with: the editor's resolver, which is
+/// what `gate_for_file` (the export's view) must agree with.
+fn low_edge_on_screen(state: &GateState, id: &GateId, x: &str) -> f32 {
+    let groups = fixture_metadata()
+        .get(&Arc::from("sample1") as &Arc<str>)
+        .cloned()
+        .unwrap();
+    let resolver = state.get_current_sample(Arc::from("sample1"), &groups);
+    let gate = resolver.resolve_drawable(id).unwrap();
+    extent_on(&gate.get_gate_ref(None).unwrap().geometry, x)
+        .unwrap()
+        .0
+}
+
+#[test]
+fn a_position_placed_under_the_files_own_column_replaces_it() {
+    // The two gates the fixture groups, each by its own column.
+    for (id, column) in [("QCVn", "Type"), ("0lmI", "test")] {
+        let mut state = import(&fixture(FIXTURE));
+        let id: GateId = Arc::from(id);
+        assert_eq!(
+            state.group_override_column(&id).as_deref(),
+            Some(column),
+            "the premise: {id} arrives grouped by {column}"
+        );
+        let (x, to) = place_by(&mut state, &id, column);
+        assert!(close(low_edge_for(&state, &id, "sample1", &x), to));
+        assert!(close(low_edge_on_screen(&state, &id, &x), to));
+    }
+}
+
+/// The file groups a gate's positions by one metadata column; the autogater
+/// positions by the pairing's sample id column, which need not be the same
+/// one. Both kinds of position are then kept, and a sample in a group of each
+/// gets whichever column the hash map of its metadata yields first - not the
+/// position just placed, and not by any rule a person could know. The run
+/// reports the gate placed; the plot shows the old position.
+///
+/// Run both ways round - each gate grouped by one column in the file and
+/// placed by the other - so whichever column hashes first, one of the two
+/// shows it.
+#[test]
+#[ignore = "known bug B-GRP-1: which column's position a sample gets depends on hash order"]
+fn a_position_placed_under_another_column_is_the_one_its_samples_get() {
+    for (id, grouped_by, placed_by) in [("QCVn", "Type", "test"), ("0lmI", "test", "Type")] {
+        let mut state = import(&fixture(FIXTURE));
+        let id: GateId = Arc::from(id);
+        assert_eq!(
+            state.group_override_column(&id).as_deref(),
+            Some(grouped_by)
+        );
+        let (x, to) = place_by(&mut state, &id, placed_by);
+        let (exported, shown) = (
+            low_edge_for(&state, &id, "sample1", &x),
+            low_edge_on_screen(&state, &id, &x),
+        );
+        assert!(
+            close(exported, to) && close(shown, to),
+            "{id}, grouped by {grouped_by} in the file and placed by {placed_by}: \
+             sample1 is at {exported} for the export and {shown} on screen, placed at {to}"
+        );
+    }
+}
