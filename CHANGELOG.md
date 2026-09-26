@@ -183,6 +183,10 @@
 
 ### Fixed
 
+- **A gate can no longer be made its own parent.** The gate tree accepted a
+  gate placed under itself, after which anything walking up the tree - every
+  gate chain - never finished. It is now refused wherever the tree is edited.
+
 - **A metadata row with no file name no longer shifts the rows after it.**
   Such a row was left out, but every file after it was then given the row
   before its own - its group, and so the gates it was given, were wrong

@@ -279,6 +279,13 @@ impl GateHierarchy {
 
     /// Check if adding a parent-child relationship would create a cycle
     fn would_create_cycle(&self, parent_id: &Arc<str>, child_id: &Arc<str>) -> bool {
+        // A gate under itself is the shortest cycle there is. It is not among
+        // its own descendants, so the descendant check alone let it through,
+        // and walking up from it (`get_ancestors`, every gate chain) never
+        // ended (B-HIER-2).
+        if parent_id == child_id {
+            return true;
+        }
         // If parent is already a descendant of child, adding this edge would create a cycle
         let descendants = self.get_descendants(child_id.as_ref());
         descendants.contains(parent_id)
@@ -662,6 +669,13 @@ impl GateHierarchy {
 
         // Reparent children
         if let Some(ref new_parent) = new_parent_id {
+            // The gate being deleted cannot take its own children: they would
+            // be left under a gate that no longer exists.
+            if new_parent.as_ref() == gate_id {
+                return Err(anyhow!(
+                    "cannot hand the children of {gate_id} to the gate being deleted"
+                ));
+            }
             // Check if new parent exists
             let all_gates: HashSet<Arc<str>> = self
                 .children
@@ -1376,16 +1390,36 @@ mod gate_hierarchy_tests {
         );
     }
 
-    /// BUG (docs/test-audit.md, B-HIER-2): `would_create_cycle` asks whether
-    /// the new parent is among the child's descendants, and a gate is not its
-    /// own descendant - so a gate can be made its own parent, by `add_child`
-    /// or by `reparent`. Walking up from it (`get_ancestors`, every gate
-    /// chain) then never ends.
+    /// BUG (docs/test-audit.md, B-HIER-3): `reparent_subtree` also refuses a
+    /// move when the gate is already below the new parent, calling it a cycle.
+    /// It is not one: moving a grandchild up to sit directly under its
+    /// grandparent is refused. No caller in the app yet.
     #[test]
-    #[ignore = "known bug B-HIER-2: a gate can be made its own parent"]
+    #[ignore = "known bug B-HIER-3: reparent_subtree refuses to move a gate up under an ancestor"]
+    fn a_subtree_can_be_moved_up_under_an_ancestor() {
+        let mut h = GateHierarchy::new();
+        h.add_child("root", "a", 0);
+        h.add_child("a", "b", 0);
+        h.add_child("b", "c", 0);
+        h.reparent_subtree("b", "root").expect("not a cycle");
+        assert_eq!(h.get_parent("b").map(|p| p.as_ref()), Some("root"));
+        assert_eq!(h.get_parent("c").map(|p| p.as_ref()), Some("b"));
+        assert!(h.validate().is_ok());
+    }
+
+    /// Was B-HIER-2: `would_create_cycle` asked only whether the new parent
+    /// was among the child's descendants, and a gate is not its own
+    /// descendant - so a gate could be made its own parent, by `add_child` or
+    /// by `reparent`. Walking up from it (`get_ancestors`, every gate chain)
+    /// then never ended.
+    #[test]
     fn a_gate_cannot_be_its_own_parent() {
         let mut h = GateHierarchy::new();
         assert!(!h.add_child("g", "g", 0), "add_child accepted a self-edge");
+        assert!(
+            h.add_gate_child("g", "g", None).is_err(),
+            "add_gate_child accepted a self-edge"
+        );
         h.add_child("root", "a", 0);
         assert!(
             h.reparent("a", "a").is_err(),
@@ -1397,8 +1431,27 @@ mod gate_hierarchy_tests {
         // to one of those children - found by the random sequences below.
         let mut h = GateHierarchy::new();
         h.add_child("g6", "g7", 0);
-        let _ = h.delete_node_keep_children("g6", Some(Arc::from("g7")));
+        assert!(
+            h.delete_node_keep_children("g6", Some(Arc::from("g7")))
+                .is_err()
+        );
         assert!(h.validate().is_ok(), "g7 was made its own parent");
+        assert_eq!(
+            h.get_parent("g7").map(|p| p.as_ref()),
+            Some("g6"),
+            "refused, so unchanged"
+        );
+
+        // Nor can a gate being deleted take its own children.
+        let mut h = GateHierarchy::new();
+        h.add_child("root", "g6", 0);
+        h.add_child("g6", "g7", 0);
+        assert!(
+            h.delete_node_keep_children("g6", Some(Arc::from("g6")))
+                .is_err()
+        );
+        assert!(h.validate().is_ok());
+        assert_eq!(h.get_parent("g7").map(|p| p.as_ref()), Some("g6"));
     }
 
     /// Random sequences of every editing operation, checked after each step:
@@ -1416,11 +1469,6 @@ mod gate_hierarchy_tests {
             for _ in 0..40 {
                 let a = names[rng.random_range(0..names.len())].clone();
                 let b = names[rng.random_range(0..names.len())].clone();
-                if a == b {
-                    // A self-edge is B-HIER-2, pinned on its own above;
-                    // skipped here so the sequences can find anything else.
-                    continue;
-                }
                 let step = match rng.random_range(0..6) {
                     0 => {
                         h.add_child(a.as_str(), b.as_str(), rng.random_range(0..5));
@@ -1439,11 +1487,6 @@ mod gate_hierarchy_tests {
                         format!("delete_subtree({a})")
                     }
                     4 => {
-                        if h.get_children(&a).iter().any(|c| c.as_ref() == b) {
-                            // Handing a gate's children to one of them is
-                            // B-HIER-2 again; pinned above.
-                            continue;
-                        }
                         let _ = h.delete_node_keep_children(&a, Some(Arc::from(b.as_str())));
                         format!("delete_node_keep_children({a}, Some({b}))")
                     }
