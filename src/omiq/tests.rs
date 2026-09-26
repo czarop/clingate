@@ -4967,3 +4967,234 @@ fn a_label_not_placed_is_written_as_omiq_writes_it() {
         serde_json::json!({"f1Val": 5.5, "f2Val": 7.0})
     );
 }
+
+// ─── A gate viewed on swapped axes goes back as the file had it ──────────────
+
+use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+
+/// Written, then read back: every gate now carries what the file said about
+/// it, as one imported from Omiq does.
+fn reimported(written: &serde_json::Value, name: &str) -> GateState {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "clingate-swap-{name}-{}-{}.omiqgt",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&path, serde_json::to_string(written).unwrap()).unwrap();
+    let mut state = GateState::default();
+    let read = state.upload_gates_from_file(
+        path.clone(),
+        &im::HashMap::with_hasher(FxBuildHasher),
+        fixture_axes(),
+    );
+    let _ = std::fs::remove_file(&path);
+    read.unwrap_or_else(|e| panic!("{name} re-imports: {e}"));
+    state
+}
+
+/// Every gate that is a container in the file - a composite's parts, not
+/// the composite - with its geometry.
+fn parts(state: &GateState) -> Vec<(GateId, flow_gates::Gate)> {
+    let mut all: Vec<(GateId, flow_gates::Gate)> = state
+        .registered_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let g = state.registered_gate(&id)?;
+            if g.is_composite() && g.get_id() == id {
+                return None;
+            }
+            let inner = g.get_gate_ref(Some(&id)).cloned();
+            Some((
+                id.clone(),
+                inner.unwrap_or_else(|| panic!("{id} has geometry")),
+            ))
+        })
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all
+}
+
+/// The global positions, as a plot shows them for a file with no positions
+/// of its own.
+fn global_resolver(state: &GateState) -> GateOverrideResolver {
+    state.get_current_sample(Arc::from("no-such-file"), &Default::default())
+}
+
+/// Every gate on `x` by `y`, turned as viewing a `y` by `x` plot turns it.
+fn view_swapped(state: &mut GateState, x: &str, y: &str) {
+    let ids: Vec<GateId> = state
+        .registered_ids()
+        .into_iter()
+        .filter(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.get_params() == (Arc::from(x), Arc::from(y)))
+        })
+        .collect();
+    assert!(!ids.is_empty(), "the premise: gates on {x} by {y}");
+    let resolver = global_resolver(state);
+    state.orient_to_plot(&ids, y, x, &resolver).unwrap();
+}
+
+/// One gate of `kind` drawn on FSC-A by SSC-A. A polygon is drawn point by
+/// point, and lopsided, so that turning it moves every vertex.
+fn drawn(kind: PrimaryGateType) -> GateState {
+    let points = matches!(kind, PrimaryGateType::Polygon).then(|| {
+        vec![
+            (100.0, 200.0),
+            (400.0, 250.0),
+            (350.0, 700.0),
+            (150.0, 600.0),
+        ]
+    });
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &editor_mapper(),
+            300.0,
+            320.0,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+            points,
+            None,
+            kind,
+            Some("drawn".to_string()),
+        )
+        .unwrap_or_else(|e| panic!("{kind:?} is drawn: {e}"));
+    state
+}
+
+/// Every kind of gate that has axes.
+fn kinds_with_axes() -> [PrimaryGateType; 7] {
+    [
+        PrimaryGateType::Rectangle,
+        PrimaryGateType::Polygon,
+        PrimaryGateType::Ellipse,
+        PrimaryGateType::Line(Some(500.0)),
+        PrimaryGateType::Quadrant,
+        PrimaryGateType::SkewedQuadrant,
+        PrimaryGateType::Bisector,
+    ]
+}
+
+/// Each kind of gate, drawn, saved and read back, is then viewed on a plot
+/// with its axes the other way round - which rewrites the held gate with its
+/// channels and coordinates exchanged - and saved again. What is written the
+/// second time must be exactly what was written the first: the same channels
+/// as `f1` and `f2`, the same coordinates, the same label.
+///
+/// Before the fix the second save wrote every one of these with `f1` and `f2`
+/// exchanged, so Omiq showed each on flipped axes; a range gate, which writes
+/// only its x extent, wrote the extent of the wrong channel.
+#[test]
+fn a_gate_viewed_on_swapped_axes_is_written_as_the_file_had_it() {
+    for kind in kinds_with_axes() {
+        let name = format!("{kind:?}");
+        let mut state = reimported(&export_new(&drawn(kind)), &name);
+        let before = export_new(&state);
+
+        view_swapped(&mut state, "FSC-A", "SSC-A");
+        let held = parts(&state);
+        assert!(!held.is_empty());
+        for (id, inner) in held {
+            assert_eq!(
+                (&*inner.parameters.0, &*inner.parameters.1),
+                ("SSC-A", "FSC-A"),
+                "{name}: the premise - {id} is held the other way round"
+            );
+        }
+
+        let after = export_new(&state);
+        assert_eq!(
+            after["tree"]["filterContainers"], before["tree"]["filterContainers"],
+            "{name}: viewing the gate on swapped axes changed what is written"
+        );
+        for container in objects(&after, &["tree", "filterContainers"]).values() {
+            assert_eq!(container["defaultFilter"]["f1"], "FSC-A", "{name}");
+            assert_eq!(container["defaultFilter"]["f2"], "SSC-A", "{name}");
+        }
+    }
+}
+
+/// Written back, then read again and viewed the right way round, the gate is
+/// where it was: turning it twice leaves every coordinate as it was.
+#[test]
+fn a_gate_turned_and_turned_back_is_where_it_was() {
+    for kind in kinds_with_axes() {
+        let name = format!("{kind:?}");
+        let mut state = reimported(&export_new(&drawn(kind)), &name);
+        let points = |s: &GateState| -> Vec<(GateId, Vec<(f32, f32)>)> {
+            parts(s)
+                .into_iter()
+                .map(|(id, inner)| {
+                    let (x, y) = inner.parameters.clone();
+                    let nodes = match &inner.geometry {
+                        flow_gates::GateGeometry::Polygon { nodes, .. } => nodes.clone(),
+                        flow_gates::GateGeometry::Rectangle { min, max } => {
+                            vec![min.clone(), max.clone()]
+                        }
+                        flow_gates::GateGeometry::Ellipse { center, .. } => vec![center.clone()],
+                        flow_gates::GateGeometry::Boolean { .. } => vec![],
+                    };
+                    let at = nodes
+                        .iter()
+                        .map(|n| (n.get_coordinate(&x).unwrap(), n.get_coordinate(&y).unwrap()))
+                        .collect();
+                    (id, at)
+                })
+                .collect()
+        };
+        let was = points(&state);
+
+        view_swapped(&mut state, "FSC-A", "SSC-A");
+        let swapped = points(&state);
+        assert_ne!(
+            swapped, was,
+            "{name}: the premise - turning moved the coordinates"
+        );
+        view_swapped(&mut state, "SSC-A", "FSC-A");
+        assert_eq!(points(&state), was, "{name}");
+    }
+}
+
+/// A gate drawn here has no file to go back to, so it is written as it is
+/// held - on the axes it was last viewed on.
+#[test]
+fn a_gate_drawn_here_is_written_as_it_is_held() {
+    let mut state = drawn(PrimaryGateType::Rectangle);
+    view_swapped(&mut state, "FSC-A", "SSC-A");
+    let written = export_new(&state);
+    let containers = objects(&written, &["tree", "filterContainers"]);
+    assert_eq!(containers.len(), 1);
+    let filter = &containers.values().next().unwrap()["defaultFilter"];
+    assert_eq!(filter["f1"], "SSC-A");
+    assert_eq!(filter["f2"], "FSC-A");
+}
+
+/// What the file said a gate's axes were is kept with the rest of what it
+/// said about the gate.
+#[test]
+fn the_axes_a_gate_arrived_on_are_captured() {
+    let state = import(BEFORE);
+    let captured = |id: &str| {
+        state
+            .omiq_rebuild()
+            .get(&Arc::from(id))
+            .unwrap()
+            .source_axes
+            .clone()
+    };
+    assert_eq!(
+        captured("XdrW"),
+        Some((
+            Arc::from("Alexa Fluor 647-A"),
+            Arc::from("Vio Bright 423-A")
+        ))
+    );
+    assert_eq!(
+        captured("uN8Y"),
+        Some((Arc::from("FSC-A"), Arc::from("SSC-A")))
+    );
+    assert_eq!(captured("Z2Ti"), None, "a boolean has no axes");
+}

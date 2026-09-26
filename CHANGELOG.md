@@ -190,6 +190,15 @@
 
 ### Fixed
 
+- **A gate viewed on swapped axes was saved to Omiq on those axes.** Viewing
+  a gate on a plot with its channels the other way round rewrites the held
+  gate with them exchanged. It gates the same events, but the export wrote it
+  that way: Omiq showed it on flipped axes, a range gate wrote the extent of
+  the wrong channel, and a sample's own position could be written the other
+  way round from the gate's default. The export now turns each gate - default,
+  per group and per sample - back to the axes the file had it on. A gate drawn
+  here is written as it is held.
+
 - **Files are always listed in the same order.** Names that read the same to
   a person but are not the same - `D02` and `D2`, `a1` and `A1` - came out in
   whatever order they arrived in, which could differ from one tab or run to

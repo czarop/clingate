@@ -117,6 +117,16 @@ pub struct OmiqRebuildData {
     /// and start with no label at all, so 24 of them lost theirs on the way
     /// back out. Kept here so the export can fall back to it.
     pub label_position: Option<crate::omiq::deserialise::Point>,
+    /// The two channels this gate arrived on, as the file names them: `f1`
+    /// on the x axis, `f2` on the y.
+    ///
+    /// Viewing a gate on a plot whose axes are the other way round rewrites
+    /// it with its channels and coordinates exchanged. It is the same region,
+    /// but Omiq draws a gate on the axes its file names, so the export turns
+    /// it back to these before writing it. `None` for a boolean, which has no
+    /// axes.
+    #[serde(default)]
+    pub source_axes: Option<(Arc<str>, Arc<str>)>,
 }
 
 impl OmiqRebuildData {
@@ -182,31 +192,39 @@ impl OmiqRebuildStore {
         for (id, container) in &experiment.tree.filter_containers {
             let placements = nodes_for_container.get(id).cloned().unwrap_or_default();
 
-            let (container_type, group_id, md, source_type, per_file_ids, label_position) =
-                match container {
-                    FilterContainer::Atomic(atomic) => {
-                        let mut files: Vec<FileId> =
-                            atomic.per_file_filters.keys().cloned().collect();
-                        // Hash order is not stable; sort so exports are reproducible.
-                        files.sort();
-                        (
-                            Arc::from("DEFAULT"),
-                            atomic.group_id.clone(),
-                            atomic.md.clone(),
-                            OmiqGateType::of(&atomic.default_filter),
-                            files,
-                            atomic.default_filter.label_position(),
-                        )
-                    }
-                    FilterContainer::Compound(compound) => (
-                        Arc::from(boolean_wire_name(&compound.operation)),
-                        None,
-                        None,
-                        None,
-                        Vec::new(),
-                        None,
-                    ),
-                };
+            let (
+                container_type,
+                group_id,
+                md,
+                source_type,
+                per_file_ids,
+                label_position,
+                source_axes,
+            ) = match container {
+                FilterContainer::Atomic(atomic) => {
+                    let mut files: Vec<FileId> = atomic.per_file_filters.keys().cloned().collect();
+                    // Hash order is not stable; sort so exports are reproducible.
+                    files.sort();
+                    (
+                        Arc::from("DEFAULT"),
+                        atomic.group_id.clone(),
+                        atomic.md.clone(),
+                        OmiqGateType::of(&atomic.default_filter),
+                        files,
+                        atomic.default_filter.label_position(),
+                        atomic.default_filter.get_params(),
+                    )
+                }
+                FilterContainer::Compound(compound) => (
+                    Arc::from(boolean_wire_name(&compound.operation)),
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                ),
+            };
 
             gates.insert(
                 id.clone(),
@@ -218,6 +236,7 @@ impl OmiqRebuildStore {
                     source_type,
                     per_file_ids,
                     label_position,
+                    source_axes,
                 },
             );
         }

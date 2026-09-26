@@ -304,6 +304,14 @@ impl GateSubStore {
         }
     }
 
+    /// Write the gates [`oriented_to_plot`] turned, each into the tier it
+    /// was resolved from.
+    pub fn apply_orientation(&mut self, updates: Vec<OrientedGate>) {
+        for (id, gate, origin) in updates {
+            self.insert_for_source(&[id], &gate, &origin);
+        }
+    }
+
     /// Apply a transform to every stored gate across all three tiers.
     ///
     /// Results are memoised by heap address: a composite is aliased under
@@ -485,6 +493,53 @@ impl GateOverrideResolver {
     }
 }
 
+/// A gate turned to a plot's axes: the id to write it under, the gate, and
+/// the tier it was resolved from.
+pub type OrientedGate = (GateId, Arc<dyn DrawableGate>, GateSource);
+
+/// The gates among `ids` held the other way round from a plot of `x` by `y`,
+/// turned to it.
+///
+/// Only the position `resolver` shows is turned - the global one, or the
+/// group's or sample's that overrides it - and it is written back into that
+/// tier, so the same gate can be held on its axes one way globally and the
+/// other for one sample. The export turns each back to the file's axes; see
+/// `omiq::serialise::as_imported`.
+///
+/// A composite is written under its own id and each of its parts'.
+pub fn oriented_to_plot(
+    ids: &[GateId],
+    x: &str,
+    y: &str,
+    resolver: &GateOverrideResolver,
+) -> anyhow::Result<Vec<OrientedGate>> {
+    let mut updates = Vec::new();
+    for k in ids {
+        let Some(new_gate) = resolver.resolve_drawable(k)?.match_to_plot_axis(x, y)? else {
+            continue;
+        };
+        let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
+        let gate_origin = resolver
+            .gate_origins
+            .get(k)
+            .ok_or_else(|| anyhow!("error finding gate source for {}", k))?
+            .clone();
+
+        updates.push((
+            new_gate_arc.get_id(),
+            new_gate_arc.clone(),
+            gate_origin.clone(),
+        ));
+
+        if new_gate_arc.is_composite() {
+            for sub_id in new_gate_arc.get_inner_gate_ids() {
+                updates.push((sub_id, new_gate_arc.clone(), gate_origin.clone()));
+            }
+        }
+    }
+    Ok(updates)
+}
+
 /// a plot is selected for a file,
 /// The currently selected (parental) gate id is stored in a signal and accessed.
 /// Create a GatesOnPlotKey with the current params and the parental gate id,
@@ -614,6 +669,20 @@ impl GateState {
                     .is_some_and(|was| was.gate_id == placed.gate_id)
                     && self.parent_node(node) == earlier.parent_node(node)
             })
+    }
+
+    /// Turn the gates among `ids` to a plot of `x` by `y`, as viewing that
+    /// plot does. See [`oriented_to_plot`].
+    pub fn orient_to_plot(
+        &mut self,
+        ids: &[GateId],
+        x: &str,
+        y: &str,
+        resolver: &GateOverrideResolver,
+    ) -> anyhow::Result<()> {
+        let updates = oriented_to_plot(ids, x, y, resolver)?;
+        self.gate_store.apply_orientation(updates);
+        Ok(())
     }
 
     pub fn omiq_rebuild(&self) -> &crate::omiq::rebuild::OmiqRebuildStore {
@@ -2420,39 +2489,14 @@ impl<Lens> Store<GateState, Lens> {
             y_axis_title.into(),
             parental_gate_id.map(|id| id.into()),
         );
-        let mut updates = Vec::new();
-        {
+        let updates = {
             let key_bind = self.gate_ids_by_view();
             let kbp = &*key_bind.peek();
             let Some(ids) = kbp.get(&key) else {
                 return Err(anyhow::anyhow!("No keys found"));
             };
-
-            for k in ids {
-                let Some(new_gate) = resolver.resolve_drawable(k)?.match_to_plot_axis(&x, &y)?
-                else {
-                    continue;
-                };
-                let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
-                let gate_origin = resolver
-                    .gate_origins
-                    .get(k)
-                    .ok_or_else(|| anyhow!("error finding gate source for {}", k))?
-                    .clone();
-
-                updates.push((
-                    new_gate_arc.get_id(),
-                    new_gate_arc.clone(),
-                    gate_origin.clone(),
-                ));
-
-                if new_gate_arc.is_composite() {
-                    for sub_id in new_gate_arc.get_inner_gate_ids() {
-                        updates.push((sub_id, new_gate_arc.clone(), gate_origin.clone()));
-                    }
-                }
-            }
-        }
+            oriented_to_plot(ids, &x, &y, resolver)?
+        };
         // Almost always nothing to do: a gate needs writing only when the plot
         // shows its axes the other way round. Writing regardless notified
         // everything subscribed to the gates on every change of file or plot -
@@ -2461,11 +2505,7 @@ impl<Lens> Store<GateState, Lens> {
         if updates.is_empty() {
             return Ok(());
         }
-        self.gate_store().with_mut(|s| {
-            for (id, gate, origin) in updates {
-                s.insert_for_source(&[id], &gate, &origin);
-            }
-        });
+        self.gate_store().with_mut(|s| s.apply_orientation(updates));
 
         Ok(())
     }

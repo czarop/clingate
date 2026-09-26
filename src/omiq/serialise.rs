@@ -332,6 +332,42 @@ fn container_name(gate: &Arc<dyn DrawableGate>, container_id: &GateId) -> Arc<st
         .unwrap_or_else(|| Arc::from(gate.get_name()))
 }
 
+/// The gate on the axes the file had it on.
+///
+/// Viewing a gate on a plot whose axes are the other way round rewrites it
+/// with its two channels, and every coordinate, exchanged - see
+/// `match_gates_to_plot`. That is the same region, but Omiq draws a gate on
+/// the axes its file names, so written as held it would come back on flipped
+/// axes; and a range gate, which writes only its x extent, would write the
+/// wrong one. So a gate held the other way round from `source_axes` is turned
+/// back before it is written. Each tier is turned on its own: only the
+/// position shown is rewritten, so a gate's global and per-file positions
+/// can be held in different orientations.
+///
+/// A gate with no source axes - drawn here, or a boolean - is written as it is
+/// held, as is one on channels other than the file's two: that is a gate on
+/// different channels, and turning it would not make it the file's.
+fn as_imported(
+    gate: &Arc<dyn DrawableGate>,
+    container_id: &GateId,
+    source_axes: Option<&(Arc<str>, Arc<str>)>,
+) -> anyhow::Result<Arc<dyn DrawableGate>> {
+    let Some((x, y)) = source_axes else {
+        return Ok(gate.clone());
+    };
+    let Some(inner) = gate.get_gate_ref(Some(container_id)) else {
+        return Ok(gate.clone());
+    };
+    let (held_x, held_y) = &inner.parameters;
+    if held_x != y || held_y != x || x == y {
+        return Ok(gate.clone());
+    }
+    let turned = gate
+        .match_to_plot_axis(x, y)?
+        .ok_or_else(|| anyhow!("gate {container_id} is held on {held_x} by {held_y} but did not turn back to {x} by {y}"))?;
+    Ok(Arc::from(turned))
+}
+
 /// Build the filter container for one gate.
 fn container_for(
     state: &GateState,
@@ -364,7 +400,14 @@ fn container_for(
         .and_then(|r| r.source_type)
         .or(synthesised.as_ref().map(|(_, written_as)| *written_as));
     let captured_label = rebuild.and_then(|r| r.label_position);
-    let default_filter = gate_to_serialized(gate, container_id, source_type, axes, captured_label)?;
+    let source_axes = rebuild.and_then(|r| r.source_axes.as_ref());
+    let default_filter = gate_to_serialized(
+        &as_imported(gate, container_id, source_axes)?,
+        container_id,
+        source_type,
+        axes,
+        captured_label,
+    )?;
 
     // Omiq stores one entry per file, even when a metadata column is what
     // actually drives the position. So write the files this container already
@@ -390,8 +433,13 @@ fn container_for(
         let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
             continue;
         };
-        let filter =
-            gate_to_serialized(&for_file, container_id, source_type, axes, captured_label)?;
+        let filter = gate_to_serialized(
+            &as_imported(&for_file, container_id, source_axes)?,
+            container_id,
+            source_type,
+            axes,
+            captured_label,
+        )?;
         per_file_filters.insert(file_id.clone(), filter);
     }
 

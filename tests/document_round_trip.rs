@@ -647,3 +647,76 @@ fn the_export_names_a_grouping_column_only_if_it_holds_every_files_position() {
         edge(&back, "sample2")
     );
 }
+
+/// A sample's own position of a gate, viewed on a plot with the gate's axes
+/// the other way round, is saved on the axes the file had it on.
+///
+/// Viewing rewrites only the position shown - here the sample's - so the gate
+/// is held one way round globally and the other for that sample. Before the
+/// fix the export wrote the sample's position with `f1` and `f2` exchanged
+/// under a default filter that had them the right way round: one container
+/// whose positions disagree about which channel is which.
+#[test]
+fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
+    let mut state = import(&fixture(FIXTURE));
+    let metadata = fixture_metadata();
+    let before = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+
+    let (x, y): (Arc<str>, Arc<str>) = (Arc::from("Alexa Fluor 700-A"), Arc::from("BUV737-A"));
+    let id: GateId = Arc::from("0lmI");
+    let sample: Arc<str> = Arc::from("sample1");
+    let resolver = state.get_current_sample(sample.clone(), metadata.get(&sample).unwrap());
+    assert_ne!(
+        resolver.gate_origins.get(&id),
+        Some(&GateSource::Global),
+        "the premise: sample1 has a position of its own"
+    );
+    let on_these_axes: Vec<GateId> = state
+        .registered_ids()
+        .into_iter()
+        .filter(|g| {
+            state
+                .registered_gate(g)
+                .is_some_and(|g| g.get_params() == (x.clone(), y.clone()))
+        })
+        .collect();
+    state
+        .orient_to_plot(&on_these_axes, &y, &x, &resolver)
+        .unwrap();
+
+    let held = |g: Arc<dyn DrawableGate>| g.get_params();
+    assert_eq!(
+        held(state.gate_for_file(&id, &sample, &metadata).unwrap()),
+        (y.clone(), x.clone()),
+        "the premise: sample1's position is held the other way round"
+    );
+    assert_eq!(
+        held(state.registered_gate(&id).unwrap()),
+        (x.clone(), y.clone()),
+        "the premise: the global position is not"
+    );
+
+    let after = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    assert_eq!(
+        after["tree"]["filterContainers"], before["tree"]["filterContainers"],
+        "viewing on swapped axes changed what is saved"
+    );
+    let per_file = &after["tree"]["filterContainers"]["0lmI"]["perFileFilters"]["sample1"];
+    assert_eq!(per_file["f1"], "Alexa Fluor 700-A");
+    assert_eq!(
+        per_file["labelLoc"]["f1Val"], 51.0513_f32 as f64,
+        "the label as the file had it"
+    );
+
+    // And opened again, the sample's position is where it was.
+    let reopened = saved_and_reopened(&state, "swapped-sample");
+    let edges = |s: &GateState| {
+        let g = s.gate_for_file(&id, &sample, &metadata).unwrap();
+        (
+            g.get_params(),
+            extent_on(&g.get_gate_ref(None).unwrap().geometry, &x).unwrap(),
+            extent_on(&g.get_gate_ref(None).unwrap().geometry, &y).unwrap(),
+        )
+    };
+    assert_eq!(edges(&reopened), edges(&import(&fixture(FIXTURE))));
+}
