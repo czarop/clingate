@@ -190,6 +190,27 @@
 
 ### Fixed
 
+- **A damaged FCS file is refused, not a crash - and one bad file no longer
+  stops a rules run.** A file with a damaged header or cut short could fail an
+  assertion deep in the FCS reader; a rules run reads files in parallel, so
+  one such file ended the whole run and no gate was placed. Now the file is
+  refused with a reason when the workspace opens, or reported in the run while
+  every other file is still placed. A file whose header offset is damaged but
+  whose keywords still say where the events are is read correctly. (Fixed in
+  the flow crates, which clingate now pins to that fix.)
+
+- **A file keeps its own $GUID.** Opening a file replaced its $GUID with a
+  random one, so the same acquisition had a new identity every time. Two
+  copies of one acquisition now compare as the same file.
+
+- **A plot holding an event with no value still shows its percentages.** An
+  event with a NaN value stopped the percentages being counted at all.
+
+- **Files written by the flow crates state their data offsets correctly.**
+  Their $BEGINDATA and $ENDDATA pointed somewhere other than the data, which a
+  reader trusting those keywords would have misread. Files written before the
+  fix are still read, from the header.
+
 - **Linking no longer leaves the replaced gate behind in the file.** When a
   position was linked to another gate, the gate it used to show stayed
   registered even with nothing using it, and was saved to Omiq as a container

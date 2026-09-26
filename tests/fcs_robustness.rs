@@ -87,14 +87,12 @@ fn the_workspace_refuses_a_file_cut_short_anywhere() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// BUG (docs/test-audit.md, B-FCS-3), upstream: flow_fcs's `Fcs::open`
-/// slices the file by the offsets its header claims without checking them,
-/// so a file cut short - or with a digit of an offset changed - panics
-/// ("range end index 312 out of range for slice of length 110"). Every
-/// caller here runs it on a worker thread, so the app survives, but see
-/// B-FCS-2 for what the panic still costs.
+/// Was B-FCS-3, fixed in flow_fcs: `Fcs::open` sliced the file by the
+/// offsets its header claimed without checking them, so a file cut short -
+/// or with a digit of an offset changed - panicked ("range end index 312 out
+/// of range for slice of length 110"), and a rules run, which reads files in
+/// parallel, lost every file with it (B-FCS-2).
 #[test]
-#[ignore = "known bug B-FCS-3 (flow_fcs): a damaged file panics Fcs::open"]
 fn reading_the_events_of_a_damaged_file_is_an_error_not_a_panic() {
     let mut problems = damaged_reads(Reader::Events, 400, 1, header_damage);
     problems.extend(damaged_reads(Reader::Events, 200, 2, cut_short));

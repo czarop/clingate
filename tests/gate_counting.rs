@@ -420,9 +420,8 @@ fn the_filter_and_the_index_agree_on_every_event_on_every_kind_of_edge() {
 
 /// Whole-number events and gates with whole-number corners, so events land
 /// exactly on edges, corners and slanted sides all the time - the case that
-/// hid the disagreement on real, decimal data. (No NaN events: the index
-/// cannot be built over one - B-IDX-1 below. The filter's NaN handling is
-/// pinned in its own tests.)
+/// hid the disagreement on real, decimal data. A few NaN and infinite events
+/// too, which neither may hold.
 #[test]
 fn the_filter_and_the_index_agree_on_whole_number_data_whatever_the_gates() {
     use rand::prelude::*;
@@ -435,6 +434,12 @@ fn the_filter_and_the_index_agree_on_whole_number_data_whatever_the_gates() {
                 xs.push(x as f32);
                 ys.push(y as f32);
             }
+        }
+        for _ in 0..5 {
+            xs.push(f32::NAN);
+            ys.push(rng.random_range(0..=40) as f32);
+            xs.push(rng.random_range(0..=40) as f32);
+            ys.push(f32::INFINITY);
         }
         let mut corner = || {
             (
@@ -485,14 +490,11 @@ fn the_filter_and_the_index_agree_on_whole_number_data_whatever_the_gates() {
     }
 }
 
-/// BUG (docs/test-audit.md, B-IDX-1): `flow_gates`'s `EventIndex::build`
-/// panics on an event with a NaN value - `rstar`'s bulk load unwraps a
-/// comparison that NaN cannot answer. In the app the index is built on a
-/// worker thread, so a plot holding such an event shows no percentages rather
-/// than crashing, but it should simply leave the event out. Upstream, in
-/// `czarop/flow`.
+/// Was B-IDX-1, fixed in flow_gates: `EventIndex::build` panicked on an
+/// event with a NaN value - `rstar`'s bulk load unwraps a comparison NaN
+/// cannot answer - and a plot holding one showed no percentages. The event is
+/// now left out of the index, as the filter leaves it out of every gate.
 #[test]
-#[ignore = "known bug B-IDX-1: the event index panics on a NaN value"]
 fn an_index_can_be_built_over_an_event_with_no_value() {
     // Enough events for the bulk load to sort them: a handful goes into one
     // leaf without a comparison, and builds whatever it holds.

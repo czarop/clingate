@@ -201,20 +201,19 @@ fn comparing_two_files_does_not_need_a_guid() {
         FcsSampleStub::open(a.to_str().unwrap()).unwrap(),
         FcsSampleStub::open(b.to_str().unwrap()).unwrap(),
     );
-    // Neither file carries a $GUID. (Opening gives each a random one - see
-    // B-FCS-1 - so this holds whichever way they are told apart.)
+    // Neither file carries a $GUID, so opening gives each a random one of
+    // its own.
     assert!(a != b, "two different files compared equal");
     assert!(a == a.clone());
 }
 
-/// BUG (docs/test-audit.md, B-FCS-1): flow_fcs's `validate_guid` looks the
-/// GUID up as `GUID`, but keywords are stored as `$GUID`, so it never finds
-/// one and inserts a random UUID - over the file's own `$GUID`. Every open
-/// gives a file a new identity, so equality "by `$GUID`" compares two random
-/// numbers: two copies of one acquisition, or one file opened twice, are
+/// Was B-FCS-1, fixed in flow_fcs: `validate_guid` looked the GUID up as
+/// `GUID`, but keywords are stored as `$GUID`, so it never found one and
+/// inserted a random UUID - over the file's own `$GUID`. Every open gave a
+/// file a new identity, so equality "by `$GUID`" compared two random
+/// numbers: two copies of one acquisition, or one file opened twice, were
 /// never equal.
 #[test]
-#[ignore = "known bug B-FCS-1: opening a file replaces its $GUID with a random one"]
 fn two_copies_of_one_acquisition_are_equal_by_guid() {
     let dir = scratch("sameguid");
     let (a, b) = (dir.join("a.fcs"), dir.join("copy_of_a.fcs"));
@@ -378,21 +377,51 @@ pub fn with_data_start_damaged(path: &Path) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// BUG (docs/test-audit.md, B-FCS-2): the workspace checks a file's header
-/// and keywords but not that its data segment holds the `$TOT` events its
-/// keywords promise. A file whose header offsets are damaged is accepted, and
-/// reading its events then trips an assertion inside flow_fcs ("Parameter 1
-/// should have 50 events, got 88").
+/// As [`with_data_start_damaged`], and `$BEGINDATA` damaged too - to
+/// another number of the same width, so nothing else moves. Neither the
+/// header nor the keywords now place the 50 events, and nothing shows where
+/// they are.
+pub fn with_data_offsets_damaged(path: &Path) {
+    with_data_start_damaged(path);
+    let mut bytes = std::fs::read(path).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let at = text
+        .find("$BEGINDATA/")
+        .expect("the file states its data start")
+        + "$BEGINDATA/".len();
+    bytes[at..at + 8].copy_from_slice(b"00000100");
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Was B-FCS-2: the workspace checked a file's header and keywords but not
+/// that its events could be read, so a file whose header's data offset was
+/// damaged was accepted - and reading its events tripped an assertion inside
+/// flow_fcs ("Parameter 1 should have 50 events, got 88"). The workspace now
+/// asks flow_fcs where the events are, as reading them does; where nothing
+/// places them, the file is refused when the workspace opens.
 #[test]
-#[ignore = "known bug B-FCS-2: a file whose data segment does not hold $TOT events is accepted"]
-fn a_file_whose_data_segment_does_not_match_its_event_count_is_refused() {
+fn a_file_whose_events_cannot_be_located_is_refused() {
     let dir = scratch("datamismatch");
     let path = dir.join("damaged.fcs");
+    with_data_offsets_damaged(&path);
+    let why = FcsSampleStub::open(path.to_str().unwrap())
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(why.contains("its events cannot be read"), "{why}");
+}
+
+/// The header's data offset damaged, but `$BEGINDATA`/`$ENDDATA` intact and
+/// placing exactly the 50 events: flow_fcs reads them from there, so the
+/// workspace takes the file and its events come back as they were written.
+#[test]
+fn a_damaged_header_offset_the_keywords_overrule_is_read_correctly() {
+    let dir = scratch("overruled");
+    let path = dir.join("damaged.fcs");
     with_data_start_damaged(&path);
-    assert!(
-        FcsSampleStub::open(path.to_str().unwrap()).is_err(),
-        "accepted a file whose data segment holds 88 events' worth for 50"
-    );
+    assert!(FcsSampleStub::open(path.to_str().unwrap()).is_ok());
+    let fcs = flow_fcs::Fcs::open(path.to_str().unwrap()).expect("read from the keywords");
+    assert_eq!(fcs.data_frame.height(), 50);
 }
 
 /// A file cut short in its events is accepted by the workspace today, but

@@ -140,10 +140,6 @@ impl FcsFiles {
     }
 }
 
-/// The fixed-width HEADER segment every FCS version starts with: the version,
-/// four spaces, and six eight-character offsets.
-const HEADER_LEN: usize = 58;
-
 #[derive(Debug, Clone)]
 pub struct FcsSampleStub {
     /// The header segment of the fcs file, including the version, and byte offsets to the text, data, and analysis segments
@@ -167,10 +163,11 @@ impl PartialEq for FcsSampleStub {
     /// Falls back to the path rather than panicking. This used to `expect` a
     /// GUID on both sides, which took the app down for a file without one.
     ///
-    /// In practice every opened file has one, and not its own: flow_fcs's
-    /// `validate_guid` looks for `GUID`, never finds it among keywords stored
-    /// as `$GUID`, and inserts a random `$GUID` over the file's. See B-FCS-1
-    /// in `docs/test-audit.md`.
+    /// Every opened file has one: its own, or - for a file without - a random
+    /// one given when it is opened. So two copies of one acquisition are equal
+    /// wherever they are, and two opens of a file without a `$GUID` are not.
+    /// flow_fcs used to replace every file's own `$GUID` with a random one
+    /// (B-FCS-1), so until it was fixed no two files ever compared equal.
     fn eq(&self, other: &Self) -> bool {
         match (self.get_guid(), other.get_guid()) {
             (Ok(a), Ok(b)) => a == b,
@@ -202,37 +199,24 @@ impl FcsSampleStub {
 
         Self::validate_fcs_extension(&file_access.path)?;
 
-        // `Header::from_mmap` slices the first 58 bytes without checking the
-        // file has them, so an empty or tiny file panics inside flow_fcs.
-        if file_access.mmap.len() < HEADER_LEN {
-            return Err(anyhow!(
-                "it is {} bytes long, shorter than an FCS header",
-                file_access.mmap.len()
-            ));
-        }
+        // flow_fcs refuses a file too short for a header, or whose TEXT
+        // segment is not inside it. It used to slice by the offsets without
+        // checking them, and this checked them first; now it answers itself.
         let header = Header::from_mmap(&file_access.mmap)
             .map_err(|e| anyhow!("its header is not an FCS header: {e}"))?;
-
-        // `Metadata::from_mmap` indexes the file by the header's offsets
-        // without checking them, so a truncated file - or one whose header
-        // merely looks right - panics inside flow_fcs. Checked here, where it
-        // can still be reported.
-        let text = &header.text_offset;
-        if text.is_empty() || *text.end() >= file_access.mmap.len() {
-            return Err(anyhow!(
-                "its header places the text segment at bytes {}-{}, but the file is only {} \
-                 bytes long - it is truncated or not an FCS file",
-                text.start(),
-                text.end(),
-                file_access.mmap.len()
-            ));
-        }
         let mut metadata = Metadata::from_mmap(&file_access.mmap, &header);
 
         metadata
             .validate_text_segment_keywords(&header)
             .map_err(|e| anyhow!("its keywords are incomplete: {e}"))?;
         metadata.validate_guid();
+
+        // The events are not read here, but whether they can be is: where the
+        // file places them, and that they are all there. The same check
+        // `Fcs::open` makes before reading them, so a file the workspace
+        // accepts is one a plot or a rules run can read (was B-FCS-2).
+        flow_fcs::Fcs::locate_events(&header, &metadata, file_access.mmap.len())
+            .map_err(|e| anyhow!("its events cannot be read: {e}"))?;
 
         let parameters = Self::generate_parameter_map(&metadata)
             .map_err(|e| anyhow!("its parameters could not be read: {e}"))?;

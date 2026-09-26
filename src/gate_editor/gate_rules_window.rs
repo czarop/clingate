@@ -2641,18 +2641,17 @@ mod tests {
             );
         }
 
-        /// BUG (docs/test-audit.md, B-FCS-2): a file whose header's data
-        /// offset is damaged passes the workspace's check, and reading its
-        /// events trips an assertion inside flow_fcs. Files are read in
-        /// parallel, so that panic takes the whole run with it - the donor's
-        /// gate is never placed because of a different file.
+        /// Was B-FCS-2: a file whose data could not be read tripped an
+        /// assertion inside flow_fcs, and files are read in parallel, so that
+        /// panic took the whole run with it - the donor's gate was never
+        /// placed because of a different file. flow_fcs now refuses such a
+        /// file with an error: it is reported, and the rest still run.
         #[test]
-        #[ignore = "known bug B-FCS-2: one file with a damaged data offset ends the whole run"]
         fn a_file_with_a_damaged_data_offset_is_reported_and_the_rest_still_run() {
             let (state, _) = positive_gate();
             let mut files = workspace("run-damaged");
             let damaged = files[0].1.with_file_name("damaged.fcs");
-            crate::file_load_tests::with_data_start_damaged(&damaged);
+            crate::file_load_tests::with_data_offsets_damaged(&damaged);
             files.push((Arc::from("damaged.fcs"), damaged));
 
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2674,6 +2673,20 @@ mod tests {
             assert!(
                 outcome.report.positioned.iter().any(|p| &*p.file == "fs_b"),
                 "the donor was still placed"
+            );
+            assert!(
+                outcome
+                    .report
+                    .skipped
+                    .iter()
+                    .any(|s| s.reason.contains("damaged.fcs")),
+                "and the damaged file reported: {:?}",
+                outcome
+                    .report
+                    .skipped
+                    .iter()
+                    .map(|s| &s.reason)
+                    .collect::<Vec<_>>()
             );
         }
 

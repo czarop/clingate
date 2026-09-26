@@ -9,9 +9,13 @@ dioxus = { version = "0.7.10", features = ["router"] }
 thiserror = "2.0.12"
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread", "time"] }
 anyhow = "1"
-flow-fcs = { git = "https://github.com/czarop/flow" }
-flow-plots = { git = "https://github.com/czarop/flow", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow" }
+# Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch: flow_fcs refuses
+# damaged files instead of panicking and keeps a file's own $GUID, and
+# flow_gates' event index leaves out NaN events. Back to the default branch once
+# it is merged there.
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
 base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"
