@@ -12,16 +12,44 @@ pub struct DensityGrid {
     pub y_range: (f64, f64),
 }
 
+/// A column's values as f64, whatever numeric type it holds - FCS event data
+/// is Float32.
+///
+/// A column that is not numbers is refused: a cast would turn its text into
+/// nulls, which read as no events at all.
+fn as_f64(column: &Column) -> Result<Float64Chunked, String> {
+    if !column.dtype().is_primitive_numeric() {
+        return Err(format!(
+            "column {} holds {}, not numbers",
+            column.name(),
+            column.dtype()
+        ));
+    }
+    column
+        .cast(&DataType::Float64)
+        .and_then(|c| c.f64().cloned())
+        .map_err(|e| format!("column {} is not numbers: {e}", column.name()))
+}
+
 impl DensityGrid {
+    /// Count the events into an `n_bins` x `n_bins` grid over the two ranges.
+    ///
+    /// Any numeric column is read - it used to `unwrap` `.f64()`, and FCS
+    /// event data is Float32, so it panicked (B-GRID-2). An event with a
+    /// coordinate that is not a finite number has no cell and is left out; a
+    /// NaN used to cast to cell 0 and be counted in the corner (B-GRID-1).
+    ///
+    /// # Errors
+    /// A column that is not numbers.
     pub fn from_column(
         xs: &Column,
         ys: &Column,
         n_bins: usize,
         x_range: (f64, f64),
         y_range: (f64, f64),
-    ) -> Self {
-        let xs = xs.f64().unwrap();
-        let ys = ys.f64().unwrap();
+    ) -> Result<Self, String> {
+        let xs = as_f64(xs)?;
+        let ys = as_f64(ys)?;
 
         let mut counts = vec![0.0f32; n_bins * n_bins];
 
@@ -30,6 +58,9 @@ impl DensityGrid {
 
         for (x, y) in xs.into_iter().zip(ys.into_iter()) {
             let (Some(x), Some(y)) = (x, y) else { continue };
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
 
             let col = ((x - x_range.0) * x_scale) as isize;
             let row = ((y - y_range.0) * y_scale) as isize;
@@ -39,12 +70,12 @@ impl DensityGrid {
             }
         }
 
-        Self {
+        Ok(Self {
             counts,
             n_bins,
             x_range,
             y_range,
-        }
+        })
     }
 
     /// Bin width in data-space units — used to convert peak offset back to data coords
@@ -122,7 +153,15 @@ impl DensityGrid {
 }
 
 /// Simple separable Gaussian blur applied in-place
+/// Blur the grid with a Gaussian of `sigma` bins.
+///
+/// A sigma of 0 or less, or not a number, is no blur, and leaves the grid as
+/// it is. It used to build a kernel of `exp(-0 / 0)` and fill the grid with
+/// NaN, which `cross_correlate` then panicked comparing (B-GRID-4).
 pub fn gaussian_blur(grid: &mut DensityGrid, sigma: f32) {
+    if !(sigma > 0.0) || !sigma.is_finite() {
+        return;
+    }
     let n = grid.n_bins;
     let kernel = make_gaussian_kernel(sigma);
     let k = kernel.len();
@@ -283,6 +322,10 @@ pub fn apply_constraints(mut t: TranslationVector, rules: &GateRules) -> Transla
             let scale = max_t / mag;
             t.dx_data *= scale;
             t.dy_data *= scale;
+            // The bins describe the same move: scaled with it, to the nearest
+            // whole bin. They used to keep the uncapped move (B-GRID-3).
+            t.dx_bins = (f64::from(t.dx_bins) * scale).round() as i32;
+            t.dy_bins = (f64::from(t.dy_bins) * scale).round() as i32;
         }
     }
 
@@ -298,7 +341,7 @@ fn calculate_dynamic_radii(
     x_data_range: f64,
     y_data_range: f64,
 ) -> Option<(f32, f32)> {
-    let mask = xs.f64().ok()?.lt(x_mid) & ys.f64().ok()?.lt(y_mid);
+    let mask = as_f64(xs).ok()?.lt(x_mid) & as_f64(ys).ok()?.lt(y_mid);
     let filtered_x = xs.filter(&mask).ok()?;
     let filtered_y = ys.filter(&mask).ok()?;
 
@@ -310,13 +353,19 @@ fn calculate_dynamic_radii(
         return None;
     }
 
-    let std_x = filtered_x.f64().ok()?.std(1)?;
-    let std_y = filtered_y.f64().ok()?.std(1)?;
+    let std_x = as_f64(&filtered_x).ok()?.std(1)?;
+    let std_y = as_f64(&filtered_y).ok()?.std(1)?;
 
     // RED FLAG 2: Noise Check
     // If StdDev is 0.0, the data is a single vertical/horizontal line (error).
-    // If StdDev is too high (e.g., > 25% of total range), it's just noise, not a cluster.
-    if std_x <= 0.0 || std_y <= 0.0 || std_x > (x_data_range * 0.25) {
+    // If StdDev is too high, it's just noise, not a cluster. "Too high" is 25%
+    // of the window the events were taken from - the lower half of each axis
+    // - on either axis: uniform scatter over that window has a spread of
+    // about 29% of it, and a population sits well inside. It used to be 25%
+    // of the whole axis, which the half-axis window cannot reach, and only on
+    // X, so the check could never fire (B-GRID-5).
+    let (window_x, window_y) = (x_data_range / 2.0, y_data_range / 2.0);
+    if std_x <= 0.0 || std_y <= 0.0 || std_x > window_x * 0.25 || std_y > window_y * 0.25 {
         return None;
     }
 
@@ -361,14 +410,14 @@ pub fn compute_negative_shift(
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
     let mut test_grid = DensityGrid::from_column(
         test_parent_events.0,
         test_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
 
     gaussian_blur(&mut qc_grid, blur_sigma);
     gaussian_blur(&mut test_grid, blur_sigma);
@@ -412,14 +461,14 @@ pub fn compute_total_shift(
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
     let mut test_grid = DensityGrid::from_column(
         test_parent_events.0,
         test_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
 
     gaussian_blur(&mut qc_grid, blur_sigma);
     gaussian_blur(&mut test_grid, blur_sigma);

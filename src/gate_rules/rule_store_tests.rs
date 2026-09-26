@@ -700,13 +700,12 @@ fn digits_inside_a_name_compare_as_numbers() {
     assert_eq!(human_order("abc", "abc"), Ordering::Equal);
 }
 
-/// BUG (docs/test-audit.md, B-RS-1): the comparison reads `D02` and `D2` as
-/// the same number and `a1` and `A1` as the same text, and so calls two
-/// different names Equal. A sort then leaves them in whatever order they
-/// arrived - and the files arrive from a hash map - so two tabs, or two runs,
-/// can list the same samples differently. Distinct names need a tie-break.
+/// Was B-RS-1: the comparison read `D02` and `D2` as the same number and
+/// `a1` and `A1` as the same text, and so called two different names Equal.
+/// A sort then left them in whatever order they arrived - and the files
+/// arrive from a hash map - so two tabs, or two runs, could list the same
+/// samples differently.
 #[test]
-#[ignore = "known bug B-RS-1: human_order calls distinct names equal"]
 fn distinct_names_never_compare_equal() {
     use crate::gate_rules::rule_store::human_order;
     use std::cmp::Ordering;
@@ -714,6 +713,44 @@ fn distinct_names_never_compare_equal() {
         assert_ne!(human_order(a, b), Ordering::Equal, "{a} vs {b}");
         assert_eq!(human_order(a, b), human_order(b, a).reverse(), "{a} vs {b}");
     }
+}
+
+/// The tie-break decides only between names that read the same: the
+/// natural order still comes first, and any order of the same names sorts
+/// to the same list.
+#[test]
+fn a_sort_gives_one_order_whatever_order_the_names_arrive_in() {
+    use crate::gate_rules::rule_store::human_order;
+    use rand::prelude::*;
+    let names = [
+        "D2",
+        "D02",
+        "d2",
+        "D10",
+        "a1",
+        "A1",
+        "Plate_7",
+        "plate_007",
+        "D1",
+    ];
+    let mut expected = names.to_vec();
+    expected.sort_by(|a, b| human_order(a, b));
+    // Names that read alike sit together, in the order of their exact text.
+    assert_eq!(&expected[..2], ["A1", "a1"]);
+    let mut rng = StdRng::seed_from_u64(4);
+    for _ in 0..50 {
+        let mut shuffled = names.to_vec();
+        shuffled.shuffle(&mut rng);
+        shuffled.sort_by(|a, b| human_order(a, b));
+        assert_eq!(shuffled, expected);
+    }
+    // Still numbers before text and 2 before 10.
+    let at = |n: &str| expected.iter().position(|x| *x == n).unwrap();
+    assert!(at("D1") < at("D2") && at("D2") < at("D10"), "{expected:?}");
+    assert!(
+        at("D02") < at("D10") && at("d2") < at("D10"),
+        "{expected:?}"
+    );
 }
 
 #[test]
@@ -743,11 +780,16 @@ fn an_id_too_long_for_a_number_still_compares() {
     assert_eq!(human_order(a, b), Ordering::Less);
 }
 
+/// Case does not split the ordering: `donor` and `DONOR` sort together,
+/// with nothing between them, rather than every capitalised name first. They
+/// are not equal - only a name equals itself (B-RS-1).
 #[test]
 fn case_does_not_split_the_ordering() {
     use crate::gate_rules::rule_store::human_order;
     use std::cmp::Ordering;
-    assert_eq!(human_order("donor", "DONOR"), Ordering::Equal);
+    let mut names = vec!["donor", "Cell", "DONOR", "eve", "Donor"];
+    names.sort_by(|a, b| human_order(a, b));
+    assert_eq!(names, ["Cell", "DONOR", "Donor", "donor", "eve"]);
     assert_eq!(human_order("Apple", "banana"), Ordering::Less);
 }
 

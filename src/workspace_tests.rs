@@ -418,17 +418,41 @@ fn a_remembered_workspace_from_an_older_version_still_loads() {
     assert!(loaded.fcs.is_empty());
 }
 
-/// BUG (docs/test-audit.md, B-WS-1): a file from outside the workspace keeps
-/// its own name, but "outside" is decided by `strip_prefix`, which compares
-/// components without resolving `..`. A path that climbs out through the
-/// workspace folder counts as inside it and is named `.._elsewhere_A1.fcs`.
+/// Was B-WS-1: "outside the workspace" was decided by `strip_prefix`, which
+/// compares components without resolving `..`, so a path that climbed out
+/// through the workspace folder counted as inside it and was named
+/// `.._elsewhere_A1.fcs`.
 #[test]
-#[ignore = "known bug B-WS-1: a path that climbs out of the workspace is named as if inside it"]
 fn a_path_that_climbs_out_of_the_workspace_keeps_its_own_name() {
     let root = Path::new("/w");
     assert_eq!(
         program_name(Some(root), Path::new("/w/../elsewhere/A1.fcs")),
         "A1.fcs"
+    );
+}
+
+#[test]
+fn dots_in_a_path_inside_the_workspace_name_the_file_by_where_it_really_is() {
+    let root = Path::new("/w");
+    for (path, name) in [
+        ("/w/Plate_1/../Plate_2/A1.fcs", "Plate_2_A1.fcs"),
+        ("/w/./Plate_1/./A1.fcs", "Plate_1_A1.fcs"),
+        ("/w/Plate_1/WK1/../../A1.fcs", "A1.fcs"),
+    ] {
+        assert_eq!(program_name(Some(root), Path::new(path)), name, "{path}");
+    }
+    // A root written with dots of its own is the same folder.
+    assert_eq!(
+        program_name(
+            Some(Path::new("/data/../w/.")),
+            Path::new("/w/Plate_1/A1.fcs")
+        ),
+        "Plate_1_A1.fcs"
+    );
+    // Climbing above the filesystem root stays at it.
+    assert_eq!(
+        program_name(Some(root), Path::new("/../../w/Plate_1/A1.fcs")),
+        "Plate_1_A1.fcs"
     );
 }
 

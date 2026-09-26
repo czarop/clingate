@@ -183,11 +183,15 @@ pub fn kde_negative_shift(
     let qc_peak_y = kde_peak(&ys_grid, &qc_density_y);
     let test_peak_y = kde_peak(&ys_grid, &test_density_y);
 
-    // ── Width (std dev of events in the quadrant) ─────────────────────────────
-    let qc_width_x = std_dev(&qc_neg_x);
-    let qc_width_y = std_dev(&qc_neg_y);
-    let test_width_x = std_dev(&test_neg_x);
-    let test_width_y = std_dev(&test_neg_y);
+    // ── Width of the negative's own peak ──────────────────────────────────────
+    // Read off the peak rather than the whole quadrant: the std-dev of every
+    // event below the midpoint counted positives smeared down into the
+    // quadrant as negative width, and read an unchanged negative as twice as
+    // wide (B-KDE-1).
+    let qc_width_x = peak_width(&xs_grid, &qc_density_x, bw_x);
+    let qc_width_y = peak_width(&ys_grid, &qc_density_y, bw_y);
+    let test_width_x = peak_width(&xs_grid, &test_density_x, bw_x);
+    let test_width_y = peak_width(&ys_grid, &test_density_y, bw_y);
 
     Ok(NegativePopulationShift {
         dx: test_peak_x - qc_peak_x,
@@ -202,6 +206,63 @@ pub fn kde_negative_shift(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// The width of the tallest peak of a density, as the standard deviation of
+/// a normal peak of the same shape: its full width at half its height, over
+/// `2 sqrt(2 ln 2)`.
+///
+/// Anything below half the peak's height - a smeared positive running into
+/// the negative's quadrant, a tail - does not widen it, which is the point:
+/// it measures the population, not the quadrant.
+///
+/// The density is a kernel estimate with a Gaussian kernel of width
+/// `bandwidth`, which adds the kernel's variance to the peak's own; it is
+/// taken back out, so a narrow peak is not read as the width of the kernel.
+/// Where the peak runs off either end of the grid before falling to half its
+/// height, the end is used, and the width is a lower bound. A lightly smoothed
+/// peak is noisy at the top, which reads it a little narrow - 0.92 to 0.99 of
+/// the true spread on 4,000 events.
+fn peak_width(xs: &[f64], density: &[f64], bandwidth: f64) -> f64 {
+    let Some((peak, &top)) = density
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.is_finite())
+        .max_by(|a, b| a.1.total_cmp(b.1))
+    else {
+        return f64::NAN;
+    };
+    if top <= 0.0 {
+        return f64::NAN;
+    }
+    let half = top / 2.0;
+    // Where the density crosses half height between two grid points,
+    // linearly interpolated.
+    let crossing = |inside: usize, outside: usize| {
+        let (d_in, d_out) = (density[inside], density[outside]);
+        let t = if d_in == d_out {
+            0.0
+        } else {
+            (d_in - half) / (d_in - d_out)
+        };
+        xs[inside] + t * (xs[outside] - xs[inside])
+    };
+    let left = (0..peak)
+        .rev()
+        .find(|&i| density[i] < half)
+        .map_or(xs[0], |i| crossing(i + 1, i));
+    let right = (peak + 1..density.len())
+        .find(|&i| density[i] < half)
+        .map_or(xs[density.len() - 1], |i| crossing(i - 1, i));
+    let observed = (right - left) / (2.0 * (2.0 * std::f64::consts::LN_2).sqrt());
+    let bandwidth = if bandwidth.is_finite() {
+        bandwidth
+    } else {
+        0.0
+    };
+    (observed * observed - bandwidth * bandwidth)
+        .max(0.0)
+        .sqrt()
+}
 
 fn extract_negative_quadrant(
     events: (&Column, &Column),
@@ -809,12 +870,46 @@ mod flow_tests {
         );
     }
 
-    /// BUG (docs/test-audit.md, B-KDE-1): the width is the std-dev of every
-    /// event below the axis midpoint, so positives smeared down into that
-    /// quadrant read as a widened negative - ratios of about 2.15 on both
-    /// axes here, where the negative is identical.
+    /// The width read off a peak is the population's own standard deviation,
+    /// the kernel's share taken out, whatever the bandwidth - and a smear
+    /// below half the peak's height does not change it.
     #[test]
-    #[ignore = "known bug B-KDE-1: a smeared positive inflates the negative's width"]
+    fn a_peak_width_is_the_population_s_own_spread() {
+        let mut rng = StdRng::seed_from_u64(9);
+        for sd in [0.05, 0.2, 0.5] {
+            let values: Vec<f64> = (0..4000)
+                .map(|_| Normal::new(1.0, sd).unwrap().sample(&mut rng))
+                .collect();
+            // Measured at 0.92-0.99 of the true spread: a lightly smoothed
+            // peak is a little noisy at the top, which reads it narrow.
+            for bandwidth in [silverman_bandwidth(&values), sd * 0.5] {
+                let (xs, d) = kde_1d(&values, (-2.0, 4.0), 1024, bandwidth);
+                let w = peak_width(&xs, &d, bandwidth);
+                assert!(
+                    (w / sd - 1.0).abs() < 0.1,
+                    "sd {sd}, bandwidth {bandwidth}: {w}"
+                );
+            }
+            // A smear running from the peak out to the right: the quadrant's
+            // spread balloons, the peak's does not.
+            let mut smeared = values.clone();
+            smeared.extend((0..1500).map(|i| 1.0 + 2.5 * i as f64 / 1500.0));
+            let bw = silverman_bandwidth(&values);
+            let (xs, d) = kde_1d(&smeared, (-2.0, 4.0), 1024, bw);
+            let w = peak_width(&xs, &d, bw);
+            assert!((w / sd - 1.0).abs() < 0.1, "sd {sd} smeared: {w}");
+            assert!(
+                std_dev(&smeared) > 1.5 * sd,
+                "the smear does widen the quadrant"
+            );
+        }
+    }
+
+    /// Was B-KDE-1: the width was the std-dev of every event below the axis
+    /// midpoint, so positives smeared down into that quadrant read as a
+    /// widened negative - ratios of about 2.15 on both axes here, where the
+    /// negative is identical.
+    #[test]
     fn test_smeared_positive_only_in_test() {
         let (qc, test) = smeared_positive_only_in_test(42);
         run(

@@ -137,7 +137,19 @@ impl Default for SamplePairing {
 /// Runs of digits compare as numbers and everything else as text. Without it a
 /// timepoint column - which is the obvious thing to sort by - comes out in an
 /// order nobody wants.
+///
+/// Names that read the same that way but are not the same - `D02` and `D2`,
+/// `a1` and `A1` - are put in the order of their exact text, so only a name
+/// equals itself. They used to compare equal, and a sort left them in
+/// whatever order they arrived in, which comes from a hash map: the same
+/// samples could be listed differently from one tab or run to the next
+/// (B-RS-1).
 pub fn human_order(a: &str, b: &str) -> std::cmp::Ordering {
+    read_as_a_person_would(a, b).then_with(|| a.cmp(b))
+}
+
+/// The comparison itself, which calls some different names equal.
+fn read_as_a_person_would(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
     loop {

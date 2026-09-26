@@ -469,15 +469,9 @@ impl GateHierarchy {
             ));
         }
 
-        // Check if gate_id is a descendant of new_parent_id (would create cycle)
-        let new_parent_descendants = self.get_descendants(new_parent_id.as_ref());
-        if new_parent_descendants.contains(&gate_id) {
-            return Err(anyhow!(
-                "Would create cycle {} {}",
-                new_parent_id.as_ref(),
-                gate_id.as_ref(),
-            ));
-        }
+        // A gate already somewhere below the new parent is not a cycle: moving
+        // a grandchild up to sit directly under its grandparent is an ordinary
+        // move. A check here refused it as one (B-HIER-3).
 
         // Reparent the root gate
         self.reparent(gate_id.as_ref(), new_parent_id.as_ref())?;
@@ -499,8 +493,7 @@ impl GateHierarchy {
     /// A new `GateHierarchy` containing the cloned subtree, or an error if the gate doesn't exist
     ///
     /// # Example
-    /// ```rust,ignore
-    /// // Fails today: see B-HIER-1 in docs/test-audit.md.
+    /// ```rust
     /// use clingate::gate_editor::gates::gate_hierarchy::GateHierarchy;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -510,6 +503,10 @@ impl GateHierarchy {
     ///
     /// let cloned = hierarchy.clone_subtree("child", |id| format!("{}_copy", id))?;
     /// // cloned contains "child_copy" -> "grandchild_copy"
+    /// assert_eq!(
+    ///     cloned.get_parent("grandchild_copy").map(|p| p.as_ref()),
+    ///     Some("child_copy")
+    /// );
     /// # Ok(())
     /// # }
     /// # example().unwrap();
@@ -518,6 +515,11 @@ impl GateHierarchy {
     where
         F: Fn(&str) -> String,
     {
+        let known = self.children.contains_key(gate_id) || self.parents.contains_key(gate_id);
+        if !known {
+            return Err(anyhow!("gate not found in hierarchy {gate_id}"));
+        }
+
         let mut new_hierarchy = Self::new();
 
         // Get all nodes in subtree (including root)
@@ -533,29 +535,34 @@ impl GateHierarchy {
             })
             .collect();
 
-        // Clone relationships
+        // The copied root is a root of the new hierarchy, with its own order,
+        // so a subtree of one gate clones to that gate rather than to nothing.
+        let new_root = id_map[&subtree_nodes[0]].clone();
+        new_hierarchy.add_root(new_root.clone());
+        if let Some(ord) = self.orders.get(gate_id) {
+            new_hierarchy.orders.insert(new_root, *ord);
+        }
+
+        // Clone relationships. Both failures used to be reported whatever
+        // happened - "possible cycle" when the child could not be added and
+        // "no order for child" when it could - so every subtree with a child
+        // failed (B-HIER-1).
         for old_id in &subtree_nodes {
-            if let Some(children) = self.children.get(old_id) {
-                let new_parent_id = id_map.get(old_id).unwrap();
-                for child in children {
-                    if let Some(new_child_id) = id_map.get(child)
-                        && let Some(ord) = self.orders.get(child)
-                    {
-                        if !new_hierarchy.add_child(
-                            new_parent_id.clone(),
-                            new_child_id.clone(),
-                            *ord,
-                        ) {
-                            return Err(anyhow!(
-                                "Failed to add child in cloned hierarchy - possible cycle",
-                            ));
-                        } else {
-                            return Err(anyhow!(
-                                "Failed to add child in cloned hierarchy - no order for child {}",
-                                child
-                            ));
-                        }
-                    }
+            let Some(children) = self.children.get(old_id) else {
+                continue;
+            };
+            let new_parent_id = &id_map[old_id];
+            for child in children {
+                // Every descendant is in the map: the subtree is the root and
+                // all its descendants.
+                let new_child_id = &id_map[child];
+                let ord = self.orders.get(child).ok_or_else(|| {
+                    anyhow!("Failed to add child in cloned hierarchy - no order for child {child}")
+                })?;
+                if !new_hierarchy.add_child(new_parent_id.clone(), new_child_id.clone(), *ord) {
+                    return Err(anyhow!(
+                        "Failed to add child in cloned hierarchy - possible cycle"
+                    ));
                 }
             }
         }
@@ -1368,13 +1375,10 @@ mod gate_hierarchy_tests {
         assert!(GateHierarchy::from_relationships(&rels).is_err());
     }
 
-    /// BUG (docs/test-audit.md, B-HIER-1): both branches of the check after
-    /// `add_child` return an error - the failure branch says "possible
-    /// cycle", the success branch "no order for child" - so cloning any
-    /// subtree with a child in it fails. Nothing calls it yet; its doctest
-    /// never noticed because the example was never run.
-    #[test]
-    #[ignore = "known bug B-HIER-1: clone_subtree fails on every subtree with a child"]
+    /// Was B-HIER-1: both branches after `add_child` returned `Err` -
+    /// "possible cycle" on failure, "no order for child" on success - so any
+    /// subtree with a child in it failed. Its doctest never noticed because
+    /// the example was never run.
     fn a_subtree_can_be_cloned_under_new_ids() {
         let mut h = GateHierarchy::new();
         h.add_child("parent", "child", 0);
@@ -1390,12 +1394,9 @@ mod gate_hierarchy_tests {
         );
     }
 
-    /// BUG (docs/test-audit.md, B-HIER-3): `reparent_subtree` also refuses a
-    /// move when the gate is already below the new parent, calling it a cycle.
-    /// It is not one: moving a grandchild up to sit directly under its
-    /// grandparent is refused. No caller in the app yet.
+    /// Was B-HIER-3: `reparent_subtree` also refused a move when the gate was
+    /// already below the new parent, calling it a cycle. It is not one.
     #[test]
-    #[ignore = "known bug B-HIER-3: reparent_subtree refuses to move a gate up under an ancestor"]
     fn a_subtree_can_be_moved_up_under_an_ancestor() {
         let mut h = GateHierarchy::new();
         h.add_child("root", "a", 0);
@@ -1405,6 +1406,62 @@ mod gate_hierarchy_tests {
         assert_eq!(h.get_parent("b").map(|p| p.as_ref()), Some("root"));
         assert_eq!(h.get_parent("c").map(|p| p.as_ref()), Some("b"));
         assert!(h.validate().is_ok());
+    }
+
+    #[test]
+    fn a_subtree_of_one_gate_clones_to_that_gate() {
+        let mut h = GateHierarchy::new();
+        h.add_child("parent", "leaf", 7);
+        let cloned = h.clone_subtree("leaf", |id| format!("{id}_copy")).unwrap();
+        assert_eq!(cloned.get_roots(), vec![Arc::<str>::from("leaf_copy")]);
+        assert_eq!(
+            cloned.get_order("leaf_copy"),
+            Some(7),
+            "its order comes too"
+        );
+    }
+
+    #[test]
+    fn a_cloned_subtree_keeps_every_child_and_its_order() {
+        let mut h = GateHierarchy::new();
+        h.add_child("root", "a", 1);
+        h.add_child("a", "b", 5);
+        h.add_child("a", "c", 3);
+        h.add_child("c", "d", 9);
+        let cloned = h.clone_subtree("a", |id| format!("{id}'")).unwrap();
+        assert!(cloned.validate().is_ok());
+        assert_eq!(cloned.get_parent("d'").map(|p| p.as_ref()), Some("c'"));
+        let kids: Vec<String> = cloned
+            .get_children("a'")
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
+        assert_eq!(kids, ["c'", "b'"], "in sibling order");
+        assert_eq!(cloned.get_order("d'"), Some(9));
+        assert!(
+            cloned.get_parent("a'").is_none(),
+            "the copy is a root of its own"
+        );
+    }
+
+    #[test]
+    fn cloning_a_gate_not_in_the_tree_is_an_error() {
+        let h = linear_tree();
+        assert!(h.clone_subtree("nowhere", |id| id.to_string()).is_err());
+    }
+
+    /// The check that stays: a gate cannot be moved under itself or under one
+    /// of its own descendants.
+    #[test]
+    fn a_subtree_cannot_be_moved_under_itself_or_its_descendants() {
+        let mut h = GateHierarchy::new();
+        h.add_child("root", "a", 0);
+        h.add_child("a", "b", 0);
+        h.add_child("b", "c", 0);
+        assert!(h.reparent_subtree("a", "a").is_err());
+        assert!(h.reparent_subtree("a", "c").is_err());
+        assert!(h.validate().is_ok());
+        assert_eq!(h.get_parent("a").map(|p| p.as_ref()), Some("root"));
     }
 
     /// Was B-HIER-2: `would_create_cycle` asked only whether the new parent

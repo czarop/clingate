@@ -12,7 +12,7 @@ the seams the integration tests in the second pass are written against.
   should fail. One that passes has been fixed - delete its `#[ignore]` and
   move its entry to *Fixed*. (Doctests are the exception: rustdoc never runs
   a block marked `ignore`, even under `--ignored`, and reports it as passing.
-  The one such block, `clone_subtree`'s, has a failing unit test beside it.)
+  None is marked so today.)
 - **A vacuous test** is one that cannot fail whatever the code does: no
   assertion, an assertion that always holds, or an early `return` that turns a
   missing input into a pass. Each one found is listed with what was done.
@@ -22,16 +22,15 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,145 unit tests and 38 integration tests pass**, plus 11 doctests.
-- **14 known-bug tests (13 bugs) are pinned as failing tests** (`#[ignore]`d
-  with their id); all of them fail today. B-BUILD-1, B-NAV-1, B-RUN-1,
-  B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2, B-AX-3,
-  B-AX-4, B-CNT-1, B-CONF-1, B-CONF-2, B-DOC-1, B-HIER-2, B-META-1,
-  B-OMIQ-1, B-PHEN-1, B-SCALE-1, B-THR-1 and B-OMIQ-2 have been fixed;
-  B-RULE-1 by removing the setting. B-FCS-1, B-FCS-2, B-FCS-3 and B-IDX-1
-  were fixed in `czarop/flow` on the branch `claude/fcs-errors-not-panics`,
-  which `Cargo.toml` pins until it is merged there. B-STAT-1 is kept by
-  decision, and B-AUTO-1 is left as it is by decision and flagged.
+- **1,163 unit tests and 38 integration tests pass**, plus 12 doctests.
+- **4 known-bug tests (3 bugs) are pinned as failing tests** (`#[ignore]`d
+  with their id); all of them fail today. B-AUTO-1 is left as it is by
+  decision and flagged; B-KDE-2 and B-KDE-3, in the shift classifier the app
+  does not call, each need a decision about method, set out in their rows.
+  Every other bug found has been fixed - B-RULE-1 by removing the setting,
+  and B-FCS-1, B-FCS-2, B-FCS-3 and B-IDX-1 in `czarop/flow` on the branch
+  `claude/fcs-errors-not-panics`, which `Cargo.toml` pins until it is merged
+  there. B-STAT-1 is kept by decision.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -53,18 +52,8 @@ to fix first.
 | Id | Where | What | Severity |
 |---|---|---|---|
 | B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800. **Left as it is, by decision:** the refinement is right in most situations, and changing it risks those; flagged here so a gate placed this way is checked by eye | **High** - confidently wrong gating |
-| B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
-| B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
-| B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
-| B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
-| B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
-| B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
-| B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
-| B-HIER-3 | `gate_hierarchy::GateHierarchy::reparent_subtree` | Besides the real cycle check, refuses a move when the gate is already below the new parent, calling it a cycle - so a gate cannot be moved up to sit directly under its grandparent | Low - no caller yet |
-| B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
-| B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
-| B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
-| B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
+| B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app. **Needs a decision:** the 0.1 significance threshold is fixed, and the peak of a wide population (sd 0.35, 3,000 events) cannot be located more closely than about that - even found on a density smoothed for each sample it lands 0.10 off. Fixing it means choosing a threshold scaled to how precisely the peak can be located, or a steadier estimate of the centre than the highest point of the curve. The x-axis case passes only because its test is held to a looser tolerance |
+| B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app. **Needs a decision:** making the entropy term grid-independent (the density's effective width as a share of the axis) gives the documented ends and passes its own test - but a smear covering a quarter of the axis then scores lower, and the end-to-end smear test gets worse (x 0.23 -> 0.10 against 0.4). The question is what a smear is: flat relative to the axis, as documented, or flat wherever it lies. Reverted until that is decided |
 | B-FCS-2 (fixed, in flow) | `file_load::FcsSampleStub::open`, flow_fcs `Fcs::open` | A file whose data could not be read - one digit of the header's data offset damaged - was accepted by the workspace, and reading its events failed an assertion inside flow_fcs; a rules run reads files in parallel, so that one panic ended the whole run. Fixed in `czarop/flow` (branch `claude/fcs-errors-not-panics`): `Fcs::locate_events` finds exactly the `$TOT` events' bytes and refuses what it cannot place, and `Fcs::open` answers with an error, never a panic. Where the header and `$BEGINDATA`/`$ENDDATA` disagree it uses whichever places exactly `$TOT` events, so a damaged header offset over intact keywords now reads correctly; where neither does, the file is refused. The workspace calls the same `locate_events`, so such a file is refused when the workspace opens; in a run it is reported and every other file still placed | - |
 | B-FCS-3 (fixed, in flow) | flow_fcs `Header::from_mmap`, `Metadata::from_mmap`, `Fcs::open` | Sliced by the header's offsets without checking them: truncated or damaged files panicked. Fixed in `czarop/flow`: every slice is bounds-checked, `Header::from_mmap` refuses a TEXT segment outside the file, the count assertions are errors, sizes are overflow-checked. clingate's own copies of those checks in `FcsSampleStub::open` are gone. The fuzz of 600 damaged files passes | - |
 | B-FCS-1 (fixed, in flow) | flow_fcs `Metadata::validate_guid` | Looked for `GUID` among keywords stored as `$GUID`, never found it, and wrote a random `$GUID` over the file's own. Fixed in `czarop/flow`: a file keeps its `$GUID` and only one without is given one; concatenation, a new dataset, gets a new one (`assign_new_guid`). Note: `FcsSampleStub` compares files by `$GUID` (the original design), so two copies of one acquisition now compare equal where before no two files ever did | - |
@@ -72,6 +61,16 @@ to fix first.
 | B-DOC-1 (fixed) | `GateState::link_node_to_gate` / `link_composite` | Linking - pointing a position at another gate so the two share it, Omiq's linked gate - kept the gate it replaced registered "since a boolean may still reference it", whether one did or not; such gates accumulated until the next delete and were exported as containers on no plot. Added with linking by an earlier session (commit 12f8239, 14 Sep), not in the original code. Fixed: a link runs the same sweep a delete does (`collect_stranded_ghosts`), after every corner for a composite - a gate a boolean still reaches is kept, anything else is collected. The document fuzzer no longer sweeps after a link itself | - |
 | B-OMIQ-1 (fixed) | `omiq::deserialise` (`labelLoc`) | Omiq writes `"labelLoc": {}` for a label not yet placed; `Point` read a missing coordinate as 0, so it came in as (0, 0) and went back out as an explicit `{"f1Val": 0, "f2Val": 0}`. Fixed: `{}`, `null` or no key reads as no position, and no position is written as `{}`, as Omiq writes it | - |
 | B-THR-1 (fixed) | `gate_rules::threshold::valley_in` / `first_valley` | `NoValley::OnlyOnePeak { events }` was always built with `events: 0`, so the refusal said "one peak ... over 0 events". Fixed: `events` is an `Option` - `first_valley`, which has the values, fills in how many finite ones the density was read from; `valley_in`, handed a density alone, says it does not know, and the message quotes a count only when there is one | - |
+| B-HIER-1 (fixed) | `gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` returned `Err`, so cloning any subtree with a child failed. Fixed: each error is reported only when it happens; the copied root is a root of the new tree with its order, so a lone gate clones to itself; a gate not in the tree is an error, as documented. Its doctest now runs | - |
+| B-HIER-3 (fixed) | `gate_hierarchy::GateHierarchy::reparent_subtree` | Refused moving a gate that was already below the new parent, calling it a cycle. The check is gone; the real one - a gate under itself or its own descendant - stays, in `reparent` | - |
+| B-WS-1 (fixed) | `workspace::program_name` | "Outside the workspace" was decided by `strip_prefix`, which does not resolve `..`. Both paths are now resolved lexically first - `.` dropped, `..` taking the folder before it, the disk not consulted - so `/w/../elsewhere/A1.fcs` keeps its own name and `/w/Plate_1/../Plate_2/A1.fcs` is `Plate_2_A1.fcs` | - |
+| B-RS-1 (fixed) | `gate_rules::rule_store::human_order` | Called distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists kept the order a hash map gave. Names that read alike are now put in the order of their exact text: the natural order is unchanged and only a name equals itself. `case_does_not_split_the_ordering` asserted the old equality and now checks what its name says | - |
+| B-KDE-1 (fixed) | `gate_move::kde::kde_negative_shift` | The negative's width was the std-dev of everything below the axis midpoint, so a smeared positive read as a widened negative. It is now read off the negative's own peak: full width at half height as a standard deviation, the kernel's share taken out - 0.92 to 0.99 of the true spread, and unmoved by a smear | - |
+| B-GRID-1 (fixed) | `DensityGrid::from_column` | A NaN coordinate was cast to cell 0 and counted; events with a coordinate that is not a finite number are now left out | - |
+| B-GRID-2 (fixed) | `DensityGrid::from_column` | `unwrap`ped `.f64()`, so a Float32 column (FCS data) panicked. Any numeric column is read; a column that is not numbers is an error, and `from_column` returns a `Result` | - |
+| B-GRID-3 (fixed) | `gate_move::density_grid::apply_constraints` | Capping a move scaled `dx_data`/`dy_data` but not the bin counts; they are scaled with it, to the nearest bin | - |
+| B-GRID-4 (fixed) | `gate_move::density_grid::gaussian_blur` | `sigma = 0` gave a NaN kernel and a NaN grid; a sigma of 0 or less, or not a number, is now no blur | - |
+| B-GRID-5 (fixed) | `gate_move::density_grid::calculate_dynamic_radii` | The noise guard compared a spread measured on the lower half of the axis with 25% of the whole axis, and only on X, so it could not fire. It now compares with 25% of the window it measured, on both axes: uniform scatter over the window has a spread of about 29% of it | - |
 | B-STAT-1 (kept, by decision) | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100`: a gate over an empty parent shows NaN%. Kept on purpose - it tells "no events to gate" apart from "none of the events are in the gate", which shows 0%. Both are pinned (`a_gate_over_an_empty_parent_shows_nan_and_an_empty_gate_shows_zero`) | - |
 | B-PHEN-1 (fixed) | `gate_rules::phenotype::Baseline::of` | Non-finite values were not dropped: the first median was sorted with NaN in it (by a comparator that is not an order) and landed on one, so the baseline came back `median: NaN` and the marker was disabled for the match. Fixed: NaN and infinite values are left out, exactly - the baseline is the one of the finite values alone; a marker with none reads as an empty one | - |
 | B-CONF-1 (fixed) | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold passed over it: an unmeasurable component left the overall score untouched, ranking the gate as trustworthy. Fixed: a component that could not be measured scores 0 and its detail says so ("could not be measured: ..."); the overall also counts a NaN put straight into the public field as 0 | - |
@@ -394,8 +393,8 @@ compiled them and ran nothing - their assertions had never executed. Each now
 ends `# example().unwrap();`. Run, three failed: `reparent` and
 `reparent_subtree` moved a gate under a parent that was never added, which
 the functions correctly refuse (the examples were wrong, and now add it);
-`clone_subtree` failed on a real bug, B-HIER-1, and its example is marked
-`ignore` with a pointer here until it is fixed.
+`clone_subtree` failed on a real bug, B-HIER-1 - since fixed, and its
+example now runs.
 
 ### Random edit sequences
 

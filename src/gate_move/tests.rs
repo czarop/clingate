@@ -498,7 +498,7 @@ fn the_smear_score_of_a_degenerate_input_is_zero() {
 fn density_grid_bins_every_in_range_event_exactly_once() {
     let df = frame((vec![0.5, 1.5, 2.5], vec![0.5, 1.5, 2.5]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0)).unwrap();
 
     assert_eq!(grid.counts.len(), 16);
     assert_eq!(grid.counts.iter().sum::<f32>(), 3.0);
@@ -508,7 +508,7 @@ fn density_grid_bins_every_in_range_event_exactly_once() {
 fn density_grid_discards_events_outside_the_range() {
     let df = frame((vec![-5.0, 0.5, 99.0], vec![0.5, 0.5, 0.5]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0)).unwrap();
 
     assert_eq!(
         grid.counts.iter().sum::<f32>(),
@@ -521,7 +521,7 @@ fn density_grid_discards_events_outside_the_range() {
 fn density_grid_reports_its_bin_widths() {
     let df = frame((vec![0.5], vec![0.5]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 10, (0.0, 5.0), (-2.0, 3.0));
+    let grid = DensityGrid::from_column(xs, ys, 10, (0.0, 5.0), (-2.0, 3.0)).unwrap();
 
     assert!((grid.bin_width_x() - 0.5).abs() < 1e-12);
     assert!((grid.bin_width_y() - 0.5).abs() < 1e-12);
@@ -532,7 +532,7 @@ fn density_grid_places_an_event_in_the_expected_cell() {
     // 4 bins over 0..4, so an event at (2.5, 0.5) lands at col 2, row 0.
     let df = frame((vec![2.5], vec![0.5]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 4.0), (0.0, 4.0)).unwrap();
 
     assert_eq!(grid.counts[0 * 4 + 2], 1.0);
 }
@@ -544,7 +544,7 @@ fn cross_correlation_of_a_grid_with_itself_is_zero_translation() {
     let mut rng = StdRng::seed_from_u64(27);
     let df = frame(blob(0.0, 0.0, 0.5, 0.5, 4000, &mut rng));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 64, (-4.0, 4.0), (-4.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 64, (-4.0, 4.0), (-4.0, 4.0)).unwrap();
 
     let t = cross_correlate(&grid, &grid);
 
@@ -568,8 +568,8 @@ fn cross_correlation_recovers_a_known_translation() {
     let (qx, qy) = cols(&qc_df);
     let (tx, ty) = cols(&test_df);
 
-    let qc = DensityGrid::from_column(qx, qy, 64, (-4.0, 4.0), (-4.0, 4.0));
-    let test = DensityGrid::from_column(tx, ty, 64, (-4.0, 4.0), (-4.0, 4.0));
+    let qc = DensityGrid::from_column(qx, qy, 64, (-4.0, 4.0), (-4.0, 4.0)).unwrap();
+    let test = DensityGrid::from_column(tx, ty, 64, (-4.0, 4.0), (-4.0, 4.0)).unwrap();
 
     let t = cross_correlate(&qc, &test);
 
@@ -590,7 +590,7 @@ fn cross_correlation_converts_bins_to_data_units_via_the_bin_width() {
     let mut rng = StdRng::seed_from_u64(29);
     let df = frame(blob(0.0, 0.0, 0.4, 0.4, 2000, &mut rng));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 32, (-4.0, 4.0), (-4.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 32, (-4.0, 4.0), (-4.0, 4.0)).unwrap();
 
     let t = cross_correlate(&grid, &grid);
 
@@ -669,16 +669,15 @@ fn max_translation_leaves_a_short_move_untouched() {
 
 // ─── DensityGrid: edge cases ──────────────────────────────────────────────────
 
-/// BUG (docs/test-audit.md, B-GRID-1): `from_column` finds a cell with
-/// `((x - lo) * scale) as isize`, and a NaN cast to an integer is 0, so an
-/// event with a NaN coordinate is counted in the corner cell instead of being
-/// dropped with the other unplaceable events.
+/// Was B-GRID-1: `from_column` found a cell with `((x - lo) * scale) as
+/// isize`, and a NaN cast to an integer is 0, so an event with a NaN
+/// coordinate was counted in the corner cell instead of being dropped with
+/// the other unplaceable events.
 #[test]
-#[ignore = "known bug B-GRID-1: a NaN event is counted in cell (0, 0)"]
 fn density_grid_drops_an_event_with_a_nan_coordinate() {
     let df = frame((vec![f64::NAN, 0.5], vec![0.5, f64::NAN]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0)).unwrap();
 
     assert_eq!(grid.counts.iter().sum::<f32>(), 0.0, "{:?}", grid.counts);
 }
@@ -690,7 +689,7 @@ fn density_grid_drops_infinite_events() {
         vec![0.5, 0.5, 0.5],
     ));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0)).unwrap();
 
     assert_eq!(grid.counts.iter().sum::<f32>(), 1.0);
 }
@@ -701,21 +700,19 @@ fn density_grid_bins_are_half_open() {
     // the range has no cell to go in.
     let df = frame((vec![0.0, 1.0], vec![0.0, 0.0]));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0));
+    let grid = DensityGrid::from_column(xs, ys, 4, (0.0, 1.0), (0.0, 1.0)).unwrap();
 
     assert_eq!(grid.counts[0], 1.0);
     assert_eq!(grid.counts.iter().sum::<f32>(), 1.0);
 }
 
-/// BUG (docs/test-audit.md, B-GRID-2): `from_column` unwraps `.f64()`, and
-/// event data read from FCS files is Float32, so it panics instead of
-/// binning - `kde_negative_shift` maps the same mismatch to an `Err`.
+/// Was B-GRID-2: `from_column` unwrapped `.f64()`, and event data read from
+/// FCS files is Float32, so it panicked instead of binning.
 #[test]
-#[ignore = "known bug B-GRID-2: a Float32 column panics"]
 fn density_grid_bins_float32_columns() {
     let df = df!["x" => [0.1f32, 0.6], "y" => [0.1f32, 0.6]].unwrap();
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 2, (0.0, 1.0), (0.0, 1.0));
+    let grid = DensityGrid::from_column(xs, ys, 2, (0.0, 1.0), (0.0, 1.0)).unwrap();
 
     assert_eq!(grid.counts, vec![1.0, 0.0, 0.0, 1.0]);
 }
@@ -730,7 +727,7 @@ fn the_lower_quadrant_peak_ignores_a_bigger_positive() {
         blob(3.0, 3.0, 0.1, 0.1, 3000, &mut rng),
     ));
     let (xs, ys) = cols(&df);
-    let grid = DensityGrid::from_column(xs, ys, 32, (-2.0, 4.0), (-2.0, 4.0));
+    let grid = DensityGrid::from_column(xs, ys, 32, (-2.0, 4.0), (-2.0, 4.0)).unwrap();
 
     let (row, col) = grid.find_lower_quadrant_peak();
     // 0.0 on a -2..4 axis in 32 bins is bin 10.
@@ -777,11 +774,10 @@ fn a_blur_keeps_the_mass_of_a_point_away_from_the_edges() {
     assert!(grid.counts[16 * 32 + 16] < 1.0);
 }
 
-/// BUG (docs/test-audit.md, B-GRID-4): a sigma of 0 - no blur - builds a
-/// one-tap kernel of `exp(-0 / 0)`, which is NaN, and the blur turns every
-/// count into NaN. `cross_correlate` then panics comparing NaNs.
+/// Was B-GRID-4: a sigma of 0 - no blur - built a one-tap kernel of
+/// `exp(-0 / 0)`, which is NaN, and the blur turned every count into NaN.
+/// `cross_correlate` then panicked comparing NaNs.
 #[test]
-#[ignore = "known bug B-GRID-4: a zero-sigma blur fills the grid with NaN"]
 fn a_blur_of_zero_leaves_the_grid_alone() {
     let mut grid = DensityGrid {
         counts: vec![0.0, 1.0, 2.0, 3.0],
@@ -794,11 +790,10 @@ fn a_blur_of_zero_leaves_the_grid_alone() {
     assert_eq!(grid.counts, vec![0.0, 1.0, 2.0, 3.0]);
 }
 
-/// BUG (docs/test-audit.md, B-GRID-3): capping a move scales its data-space
-/// components but leaves the bin components at the uncapped move, so the
-/// result describes two different translations.
+/// Was B-GRID-3: capping a move scaled its data-space components but left
+/// the bin components at the uncapped move, so the result described two
+/// different translations.
 #[test]
-#[ignore = "known bug B-GRID-3: a capped move keeps its uncapped bin counts"]
 fn a_capped_move_keeps_its_bins_consistent_with_its_distance() {
     let rules = GateRules {
         lock_x: false,
@@ -879,14 +874,47 @@ fn a_qc_with_no_negative_is_an_error() {
     assert!(err.is_some_and(|e| e.contains("no clear negative")));
 }
 
-/// BUG (docs/test-audit.md, B-GRID-5): the "this is noise, not a cluster"
-/// guard in `calculate_dynamic_radii` rejects a spread above 25% of the axis,
-/// but it measures only events already confined to the lower half of the
-/// axis, whose spread cannot reach that - uniform noise there is about 8%.
-/// It also looks only at X. So the guard never fires, and a QC whose lower
-/// quadrant is uniform noise is aligned as if it had a population.
+/// The guard looks at Y too: a negative that is a tight column in X but
+/// noise from top to bottom of its window in Y is not a population either.
 #[test]
-#[ignore = "known bug B-GRID-5: the noise guard cannot fire"]
+fn a_qc_whose_negative_is_noise_in_y_alone_is_an_error() {
+    let mut rng = StdRng::seed_from_u64(44);
+    let noise: (Vec<f64>, Vec<f64>) = (0..3000)
+        .map(|_| {
+            (
+                0.4 + rng.random_range(-0.05..0.05),
+                rng.random_range(-1.0..1.75),
+            )
+        })
+        .unzip();
+    let qc = frame(noise);
+    let result = crate::gate_move::density_grid::compute_negative_shift(
+        cols(&qc),
+        cols(&qc),
+        AXIS,
+        AXIS,
+        &free(),
+        64,
+        2.0,
+    );
+    assert!(result.is_err(), "noise in Y was aligned");
+}
+
+/// A column that is not numbers is an error, not a panic.
+#[test]
+fn density_grid_refuses_a_column_that_is_not_numbers() {
+    let df = df!["x" => ["a", "b"], "y" => [0.1f32, 0.6]].unwrap();
+    let (xs, ys) = cols(&df);
+    assert!(DensityGrid::from_column(xs, ys, 2, (0.0, 1.0), (0.0, 1.0)).is_err());
+}
+
+/// Was B-GRID-5: the "this is noise, not a cluster" guard in
+/// `calculate_dynamic_radii` rejected a spread above 25% of the axis, but it
+/// measured only events already confined to the lower half of the axis,
+/// whose spread cannot reach that - uniform noise there is about 14%. It also
+/// looked only at X. So the guard never fired, and a QC whose lower quadrant
+/// was uniform noise was aligned as if it had a population.
+#[test]
 fn a_qc_whose_negative_is_uniform_noise_is_an_error() {
     let mut rng = StdRng::seed_from_u64(43);
     let noise: (Vec<f64>, Vec<f64>) = (0..3000)

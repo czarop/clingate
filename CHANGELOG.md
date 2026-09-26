@@ -190,6 +190,15 @@
 
 ### Fixed
 
+- **Files are always listed in the same order.** Names that read the same to
+  a person but are not the same - `D02` and `D2`, `a1` and `A1` - came out in
+  whatever order they arrived in, which could differ from one tab or run to
+  the next.
+
+- **A file reached through `..` is named for where it really is.** A path
+  that climbed out of the workspace folder through `..` was named as if it
+  were inside it.
+
 - **A damaged FCS file is refused, not a crash - and one bad file no longer
   stops a rules run.** A file with a damaged header or cut short could fail an
   assertion deep in the FCS reader; a rules run reads files in parallel, so

@@ -188,8 +188,15 @@ fn has_extension(path: &Path, wanted: &str) -> bool {
 ///
 /// A file at the top level, or one added from outside the workspace folder,
 /// keeps its own name.
+///
+/// Whether a file is inside is decided on the paths with `.` and `..`
+/// resolved, so `/w/../elsewhere/A1.fcs` is outside `/w` - it used to count as
+/// inside and be named `.._elsewhere_A1.fcs` (B-WS-1) - and
+/// `/w/Plate_1/../Plate_2/A1.fcs` is `Plate_2_A1.fcs`.
 pub fn program_name(root: Option<&Path>, path: &Path) -> String {
-    if let Some(below) = root.and_then(|root| path.strip_prefix(root).ok()) {
+    let path = &lexically_normal(path);
+    let root = root.map(lexically_normal);
+    if let Some(below) = root.and_then(|root| path.strip_prefix(root).ok().map(Path::to_path_buf)) {
         let parts: Vec<String> = below
             .components()
             .map(|part| part.as_os_str().to_string_lossy().into_owned())
@@ -201,6 +208,33 @@ pub fn program_name(root: Option<&Path>, path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// `path` with `.` dropped and each `..` taking the folder before it, as
+/// written - the disk is not consulted, so a symbolic link is not followed.
+/// A `..` with nothing before it to take is kept.
+fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !matches!(
+                    out.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    // Nothing to climb out of; keep it. Above the root there
+                    // is only the root, so there it is dropped.
+                    out.push(part);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 // ── remembering the last one ─────────────────────────────────────────────
