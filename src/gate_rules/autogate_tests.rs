@@ -1808,11 +1808,11 @@ fn the_line_and_the_gate_agree_when_the_shape_does_not_interfere() {
 
     let by_gate = admitted_by(&gate, &index).unwrap();
     let by_line = beyond_the_line(&values, Bound::Above, 900.0);
-    // Within one event of a thousand, not exact: the R-tree admits the event
-    // sitting exactly on the edge and `beyond_the_line` does not, matching the
-    // `gt(min)` convention `filter_events_by_hierarchy_to_mask` uses. Worth
-    // knowing when reading the two columns against each other - a one-event
-    // disagreement is the floor, not a signal.
+    // Within one event of a thousand, not exact: the gate holds the event
+    // sitting exactly on its edge - as the filter below it does - and the
+    // naive `beyond_the_line` does not. Worth knowing when reading the two
+    // columns against each other - a one-event disagreement is the floor, not
+    // a signal.
     assert!(
         (by_gate - by_line).abs() <= 0.0011,
         "gate {by_gate}, line {by_line}"

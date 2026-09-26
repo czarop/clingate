@@ -120,10 +120,11 @@ fn a_rectangle_spanning_an_axis_selects_the_whole_column() {
     assert_eq!(selected(&mask_for("col", &r)), vec![1, 2, 4]);
 }
 
-/// The rectangle mask uses strict comparisons, so an event exactly on the edge
-/// falls outside. Worth pinning: it decides whether counts match Omiq's.
+/// A rectangle holds its edges and corners, as the index that counts the
+/// percentage on it does - the population below a gate is the one its
+/// percentage counts (was B-CNT-1: the mask was strict, and dropped them).
 #[test]
-fn a_rectangle_excludes_events_exactly_on_its_boundary() {
+fn a_rectangle_holds_events_exactly_on_its_boundary() {
     let geometry =
         create_rectangle_geometry(vec![(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0)], X, Y)
             .unwrap();
@@ -131,11 +132,32 @@ fn a_rectangle_excludes_events_exactly_on_its_boundary() {
         Arc::new(RectangleGate::try_new(gate("edge", geometry), true).unwrap());
     let r = resolver(vec![g]);
 
-    // Events 0 (1,1) and 1 (5,5) sit exactly on opposite corners.
-    assert!(
-        selected(&mask_for("edge", &r)).is_empty(),
-        "boundary events are excluded"
-    );
+    // Events 0 (1,1) and 1 (5,5) sit on opposite corners, 2 (5,1) on a third;
+    // 4 (5,9) is on the line of the right edge but above the top.
+    assert_eq!(selected(&mask_for("edge", &r)), vec![0, 1, 2]);
+}
+
+/// An event with no value - NaN - is in no rectangle, however wide, as in
+/// the index.
+#[test]
+fn a_rectangle_holds_no_event_with_a_nan_value() {
+    let geometry = create_rectangle_geometry(
+        vec![(-1e16, -1e16), (1e16, -1e16), (1e16, 1e16), (-1e16, 1e16)],
+        X,
+        Y,
+    )
+    .unwrap();
+    let g: Arc<dyn DrawableGate> =
+        Arc::new(RectangleGate::try_new(gate("all", geometry), true).unwrap());
+    let r = resolver(vec![g]);
+    let df = df![
+        X => [1.0f32, f32::NAN, 3.0, f32::INFINITY],
+        Y => [1.0f32, 2.0, f32::NAN, 4.0],
+    ]
+    .unwrap();
+    let mask = filter_events_to_mask(&df, Arc::from("all"), &r).unwrap();
+    let held: Vec<bool> = mask.into_iter().map(|m| m.unwrap_or(false)).collect();
+    assert_eq!(held, [true, false, false, false]);
 }
 
 #[test]

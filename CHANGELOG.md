@@ -183,6 +183,14 @@
 
 ### Fixed
 
+- **The population under a gate is exactly the one its percentage counts.** An
+  event lying exactly on a rectangle's edge was counted in the percentage on
+  the gate but left out of the population drawn and gated below it, and an
+  event on the boundary of an ellipse could fall either way between the two.
+  Both now use the same rule for every gate shape: a rectangle holds its edges.
+  On decimal data this almost never came up; on whole-number values with a
+  gate edge on a round number it could move a handful of events.
+
 - **A gate can no longer be made its own parent.** The gate tree accepted a
   gate placed under itself, after which anything walking up the tree - every
   gate chain - never finished. It is now refused wherever the tree is edited.

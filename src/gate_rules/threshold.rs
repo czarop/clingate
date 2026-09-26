@@ -5,13 +5,17 @@
 //! The caller decides which axis and which edge, so the same solvers serve a
 //! rectangle whose left edge moves, a bisector arm, or a quadrant centre line.
 //!
-//! Two conventions, both chosen to match what the rest of the editor already
-//! does rather than to be tidy in isolation:
+//! Two conventions:
 //!
-//! - A gate admits an event when its value is **strictly greater** than the
-//!   lower edge, because that is what `filter_events_to_mask` does
-//!   (`gt(min) & lt(max)`). Counting any other way would report a fraction the
-//!   gate does not actually capture.
+//! - The solvers count an event as admitted when its value is **strictly
+//!   greater** than the edge. This is a model for choosing a position. A gate
+//!   itself holds an event on its lower or left edge - a rectangle holds all
+//!   its edges, a polygon its left and bottom sides, as `filter_events_to_mask`
+//!   and the index behind every percentage agree - and `autogate` measures
+//!   what a placed gate holds on the gate itself (`admitted_by`) and reports
+//!   and scores that. The one exception is a composite moved by a rule with no
+//!   band: it has no single count to measure, so the model's count is
+//!   reported. The two differ only for an event exactly on the line.
 //! - Values arrive in the axis's **display space** - arcsinh for a fluorescence
 //!   channel, linear for scatter. Quantiles do not care, since a monotone
 //!   transform preserves order, but an offset in data units very much does: it
@@ -115,7 +119,8 @@ fn descending(values: &[f64]) -> Result<Vec<f64>, SolveError> {
     Ok(sorted)
 }
 
-/// What a gate at `x` admits, counted the way the filter counts it.
+/// What a gate at `x` admits, by the solvers' strict model - see the module
+/// notes for how that relates to what the placed gate holds.
 fn admitted(sorted_desc: &[f64], x: f64) -> (usize, f64) {
     let n = sorted_desc.partition_point(|v| *v > x);
     (n, n as f64 / sorted_desc.len() as f64)

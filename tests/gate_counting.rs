@@ -226,15 +226,13 @@ fn the_filter_and_the_on_screen_count_agree_away_from_the_edges() {
     }
 }
 
-/// BUG (docs/test-audit.md, B-CNT-1): the filter admits an event strictly
-/// inside a rectangle (`gt(min) & lt(max)`); the index counts one on the
-/// edge. Here that is 240 against 246 - exactly the six events placed on the
-/// edges and corners - so the percentage on the gate counts events the
-/// population drawn under it does not hold. Linear scatter values are often
-/// whole numbers and gate edges often round ones, so this is not only a
-/// theoretical case.
+/// Was B-CNT-1: the filter admitted an event only strictly inside a
+/// rectangle (`gt(min) & lt(max)`) while the index counted one on the edge -
+/// 240 against 246 here, exactly the six events placed on the edges and
+/// corners - so the percentage on the gate counted events the population drawn
+/// under it did not hold. Linear scatter values are often whole numbers and
+/// gate edges often round ones, so it was not only a theoretical case.
 #[test]
-#[ignore = "known bug B-CNT-1: the filter and the on-screen count disagree about events on an edge"]
 fn an_event_on_a_rectangle_s_edge_is_counted_the_same_way_by_both() {
     let (_, by_mask, by_index) = both_counts()
         .into_iter()
@@ -276,4 +274,230 @@ fn a_gate_over_an_empty_population_reports_no_percentage_rather_than_nan() {
     let stats = get_percent_and_counts_gate(gates()[0].clone(), &idx, 0.0).unwrap();
     let percent = stats.get_percent_for_id(Arc::from("rect")).unwrap();
     assert!(percent.is_finite(), "an empty parent shows {percent}%");
+}
+
+// ── event for event, on every kind of edge ───────────────────────────────
+
+/// Every event each piece of `gates` holds, by the filter and by the index,
+/// wherever the two differ: (piece, index of the event, (x, y), by the filter,
+/// by the index). Empty when they agree on every event.
+fn disagreements(
+    gates: &[Arc<dyn DrawableGate>],
+    (xs, ys): &(Vec<f32>, Vec<f32>),
+) -> Vec<(Arc<str>, usize, (f32, f32), bool, bool)> {
+    let df = df![X => xs.clone(), Y => ys.clone()].unwrap();
+    let idx = EventIndex::build(xs, ys).unwrap();
+    let state = state_with(gates);
+    let resolver = state.get_current_sample(Arc::from("f1"), &Default::default());
+    let mut out = Vec::new();
+    for gate in gates {
+        let pieces = if gate.is_composite() {
+            gate.get_inner_gate_ids()
+        } else {
+            vec![gate.get_id()]
+        };
+        for piece in pieces {
+            let inner = gate.get_gate_ref(Some(&piece)).expect("a piece resolves");
+            let by_index: std::collections::BTreeSet<usize> =
+                idx.filter_by_gate(inner).unwrap().into_iter().collect();
+            let mask = filter_events_to_mask(&df, piece.clone(), &resolver)
+                .unwrap_or_else(|e| panic!("{piece} cannot be filtered: {e}"));
+            for (i, held) in mask.into_iter().enumerate() {
+                let (f, x) = (held.unwrap_or(false), by_index.contains(&i));
+                if f != x {
+                    out.push((piece.clone(), i, (xs[i], ys[i]), f, x));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Where every piece of `gates` has its corners, the middle of each side, and
+/// - for an ellipse - points round its boundary: the events most likely to
+/// fall one way for one count and the other way for the other.
+fn on_the_edges(gates: &[Arc<dyn DrawableGate>]) -> (Vec<f32>, Vec<f32>) {
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    let mut push = |x: f32, y: f32| {
+        xs.push(x);
+        ys.push(y);
+    };
+    for gate in gates {
+        let pieces = if gate.is_composite() {
+            gate.get_inner_gate_ids()
+        } else {
+            vec![gate.get_id()]
+        };
+        for piece in pieces {
+            let inner = gate.get_gate_ref(Some(&piece)).unwrap();
+            match &inner.geometry {
+                flow_gates::GateGeometry::Rectangle { min, max } => {
+                    let (x0, y0) = (
+                        min.get_coordinate(X).unwrap(),
+                        min.get_coordinate(Y).unwrap(),
+                    );
+                    let (x1, y1) = (
+                        max.get_coordinate(X).unwrap(),
+                        max.get_coordinate(Y).unwrap(),
+                    );
+                    for (x, y) in [
+                        (x0, y0),
+                        (x1, y1),
+                        (x0, y1),
+                        (x1, y0),
+                        ((x0 + x1) / 2.0, y0),
+                        ((x0 + x1) / 2.0, y1),
+                        (x0, (y0 + y1) / 2.0),
+                        (x1, (y0 + y1) / 2.0),
+                    ] {
+                        push(x, y);
+                    }
+                }
+                flow_gates::GateGeometry::Polygon { nodes, .. } => {
+                    let corners: Vec<(f32, f32)> = nodes
+                        .iter()
+                        .map(|n| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap()))
+                        .collect();
+                    for (i, &(x, y)) in corners.iter().enumerate() {
+                        let (nx, ny) = corners[(i + 1) % corners.len()];
+                        // Only the corners within the plot: a quadrant's
+                        // reach out to its infinite bounds.
+                        for (px, py) in [(x, y), ((x + nx) / 2.0, (y + ny) / 2.0)] {
+                            if px.abs() < 1e6 && py.abs() < 1e6 {
+                                push(px, py);
+                            }
+                        }
+                    }
+                }
+                flow_gates::GateGeometry::Ellipse {
+                    center,
+                    radius_x,
+                    radius_y,
+                    angle,
+                } => {
+                    let (cx, cy) = (
+                        center.get_coordinate(X).unwrap(),
+                        center.get_coordinate(Y).unwrap(),
+                    );
+                    for k in 0..64 {
+                        let t = k as f32 * std::f32::consts::TAU / 64.0;
+                        let (u, v) = (radius_x * t.cos(), radius_y * t.sin());
+                        push(
+                            cx + u * angle.cos() - v * angle.sin(),
+                            cy + u * angle.sin() + v * angle.cos(),
+                        );
+                    }
+                }
+                flow_gates::GateGeometry::Boolean { .. } => {}
+            }
+        }
+    }
+    // And the lines the composites divide along, through their centres.
+    for x in [250.0f32, 310.0, 280.0] {
+        for y in [0.0f32, 330.0, 300.0, 280.0, 1000.0] {
+            push(x, y);
+        }
+    }
+    (xs, ys)
+}
+
+/// Every kind of gate, events on every kind of edge: the population the filter
+/// passes down holds exactly the events the percentage on the gate counts.
+#[test]
+fn the_filter_and_the_index_agree_on_every_event_on_every_kind_of_edge() {
+    let gates = gates();
+    let events = on_the_edges(&gates);
+    assert!(
+        events.0.len() > 100,
+        "the fixture should hold plenty of edge events, has {}",
+        events.0.len()
+    );
+    let wrong = disagreements(&gates, &events);
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// Whole-number events and gates with whole-number corners, so events land
+/// exactly on edges, corners and slanted sides all the time - the case that
+/// hid the disagreement on real, decimal data. (No NaN events: the index
+/// cannot be built over one - B-IDX-1 below. The filter's NaN handling is
+/// pinned in its own tests.)
+#[test]
+fn the_filter_and_the_index_agree_on_whole_number_data_whatever_the_gates() {
+    use rand::prelude::*;
+    let mut rng = StdRng::seed_from_u64(17);
+    for trial in 0..150 {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for x in 0..=40 {
+            for y in 0..=40 {
+                xs.push(x as f32);
+                ys.push(y as f32);
+            }
+        }
+        let mut corner = || {
+            (
+                rng.random_range(0..=40) as f32,
+                rng.random_range(0..=40) as f32,
+            )
+        };
+        let ((ax, ay), (bx, by)) = (corner(), corner());
+        let rect = create_rectangle_geometry(
+            vec![
+                (ax.min(bx), ay.min(by)),
+                (ax.max(bx), ay.min(by)),
+                (ax.max(bx), ay.max(by)),
+                (ax.min(bx), ay.max(by)),
+            ],
+            X,
+            Y,
+        );
+        let poly = create_polygon_geometry((0..5).map(|_| corner()).collect(), X, Y);
+        let (c, l, r) = (corner(), corner(), corner());
+        let ellipse = clingate::omiq::deserialise::create_omiq_ellipse_geometry(
+            (l.0 as f64, l.1 as f64),
+            (r.0 as f64, r.1 as f64),
+            (c.0 as f64, c.1 as f64),
+            X,
+            Y,
+        );
+        let mut gates: Vec<Arc<dyn DrawableGate>> = Vec::new();
+        // A degenerate draw - a rectangle or polygon with no area, an ellipse
+        // with no width - is refused by the constructors; nothing to compare.
+        if let Ok(g) = rect {
+            if let Ok(g) = RectangleGate::try_new(inner("rect", g), true) {
+                gates.push(Arc::new(g));
+            }
+        }
+        if let Ok(g) = poly {
+            if let Ok(g) = PolygonGate::try_new(inner("poly", g), true) {
+                gates.push(Arc::new(g));
+            }
+        }
+        if let Ok(g) = ellipse {
+            if let Ok(g) = EllipseGate::try_new(inner("ellipse", g), true) {
+                gates.push(Arc::new(g));
+            }
+        }
+        let wrong = disagreements(&gates, &(xs, ys));
+        assert!(wrong.is_empty(), "trial {trial}: {wrong:#?}");
+    }
+}
+
+/// BUG (docs/test-audit.md, B-IDX-1): `flow_gates`'s `EventIndex::build`
+/// panics on an event with a NaN value - `rstar`'s bulk load unwraps a
+/// comparison that NaN cannot answer. In the app the index is built on a
+/// worker thread, so a plot holding such an event shows no percentages rather
+/// than crashing, but it should simply leave the event out. Upstream, in
+/// `czarop/flow`.
+#[test]
+#[ignore = "known bug B-IDX-1: the event index panics on a NaN value"]
+fn an_index_can_be_built_over_an_event_with_no_value() {
+    // Enough events for the bulk load to sort them: a handful goes into one
+    // leaf without a comparison, and builds whatever it holds.
+    let xs: Vec<f32> = (0..1000)
+        .map(|i| if i == 500 { f32::NAN } else { i as f32 })
+        .collect();
+    let ys: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+    let built = std::panic::catch_unwind(|| EventIndex::build(&xs, &ys).is_ok());
+    assert_eq!(built.ok(), Some(true), "panicked, or refused the data");
 }

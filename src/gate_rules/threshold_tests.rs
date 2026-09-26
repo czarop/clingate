@@ -306,9 +306,10 @@ fn a_percentile_rule_on_an_empty_population_is_an_error() {
 
 // ─── the convention that ties the two together ────────────────────────────────
 
-/// Both solvers count the way `filter_events_to_mask` does - strictly greater
-/// than the lower edge. If that ever diverges, every reported fraction becomes
-/// a small lie, so it is pinned here rather than left as a comment.
+/// Both solvers count strictly greater than the edge - their model, pinned so
+/// it changes only on purpose. A placed gate is measured on the gate itself
+/// (`autogate::admitted_by`), which holds an event on its lower edge; see the
+/// module notes in `threshold`.
 #[test]
 fn an_event_exactly_on_the_edge_is_outside_the_gate() {
     let t = percentile_offset(&[1.0, 2.0, 3.0], 100.0, 0.0).unwrap();
