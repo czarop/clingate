@@ -28,11 +28,30 @@ pub struct Component {
 }
 
 impl Component {
+    /// A score outside 0 to 1 is clamped into it.
+    ///
+    /// A score that is not a number - something that could not be measured,
+    /// such as a ratio with nothing to divide by - scores 0 and says so. It
+    /// used to stay NaN, which the overall's `min` then passed over, so the
+    /// gate was ranked as trustworthy for exactly the reason it should be
+    /// looked at (B-CONF-1).
     pub fn new(name: &'static str, score: f64, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        if score.is_nan() {
+            return Self {
+                name,
+                score: 0.0,
+                detail: if detail.is_empty() {
+                    "could not be measured".to_string()
+                } else {
+                    format!("could not be measured: {detail}")
+                },
+            };
+        }
         Self {
             name,
             score: score.clamp(0.0, 1.0),
-            detail: detail.into(),
+            detail,
         }
     }
 }
@@ -52,10 +71,13 @@ impl Confidence {
     /// a single count must not be rescued by the other three. For a ranking
     /// whose job is to surface gates for review, the weakest link is the
     /// question being asked.
+    ///
+    /// A NaN score - which [`Component::new`] never makes, but the fields are
+    /// public - counts as 0 rather than being skipped by `min`.
     pub fn from_components(components: Vec<Component>) -> Self {
         let score = components
             .iter()
-            .map(|c| c.score)
+            .map(|c| if c.score.is_nan() { 0.0 } else { c.score })
             .fold(1.0_f64, |acc, s| acc.min(s));
         Self { components, score }
     }
@@ -288,6 +310,12 @@ fn displacement_score(t: &Threshold, reference: f64, limits: &ConfidenceLimits) 
         return 0.0;
     }
     let moved = (t.x - reference).abs() / t.parent_spread;
+    // The limit comes from the rules file. At 0 or below no move is
+    // tolerated: an unmoved gate scores 1 and any move 0. Dividing by it
+    // scored an unmoved gate 0 / 0 (B-CONF-2).
+    if limits.displacement_limit <= 0.0 {
+        return if moved == 0.0 { 1.0 } else { 0.0 };
+    }
     (1.0 - moved / limits.displacement_limit).clamp(0.0, 1.0)
 }
 

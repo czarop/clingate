@@ -355,29 +355,49 @@ fn a_comfortable_split_still_scores_well() {
 
 // ─── An unmeasurable component ───────────────────────────────────────────────
 
-/// BUG (docs/test-audit.md, B-CONF-1): `Component::new` clamps its score,
-/// and clamping NaN gives NaN; `from_components` then folds with `f64::min`,
-/// which returns the other operand when one is NaN. A component that could
-/// not be measured is dropped from the overall instead of dragging it down,
-/// so a gate is ranked as trustworthy for exactly the reason it should be
-/// looked at.
+/// Was B-CONF-1: `Component::new` clamped its score, and clamping NaN gives
+/// NaN; `from_components` then folded with `f64::min`, which returns the
+/// other operand when one is NaN. A component that could not be measured was
+/// dropped from the overall instead of dragging it down, so a gate was ranked
+/// as trustworthy for exactly the reason it should be looked at.
 #[test]
-#[ignore = "known bug B-CONF-1: a NaN component is ignored by the overall score"]
 fn a_component_that_could_not_be_measured_counts_against_the_gate() {
     let c = Confidence::from_components(vec![
         Component::new("fine", 0.9, ""),
-        Component::new("unmeasured", f64::NAN, ""),
+        Component::new("unmeasured", f64::NAN, "0 of 0 events"),
     ]);
-    assert!(c.score <= 0.0, "overall {}", c.score);
-    assert_eq!(c.weakest().unwrap().name, "unmeasured");
+    assert_eq!(c.score, 0.0, "overall {}", c.score);
+    let weakest = c.weakest().unwrap();
+    assert_eq!(weakest.name, "unmeasured");
+    assert_eq!(weakest.detail, "could not be measured: 0 of 0 events");
 }
 
-/// BUG (docs/test-audit.md, B-CONF-2): the limits are read from the rules
-/// file, and `displacement_score` divides by `displacement_limit` where
-/// `stability_score` guards its own divisor. A limit of 0 scores a gate that
-/// did not move at all as 0 / 0.
+/// The fields are public, so a NaN can still be put in by hand; the overall
+/// counts it as 0 rather than passing over it.
 #[test]
-#[ignore = "known bug B-CONF-2: a displacement limit of 0 scores an unmoved gate as NaN"]
+fn a_nan_put_straight_into_a_component_still_counts_against_the_gate() {
+    let mut unmeasured = Component::new("unmeasured", 0.5, "");
+    unmeasured.score = f64::NAN;
+    let c = Confidence::from_components(vec![Component::new("fine", 0.9, ""), unmeasured]);
+    assert_eq!(c.score, 0.0);
+}
+
+#[test]
+fn a_measured_component_keeps_its_own_detail() {
+    let c = Component::new("fine", 0.9, "the gate captures a fraction inside the band");
+    assert_eq!(c.detail, "the gate captures a fraction inside the band");
+    assert_eq!(
+        Component::new("empty", f64::NAN, "").detail,
+        "could not be measured"
+    );
+}
+
+/// Was B-CONF-2: the limits are read from the rules file, and
+/// `displacement_score` divided by `displacement_limit` where
+/// `stability_score` guards its own divisor. A limit of 0 scored a gate that
+/// did not move at all as 0 / 0. A limit of 0 now means no move is
+/// tolerated.
+#[test]
 fn a_zero_displacement_limit_still_scores_an_unmoved_gate() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
     let model = CountAndSeparation {
@@ -387,8 +407,9 @@ fn a_zero_displacement_limit_still_scores_an_unmoved_gate() {
         },
     };
     let c = model.assess(&t, Some(t.x));
-    let moved = part(&c, DISPLACEMENT);
-    assert!(moved.is_finite(), "displacement scored {moved}");
+    assert_eq!(part(&c, DISPLACEMENT), 1.0, "an unmoved gate");
+    let c = model.assess(&t, Some(t.x + 0.5));
+    assert_eq!(part(&c, DISPLACEMENT), 0.0, "a gate that moved at all");
 }
 
 #[test]

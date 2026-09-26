@@ -392,23 +392,22 @@ impl AboveTheNegativeRule {
 /// their own there is no dip to find and this rule has nothing to say;
 /// `AboveTheNegative` is for those. The two are not competitors, they are for
 /// different shapes of plot.
+///
+/// A shallow dip is placed, not refused, and scored on how deep it is against
+/// the reference's dip (`confidence::VALLEY`), so it rises to the top for
+/// review. Refusing hid the answer exactly when a person most wanted to see it
+/// - a run came back with seven samples unplaced at depths of 5% to 24%
+/// against a threshold of 25%, one of them short by a single point, and the
+/// only way to find out where the gate would have gone was to change the
+/// setting and run again. Only a density with no dip at all is refused,
+/// because then there is nothing to place.
+///
+/// There used to be a `min_depth_fraction` here, the depth below which a
+/// placement was refused. When refusing gave way to scoring it was left in the
+/// form and the rules file, read by nothing (B-RULE-1), and it was removed. A
+/// rules file that still has it loads as before; the value is ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValleyRule {
-    /// How shallow this sample's valley may be, against the reference's, before
-    /// the placement is flagged for review.
-    ///
-    /// It flags rather than refuses. Refusing hid the answer exactly when a
-    /// person most wanted to see it - a run came back with seven samples
-    /// unplaced at depths of 5% to 24% against a threshold of 25%, one of them
-    /// short by a single point, and the only way to find out where the gate
-    /// would have gone was to change the setting and run again. Placing it and
-    /// saying so is more useful, and the confidence score carries how shallow
-    /// the dip was.
-    ///
-    /// Only a density with no dip at all is refused, because then there is
-    /// nothing to place.
-    #[serde(default = "quarter")]
-    pub min_depth_fraction: f64,
     /// Scales the density's bandwidth. Below 1 finds shallower dips and more
     /// noise; above 1 smooths shallow ones away. Exposed because which of those
     /// is wanted depends on the marker, and no automatic rule knows that.
@@ -418,14 +417,9 @@ pub struct ValleyRule {
     pub confidence: CountAndSeparation,
 }
 
-fn quarter() -> f64 {
-    0.25
-}
-
 impl Default for ValleyRule {
     fn default() -> Self {
         Self {
-            min_depth_fraction: 0.25,
             smoothing: 1.0,
             confidence: CountAndSeparation::default(),
         }

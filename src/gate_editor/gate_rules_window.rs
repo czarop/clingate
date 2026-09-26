@@ -338,7 +338,6 @@ pub fn GateRulesWindow() -> Element {
     let mut calibrate_on = use_signal(String::new);
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
-    let mut min_depth = use_signal(|| "0.25".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
@@ -468,7 +467,6 @@ pub fn GateRulesWindow() -> Element {
             }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
-                min_depth.set(format!("{}", r.min_depth_fraction));
                 smoothing.set(format!("{}", r.smoothing));
             }
         }
@@ -530,13 +528,11 @@ pub fn GateRulesWindow() -> Element {
                 })
             }
             "InTheValley" => {
-                let (Ok(d), Ok(sm)) = (min_depth().parse::<f64>(), smoothing().parse::<f64>())
-                else {
-                    warn(&toasts, "The depth and smoothing must be numbers");
+                let Ok(sm) = smoothing().parse::<f64>() else {
+                    warn(&toasts, "The smoothing must be a number");
                     return;
                 };
                 Rule::InTheValley(ValleyRule {
-                    min_depth_fraction: d,
                     smoothing: sm,
                     ..ValleyRule::default()
                 })
@@ -967,15 +963,8 @@ pub fn GateRulesWindow() -> Element {
                         "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
                     }
 
-                    label { "Flag below" }
-                    input {
-                        r#type: "number",
-                        step: "0.05",
-                        value: "{min_depth}",
-                        oninput: move |e| min_depth.set(e.value()),
-                    }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "As a fraction of the reference's valley depth. A shallower dip below this still gets a gate - refusing hid the answer exactly where it was most wanted - but it is scored low and rises to the top for review. Only a density with no dip at all is left unplaced, because then there is nothing to place."
+                        "A shallower dip than the reference's still gets a gate - refusing hid the answer exactly where it was most wanted - but it is scored on how deep it is against the reference's, and a shallow one rises to the top for review. Only a density with no dip at all is left unplaced, because then there is nothing to place."
                     }
 
                     label { "Smoothing" }

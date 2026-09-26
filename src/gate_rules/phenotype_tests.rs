@@ -397,14 +397,13 @@ fn an_untrimmed_baseline_would_have_moved_it() {
 
 // ── values a real file can hold ───────────────────────────────────────────
 
-/// BUG (docs/test-audit.md, B-PHEN-1): `Baseline::of` does not drop
-/// non-finite values. The first, untrimmed median is sorted with the NaNs in
-/// it (by `partial_cmp().unwrap_or(Equal)`, which is not an order) and lands
-/// on one; every z is then NaN, the trimming pass keeps nothing, and the NaN
-/// estimate is returned - `median: NaN, spread: 1e-6`. One corrupt event
-/// disables that marker for the whole phenotype match.
+/// Was B-PHEN-1: `Baseline::of` did not drop non-finite values. The first,
+/// untrimmed median was sorted with the NaNs in it (by
+/// `partial_cmp().unwrap_or(Equal)`, which is not an order) and landed on
+/// one; every z was then NaN, the trimming pass kept nothing, and the NaN
+/// estimate was returned - `median: NaN, spread: 1e-6`. One corrupt event
+/// disabled that marker for the whole phenotype match.
 #[test]
-#[ignore = "known bug B-PHEN-1: a NaN value makes a marker's baseline NaN"]
 fn a_nan_among_the_values_does_not_move_the_baseline() {
     // A corrupt event or a transform of a negative that went wrong: one NaN
     // in a marker's column. It is not a value, so it should not count - and
@@ -428,6 +427,31 @@ fn a_nan_among_the_values_does_not_move_the_baseline() {
         a.spread,
         b.spread
     );
+}
+
+/// Left out, not merely outvoted: with NaN and infinite values mixed in, the
+/// baseline is exactly the one of the finite values alone.
+#[test]
+fn values_that_are_not_numbers_are_left_out_of_the_baseline_exactly() {
+    let clean: Vec<f64> = (0..997).map(|i| ((i * 37) % 997) as f64 / 10.0).collect();
+    let mut dirty = clean.clone();
+    for (at, bad) in [
+        (0, f64::NAN),
+        (300, f64::INFINITY),
+        (600, f64::NEG_INFINITY),
+        (997, f64::NAN),
+    ] {
+        dirty.insert(at, bad);
+    }
+    let (a, b) = (Baseline::of(&clean), Baseline::of(&dirty));
+    assert_eq!((a.median, a.spread), (b.median, b.spread));
+}
+
+/// A marker with no numbers at all reads as an empty one does.
+#[test]
+fn a_marker_with_no_numbers_reads_as_an_empty_one() {
+    let (none, empty) = (Baseline::of(&[f64::NAN, f64::INFINITY]), Baseline::of(&[]));
+    assert_eq!((none.median, none.spread), (empty.median, empty.spread));
 }
 
 #[test]

@@ -22,12 +22,14 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,124 unit tests and 35 integration tests pass**, plus 11 doctests.
-- **27 known-bug tests (25 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,132 unit tests and 36 integration tests pass**, plus 11 doctests.
+- **22 known-bug tests (20 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. B-BUILD-1, B-NAV-1, B-RUN-1,
-  B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2,
-  B-AX-3, B-AX-4, B-CNT-1, B-HIER-2, B-META-1, B-SCALE-1 and B-OMIQ-2 have
-  been fixed.
+  B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2, B-AX-3,
+  B-AX-4, B-CNT-1, B-CONF-1, B-CONF-2, B-HIER-2, B-META-1, B-PHEN-1,
+  B-SCALE-1 and B-OMIQ-2 have been fixed; B-RULE-1 by removing the setting.
+  B-STAT-1 is kept by decision, and B-AUTO-1 is left as it is by decision
+  and flagged.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -50,17 +52,12 @@ to fix first.
 |---|---|---|---|
 | B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800. **Left as it is, by decision:** the refinement is right in most situations, and changing it risks those; flagged here so a gate placed this way is checked by eye | **High** - confidently wrong gating |
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
-| B-CONF-1 | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold ignores NaN: an unmeasurable component leaves the overall score untouched, ranking the gate as trustworthy | Medium - review ranking |
-| B-RULE-1 | `gate_rules::rule::ValleyRule::min_depth_fraction` | Documented as the depth below which a valley placement is flagged; edited in the Gate Rules tab and saved, but read nowhere - a placement scores the same (0.5315 in the test) whether the bar is 0.9 or 0.05. It used to refuse a placement whose dip was shallower than this fraction of the reference's; commit a045937 turned the refusal into a placement scored by the depth ratio and left the setting in the form, read by nothing | Medium - a setting that does nothing |
-| B-PHEN-1 | `gate_rules::phenotype::Baseline::of` | Non-finite values are not dropped: the first median is sorted with NaN in it (by a comparator that is not an order) and lands on one, so the baseline comes back `median: NaN` and the marker is disabled for the match | Medium - one corrupt event |
 | B-IDX-1 | flow_gates `EventIndex::build` (upstream, `czarop/flow`) | Panics on an event with a NaN value: `rstar`'s bulk load unwraps a comparison NaN cannot answer. The index is built on a worker thread, so a plot holding such an event shows no percentages rather than crashing the app. Found while checking B-CNT-1 | Low here - upstream |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
 | B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
 | B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
 | B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
-| B-CONF-2 | `gate_rules::confidence::displacement_score` | Divides by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scores an unmoved gate as NaN (then hidden by B-CONF-1) | Low |
 | B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
-| B-STAT-1 | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100` unguarded: a gate over an empty parent shows NaN% | Low |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
 | B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
 | B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app |
@@ -73,6 +70,11 @@ to fix first.
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
 | B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
+| B-STAT-1 (kept, by decision) | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100`: a gate over an empty parent shows NaN%. Kept on purpose - it tells "no events to gate" apart from "none of the events are in the gate", which shows 0%. Both are pinned (`a_gate_over_an_empty_parent_shows_nan_and_an_empty_gate_shows_zero`) | - |
+| B-PHEN-1 (fixed) | `gate_rules::phenotype::Baseline::of` | Non-finite values were not dropped: the first median was sorted with NaN in it (by a comparator that is not an order) and landed on one, so the baseline came back `median: NaN` and the marker was disabled for the match. Fixed: NaN and infinite values are left out, exactly - the baseline is the one of the finite values alone; a marker with none reads as an empty one | - |
+| B-CONF-1 (fixed) | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold passed over it: an unmeasurable component left the overall score untouched, ranking the gate as trustworthy. Fixed: a component that could not be measured scores 0 and its detail says so ("could not be measured: ..."); the overall also counts a NaN put straight into the public field as 0 | - |
+| B-CONF-2 (fixed) | `gate_rules::confidence::displacement_score` | Divided by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scored an unmoved gate as NaN. Fixed: a limit of 0 or below means no move is tolerated - an unmoved gate scores 1, any move 0 | - |
+| B-RULE-1 (fixed, by removal) | `gate_rules::rule::ValleyRule::min_depth_fraction` | Edited in the Gate Rules tab and saved, but read nowhere: it used to refuse a placement whose dip was shallower than this fraction of the reference's, and when refusing gave way to placing and scoring by the depth ratio (commit a045937) the setting was left behind. Removed from the rule, the tab and the tests; a rules file that still has it loads as the same rule, the value ignored (pinned) | - |
 | B-CNT-1 (fixed) | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter - the population a gate's children are drawn on, gated from, and positioned against by a rules run - admitted an event only strictly inside a rectangle, while the index behind the percentage on the gate counts one on the edge (240 vs 246 in the test, the six edge events); and its ellipse test was an equivalent formula that rounded differently, so events on or next to an ellipse's boundary fell either way (both directions seen on whole-number data). Whole-hierarchy percentages matched Omiq because on decimal data an event almost never sits exactly on an edge. Fixed: every shape decides membership exactly as the index does - rectangles hold their edges, the ellipse uses the index's own formula, and polygons call the index's `point_in_polygon` rather than a copy of it (the copy agreed in every case tried, but nothing held it to). New tests compare the two event by event with events placed on every corner, side and boundary of every gate type, and over 150 random gates on whole-number data. The rules' one-dimensional solver model still counts strictly; what a placed gate holds is measured on the gate, so it only shows through for a composite moved by a rule with no band, and only for an event exactly on the line | - |
 | B-HIER-2 (fixed) | `gate_hierarchy::GateHierarchy::would_create_cycle` (used by `add_child`, `add_gate_child`, `reparent`, `delete_node_keep_children`) | Checked only whether the parent was among the child's descendants; a gate is not its own, so a gate could be made its own parent - directly, or by deleting a gate and handing its children to one of them - and `get_ancestors` then looped forever. Fixed: a gate as its own parent is refused, as is handing a deleted gate's children to the gate being deleted. The random edit sequences now include both | - |
 | B-META-1 (fixed) | `omiq::metadata::parse_metadata_csv` | A row with no id or file name was skipped when ids were collected, but metadata was then read by position in the shortened list: every later file got the previous row's metadata, so its group - and the gates it was given - were wrong. Fixed: each row is read whole - id, file name and metadata together. A row with no id or no file name is left out and reported (`ParsedMetaData::skipped`), by row number and whichever of the two it has, as a warning when the metadata loads; an entirely empty row is passed over. Two rows with one id are refused, naming both. A file name on two rows - Omiq allows two plates' `A1.fcs`, told apart by id - keeps both rows under their ids but ties no file on disk to either, with a warning (`ParsedMetaData::shared_names`); it used to go to whichever row came last, silently | - |
@@ -228,11 +230,12 @@ pairing), and writes placements back with `apply_placements`
 (`gate_editor::gate_rules_window`) drives it through `files_to_read`,
 `measure_all` and `run_solve`, and saves `RuleStore` as JSON.
 
-**Found.** B-RULE-1: the test that claims to check a shallow valley is
+**Found.** B-RULE-1: the test that claimed to check a shallow valley is
 flagged against the bar (`a_shallow_valley_is_placed_and_flagged_rather_than_refused`)
-passes 0.9 as the bar, but its "shallower than the bar" assertion checks the
-fixture, not the code - with the bar at 0 the result is identical. The new
-test shows it.
+passed 0.9 as the bar, but its "shallower than the bar" assertion checked the
+fixture, not the code - with the bar at 0 the result was identical. The bar
+has since been removed, and the test checks what it always could: that a
+shallow dip is placed and scored low.
 
 **Added.** `ValleyRule::calibrate` and `place` directly (the offset from the
 bottom, following a shifted dip, refusing one hump), `describe`,
@@ -346,9 +349,11 @@ files). Run with `cargo test --no-default-features --tests`.
   names, without a file removed by hand; B-META-1 end to end; bare well
   names shared by two plates are reported and tied to neither file.
 - `gate_counting` - every gate type counted by the filter and by the
-  on-screen index over the same events: they agree away from edges, the
-  quadrant's quarters account for every event once; B-CNT-1 (edges),
-  B-STAT-1 (empty parent).
+  on-screen index over the same events: they agree event for event, on
+  every corner, side and boundary of every gate type and over random gates
+  on whole-number data (B-CNT-1, fixed); the quadrant's quarters account for
+  every event once; NaN% over an empty parent, kept on purpose (B-STAT-1);
+  B-IDX-1 (a NaN event in the index).
 - `document_round_trip` - a real fixture imported with metadata; a position
   set for one sample, and one set per specimen (as the autogater writes),
   survive save and reopen on exactly the samples they were set for; a

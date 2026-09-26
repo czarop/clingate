@@ -708,3 +708,31 @@ fn every_rule_but_the_phenotype_is_judged_on_its_threshold() {
         assert!(rule.assess(&t, None).is_some(), "{}", rule.kind());
     }
 }
+
+/// `min_depth_fraction` was removed from the valley rule (B-RULE-1: it was read
+/// by nothing). A rules file saved before then still has it, and must load as
+/// the same rule, the old value ignored.
+#[test]
+fn a_valley_rule_saved_with_the_old_depth_setting_still_loads() {
+    let rule = Rule::InTheValley(ValleyRule {
+        smoothing: 1.5,
+        ..ValleyRule::default()
+    });
+    let mut json = serde_json::to_value(&rule).unwrap();
+    // Wherever the rule's own fields sit in the encoding, put the old key
+    // beside `smoothing`.
+    fn add_old_key(v: &mut serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) if map.contains_key("smoothing") => {
+                map.insert("min_depth_fraction".into(), serde_json::json!(0.25));
+                true
+            }
+            serde_json::Value::Object(map) => map.values_mut().any(add_old_key),
+            _ => false,
+        }
+    }
+    assert!(add_old_key(&mut json), "no smoothing field in {json}");
+    assert!(json.to_string().contains("min_depth_fraction"));
+    let back: Rule = serde_json::from_value(json).expect("an old rules file loads");
+    assert_eq!(back, rule);
+}

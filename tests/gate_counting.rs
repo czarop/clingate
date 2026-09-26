@@ -256,24 +256,26 @@ fn the_quarters_of_a_quadrant_account_for_every_event_once() {
     assert_eq!(total, events().0.len());
 }
 
-/// BUG (docs/test-audit.md, B-STAT-1): the percentage is `count / parent *
-/// 100` with no guard, so a gate over an empty population - a parent that
-/// excludes everything on this sample - shows NaN%.
+/// Was pinned as B-STAT-1 and kept on purpose: over an empty parent the
+/// percentage is 0 / 0, NaN, and the gate shows "NaN%". That says something
+/// 0% would not - there were no events to gate at all, rather than events of
+/// which the gate held none - so it stays. Both cases are pinned.
 #[test]
-#[ignore = "known bug B-STAT-1: a gate over an empty parent shows NaN%"]
-fn a_gate_over_an_empty_population_reports_no_percentage_rather_than_nan() {
+fn a_gate_over_an_empty_parent_shows_nan_and_an_empty_gate_shows_zero() {
     let empty = (Vec::<f32>::new(), Vec::<f32>::new());
-    let Ok(event_index) = EventIndex::build(&empty.0, &empty.1) else {
-        // An index cannot be built over nothing, so there is nothing to show.
-        return;
-    };
     let idx = EventIndexMapped {
-        event_index: Arc::new(event_index),
+        event_index: Arc::new(EventIndex::build(&empty.0, &empty.1).expect("an empty index")),
         index_map: Arc::new(Vec::new()),
     };
     let stats = get_percent_and_counts_gate(gates()[0].clone(), &idx, 0.0).unwrap();
     let percent = stats.get_percent_for_id(Arc::from("rect")).unwrap();
-    assert!(percent.is_finite(), "an empty parent shows {percent}%");
+    assert!(percent.is_nan(), "an empty parent shows {percent}%");
+
+    // Events, none of them in the rectangle.
+    let far = (vec![900.0f32, 950.0], vec![900.0f32, 950.0]);
+    let idx = index(&far);
+    let stats = get_percent_and_counts_gate(gates()[0].clone(), &idx, 2.0).unwrap();
+    assert_eq!(stats.get_percent_for_id(Arc::from("rect")), Some(0.0));
 }
 
 // ── event for event, on every kind of edge ───────────────────────────────

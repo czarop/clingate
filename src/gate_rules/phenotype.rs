@@ -222,8 +222,15 @@ impl Baseline {
     /// values it says are within [`TRIM`] spreads. One pass is enough - the
     /// first estimate is already robust enough to say which values are far out,
     /// it is only its *scale* that the far-out ones distort.
+    ///
+    /// A value that is not a number - NaN or infinite, from a corrupt event or
+    /// a transform gone wrong - is no measurement of the population and is
+    /// left out, as the threshold solvers leave it out. It used to go into the
+    /// sort, which has no order for NaN, and one such event could make the
+    /// whole marker's baseline NaN and drop it from the match (B-PHEN-1).
     pub fn of(values: &[f64]) -> Self {
-        let rough = Self::untrimmed(values);
+        let values: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+        let rough = Self::untrimmed(&values);
         let kept: Vec<f64> = values
             .iter()
             .copied()

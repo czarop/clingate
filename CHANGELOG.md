@@ -181,7 +181,25 @@
   since carrying it over would let the form name a combination the document does
   not have.
 
+### Removed
+
+- **The valley rule's "Flag below" setting.** It was read by nothing: when a
+  shallow valley stopped being refused and was scored on its depth instead,
+  the setting stayed in the form but no longer did anything. Rules files that
+  still carry it load as before.
+
 ### Fixed
+
+- **A gate rule's score no longer hides what it could not measure.** A part
+  of the confidence score that could not be worked out - a ratio with nothing
+  to divide by - was silently left out of the overall, so the gate looked
+  trustworthy. It now scores 0 and says "could not be measured", which puts
+  the gate at the top of the review list. A displacement limit of 0 in the
+  rules file now means no move is tolerated, rather than scoring nonsense.
+
+- **One corrupt value no longer switches a marker off in phenotype matching.**
+  A NaN or infinite value in a marker's column made that marker's baseline NaN
+  and dropped it from the match; such values are now left out.
 
 - **The population under a gate is exactly the one its percentage counts.** An
   event lying exactly on a rectangle's edge was counted in the percentage on

@@ -1988,7 +1988,7 @@ fn two_populations(negative: f32, merge: f32) -> polars::prelude::DataFrame {
     df![X => xs, Y => vec![0.0f32; n]].unwrap()
 }
 
-fn valley_rule(file: &str, min_depth: f64) -> crate::gate_rules::rule_store::RuleStore {
+fn valley_rule(file: &str) -> crate::gate_rules::rule_store::RuleStore {
     use crate::gate_rules::rule::{Rule, ValleyRule};
     use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
 
@@ -1999,10 +1999,7 @@ fn valley_rule(file: &str, min_depth: f64) -> crate::gate_rules::rule_store::Rul
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(file)),
-            rule: Rule::InTheValley(ValleyRule {
-                min_depth_fraction: min_depth,
-                ..ValleyRule::default()
-            }),
+            rule: Rule::InTheValley(ValleyRule::default()),
         },
     );
     store
@@ -2037,7 +2034,7 @@ fn the_gate_follows_the_valley_when_the_populations_move() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.25),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &shifted)],
     );
@@ -2077,7 +2074,7 @@ fn a_wider_positive_population_does_not_carry_the_gate_away() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.05),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &closer)],
     );
@@ -2114,7 +2111,7 @@ fn merged_populations_are_refused_rather_than_guessed() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.25),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &merged)],
     );
@@ -2143,7 +2140,7 @@ fn merged_populations_are_refused_rather_than_guessed() {
 }
 
 #[test]
-fn a_shallower_valley_within_tolerance_is_still_placed() {
+fn a_shallower_valley_is_still_placed() {
     // The other half: shallower is not the same as absent. A dip a third as
     // deep still has a lowest point and the gate still belongs there.
     let (mut state, _) = one_positive_gate();
@@ -2153,7 +2150,7 @@ fn a_shallower_valley_within_tolerance_is_still_placed() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.05),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &shallower)],
     );
@@ -2208,10 +2205,9 @@ fn a_shallow_valley_is_placed_and_flagged_rather_than_refused() {
     let here = two_populations(400.0, 0.0);
     let shallow = two_populations(400.0, 130.0);
 
-    // A threshold the sample's dip does not meet.
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.9),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &shallow)],
     );
@@ -2224,7 +2220,7 @@ fn a_shallow_valley_is_placed_and_flagged_rather_than_refused() {
     let (reference, sample) = placed.valley.unwrap();
     assert!(
         sample.depth < reference.depth * 0.9,
-        "shallower than the bar"
+        "the fixture's dip should be much shallower than the reference's"
     );
     assert_eq!(
         placed.weakest,
@@ -2235,42 +2231,6 @@ fn a_shallow_valley_is_placed_and_flagged_rather_than_refused() {
         placed.confidence < 1.0,
         "scored on how deep the dip was: {}",
         placed.confidence
-    );
-}
-
-/// BUG (docs/test-audit.md, B-RULE-1): `ValleyRule::min_depth_fraction` is
-/// documented as how shallow a sample's dip may be, against the reference's,
-/// before the placement is flagged - and nothing reads it. The Gate Rules tab
-/// edits it and the rules file saves it, but the depth component is added
-/// the same way whatever it says, so a dip well inside a lenient bar is
-/// flagged exactly as hard as one far outside a strict one.
-#[test]
-#[ignore = "known bug B-RULE-1: min_depth_fraction has no effect"]
-fn a_dip_inside_the_bar_is_judged_more_kindly_than_one_outside_it() {
-    let map = two_specimens();
-    let here = two_populations(400.0, 0.0);
-    let shallow = two_populations(400.0, 130.0);
-    let confidence = |bar: f64| {
-        let (mut state, _) = one_positive_gate();
-        let report = sweep_frames(
-            &mut state,
-            &valley_rule("fs_qc", bar),
-            &map,
-            &[("fs_qc", &here), ("fs_b", &shallow)],
-        );
-        let placed = report
-            .positioned
-            .iter()
-            .find(|p| &*p.specimen == "DONOR-B")
-            .expect("placed");
-        (placed.confidence, placed.weakest)
-    };
-    let (strict, strict_weakest) = confidence(0.9);
-    let (lenient, lenient_weakest) = confidence(0.05);
-    assert_eq!(strict_weakest, Some(crate::gate_rules::confidence::VALLEY));
-    assert!(
-        lenient > strict || lenient_weakest != strict_weakest,
-        "the bar changed nothing: {strict} at 0.9, {lenient} at 0.05"
     );
 }
 
@@ -2285,7 +2245,7 @@ fn a_density_with_no_dip_at_all_is_still_refused() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.0),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &here), ("fs_b", &merged)],
     );
@@ -2365,7 +2325,7 @@ fn the_valley_rule_gives_each_specimen_its_own_position_and_badge() {
 
     let report = sweep_frames(
         &mut state,
-        &valley_rule("fs_qc", 0.25),
+        &valley_rule("fs_qc"),
         &map,
         &[("fs_qc", &qc), ("fs_b", &b), ("fs_c", &c)],
     );
