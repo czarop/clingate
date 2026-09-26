@@ -914,8 +914,11 @@ impl GateState {
     /// one gate - Omiq's linked gate.
     ///
     /// The gate `node` used to show is discarded at this position. If that was
-    /// its only position it stays registered as a ghost rather than being
-    /// dropped, since a boolean may still reference it.
+    /// its only position, what happens next is what happens when a last
+    /// position is deleted: a boolean built on it keeps it registered and
+    /// evaluable, and with nothing reaching it `collect_stranded_ghosts` takes
+    /// it. It used to be kept whether anything reached it or not, and such
+    /// gates were written out on export as containers on no plot (B-DOC-1).
     ///
     /// Refused when the two are on different parameters - the result would be a
     /// gate drawn on axes it was not measured against - and for composites,
@@ -966,6 +969,7 @@ impl GateState {
         self.record_placement(node.clone(), to, collapsed);
         self.unindex_view_at(&plot, &from);
         self.reindex_view(node);
+        self.collect_stranded_ghosts();
         Ok(())
     }
 
@@ -1028,6 +1032,10 @@ impl GateState {
             self.unindex_view_at(&plot, &old_gate);
             self.reindex_view(&corner_node);
         }
+        // After every corner, not inside the loop: a composite is reachable
+        // while any corner holds a position, so a sweep between corners would
+        // see a half-linked group and keep it.
+        self.collect_stranded_ghosts();
         Ok(())
     }
 

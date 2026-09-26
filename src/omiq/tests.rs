@@ -3415,7 +3415,10 @@ fn linking_makes_two_positions_share_one_gate() {
     assert_eq!(state.placement_count(&g2), 2);
     assert!(state.is_linked(&g2));
     assert_eq!(state.placement_count(&g1), 0, "g1 is applied nowhere");
-    assert!(state.is_ghost(&g1), "but is still resolvable");
+    assert!(
+        !state.is_registered(&g1),
+        "and no boolean reaches it, so it is collected (B-DOC-1)"
+    );
 }
 
 #[test]
@@ -3433,14 +3436,13 @@ fn linking_keeps_each_position_where_it_was() {
     assert_eq!(state.parent_node(&node), before, "the tree did not move");
 }
 
-/// BUG (docs/test-audit.md, B-DOC-1): linking re-points a position at
-/// another gate and keeps the gate it used to show "as a ghost ... since a
-/// boolean may still reference it" - whether or not one does. Deleting the
-/// last position of a gate collects it when nothing references it
-/// (`collect_stranded_ghosts`), because such gates accumulate and are written
-/// out on export as containers on no plot. Linking leaves exactly that.
+/// Was B-DOC-1: linking re-pointed a position at another gate and kept the
+/// gate it used to show "as a ghost ... since a boolean may still reference
+/// it" - whether or not one did. Deleting the last position of a gate
+/// collects it when nothing references it (`collect_stranded_ghosts`),
+/// because such gates accumulate and are written out on export as containers
+/// on no plot. Linking now does the same.
 #[test]
-#[ignore = "known bug B-DOC-1: linking leaves the replaced gate registered when nothing references it"]
 fn linking_away_from_an_unreferenced_gate_collects_it() {
     let mut state = GateState::default();
     let a = add(&mut state, PrimaryGateType::Rectangle, "a", None);
@@ -3456,6 +3458,70 @@ fn linking_away_from_an_unreferenced_gate_collects_it() {
         !state.is_registered(&a),
         "and no boolean reaches it, so there is nothing to keep it for"
     );
+}
+
+/// The other half: a gate a boolean is built on stays when linking takes its
+/// last position, or the boolean would stop evaluating.
+#[test]
+fn linking_away_from_a_gate_a_boolean_needs_keeps_it() {
+    let mut state = import(AFTER);
+    let operand = the_live_operand(&state);
+    let (x, y) = state.registered_gate(&operand).unwrap().get_params();
+    state
+        .add_gate(
+            &editor_mapper(),
+            300.0,
+            300.0,
+            x,
+            y,
+            None,
+            None,
+            PrimaryGateType::Rectangle,
+            Some("link target".to_string()),
+        )
+        .unwrap();
+    let target = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state
+                .registered_gate(id)
+                .is_some_and(|g| g.get_name() == "link target")
+        })
+        .unwrap();
+    let target_node = state.nodes_for_gate(&target)[0].clone();
+
+    for node in state.nodes_for_gate(&operand).to_vec() {
+        state.link_node_to_gate(&node, &target_node).unwrap();
+    }
+
+    assert_eq!(state.placement_count(&operand), 0, "it is on no plot now");
+    assert!(
+        state.is_registered(&operand) && state.is_ghost(&operand),
+        "but its boolean still reaches it, so it stays resolvable"
+    );
+}
+
+/// A linked-away composite nothing reaches goes whole: its own key and every
+/// corner's.
+#[test]
+fn linking_away_from_an_unreferenced_composite_collects_every_corner() {
+    let (mut state, source, target) = two_quadrants();
+    let node = state.nodes_for_gate(&source.get_inner_gate_ids()[0])[0].clone();
+    let target_node = state.nodes_for_gate(&target.get_inner_gate_ids()[0])[0].clone();
+
+    state.link_node_to_gate(&node, &target_node).unwrap();
+
+    assert!(!state.is_registered(&source.get_id()), "the group key");
+    for corner in source.get_inner_gate_ids() {
+        assert!(!state.is_registered(&corner), "corner {corner}");
+    }
+    for corner in target.get_inner_gate_ids() {
+        assert!(
+            state.is_registered(&corner),
+            "the target's corner {corner} stays"
+        );
+    }
 }
 
 #[test]
@@ -4653,7 +4719,7 @@ fn every_gate_keeps_the_label_it_came_in_with() {
             let Some(was) = container
                 .get("defaultFilter")
                 .and_then(|f| f.get("labelLoc"))
-                // An empty `{}` is covered by B-OMIQ-1 below.
+                // An empty `{}` - no label placed - is checked below.
                 .filter(|l| l.as_object().is_some_and(|o| !o.is_empty()))
             else {
                 continue;
@@ -4682,12 +4748,11 @@ fn every_gate_keeps_the_label_it_came_in_with() {
     }
 }
 
-/// BUG (docs/test-audit.md, B-OMIQ-1): Omiq writes `"labelLoc": {}` for a
-/// gate whose label has not been placed. A missing coordinate is read as 0,
-/// so the export writes `{"f1Val": 0, "f2Val": 0}` back - an unedited gate's
-/// label pinned to the plot's origin.
+/// Was B-OMIQ-1: Omiq writes `"labelLoc": {}` for a gate whose label has
+/// not been placed. A missing coordinate was read as 0, so the export wrote
+/// `{"f1Val": 0, "f2Val": 0}` back - an unedited gate's label pinned to the
+/// plot's origin. It now goes back as `{}`.
 #[test]
-#[ignore = "known bug B-OMIQ-1: an unset label location is exported as (0, 0)"]
 fn an_unset_label_location_is_exported_unset() {
     let source = original(BEFORE);
     let written = export_with_metadata(BEFORE);
@@ -4703,9 +4768,10 @@ fn an_unset_label_location_is_exported_unset() {
             .is_some_and(|o| o.is_empty())
         {
             let now = to[id].get("defaultFilter").and_then(|f| f.get("labelLoc"));
-            assert!(
-                now.is_none_or(|l| l.as_object().is_some_and(|o| o.is_empty())),
-                "container {id}: unset label written as {now:?}"
+            assert_eq!(
+                now,
+                Some(&serde_json::json!({})),
+                "container {id}: unset label written as {now:?}, not as Omiq writes it"
             );
             checked += 1;
         }
@@ -4853,4 +4919,51 @@ fn a_missing_file_leaves_the_gates_alone() {
     );
     assert!(outcome.is_err(), "a missing file must be refused");
     assert_eq!(shape(&state), before);
+}
+
+// ─── labelLoc, every shape it arrives in ─────────────────────────────────────
+
+fn rectangle_with_label(label: Option<&str>) -> GateSerialized {
+    let label = label
+        .map(|l| format!(r#", "labelLoc": {l}"#))
+        .unwrap_or_default();
+    serde_json::from_str(&format!(
+        r#"{{"type": "RectangleGate", "f1": "FSC-A", "f2": "SSC-A",
+            "min": {{"f1Val": 1, "f2Val": 2}}, "max": {{"f1Val": 3, "f2Val": 4}}{label}}}"#
+    ))
+    .unwrap()
+}
+
+#[test]
+fn a_label_not_yet_placed_reads_as_none_however_it_is_written() {
+    for written in [Some("{}"), Some("null"), None] {
+        assert_eq!(
+            rectangle_with_label(written).label_position(),
+            None,
+            "labelLoc {written:?}"
+        );
+    }
+}
+
+#[test]
+fn a_placed_label_reads_as_its_point() {
+    let at = rectangle_with_label(Some(r#"{"f1Val": 5.5, "f2Val": 7}"#)).label_position();
+    assert_eq!(at, Some(Point { x: 5.5, y: 7.0 }));
+    // One coordinate, as before: the missing one is 0.
+    let half = rectangle_with_label(Some(r#"{"f1Val": 5.5}"#)).label_position();
+    assert_eq!(half, Some(Point { x: 5.5, y: 0.0 }));
+}
+
+#[test]
+fn a_label_not_placed_is_written_as_omiq_writes_it() {
+    for written in [Some("{}"), None] {
+        let json = serde_json::to_value(rectangle_with_label(written)).unwrap();
+        assert_eq!(json["labelLoc"], serde_json::json!({}), "from {written:?}");
+    }
+    let placed =
+        serde_json::to_value(rectangle_with_label(Some(r#"{"f1Val": 5.5, "f2Val": 7}"#))).unwrap();
+    assert_eq!(
+        placed["labelLoc"],
+        serde_json::json!({"f1Val": 5.5, "f2Val": 7.0})
+    );
 }

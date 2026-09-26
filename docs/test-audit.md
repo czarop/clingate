@@ -22,14 +22,14 @@ the seams the integration tests in the second pass are written against.
 
 ## Where things stand
 
-- **1,132 unit tests and 36 integration tests pass**, plus 11 doctests.
-- **22 known-bug tests (20 bugs) are pinned as failing tests** (`#[ignore]`d
+- **1,141 unit tests and 36 integration tests pass**, plus 11 doctests.
+- **19 known-bug tests (17 bugs) are pinned as failing tests** (`#[ignore]`d
   with their id); all of them fail today. B-BUILD-1, B-NAV-1, B-RUN-1,
   B-GRP-1, B-GRP-2, B-PDF-1, B-PAIR-1, B-UI-1, B-AX-1, B-AX-2, B-AX-3,
-  B-AX-4, B-CNT-1, B-CONF-1, B-CONF-2, B-HIER-2, B-META-1, B-PHEN-1,
-  B-SCALE-1 and B-OMIQ-2 have been fixed; B-RULE-1 by removing the setting.
-  B-STAT-1 is kept by decision, and B-AUTO-1 is left as it is by decision
-  and flagged.
+  B-AX-4, B-CNT-1, B-CONF-1, B-CONF-2, B-DOC-1, B-HIER-2, B-META-1,
+  B-OMIQ-1, B-PHEN-1, B-SCALE-1, B-THR-1 and B-OMIQ-2 have been fixed;
+  B-RULE-1 by removing the setting. B-STAT-1 is kept by decision, and
+  B-AUTO-1 is left as it is by decision and flagged.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
@@ -54,9 +54,7 @@ to fix first.
 | B-FCS-1 | `file_load::FcsSampleStub::open` (via flow_fcs `Metadata::validate_guid`) | `validate_guid` looks for `GUID`, never finds it among keys stored as `$GUID`, and writes a random `$GUID` over the file's own. Equality "by `$GUID`" compares random numbers: two copies of one acquisition, or one file opened twice, are unequal. Root cause is upstream in `czarop/flow` | Medium - identity of an acquisition is lost |
 | B-IDX-1 | flow_gates `EventIndex::build` (upstream, `czarop/flow`) | Panics on an event with a NaN value: `rstar`'s bulk load unwraps a comparison NaN cannot answer. The index is built on a worker thread, so a plot holding such an event shows no percentages rather than crashing the app. Found while checking B-CNT-1 | Low here - upstream |
 | B-WS-1 | `workspace::program_name` | "Outside the workspace" is decided by `strip_prefix`, which does not resolve `..`; `/w/../elsewhere/A1.fcs` is named `.._elsewhere_A1.fcs` | Low - dialogs and `fcs_under` give clean paths |
-| B-FCS-2 | `file_load::FcsSampleStub::open` | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
-| B-OMIQ-1 | `omiq::serialise` (label position) | `"labelLoc": {}` (label not placed) is read as (0, 0) and exported as an explicit `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin | Low |
-| B-THR-1 | `gate_rules::threshold::valley_in` | `NoValley::OnlyOnePeak { events }` is always built with `events: 0`, so the refusal says "one peak ... over 0 events" | Low - a misleading report |
+| B-FCS-2 | `file_load::FcsSampleStub::open`; the panic itself in flow_fcs (`czarop/flow`) | Checks a file's header and keywords but not that its data segment holds the `$TOT` events promised. A file with one header offset digit damaged is accepted into the workspace, and reading its events trips an assertion in flow_fcs; a rules run reads files in parallel, so that one file ends the *whole* run ("The run did not finish") and no gate is placed. (A file merely cut short is refused cleanly when its events are read.) | Medium - one damaged file stops every run |
 | B-RS-1 | `gate_rules::rule_store::human_order` | Calls distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists keep whatever order the hash map gave | Low |
 | B-GRID-3 | `gate_move::density_grid::apply_constraints` | Capping a move scales `dx_data`/`dy_data` but not `dx_bins`/`dy_bins` | Low |
 | B-KDE-1 | `gate_move::kde::kde_negative_shift` | Negative width is the std-dev of everything below the axis midpoint, so a smeared positive reads as a widened negative (ratio 2.15 for an identical negative) | Low - not called by the app |
@@ -64,12 +62,14 @@ to fix first.
 | B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app |
 | B-HIER-1 | `gate_editor::gates::gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` return `Err` ("possible cycle" on failure, "no order for child" on success), so cloning any subtree with a child fails | Low - no caller yet |
 | B-HIER-3 | `gate_hierarchy::GateHierarchy::reparent_subtree` | Besides the real cycle check, refuses a move when the gate is already below the new parent, calling it a cycle - so a gate cannot be moved up to sit directly under its grandparent | Low - no caller yet |
-| B-DOC-1 | `GateState::link_node_to_gate` / `link_composite` | Re-pointing a position keeps the gate it replaced registered "since a boolean may still reference it", whether one does or not; deleting collects such a gate (`collect_stranded_ghosts`) because it accumulates and is exported as a container on no plot. Found by the random document edits | Low - file bloat, invisible containers in Omiq |
 | B-FCS-3 | flow_fcs `Fcs::open` (upstream, `czarop/flow`) | Slices by the header's offsets and asserts event counts without checking them: damaged or truncated files panic ("range end index 312 out of range for slice of length 110"). Every caller runs it on a worker thread, so the app survives; files the workspace refuses never reach it; B-FCS-2 is the case that does | Low here - upstream |
 | B-GRID-1 | `gate_move::density_grid::DensityGrid::from_column` | A NaN coordinate casts to cell 0 and is counted | Low - not called by the app |
 | B-GRID-2 | `DensityGrid::from_column` | `unwrap`s `.f64()`: a Float32 column (FCS data) panics | Low - not called by the app |
 | B-GRID-4 | `gate_move::density_grid::make_gaussian_kernel` | `sigma = 0` gives a NaN kernel; the blur fills the grid with NaN and `cross_correlate` then panics on `partial_cmp().unwrap()` | Low - not called by the app |
 | B-GRID-5 | `gate_move::density_grid::calculate_dynamic_radii` | The "noise, not a cluster" guard compares a spread measured on half the axis with 25% of the whole axis, and only on X; it cannot fire | Low - not called by the app |
+| B-DOC-1 (fixed) | `GateState::link_node_to_gate` / `link_composite` | Linking - pointing a position at another gate so the two share it, Omiq's linked gate - kept the gate it replaced registered "since a boolean may still reference it", whether one did or not; such gates accumulated until the next delete and were exported as containers on no plot. Added with linking by an earlier session (commit 12f8239, 14 Sep), not in the original code. Fixed: a link runs the same sweep a delete does (`collect_stranded_ghosts`), after every corner for a composite - a gate a boolean still reaches is kept, anything else is collected. The document fuzzer no longer sweeps after a link itself | - |
+| B-OMIQ-1 (fixed) | `omiq::deserialise` (`labelLoc`) | Omiq writes `"labelLoc": {}` for a label not yet placed; `Point` read a missing coordinate as 0, so it came in as (0, 0) and went back out as an explicit `{"f1Val": 0, "f2Val": 0}`. Fixed: `{}`, `null` or no key reads as no position, and no position is written as `{}`, as Omiq writes it | - |
+| B-THR-1 (fixed) | `gate_rules::threshold::valley_in` / `first_valley` | `NoValley::OnlyOnePeak { events }` was always built with `events: 0`, so the refusal said "one peak ... over 0 events". Fixed: `events` is an `Option` - `first_valley`, which has the values, fills in how many finite ones the density was read from; `valley_in`, handed a density alone, says it does not know, and the message quotes a count only when there is one | - |
 | B-STAT-1 (kept, by decision) | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100`: a gate over an empty parent shows NaN%. Kept on purpose - it tells "no events to gate" apart from "none of the events are in the gate", which shows 0%. Both are pinned (`a_gate_over_an_empty_parent_shows_nan_and_an_empty_gate_shows_zero`) | - |
 | B-PHEN-1 (fixed) | `gate_rules::phenotype::Baseline::of` | Non-finite values were not dropped: the first median was sorted with NaN in it (by a comparator that is not an order) and landed on one, so the baseline came back `median: NaN` and the marker was disabled for the match. Fixed: NaN and infinite values are left out, exactly - the baseline is the one of the finite values alone; a marker with none reads as an empty one | - |
 | B-CONF-1 (fixed) | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold passed over it: an unmeasurable component left the overall score untouched, ranking the gate as trustworthy. Fixed: a component that could not be measured scores 0 and its detail says so ("could not be measured: ..."); the overall also counts a NaN put straight into the public field as 0 | - |

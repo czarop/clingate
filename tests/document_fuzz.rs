@@ -241,11 +241,6 @@ fn random_edits(seed: u64, steps: usize) -> (GateState, Vec<String>) {
             7 | 8 => match (pick(&mut rng), pick(&mut rng)) {
                 (Some(a), Some(b)) => {
                     let linked = state.link_node_to_gate(&a, &b).is_ok();
-                    // Linking leaves the gate it replaced registered even
-                    // when nothing reaches it - B-DOC-1, pinned in the omiq
-                    // tests. Collected here, as the fix would, so the
-                    // sequences can go on to find anything else.
-                    state.collect_stranded_ghosts();
                     format!("link {a} to {b} -> {linked}")
                 }
                 _ => continue,

@@ -584,7 +584,15 @@ pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> 
         return Err(NoValley::NoPopulation);
     }
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
-    valley_in(&xs, &density)
+    // The density alone does not know how many events made it; this does.
+    let events = values.iter().filter(|v| v.is_finite()).count();
+    valley_in(&xs, &density).map_err(|why| match why {
+        NoValley::OnlyOnePeak { peak, .. } => NoValley::OnlyOnePeak {
+            peak,
+            events: Some(events),
+        },
+        other => other,
+    })
 }
 
 /// Why no boundary was found, in enough detail to tell the cases apart.
@@ -598,7 +606,12 @@ pub enum NoValley {
     NoPopulation,
     /// One peak and then a decline that never rises again - a smear, or two
     /// populations that have merged into one hump.
-    OnlyOnePeak { peak: f64, events: usize },
+    ///
+    /// `events` is how many events the density was read from, when that is
+    /// known: [`first_valley`] knows, [`valley_in`] - handed a density alone -
+    /// does not. It was a bare count that every construction set to 0, so the
+    /// report said "over 0 events" whatever the population (B-THR-1).
+    OnlyOnePeak { peak: f64, events: Option<usize> },
     /// Dips exist, but none is a boundary: too shallow to be anything but
     /// noise, or out in a tail where there is no population on the far side.
     NothingDeepEnough {
@@ -618,11 +631,16 @@ impl std::fmt::Display for NoValley {
             NoValley::NoPopulation => {
                 write!(f, "there is no population here to find a boundary in")
             }
-            NoValley::OnlyOnePeak { peak, events } => write!(
-                f,
-                "one peak at {peak:.3} over {events} events and no second population after it - \
-                 a smear, or two that have merged"
-            ),
+            NoValley::OnlyOnePeak { peak, events } => {
+                write!(f, "one peak at {peak:.3}")?;
+                if let Some(events) = events {
+                    write!(f, " over {events} events")?;
+                }
+                write!(
+                    f,
+                    " and no second population after it - a smear, or two that have merged"
+                )
+            }
             NoValley::NothingDeepEnough {
                 peak,
                 best_at,
@@ -690,7 +708,7 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
                 },
                 None => NoValley::OnlyOnePeak {
                     peak: xs[left],
-                    events: 0,
+                    events: None,
                 },
             });
         }
@@ -731,7 +749,7 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
         },
         None => NoValley::OnlyOnePeak {
             peak: xs[left],
-            events: 0,
+            events: None,
         },
     })
 }

@@ -190,6 +190,18 @@
 
 ### Fixed
 
+- **Linking no longer leaves the replaced gate behind in the file.** When a
+  position was linked to another gate, the gate it used to show stayed
+  registered even with nothing using it, and was saved to Omiq as a container
+  on no plot. It is now dropped, unless a boolean gate is built on it.
+
+- **An unplaced label stays unplaced through a round trip.** A gate whose label
+  had never been moved in Omiq came back with its label pinned to the plot's
+  origin.
+
+- **The valley rule's "only one peak" message gives the real event count.** It
+  said "over 0 events" whatever the population.
+
 - **A gate rule's score no longer hides what it could not measure.** A part
   of the confidence score that could not be worked out - a ratio with nothing
   to divide by - was silently left out of the overall, so the gate looked

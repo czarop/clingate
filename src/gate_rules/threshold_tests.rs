@@ -583,12 +583,10 @@ fn a_refusal_says_what_the_density_looked_like() {
     assert!(why.to_string().contains("far side"), "{why}");
 }
 
-/// BUG (docs/test-audit.md, B-THR-1): `OnlyOnePeak` carries how many events
-/// the peak was read from, for the report, and every construction of it
-/// writes 0 - so the message says "one peak ... over 0 events" whatever the
-/// population was.
+/// Was B-THR-1: `OnlyOnePeak` carries how many events the peak was read
+/// from, for the report, and every construction of it wrote 0 - so the
+/// message said "one peak ... over 0 events" whatever the population was.
 #[test]
-#[ignore = "known bug B-THR-1: OnlyOnePeak always reports 0 events"]
 fn a_single_peak_reports_how_many_events_it_was_read_from() {
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -599,9 +597,33 @@ fn a_single_peak_reports_how_many_events_it_was_read_from() {
     let v: Vec<f64> = (0..5_000).map(|_| one.sample(&mut rng)).collect();
     let why = first_valley(&v, 1.0).unwrap_err();
     assert!(
-        matches!(why, NoValley::OnlyOnePeak { events: 5_000, .. }),
+        matches!(
+            why,
+            NoValley::OnlyOnePeak {
+                events: Some(5_000),
+                ..
+            }
+        ),
         "{why:?}"
     );
+    assert!(why.to_string().contains("over 5000 events"), "{why}");
+}
+
+/// Handed a density alone there is no count to give, and the message does
+/// not make one up.
+#[test]
+fn a_single_peak_in_a_bare_density_claims_no_event_count() {
+    let xs: Vec<f64> = (0..50).map(|i| i as f64).collect();
+    let d: Vec<f64> = xs
+        .iter()
+        .map(|x| (-(x - 10.0).powi(2) / 20.0).exp())
+        .collect();
+    let why = valley_in(&xs, &d).unwrap_err();
+    assert!(
+        matches!(why, NoValley::OnlyOnePeak { events: None, .. }),
+        "{why:?}"
+    );
+    assert!(!why.to_string().contains("events"), "{why}");
 }
 
 #[test]
