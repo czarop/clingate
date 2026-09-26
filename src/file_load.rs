@@ -1,7 +1,6 @@
 use anyhow::anyhow;
 use flow_fcs::keyword::StringableKeyword;
-use flow_fcs::parameter::ParameterBuilder;
-use flow_fcs::{Header, Metadata, Parameter, ParameterMap, TransformType};
+use flow_fcs::{Header, Metadata, Parameter, ParameterMap};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -218,7 +217,7 @@ impl FcsSampleStub {
         flow_fcs::Fcs::locate_events(&header, &metadata, file_access.mmap.len())
             .map_err(|e| anyhow!("its events cannot be read: {e}"))?;
 
-        let parameters = Self::generate_parameter_map(&metadata)
+        let parameters = flow_fcs::Fcs::generate_parameter_map(&metadata)
             .map_err(|e| anyhow!("its parameters could not be read: {e}"))?;
 
         let filepath = PathBuf::from(path);
@@ -329,58 +328,6 @@ impl FcsSampleStub {
         }
 
         Err(anyhow!("Parameter not found: {parameter_name}"))
-    }
-
-    /// Creates a new `HashMap` of `Parameter`s
-    /// using the `Fcs` file's metadata to find the channel and label names from the `PnN` and `PnS` keywords.
-    /// Does NOT store events on the parameter.
-    /// # Errors
-    /// Will return `Err` if:
-    /// - the number of parameters cannot be found in the metadata,
-    /// - the parameter name cannot be found in the metadata,
-    /// - the parameter cannot be built (using the Builder pattern)
-    pub fn generate_parameter_map(metadata: &Metadata) -> Result<ParameterMap> {
-        let mut map = ParameterMap::default();
-        let number_of_parameters = metadata.get_number_of_parameters()?;
-        for parameter_number in 1..=*number_of_parameters {
-            let channel_name = metadata.get_parameter_channel_name(parameter_number)?;
-
-            // Use label name or fallback to the parameter name
-            let label_name = match metadata.get_parameter_label(parameter_number) {
-                Ok(label) => label,
-                Err(_) => channel_name,
-            };
-
-            let transform = if channel_name.contains("FSC")
-                || channel_name.contains("SSC")
-                || channel_name.contains("Time")
-            {
-                TransformType::Linear
-            } else {
-                TransformType::default()
-            };
-
-            // Get excitation wavelength from metadata if available
-            let excitation_wavelength = metadata
-                .get_parameter_excitation_wavelength(parameter_number)
-                .ok()
-                .flatten();
-
-            let parameter = ParameterBuilder::default()
-                // For the ParameterBuilder, ensure we're using the proper methods
-                // that may be defined by the Builder derive macro
-                .parameter_number(parameter_number)
-                .channel_name(channel_name)
-                .label_name(label_name)
-                .transform(transform)
-                .excitation_wavelength(excitation_wavelength)
-                .build()?;
-
-            // Add the parameter events to the hashmap keyed by the parameter name
-            map.insert(channel_name.to_string().into(), parameter);
-        }
-
-        Ok(map)
     }
 
     /// Looks for a keyword among the metadata and returns its value as a `&str`

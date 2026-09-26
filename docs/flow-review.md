@@ -5,6 +5,47 @@ A review of `flow_fcs`, `flow_gates` and `flow_plots` (`czarop/flow`, branch
 clingate's needs in mind. Each finding says where it is, what it costs
 clingate, and what to change. Nothing here has been changed yet.
 
+## Status
+
+Done on `czarop/flow` branch `claude/fcs-errors-not-panics`, and clingate
+pinned to it:
+
+| Item | Commit (flow) | Notes |
+| --- | --- | --- |
+| 1 Density binning | 109436c | Binned on the plotting area, bin centres, deterministic. Edge piles kept on purpose - see the correction under 1. |
+| 2 Escaped delimiters | 6a0d18d | Read and written; the writer refuses a value it cannot represent. |
+| 3 `get_guid` | 6a0d18d | |
+| 4 Pixel mapping panics | 41315d0 | `pixel_to_raw(_y)` return `Option`; clingate's `PlotMapper` returns `Result`. |
+| 5 Logging | 2e7be2b | All through `tracing`. |
+| 6 Frame cache (clingate) | - | Not started: a clingate change, not a flow one. |
+| 7 Single-copy parse | d963b3d | Also about 3x faster to open (800k x 30: 180 ms to 60 ms, release). |
+| 8 `GateNode` | 241c7c1 | Ordered list instead of a SipHash map; shared channel `Arc`s. The API is unchanged apart from the private field. |
+| 9 PNG, progress | 109436c | Plotters' frame is *not* cached: measured at about 1 ms of a render in release, not worth the state. |
+| 10 One layout | 109436c, 41315d0 | `flow_plots::plotting_area`; the renderer checks plotters agrees; clingate's mapper takes it from the render's options. |
+| 12 f64 ray cast | b7a77c4 | |
+| 13 `TransformType` hash | b7a77c4 | |
+| 14 `count_in_gate` | b7a77c4 | |
+| 15 Duplicate parameter map | - | clingate calls flow's. |
+
+Not done, as they need a decision: 11 (biexponential / logicle), 16
+(compensation).
+
+Also found on the way:
+
+- `plots/src/tests.rs` was never compiled; it is now, and running it found
+  a panic in `get_percentile_bounds` on no values (fixed in 0b18f7c).
+- GatingML import (`gatingml_to_gates`) is `todo!()` for polygon, rectangle
+  and ellipse gates: reading any GatingML file with a gate panics. clingate
+  does not use GatingML, so it is left, but it should return an error.
+- Integer data (`$DATATYPE` I) is read without applying the `$PnR` bit mask
+  the standard asks for when fewer bits are used than stored. Unchanged;
+  matters only for integer files from older instruments.
+
+Corrections to what follows: the plotting area of a 400 x 400 plot is
+330 x 330, not 330 x 340; and "Unable to parse keyword" is logged only for a
+keyword the standard defines whose value fails to parse, not for every
+keyword flow does not model.
+
 What clingate uses:
 
 - **flow_fcs** - `Fcs::open` (every plot, gallery image and rules run),
@@ -35,8 +76,9 @@ from run to run of the same data.
 Also in the same function:
 
 - Events outside the axis range are clamped into the edge bins, and those
-  piles count towards the colour scale's maximum, so a large off-scale pile
-  can wash out the real populations.
+  piles count towards the colour scale's maximum. *Correction: this is
+  intended - it is what FlowJo does, and the only sign on the plot that the
+  events are there. Kept.*
 - A bin is mapped back to data at its lower-left corner, not its centre - a
   half-bin shift against the gate overlay, which is drawn at exact
   coordinates.

@@ -15,9 +15,9 @@ anyhow = "1"
 # NaN events and its pixel mapping returns None rather than panicking;
 # flow_plots bins the density on the plotting area and draws PNG. Back to the
 # default branch once it is merged there.
-flow-fcs = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329" }
-flow-plots = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329" }
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
 base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"

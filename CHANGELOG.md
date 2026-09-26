@@ -190,6 +190,15 @@
 
 ### Fixed
 
+- **Opening a file holds its events once, and is faster.** flow_fcs decoded
+  every event into one buffer and then copied it out column by column; it now
+  decodes straight into the columns.
+- **Events within a few units of a skewed quadrant's slanted arm could land
+  in the wrong quarter** on a linear axis, from rounding where the arm runs
+  out to +-1e8. The point-in-polygon test now works in double precision.
+- **Percentages count events without listing them**, through flow_gates'
+  new `count_in_gate`.
+
 - **Density plots showed an arbitrary neighbour's colour on many pixels.**
   flow_plots binned events on a grid the size of the whole image and drew it
   into the smaller area inside the axes, so several bins shared a screen
