@@ -4,6 +4,26 @@ use polars::prelude::*;
 
 use crate::gate_editor::gates::{GateId, gate_store::GateOverrideResolver};
 
+/// Which events of `df` the gate `gate_id` admits.
+///
+/// This is the population a gate's children are drawn on and gated from, and
+/// the percentage printed on a gate is counted by `flow_gates`'s `EventIndex`
+/// (`gate_stats`). The two must agree event for event, so every shape here
+/// decides membership exactly as the index does - the same comparisons, the
+/// same formula, in the same order - including for an event exactly on a
+/// gate's edge:
+///
+/// - a rectangle holds its edges and corners (`>=` and `<=` on both axes);
+/// - a polygon - and so every quadrant, skewed quadrant and bisector piece -
+///   is `flow_gates::polygon::point_in_polygon`, called directly; like any
+///   ray cast it holds an event on a left or bottom side and not one on a
+///   right or top side;
+/// - an ellipse holds its boundary (`<= 1`), by the index's own formula.
+///
+/// The rectangle used to admit only events strictly inside, so an event on its
+/// edge was counted in the percentage but missing from the population below
+/// it; and the ellipse used an equivalent formula that rounded differently,
+/// so an event on or next to its boundary could fall either way (B-CNT-1).
 pub fn filter_events_to_mask(
     df: &DataFrame,
     gate_id: GateId,
@@ -39,9 +59,13 @@ pub fn filter_events_to_mask(
                 )
             };
 
-            // This generates the mask in one pass with zero manual indexing
-            let mask =
-                x_series.gt(minx) & x_series.lt(maxx) & y_series.gt(miny) & y_series.lt(maxy);
+            // Edges and corners are inside, as in `flow_gates`'s
+            // `filter_by_rectangle_batch` (`x >= min_x && x <= max_x && ...`).
+            // A NaN value is outside either way.
+            let mask = x_series.gt_eq(minx)
+                & x_series.lt_eq(maxx)
+                & y_series.gt_eq(miny)
+                & y_series.lt_eq(maxy);
 
             Ok(mask)
         }
@@ -72,13 +96,6 @@ pub fn filter_events_to_mask(
             let min_y = k - y_extent;
             let max_y = k + y_extent;
 
-            // Pre-calc quadratic coefficients for the rotated formula
-            let r_x2 = radius_x.powi(2);
-            let r_y2 = radius_y.powi(2);
-            let a_coeff = cos_a.powi(2) / r_x2 + sin_a.powi(2) / r_y2;
-            let b_coeff = 2.0 * sin_a * cos_a * (1.0 / r_x2 - 1.0 / r_y2);
-            let c_coeff = sin_a.powi(2) / r_x2 + cos_a.powi(2) / r_y2;
-
             // 3. SCAN: 10 Million Rows
             let x_series = df.column(&x_param)?.f32()?;
             let y_series = df.column(&y_param)?.f32()?;
@@ -94,16 +111,27 @@ pub fn filter_events_to_mask(
                         return false;
                     }
 
-                    // STEP B: Precise Rotated Ellipse Math
+                    // STEP B: the index's own test (`flow_gates`'s
+                    // `filter_by_ellipse_batch`), operation for operation, so an
+                    // event on the boundary rounds the same way in both.
                     let dx = px - h;
                     let dy = py - k;
-                    (a_coeff * dx * dx + b_coeff * dx * dy + c_coeff * dy * dy) <= 1.0
+                    let rotated_x = dx * cos_a + dy * sin_a;
+                    let rotated_y = -dx * sin_a + dy * cos_a;
+                    let normalized_x = rotated_x / radius_x;
+                    let normalized_y = rotated_y / radius_y;
+                    normalized_x * normalized_x + normalized_y * normalized_y <= 1.0
                 })
                 .collect();
 
             Ok(mask.with_name("mask".into()))
         }
-        GateGeometry::Polygon { nodes, .. } => {
+        GateGeometry::Polygon { nodes, closed } => {
+            // As the index: an open polygon, or one with fewer than three
+            // corners, holds nothing.
+            if !closed || nodes.len() < 3 {
+                return Ok(BooleanChunked::full("mask".into(), false, df.height()));
+            }
             let coords: Vec<(f32, f32)> = nodes
                 .iter()
                 .filter_map(|node| {
@@ -156,21 +184,13 @@ pub fn filter_events_to_mask(
                         return false;
                     }
 
-                    // Ray Casting logic using our flat coords
-                    let mut inside = false;
-                    let mut j = coords.len() - 1;
-                    for i in 0..coords.len() {
-                        let (v_ix, v_iy) = coords[i];
-                        let (v_jx, v_jy) = coords[j];
-
-                        if ((v_iy > py) != (v_jy > py))
-                            && (px < (v_jx - v_ix) * (py - v_iy) / (v_jy - v_iy) + v_ix)
-                        {
-                            inside = !inside;
-                        }
-                        j = i;
-                    }
-                    inside
+                    // The index's own test, called rather than copied, so the
+                    // two cannot drift apart. The copy that was here measured
+                    // each edge from its other end: the same test, and it
+                    // agreed in every case tried, but nothing held it to
+                    // rounding the same way. The box above rejects only events
+                    // this test would reject too.
+                    flow_gates::polygon::point_in_polygon(px, py, &coords)
                 })
                 .collect();
 

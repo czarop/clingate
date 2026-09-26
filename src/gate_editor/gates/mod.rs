@@ -13,10 +13,19 @@ pub mod gate_stats;
 pub mod gate_traits;
 
 #[cfg(test)]
-mod gate_filtering_tests;
+mod edit_fuzz_tests;
 #[cfg(test)]
 mod gate_drag_tests;
 #[cfg(test)]
-mod gate_types_tests;
+mod gate_filtering_tests;
+pub mod gate_paths;
+#[cfg(test)]
+mod gate_paths_tests;
 #[cfg(test)]
 mod gate_stats_tests;
+#[cfg(test)]
+mod gate_types_tests;
+#[cfg(test)]
+mod rescale_tests;
+#[cfg(test)]
+mod swap_tests;

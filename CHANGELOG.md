@@ -2,7 +2,435 @@
 
 ## Unreleased
 
+### Added
+
+- **A rule that finds a population by what it is, rather than where it sat.**
+  The cells inside the gate on the reference sample are described by where they
+  sit across markers you choose, and that description is used to find the same
+  cells in every other sample; the gate is then fitted to wherever they turn out
+  to be. For populations the threshold rules cannot reach - a smear with no dip,
+  several clusters near each other, anything that moves in both axes at once.
+
+  The markers are per rule, because which ones define a population is knowledge
+  about the biology that nothing in the data supplies. MAIT cells are TCR Va7.2
+  and CD161 and CD127; a monocyte marker is not wrong about them, it is silent,
+  and including it spends the distance budget on noise.
+
+  Two ways to fit, also per rule. *Keep the shape* moves and resizes the gate as
+  drawn and stays the kind of gate it is, for an outline that means something the
+  data does not - a quadrant, a shape agreed with somebody else, a gate that has
+  to stay comparable with how it was drawn before. *Draw a polygon* traces a
+  fresh boundary round the matched cells on every sample, and turns the gate into
+  a polygon whatever it was.
+
+  Nothing is normalised between samples: each one's markers are read against its
+  own parent population, so donor differences are carried rather than flattened.
+
+- **A verification table for it.** A gate drawn round the wrong cells looks
+  exactly like one drawn round the right cells until you look. Per sample: how
+  many cells matched against how many the hand-drawn gate held, what fraction of
+  the fitted gate's contents are actually the population, how much of the
+  population it holds, how many separate clouds they formed, and - per marker -
+  where they sat on the reference against where they sit here. The last is the
+  check that these are the same cells: a marker reading +8 on the reference and
+  +1 here has not been matched on, whatever the distance said.
+
+- **Messages are toasts.** Every report of something that just happened - a file
+  written, a rule saved, a run finished, a path that did not resolve - now
+  appears briefly in the corner and clears itself. They used to be inline notes
+  that stayed until something else replaced them, so the editor accumulated
+  stale claims like "Loaded 150 gates from ..." long after the fact, and a note
+  could only be seen on the tab that wrote it - a run finishing while you were
+  looking at the plots said nothing at all. Four of the editor's own reports
+  were set on a signal nothing rendered, so a failed axis rescale had been
+  silent entirely.
+
+  State that describes the form *right now* stays inline, because it has to be
+  readable while you act on it: which rule is being edited, how a pairing column
+  resolves, how far through a run the solver is.
+
+- **A Workspace tab, first, in place of `file_paths.txt`.** The FCS files, the
+  metadata, the scaling and the gating file are chosen in the app instead of
+  named by line number in a text file beside the binary and read once at
+  startup. Open a folder and each part is recognised: FCS files anywhere under
+  it, sub-folders included; the gating file (`.omiqgt`) and the two CSVs (with
+  "metadata" and "scaling" in their names) at the top level only. A part that
+  is missing, or that more than one file could be, is reported and chosen by
+  hand - nothing is guessed. Each part can be replaced on its own, FCS files
+  added and removed one at a time, and the gating file written from the same
+  tab. Every path has a box beside its dialog, because the dialog is a service
+  a machine may not be running.
+
+  A file from a sub-folder is known in the program by its folders and its name
+  joined with underscores - `Plate_10/A1.fcs` is `Plate_10_A1.fcs` - so two
+  plates' `A1.fcs` cannot be confused. Nothing on disk is renamed, but the
+  metadata has to use that name; a file it has no row for is flagged on the
+  Workspace tab and says so in place of its plot.
+
+  The last workspace is remembered - in the user's configuration folder, not
+  beside the binary - and offered at the next launch rather than opened.
+  Rules are not carried from one workspace to the next: they, and the sample
+  pairing that travels with them, are exported and imported on the rules tab.
+
+  Replacing the scaling carries the gates across: every channel whose
+  transform or range changed goes through the same rescale the editor's
+  cofactor and range boxes use, so drawn, per-specimen and per-sample positions
+  all come through. Replacing the metadata re-imports the gating file, because
+  it defines the groups per-specimen positions are keyed by. Both that and
+  replacing the gating file, or opening another workspace, discard gate
+  positions changed since the import, and ask first.
+
+- **Browse buttons beside every path field**, on all three tabs: the gating file
+  to load and to write, the rules sidecar to load and to save, the FCS folder,
+  and the exported contact sheet. The OS file dialog, through `rfd` - already in
+  the tree via dioxus-desktop, so no new dependency.
+
+  Three dialogs, not one: choosing a file that exists is not the same dialog as
+  naming one to write, and an open dialog cannot name a file that is not there
+  yet - which most of these are. So the rules sidecar carries two, one on the
+  field for Load and one joined to Save.
+
+  The text field stays everywhere. A pasted path reaches a mounted share that a
+  dialog makes hard work of, and the dialog is a separate D-Bus service that not
+  every machine runs. Where it does not open, that is now said rather than the
+  button appearing to do nothing.
+
+- **Load a different gating file without restarting.** A Load box on the editor
+  tab, beside the export one, replaces every gate with the ones in another Omiq
+  file. A replacement, not an addition: uploading over a loaded document used to
+  leave the old gates in the registry, unreachable from the new tree but still
+  resolved into every sample and still written back out on export. The new
+  document is parsed on a worker thread into a state of its own and swapped in
+  only once it has read, so a mistyped path leaves what is on screen alone. The
+  selected position returns to the root, since a node id from the discarded
+  document answers to nothing in the new one.
+
+- **Gate gallery (third tab).** Pick a gate in the hierarchy and see it on every
+  sample in the run at once - the question the editor cannot answer, because a
+  rule that works on the reference and drifts on a third of the cohort looks
+  fine one sample at a time. Specimens come from the same `pair_files` grouping
+  the editor uses, so the sort column chosen there orders this too and the FMX
+  is always the left plot of a pair. Ten specimens to a page.
+
+  Plots are pictures, not editors: the rendered bitmap with a static outline
+  over it and no event handlers at all, so a stray click cannot move a gate on a
+  sample someone was only looking at. Percentages are computed through the same
+  `get_percent_and_counts_gate` the editor uses, against the same R-tree, so the
+  two tabs cannot disagree.
+
+  Rendered images are cached against a fingerprint of every gate the picture
+  depends on. Gates are never mutated in place - moving one replaces the `Arc` -
+  so pointer identity answers "has this gone stale", and the fingerprint holds
+  the `Arc`s it hashed to keep those addresses from being reused. Paging back is
+  free; re-running the autogater invalidates exactly the plots whose gates moved.
+
+- **Contact-sheet PDF export.** The whole run for one gate, six specimens to an
+  A4 landscape page, re-rendered at print resolution with a count and a Stop.
+  JPEGs are embedded unchanged as `DCTDecode` images and outlines are drawn as
+  page operators from the same flattened primitives the screen uses, so the
+  exported sheet is the page you looked at rather than a second drawing of it.
+  Written directly rather than through a PDF library - no new dependency.
+
+- **Tests for carrying gates through a change of scaling** - the change a new
+  cofactor makes, typed in or arriving with a replacement scaling file. Each
+  asks what a person relies on: does the gate hold the same raw events after
+  the rescale as before it. Rectangles, line gates, quadrants and bisectors
+  must match exactly; polygons, ellipses and skewed quadrants, whose slanted
+  edges become curves on the new scale, are held to what was measured (98.4%
+  to 99.7%). Also covered: all three tiers a gate can sit in, a gate shared
+  between tiers or registered under several keys being carried once, a gate
+  on other channels being left alone, a round trip there and back, and a gate
+  drawn after a rescale living in the same space as the ones carried by it.
+  A further test holds the scaling import to producing only linear and
+  arcsinh axes, since the rescale has nothing for a biexponential one.
+
+- **A test audit, and the bugs it found as failing tests.** Every test file
+  was read for tests that could not fail - 41 scenario tests in `gate_move`
+  printed their results and passed whatever happened - and every module for
+  code no test reached. `docs/test-audit.md` lists what was repaired, what
+  was added, where each module reaches into the others, and 25 bugs, each
+  pinned as a test that fails today and is `#[ignore]`d with the bug's id:
+  `cargo test --no-default-features --no-fail-fast -- --ignored` runs them.
+  The four most serious: a metadata row without a file name shifts every
+  later file onto the wrong group; typing an axis limit below the lower one
+  crashes the app, and retyping one moves quadrants for good; and with the
+  default finder, above-the-negative puts a gate inside a negative that
+  drifted past it and scores that 0.87.
+
+- **Integration tests** in `tests/`, driving the library with real files:
+  a plate folder to each file's metadata, a document saved and reopened
+  with per-sample positions, a scaling file replaced under drawn gates on
+  real stores, every gate counted by the filter and by the on-screen index,
+  and the rules run from FCS files on disk.
+
+### Changed
+
+- **A plot no longer needs every channel the scaling file names.** The cofactors
+  handed to `apply_arcsinh_transforms` come from the axis settings, which
+  describe the whole panel; it errors on the first name it cannot find, so one
+  channel absent from one file lost the entire plot. The gallery now passes only
+  the channels the file carries. Nothing measured changes - a transform for a
+  column that is not there could not have reached the plot's axes or its gating
+  chain, which are columns that are.
+
+- **Editing a rule keeps its gate when the population changes.** The Edit button
+  exists so one rule can be moved onto a second population without retyping it,
+  and clearing the gate and parameter on every change of parent made that three
+  picks instead of one. A gate the new population also holds is now kept, and
+  the parameter with it; a name the new parent does not hold is still cleared,
+  since carrying it over would let the form name a combination the document does
+  not have.
+
+### Removed
+
+- **The valley rule's "Flag below" setting.** It was read by nothing: when a
+  shallow valley stopped being refused and was scored on its depth instead,
+  the setting stayed in the form but no longer did anything. Rules files that
+  still carry it load as before.
+
 ### Fixed
+
+- **A gate viewed on swapped axes was saved to Omiq on those axes.** Viewing
+  a gate on a plot with its channels the other way round rewrites the held
+  gate with them exchanged. It gates the same events, but the export wrote it
+  that way: Omiq showed it on flipped axes, a range gate wrote the extent of
+  the wrong channel, and a sample's own position could be written the other
+  way round from the gate's default. The export now turns each gate - default,
+  per group and per sample - back to the axes the file had it on. A gate drawn
+  here is written as it is held.
+
+- **Files are always listed in the same order.** Names that read the same to
+  a person but are not the same - `D02` and `D2`, `a1` and `A1` - came out in
+  whatever order they arrived in, which could differ from one tab or run to
+  the next.
+
+- **A file reached through `..` is named for where it really is.** A path
+  that climbed out of the workspace folder through `..` was named as if it
+  were inside it.
+
+- **A damaged FCS file is refused, not a crash - and one bad file no longer
+  stops a rules run.** A file with a damaged header or cut short could fail an
+  assertion deep in the FCS reader; a rules run reads files in parallel, so
+  one such file ended the whole run and no gate was placed. Now the file is
+  refused with a reason when the workspace opens, or reported in the run while
+  every other file is still placed. A file whose header offset is damaged but
+  whose keywords still say where the events are is read correctly. (Fixed in
+  the flow crates, which clingate now pins to that fix.)
+
+- **A file keeps its own $GUID.** Opening a file replaced its $GUID with a
+  random one, so the same acquisition had a new identity every time. Two
+  copies of one acquisition now compare as the same file.
+
+- **A plot holding an event with no value still shows its percentages.** An
+  event with a NaN value stopped the percentages being counted at all.
+
+- **Files written by the flow crates state their data offsets correctly.**
+  Their $BEGINDATA and $ENDDATA pointed somewhere other than the data, which a
+  reader trusting those keywords would have misread. Files written before the
+  fix are still read, from the header.
+
+- **Linking no longer leaves the replaced gate behind in the file.** When a
+  position was linked to another gate, the gate it used to show stayed
+  registered even with nothing using it, and was saved to Omiq as a container
+  on no plot. It is now dropped, unless a boolean gate is built on it.
+
+- **An unplaced label stays unplaced through a round trip.** A gate whose label
+  had never been moved in Omiq came back with its label pinned to the plot's
+  origin.
+
+- **The valley rule's "only one peak" message gives the real event count.** It
+  said "over 0 events" whatever the population.
+
+- **A gate rule's score no longer hides what it could not measure.** A part
+  of the confidence score that could not be worked out - a ratio with nothing
+  to divide by - was silently left out of the overall, so the gate looked
+  trustworthy. It now scores 0 and says "could not be measured", which puts
+  the gate at the top of the review list. A displacement limit of 0 in the
+  rules file now means no move is tolerated, rather than scoring nonsense.
+
+- **One corrupt value no longer switches a marker off in phenotype matching.**
+  A NaN or infinite value in a marker's column made that marker's baseline NaN
+  and dropped it from the match; such values are now left out.
+
+- **The population under a gate is exactly the one its percentage counts.** An
+  event lying exactly on a rectangle's edge was counted in the percentage on
+  the gate but left out of the population drawn and gated below it, and an
+  event on the boundary of an ellipse could fall either way between the two.
+  Both now use the same rule for every gate shape: a rectangle holds its edges.
+  On decimal data this almost never came up; on whole-number values with a
+  gate edge on a round number it could move a handful of events.
+
+- **A gate can no longer be made its own parent.** The gate tree accepted a
+  gate placed under itself, after which anything walking up the tree - every
+  gate chain - never finished. It is now refused wherever the tree is edited.
+
+- **A metadata row with no file name no longer shifts the rows after it.**
+  Such a row was left out, but every file after it was then given the row
+  before its own - its group, and so the gates it was given, were wrong
+  without a word. Each row is now read whole. Rows with no id or no file
+  name are left out and named in a warning; an empty row is passed over. Two
+  rows with the same id are refused. Two with the same file name - Omiq allows
+  two plates' `A1.fcs` - are both kept for the gating file, but no file of
+  that name is given either's metadata, and a warning says so; the later row
+  used to win silently.
+
+- **Changing an axis no longer moves a quadrant.** A new cofactor or a new
+  axis range pulled a quadrant or skewed quadrant whose centre sat near either
+  end of the axis inwards, and snapped a skewed quadrant's slanted arms to the
+  new edges, turning them - the quarters held different cells afterwards, and
+  widening the axis again did not put them back. An imported Omiq quadrant
+  whose centre lay beyond the axes was moved onto them. The centre and the
+  direction of every arm now stay exactly where they were; only where the
+  lines are drawn changes, and a centre left off the plot by a narrowed axis
+  has its handle drawn at the plot's edge, where it can still be grabbed.
+
+- **The axis boxes no longer crash the app or move gates while you type.** A
+  limit or cofactor is applied when you press Enter or leave the box, not at
+  every keystroke - typing 400000 used to apply 4, 40, 400 on the way, each
+  pulling any quadrant on the axis with it. A value that would leave the axis
+  unusable (an upper limit below the lower one, a cofactor below 1) is refused
+  with a warning and the box goes back to what it was; an upper limit below
+  the lower one used to crash the app.
+
+- **A scaling file is checked before it is used.** Its columns are found by
+  their names, so their order no longer matters, and a file missing one is
+  refused by name - columns used to be read by position, so a reordered file
+  loaded silently with the wrong values. A file with a channel that cannot be
+  drawn (Min not below Max, a cofactor of 0 or less, a value missing) is
+  refused with a warning naming each one, and nothing is changed; such files
+  used to crash the app. Decimal cofactors and ranges are now accepted.
+
+- **A damaged gating file whose tree loops is refused.** A node that is its
+  own parent, or two that are each other's, used to hang the import on
+  "Loading"; it is now refused as damaged, with a warning naming the node.
+  Every file that fails to load now raises a warning, not only a status line.
+
+- **The pairing boxes show the columns actually in use.** The Sample type box
+  read "SampleID" while pairing by SampleType: its options arrive with the
+  metadata, after its value was set, and it fell back to the first. The same
+  fix covers Sort by and the rules form's file pickers.
+
+- **Every file of a specimen can be seen.** A specimen showed one file per
+  type in its plot order, and only two plots: a re-acquired tube, a third
+  file type, or a third file of a specimen with no type was listed in the
+  editor but never drawn, and missing from the gallery and its PDF. The
+  editor now always shows the file you select - the FMO stays in the first
+  plot - and when a specimen has more than one other file, a selector above
+  the second plot picks which. That choice carries over as you step between
+  specimens: pick the unstained control and the next specimen shows its
+  unstained control too. In the gallery, a specimen's extra files get rows of
+  their own, "D1 (2)", under the column of their type.
+
+- **The PDF contact sheet says when a plot could not be drawn.** A paired
+  file that failed to render, or had no row in the metadata, was printed as
+  "no paired file" - the QC record said the specimen had no such file - and
+  the export reported success. Such a slot is now framed like a plot, names
+  the file and says why it could not be drawn, and the message after export
+  lists them.
+
+- **The most recent per-specimen position is the one that applies.** A gate
+  can be positioned per group under more than one metadata column - the
+  gating file groups it by one, a rules run by the pairing's Sample ID
+  column, and a run after that column is changed by another. A sample in a
+  group under each used to get whichever column its metadata happened to
+  list first, so a run's answer could be silently ignored. Now the position
+  written last applies, and an older one still holds for the samples nothing
+  newer covers. A save names a grouping column only when grouping by it gives
+  every sample its position; otherwise it writes the positions sample by
+  sample, so reopening the file shows exactly what was saved.
+  The same holds between a sample's own position and its specimen's: whichever
+  was set last applies. A rules run used to be hidden from any sample that
+  had been adjusted by hand (or had its own position in the gating file),
+  while its report said the sample had been moved.
+
+- **A rules run never writes to a workspace it did not measure.** A run
+  carries on while another tab is in front, and one that finished after the
+  gating file, metadata or scaling was replaced wrote its answers into the new
+  document. A run now stops as soon as the gates, files, metadata, scaling or
+  rules change, and before writing anything it checks that all of them are
+  still what it started from; if not, it says so and moves nothing. Selecting a
+  gate or looking at another file does not count as a change.
+
+- **Previous and Next get past a specimen with no FMO.** They landed on the
+  specimen's left-hand file, which such a specimen does not have, so nothing
+  was selected and the buttons stuck there. They now land on the first file
+  the specimen shows.
+
+- **`cargo test --no-default-features` builds.** The binary needs
+  `dioxus::desktop`, so every test target but `--lib` failed to build
+  without GTK. It now declares `required-features = ["desktop"]`.
+
+- **An ellipse survives a change of scaling.** Rescaling read the ellipse's
+  `radius_x` as if it lay along X. It only does when the ellipse is unrotated
+  and wider than it is tall in data units - and against a linear scatter axis,
+  where SSC-A runs to hundreds of thousands and a marker to about eight, an
+  ellipse is almost always the other way round. The scatter-sized radius went
+  through the marker's transform, overflowed, and the gate came back with an
+  infinite radius admitting everything to one side of it. The centre and one
+  end of each axis are now carried as points and the ellipse is refitted
+  through them, whatever its angle; a gate that still cannot be carried is
+  reported and left as it was, rather than replaced with a broken one.
+
+- **One bad FCS file no longer takes the application down.** The header reader
+  `expect`ed every step, and flow_fcs slices the file by its header's offsets
+  without checking them, so an empty, truncated or mislabelled file panicked.
+  Each is now an error naming the file and the reason, and the rest of the
+  folder still loads. Comparing two files also stopped panicking on one without
+  a GUID.
+
+- **Loading a second scaling file replaces the first rather than merging
+  into it.** Merging - how the store behaved when the scaling could only load
+  once - would have kept the old file's settings for every channel the new one
+  does not mention, and the old display order for every channel they share.
+
+- **The axes survive a scaling replace.** They were picked once, when the
+  first scaling arrived, and never again. Each now keeps its channel when the
+  new scaling has it and falls back to the default when it does not.
+
+- **Edit on a rule brings back the gate and the parameter.** Both were coming
+  back empty, so editing a rule meant re-picking them, and a threshold rule
+  refused to save until you did. Their menus are built from the field above -
+  gates from the population, parameters from the gate - and Edit sets both
+  halves in one go, so the value could reach the menu before the matching entry
+  existed. A menu given a value it has no entry for falls back to its first one.
+
+- **A phenotype rule now insists on a named reference sample.** Only a sample
+  gated by hand can say what a population is. Measured on "its FMX" the rule
+  would resolve a different file per specimen and could land on a control -
+  which has, by definition, no signal in the channel it drops, usually the very
+  marker the population is defined by. The phenotype would be described from
+  cells that cannot show it, and the result would look like an answer. Measured
+  on "itself" it would describe the population from the gate it is about to
+  move. The form only ever writes a named file; this is for a sidecar written by
+  hand, where nothing else would catch it.
+
+- **A run no longer fails on every file because one channel is missing from
+  one.** The third and last place with this fault: `apply_arcsinh_transforms`
+  errors on the first parameter it cannot find, and the cofactors describe the
+  whole panel as the scaling file defines it, so a channel absent from a single
+  file failed every rule on every file - a real run reported "Parameter AF P1-A
+  not found" six times and placed nothing. The gallery and the editor were fixed
+  earlier; the autogate solver reads its own frames and was still doing it.
+
+- **The sample pairing controls no longer overlap themselves on the rules tab.**
+
+  They carry a grid of their own, and dropping them into a cell of that tab's
+  form grid squeezed it into the 11rem label column: the labels wrapped and the
+  warning underneath was drawn over them. They take the full width of the row.
+
+- **A plot no longer needs every channel the scaling file names** - in the
+  editor too, not only the gallery. `apply_arcsinh_transforms` errors on the
+  first parameter it cannot find, and the editor swallowed that error into an
+  endless "Rendering Plot..." spinner, which reads as slowness rather than as a
+  failure. Both tabs now go through one filter, so they cannot answer
+  differently.
+
+- **The editor no longer scrolls back to the top on every change of sample.** A
+  plot that was loading, failed, or had no resolver rendered a placeholder sized
+  to its contents, so the page lost 600 pixels of height and the browser clamped
+  the scroll position to fit what was left. Every state a plot can be in now
+  occupies the same square.
+
 
 - **Y axis transform read from the X axis.** `extract_axis_range_from_axis_settings`
   returned `x_axis.transform` for both axes, so every quadrant and skewed-quadrant

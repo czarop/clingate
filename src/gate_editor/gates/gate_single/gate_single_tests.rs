@@ -49,7 +49,12 @@ fn gate(id: &str, geometry: GateGeometry) -> flow_gates::Gate {
 
 fn square(id: &str) -> RectangleGate {
     let geometry = create_rectangle_geometry(
-        vec![(100.0, 100.0), (300.0, 100.0), (300.0, 300.0), (100.0, 300.0)],
+        vec![
+            (100.0, 100.0),
+            (300.0, 100.0),
+            (300.0, 300.0),
+            (100.0, 300.0),
+        ],
         X,
         Y,
     )
@@ -99,12 +104,7 @@ fn polygon_points(g: &dyn DrawableGate) -> Vec<(f32, f32)> {
     match &inner.geometry {
         GateGeometry::Polygon { nodes, .. } => nodes
             .iter()
-            .map(|n| {
-                (
-                    n.get_coordinate(X).unwrap(),
-                    n.get_coordinate(Y).unwrap(),
-                )
-            })
+            .map(|n| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap()))
             .collect(),
         _ => panic!("expected a polygon"),
     }
@@ -113,7 +113,12 @@ fn polygon_points(g: &dyn DrawableGate) -> Vec<(f32, f32)> {
 fn ellipse_parts(g: &dyn DrawableGate) -> ((f32, f32), f32, f32, f32) {
     let inner = g.get_gate_ref(None).unwrap();
     match &inner.geometry {
-        GateGeometry::Ellipse { center, radius_x, radius_y, angle } => (
+        GateGeometry::Ellipse {
+            center,
+            radius_x,
+            radius_y,
+            angle,
+        } => (
             (
                 center.get_coordinate(X).unwrap(),
                 center.get_coordinate(Y).unwrap(),
@@ -301,17 +306,29 @@ fn an_axis_aligned_ellipse_has_no_rotation() {
 #[test]
 fn an_ellipse_can_be_rotated() {
     let g = ellipse("e");
+    let (centre, rx, ry, angle) = ellipse_parts(&g);
+    let turned = g
+        .rotate_gate((300.0, 300.0))
+        .unwrap()
+        .expect("an ellipse should accept a rotation");
+    let (c2, rx2, ry2, angle2) = ellipse_parts(turned.as_ref());
+    // Turned about its centre: it points somewhere new, and is the same size
+    // in the same place.
     assert!(
-        g.rotate_gate((300.0, 300.0)).unwrap().is_some(),
-        "an ellipse should accept a rotation"
+        (angle2 - angle).abs() > 1e-3,
+        "the angle did not change: {angle} -> {angle2}"
+    );
+    assert_eq!(c2, centre);
+    assert!(
+        (rx2 - rx).abs() < 1e-3 && (ry2 - ry).abs() < 1e-3,
+        "{rx}x{ry} -> {rx2}x{ry2}"
     );
 }
 
 // ─── Line ─────────────────────────────────────────────────────────────────────
 
 fn line(id: &str) -> LineGate {
-    let geometry =
-        create_rectangle_geometry(vec![(150.0, 0.0), (150.0, 1000.0)], X, Y).unwrap();
+    let geometry = create_rectangle_geometry(vec![(150.0, 0.0), (150.0, 1000.0)], X, Y).unwrap();
     LineGate::try_new(gate(id, geometry), 200.0, true).unwrap()
 }
 
@@ -619,11 +636,19 @@ fn the_drag_preview_agrees_with_the_geometry_after_crossing() {
     drag.set_anchor_once(square("r").drag_anchor(2).expect("a rectangle anchors"));
 
     // The constructor's winding, rebuilt from the geometry.
-    let pts = vec![(min.0, min.1), (max.0, min.1), (max.0, max.1), (min.0, max.1)];
-    let ghost =
-        draw_ghost_point_for_rectangle(&drag, &pts).expect("a drag draws a preview");
+    let pts = vec![
+        (min.0, min.1),
+        (max.0, min.1),
+        (max.0, max.1),
+        (min.0, max.1),
+    ];
+    let ghost = draw_ghost_point_for_rectangle(&drag, &pts).expect("a drag draws a preview");
     let GateRenderShape::Rectangle {
-        x, y, width, height, ..
+        x,
+        y,
+        width,
+        height,
+        ..
     } = ghost[0]
     else {
         panic!("expected a rectangle preview");

@@ -226,7 +226,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         min: Point,
         max: Point,
-        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "labelLoc", default, with = "label_loc")]
         label_position: Option<Point>,
     },
     #[serde(rename = "PolygonGate")]
@@ -237,7 +237,7 @@ pub enum GateSerialized {
         y_param: Arc<str>,
         #[serde(rename = "vertices")]
         points: Vec<Point>,
-        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "labelLoc", default, with = "label_loc")]
         label_position: Option<Point>,
     },
     #[serde(rename = "EllipseGate")]
@@ -250,7 +250,7 @@ pub enum GateSerialized {
         top: Point,
         right: Point,
         bottom: Point,
-        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "labelLoc", default, with = "label_loc")]
         label_position: Option<Point>,
     },
     #[serde(rename = "RangeGate")]
@@ -263,7 +263,7 @@ pub enum GateSerialized {
         f1min: f64,
         #[serde(rename = "f1Max")]
         f1max: f64,
-        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "labelLoc", default, with = "label_loc")]
         label_position: Option<Point>,
     },
     #[serde(rename = "AngleGate")]
@@ -278,7 +278,7 @@ pub enum GateSerialized {
         v1: Point,
         #[serde(rename = "v2")]
         v2: Point,
-        #[serde(rename = "labelLoc", skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "labelLoc", default, with = "label_loc")]
         label_position: Option<Point>,
     },
     // Future-proofing for other gate types
@@ -310,6 +310,24 @@ impl GateSerialized {
             GateSerialized::Unknown => None,
         }
     }
+    /// Where Omiq put this gate's label, whatever shape it is.
+    ///
+    /// Read back out at export time for a gate the editor rebuilt from parts -
+    /// a skewed quadrant's corners, say - which carry no label of their own and
+    /// would otherwise lose the one they came in with.
+    pub fn label_position(&self) -> Option<Point> {
+        match self {
+            GateSerialized::Rectangle { label_position, .. }
+            | GateSerialized::Polygon { label_position, .. }
+            | GateSerialized::Ellipse { label_position, .. }
+            | GateSerialized::Line { label_position, .. }
+            | GateSerialized::Angle { label_position, .. } => *label_position,
+            // A shape this build does not model. It is passed through verbatim
+            // elsewhere, so there is nothing here to fall back to.
+            GateSerialized::Unknown => None,
+        }
+    }
+
     pub fn to_drawable(
         &self,
         id: Arc<str>,
@@ -457,6 +475,39 @@ impl GateSerialized {
                 name,
                 id
             )),
+        }
+    }
+}
+
+/// A gate's `labelLoc`: where its label sits, or `None` when it has not been
+/// placed.
+///
+/// Omiq writes an unplaced label as an empty object, `"labelLoc": {}`, and
+/// always writes the key. [`Point`] reads a missing coordinate as 0, so `{}`
+/// used to come in as (0, 0) and go back out as an explicit
+/// `{"f1Val": 0, "f2Val": 0}` - an unedited gate's label pinned to the origin
+/// (B-OMIQ-1). Here `{}`, `null` or no key at all read as `None`, and `None`
+/// is written as `{}`, as Omiq writes it. A location with either coordinate
+/// is read as a [`Point`], as before.
+mod label_loc {
+    use super::Point;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(loc: &Option<Point>, s: S) -> Result<S::Ok, S::Error> {
+        match loc {
+            Some(point) => point.serialize(s),
+            None => serde_json::Map::new().serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Point>, D::Error> {
+        let value = Option::<serde_json::Value>::deserialize(d)?;
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(None),
+            Some(other) => Point::deserialize(other)
+                .map(Some)
+                .map_err(serde::de::Error::custom),
         }
     }
 }

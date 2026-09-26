@@ -200,15 +200,42 @@ axis, and nothing should.
       is per-rule in the sidecar already, so it can differ by marker - it wants
       calibrating against runs known to be good and bad, not guessing.
 
-- [ ] **A third rule: the edge of the negative peak.** GranzymeB and Ki67 in
-      this panel are gated by finding where the negative population ends and
-      sitting just above it - no FMO involved, and no fraction to aim at. It is
-      why both came out 0.46 arcsinh units from hand placement under a tail
-      fraction rule, which is the right answer to the wrong question.
+- [x] **A third rule: above the negative.** `AboveTheNegativeRule`. Unlike the
+      others it is not a complete specification - "a bit above the negative"
+      does not say how much - so it is calibrated before it is applied: read how
+      far above the reference sample's negative its gate sits, in widths of that
+      negative, then place every other gate the same number of widths above its
+      own. Measuring in widths rather than units is what carries the gate when a
+      negative drifts or broadens between runs.
 
-      Distinct from `percentile_offset`, which steps a *fixed* distance above a
-      percentile: this has to find the edge, so it needs the density rather than
-      an order statistic. The KDE in `gate_move` is the obvious starting point.
+      The negative is the leftmost prominent mode, not the tallest - on a marker
+      where positives outnumber negatives the tallest peak is the wrong one. Its
+      width is measured on the left flank and mirrored, because the right flank
+      runs into the positives and would otherwise feed the very variation the
+      rule exists to see past back into the answer.
+
+      `scale` and `nudge` adjust the result without touching the calibration.
+      No FMO needed: the negative is read from the sample being gated.
+
+- [ ] **Decide which way of finding the negative to keep.** Two are offered and
+      they trade off against each other, measured on synthetic populations:
+
+      *From the events below the gate* is about five times the sharper while a
+      negative has not moved more than the calibrated distance - roughly three
+      widths - landing within 0.16 of a width. Past that it sticks low: a cut
+      sitting under the negative's centre sees a narrow slice, reads a narrow
+      width from it, and puts the gate back at the cut. Self-consistent and
+      wrong. It needs no bandwidth and no notion of a peak being tall enough.
+
+      *From the density's leftmost peak* has no such limit and tracks a drift of
+      any size, but disagrees with itself between two draws of one population by
+      about 0.8 of a width. It needs a bandwidth and a prominence threshold,
+      neither of which comes from the data.
+
+      The real test is hand gating, not synthetic draws. If below-the-gate holds
+      up on real samples it is the better default and the density finder is the
+      fallback for a badly drifted one; a hybrid - refine from the gate, fall
+      back when it sticks - is the obvious end state but wants evidence first.
 
 - [x] **A rule store.** `rule_store.rs`. A rule is attached to a *population* -
       a gate name and optionally the parent it sits under, "Ki67+ of CD4+" -

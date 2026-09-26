@@ -5,7 +5,6 @@ use rustfft::{FftPlanner, num_complex::Complex};
 // for QC between runs, or FMO/FMX effect of FMO on reportables
 // don't use the negative / peak isolation fns they are overkill
 
-
 pub struct DensityGrid {
     pub counts: Vec<f32>, // row-major, shape [n_bins x n_bins]
     pub n_bins: usize,
@@ -13,16 +12,44 @@ pub struct DensityGrid {
     pub y_range: (f64, f64),
 }
 
+/// A column's values as f64, whatever numeric type it holds - FCS event data
+/// is Float32.
+///
+/// A column that is not numbers is refused: a cast would turn its text into
+/// nulls, which read as no events at all.
+fn as_f64(column: &Column) -> Result<Float64Chunked, String> {
+    if !column.dtype().is_primitive_numeric() {
+        return Err(format!(
+            "column {} holds {}, not numbers",
+            column.name(),
+            column.dtype()
+        ));
+    }
+    column
+        .cast(&DataType::Float64)
+        .and_then(|c| c.f64().cloned())
+        .map_err(|e| format!("column {} is not numbers: {e}", column.name()))
+}
+
 impl DensityGrid {
+    /// Count the events into an `n_bins` x `n_bins` grid over the two ranges.
+    ///
+    /// Any numeric column is read - it used to `unwrap` `.f64()`, and FCS
+    /// event data is Float32, so it panicked (B-GRID-2). An event with a
+    /// coordinate that is not a finite number has no cell and is left out; a
+    /// NaN used to cast to cell 0 and be counted in the corner (B-GRID-1).
+    ///
+    /// # Errors
+    /// A column that is not numbers.
     pub fn from_column(
         xs: &Column,
         ys: &Column,
         n_bins: usize,
         x_range: (f64, f64),
         y_range: (f64, f64),
-    ) -> Self {
-        let xs = xs.f64().unwrap();
-        let ys = ys.f64().unwrap();
+    ) -> Result<Self, String> {
+        let xs = as_f64(xs)?;
+        let ys = as_f64(ys)?;
 
         let mut counts = vec![0.0f32; n_bins * n_bins];
 
@@ -31,6 +58,9 @@ impl DensityGrid {
 
         for (x, y) in xs.into_iter().zip(ys.into_iter()) {
             let (Some(x), Some(y)) = (x, y) else { continue };
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
 
             let col = ((x - x_range.0) * x_scale) as isize;
             let row = ((y - y_range.0) * y_scale) as isize;
@@ -40,12 +70,12 @@ impl DensityGrid {
             }
         }
 
-        Self {
+        Ok(Self {
             counts,
             n_bins,
             x_range,
             y_range,
-        }
+        })
     }
 
     /// Bin width in data-space units — used to convert peak offset back to data coords
@@ -58,12 +88,12 @@ impl DensityGrid {
     }
 
     /// Finds the maximum density bin restricted to the lower-left quadrant.
-    /// This ensures we lock onto the double-negative background, even if 
+    /// This ensures we lock onto the double-negative background, even if
     /// a positive population has more total events.
     pub fn find_lower_quadrant_peak(&self) -> (usize, usize) {
         let n = self.n_bins;
         let half_n = n / 2; // Restrict to the bottom-left 25% of the plot area
-        
+
         let mut max_val = -1.0f32;
         let mut max_row = 0;
         let mut max_col = 0;
@@ -72,7 +102,7 @@ impl DensityGrid {
             for col in 0..half_n {
                 let idx = row * n + col;
                 let val = self.counts[idx];
-                
+
                 if val > max_val {
                     max_val = val;
                     max_row = row;
@@ -92,7 +122,7 @@ impl DensityGrid {
                 let dr = row as f32 - center_row as f32;
                 let dc = col as f32 - center_col as f32;
                 let dist_sq = dr * dr + dc * dc;
-                
+
                 let weight = (-dist_sq / (2.0 * radius_bins * radius_bins)).exp();
                 self.counts[row * n + col] *= weight;
             }
@@ -100,21 +130,21 @@ impl DensityGrid {
     }
 
     pub fn isolate_peak_elliptical(
-        &mut self, 
-        center_row: usize, 
-        center_col: usize, 
+        &mut self,
+        center_row: usize,
+        center_col: usize,
         sigma_row: f32, // Y-axis spread
-        sigma_col: f32  // X-axis spread
+        sigma_col: f32, // X-axis spread
     ) {
         let n = self.n_bins;
         for row in 0..n {
             let dr = row as f32 - center_row as f32;
             let row_weight = -(dr * dr) / (2.0 * sigma_row * sigma_row);
-            
+
             for col in 0..n {
                 let dc = col as f32 - center_col as f32;
                 let col_weight = -(dc * dc) / (2.0 * sigma_col * sigma_col);
-                
+
                 let weight = (row_weight + col_weight).exp();
                 self.counts[row * n + col] *= weight;
             }
@@ -123,7 +153,15 @@ impl DensityGrid {
 }
 
 /// Simple separable Gaussian blur applied in-place
+/// Blur the grid with a Gaussian of `sigma` bins.
+///
+/// A sigma of 0 or less, or not a number, is no blur, and leaves the grid as
+/// it is. It used to build a kernel of `exp(-0 / 0)` and fill the grid with
+/// NaN, which `cross_correlate` then panicked comparing (B-GRID-4).
 pub fn gaussian_blur(grid: &mut DensityGrid, sigma: f32) {
+    if !(sigma > 0.0) || !sigma.is_finite() {
+        return;
+    }
     let n = grid.n_bins;
     let kernel = make_gaussian_kernel(sigma);
     let k = kernel.len();
@@ -284,6 +322,10 @@ pub fn apply_constraints(mut t: TranslationVector, rules: &GateRules) -> Transla
             let scale = max_t / mag;
             t.dx_data *= scale;
             t.dy_data *= scale;
+            // The bins describe the same move: scaled with it, to the nearest
+            // whole bin. They used to keep the uncapped move (B-GRID-3).
+            t.dx_bins = (f64::from(t.dx_bins) * scale).round() as i32;
+            t.dy_bins = (f64::from(t.dy_bins) * scale).round() as i32;
         }
     }
 
@@ -299,25 +341,31 @@ fn calculate_dynamic_radii(
     x_data_range: f64,
     y_data_range: f64,
 ) -> Option<(f32, f32)> {
-    let mask = xs.f64().ok()?.lt(x_mid) & ys.f64().ok()?.lt(y_mid);
+    let mask = as_f64(xs).ok()?.lt(x_mid) & as_f64(ys).ok()?.lt(y_mid);
     let filtered_x = xs.filter(&mask).ok()?;
     let filtered_y = ys.filter(&mask).ok()?;
-    
+
     let count = filtered_x.len();
-    
+
     // RED FLAG 1: Not enough events to define a population
     // 50 is a safe floor for 5 million events; adjust based on your sensitivity needs.
     if count < 50 {
-        return None; 
+        return None;
     }
 
-    let std_x = filtered_x.f64().ok()?.std(1)?;
-    let std_y = filtered_y.f64().ok()?.std(1)?;
-    
+    let std_x = as_f64(&filtered_x).ok()?.std(1)?;
+    let std_y = as_f64(&filtered_y).ok()?.std(1)?;
+
     // RED FLAG 2: Noise Check
     // If StdDev is 0.0, the data is a single vertical/horizontal line (error).
-    // If StdDev is too high (e.g., > 25% of total range), it's just noise, not a cluster.
-    if std_x <= 0.0 || std_y <= 0.0 || std_x > (x_data_range * 0.25) {
+    // If StdDev is too high, it's just noise, not a cluster. "Too high" is 25%
+    // of the window the events were taken from - the lower half of each axis
+    // - on either axis: uniform scatter over that window has a spread of
+    // about 29% of it, and a population sits well inside. It used to be 25%
+    // of the whole axis, which the half-axis window cannot reach, and only on
+    // X, so the check could never fire (B-GRID-5).
+    let (window_x, window_y) = (x_data_range / 2.0, y_data_range / 2.0);
+    if std_x <= 0.0 || std_y <= 0.0 || std_x > window_x * 0.25 || std_y > window_y * 0.25 {
         return None;
     }
 
@@ -329,7 +377,6 @@ fn calculate_dynamic_radii(
 
     Some((sigma_x, sigma_y))
 }
-
 
 pub fn compute_negative_shift(
     qc_parent_events: (&Column, &Column),
@@ -347,29 +394,30 @@ pub fn compute_negative_shift(
 
     // 1. Try to find the spotlight radii. Errors if QC is noise.
     let (sigma_x, sigma_y) = calculate_dynamic_radii(
-        qc_parent_events.0, 
-        qc_parent_events.1, 
-        x_mid, 
-        y_mid, 
-        n_bins, 
+        qc_parent_events.0,
+        qc_parent_events.1,
+        x_mid,
+        y_mid,
+        n_bins,
         x_data_len,
-        y_data_len
-    ).ok_or("QC sample has no clear negative population in the lower quadrant.")?;
+        y_data_len,
+    )
+    .ok_or("QC sample has no clear negative population in the lower quadrant.")?;
 
-        let mut qc_grid = DensityGrid::from_column(
+    let mut qc_grid = DensityGrid::from_column(
         qc_parent_events.0,
         qc_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
     let mut test_grid = DensityGrid::from_column(
         test_parent_events.0,
         test_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
 
     gaussian_blur(&mut qc_grid, blur_sigma);
     gaussian_blur(&mut test_grid, blur_sigma);
@@ -377,7 +425,7 @@ pub fn compute_negative_shift(
     // 2. Find peaks. Check if test grid is empty.
     let (qc_row, qc_col) = qc_grid.find_lower_quadrant_peak();
     let (test_row, test_col) = test_grid.find_lower_quadrant_peak();
-    
+
     if qc_grid.counts[qc_row * n_bins + qc_col] < 1.0 {
         return Err("QC grid is empty".into());
     }
@@ -388,7 +436,7 @@ pub fn compute_negative_shift(
 
     // 4. Correlate
     let translation = cross_correlate(&qc_grid, &test_grid);
-    
+
     // RED FLAG 3: Correlation Strength
     // If the peak_strength is very low, the isolated shapes don't match.
     if translation.peak_strength < 0.1 {
@@ -407,29 +455,27 @@ pub fn compute_total_shift(
     n_bins: usize,
     blur_sigma: f32,
 ) -> Result<TranslationVector, String> {
-
-
     let mut qc_grid = DensityGrid::from_column(
         qc_parent_events.0,
         qc_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
     let mut test_grid = DensityGrid::from_column(
         test_parent_events.0,
         test_parent_events.1,
         n_bins,
         axis_x_range,
         axis_y_range,
-    );
+    )?;
 
     gaussian_blur(&mut qc_grid, blur_sigma);
     gaussian_blur(&mut test_grid, blur_sigma);
 
     // 4. Correlate
     let translation = cross_correlate(&qc_grid, &test_grid);
-    
+
     // RED FLAG 3: Correlation Strength
     // If the peak_strength is very low, the isolated shapes don't match.
     if translation.peak_strength < 0.1 {
@@ -438,8 +484,6 @@ pub fn compute_total_shift(
 
     Ok(apply_constraints(translation, rules))
 }
-
-
 
 //cargo test -- --nocapture
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -454,8 +498,10 @@ mod flow_tests {
     // ─── Core sampler ────────────────────────────────────────────────────────────
 
     struct Cluster {
-        cx: f64, cy: f64,
-        sx: f64, sy: f64,
+        cx: f64,
+        cy: f64,
+        sx: f64,
+        sy: f64,
         n: usize,
     }
 
@@ -494,8 +540,10 @@ mod flow_tests {
     }
 
     fn concat_events(a: (Vec<f64>, Vec<f64>), b: (Vec<f64>, Vec<f64>)) -> (Vec<f64>, Vec<f64>) {
-        let mut xs = a.0; xs.extend(b.0);
-        let mut ys = a.1; ys.extend(b.1);
+        let mut xs = a.0;
+        xs.extend(b.0);
+        let mut ys = a.1;
+        ys.extend(b.1);
         (xs, ys)
     }
 
@@ -512,28 +560,88 @@ mod flow_tests {
     /// Expect: negative peak positions similar, but test spread is larger on x.
     pub fn wider_negative_x(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.35, sy: 0.12, n: 3000 }, // wider x
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.35,
+                    sy: 0.12,
+                    n: 3000,
+                }, // wider x
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
     /// Negative is wider on Y axis in the test sample.
     pub fn wider_negative_y(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.35, n: 3000 }, // wider y
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.35,
+                    n: 3000,
+                }, // wider y
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
@@ -541,14 +649,44 @@ mod flow_tests {
     /// Expect: dx ≈ +0.3, dy ≈ 0.0
     pub fn negative_shifted_x(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.7, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 }, // +0.3 x
-            Cluster { cx: 2.8, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.7,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // +0.3 x
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
@@ -556,14 +694,44 @@ mod flow_tests {
     /// Expect: dx ≈ 0.0, dy ≈ +0.3
     pub fn negative_shifted_y(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.7, sx: 0.12, sy: 0.12, n: 3000 }, // +0.3 y
-            Cluster { cx: 2.5, cy: 2.8, sx: 0.20, sy: 0.20, n: 800 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.7,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // +0.3 y
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.8,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
@@ -571,26 +739,72 @@ mod flow_tests {
     /// Expect: alignment still works on the negative; positive simply absent in test.
     pub fn positive_only_in_qc(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.8, cy: 2.8, sx: 0.18, sy: 0.18, n: 900 }, // distinct positive
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 }, // negative only
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.8,
+                    sx: 0.18,
+                    sy: 0.18,
+                    n: 900,
+                }, // distinct positive
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // negative only
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
     /// Test sample has a distinct positive; QC does not.
     pub fn positive_only_in_test(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.8, cy: 2.8, sx: 0.18, sy: 0.18, n: 900 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.8,
+                    sx: 0.18,
+                    sy: 0.18,
+                    n: 900,
+                },
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
@@ -598,28 +812,56 @@ mod flow_tests {
     /// Smear sits in the intermediate region — not a tight cluster.
     pub fn smeared_positive_only_in_qc(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let neg = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-        ], &mut rng);
+        let neg = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
         let smear = sample_smear((0.8, 2.5), (0.8, 2.5), 600, &mut rng);
         let (qc_x, qc_y) = concat_events(neg, smear);
 
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-        ], &mut rng);
+        let test = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
         (make_df(qc_x, qc_y), make_df(test.0, test.1))
     }
 
     /// Test sample has a smeared positive; QC does not.
     pub fn smeared_positive_only_in_test(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
 
-        let neg = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-        ], &mut rng);
+        let neg = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
         let smear = sample_smear((0.8, 2.5), (0.8, 2.5), 600, &mut rng);
         let (test_x, test_y) = concat_events(neg, smear);
 
@@ -627,42 +869,84 @@ mod flow_tests {
     }
 
     /// Both samples have a distinct positive, but it is shifted in the test (+0.4 on both axes).
-    /// The negative is identical — so alignment should be driven by the negative, 
+    /// The negative is identical — so alignment should be driven by the negative,
     /// and the positive shift should be visible as a residual after alignment.
     pub fn positive_shifted_in_test(seed: u64) -> (DataFrame, DataFrame) {
         let mut rng = StdRng::seed_from_u64(seed);
-        let qc = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.5, cy: 2.5, sx: 0.20, sy: 0.20, n: 900 },
-        ], &mut rng);
-        let test = sample_clusters(&[
-            Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 },
-            Cluster { cx: 2.9, cy: 2.9, sx: 0.20, sy: 0.20, n: 900 }, // positive shifted +0.4
-        ], &mut rng);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 900,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.9,
+                    cy: 2.9,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 900,
+                }, // positive shifted +0.4
+            ],
+            &mut rng,
+        );
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
     fn run(label: &str, qc: &DataFrame, test: &DataFrame, expected_dx: f64, expected_dy: f64) {
-        let rules = GateRules { lock_x: false, lock_y: false, max_translation: None };
+        let rules = GateRules {
+            lock_x: false,
+            lock_y: false,
+            max_translation: None,
+        };
         let axis = ((-1.0, 4.5), (-1.0, 4.5));
 
         let result = compute_negative_shift(
             (qc.column("x").unwrap(), qc.column("y").unwrap()),
             (test.column("x").unwrap(), test.column("y").unwrap()),
-            axis.0, axis.1,
-            &rules, 64, 2.0,
+            axis.0,
+            axis.1,
+            &rules,
+            64,
+            2.0,
         );
 
-        match result {
-            Ok(t) => println!(
-                "[{label}]\n  translation: dx={:.4}, dy={:.4}\n  expected:    dx={:.4}, dy={:.4}\n  error:       dx={:.4}, dy={:.4}\n  peak:        {:.2}\n",
-                t.dx_data, t.dy_data,
-                expected_dx, expected_dy,
-                (t.dx_data - expected_dx).abs(), (t.dy_data - expected_dy).abs(),
-                t.peak_strength
-            ),
-            Err(e) => println!("[{label}] returned Err: {e}\n"),
-        }
+        // The translation is read off the correlation peak's cell, with no
+        // sub-cell refinement, so it can only be as fine as one bin: 5.5 / 64.
+        let bin = (axis.0.1 - axis.0.0) / 64.0;
+        let t = result.unwrap_or_else(|e| panic!("[{label}] returned Err: {e}"));
+        assert!(
+            (t.dx_data - expected_dx).abs() <= bin && (t.dy_data - expected_dy).abs() <= bin,
+            "[{label}] moved ({:.4}, {:.4}); expected ({expected_dx:.4}, {expected_dy:.4}) to within {bin:.4}",
+            t.dx_data,
+            t.dy_data,
+        );
+        assert!(
+            t.peak_strength.is_finite() && t.peak_strength > 0.0,
+            "[{label}] peak {}",
+            t.peak_strength
+        );
     }
 
     #[test]
@@ -722,5 +1006,19 @@ mod flow_tests {
         // Positive shift is biological and should NOT influence the result.
         let (qc, test) = positive_shifted_in_test(42);
         run("positive_shifted_in_test", &qc, &test, 0.0, 0.0);
+    }
+
+    #[test]
+    fn a_gaussian_kernel_sums_to_one_and_is_symmetric() {
+        for sigma in [0.5f32, 1.0, 2.5] {
+            let k = make_gaussian_kernel(sigma);
+            assert_eq!(k.len(), 2 * (3.0 * sigma).ceil() as usize + 1);
+            assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+            let mid = k.len() / 2;
+            assert!(k.iter().all(|&w| w <= k[mid]));
+            for i in 0..mid {
+                assert_eq!(k[i], k[k.len() - 1 - i]);
+            }
+        }
     }
 }

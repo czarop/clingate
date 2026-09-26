@@ -272,6 +272,96 @@ impl AxisInfo {
             TransformType::Biexponential { .. } => None,
         }
     }
+
+    /// Why this axis cannot be drawn on, if it cannot: a cofactor that is not
+    /// a positive number, a limit that is not a number, or a range that is
+    /// empty or the wrong way round.
+    ///
+    /// Every gate that spans a plot - quadrants, skewed quadrants - is laid out
+    /// by clamping into the axis range, and `f32::clamp` panics on a range
+    /// the wrong way round. So an axis is checked wherever one comes in: an
+    /// edit in the editor's boxes, a scaling file, a gating file imported over
+    /// the scaling.
+    pub fn problem(&self) -> Option<String> {
+        let channel = &self.param.fluoro;
+        if let TransformType::Arcsinh { cofactor } = self.transform
+            && !(cofactor.is_finite() && cofactor > 0.0)
+        {
+            return Some(format!(
+                "{channel} has an arcsinh cofactor of {cofactor} - it must be above 0"
+            ));
+        }
+        if !self.axis_lower.is_finite() || !self.axis_upper.is_finite() {
+            return Some(format!("{channel} has an axis limit that is not a number"));
+        }
+        if self.axis_lower >= self.axis_upper {
+            return Some(format!(
+                "{channel}'s lower limit ({}) is not below its upper limit ({})",
+                self.get_untransformed_lower().round(),
+                self.get_untransformed_upper().round()
+            ));
+        }
+        None
+    }
+
+    /// The axis with one of the editor's boxes changed, or why the change
+    /// cannot be made. `value` is what was typed: raw data units for a limit.
+    ///
+    /// Refused rather than applied and repaired: an edit that leaves the axis
+    /// unusable would crash the app (B-AX-1), and one applied and then
+    /// clamped would move gates the person never touched.
+    pub fn edited(&self, edit: AxisEdit, value: f64) -> Result<AxisInfo, String> {
+        if !value.is_finite() {
+            return Err("that is not a number".to_string());
+        }
+        let value = value as f32;
+        let candidate = match edit {
+            AxisEdit::Cofactor => {
+                if value < 1.0 {
+                    return Err("an arcsinh cofactor must be 1 or more".to_string());
+                }
+                if !self.is_arcsinh() {
+                    return Err(format!("{} is not on an arcsinh scale", self.param.fluoro));
+                }
+                self.into_archsinh(value).map_err(|e| e.to_string())?
+            }
+            AxisEdit::Lower => self.into_new_lower(value),
+            AxisEdit::Upper => self.into_new_upper(value),
+        };
+        match candidate.problem() {
+            Some(problem) => Err(problem),
+            None => Ok(candidate),
+        }
+    }
+
+    /// What one of the editor's boxes currently shows.
+    pub fn shown(&self, edit: AxisEdit) -> f64 {
+        match edit {
+            AxisEdit::Cofactor => self.get_cofactor().unwrap_or_default() as f64,
+            AxisEdit::Lower => self.get_untransformed_lower() as f64,
+            AxisEdit::Upper => self.get_untransformed_upper() as f64,
+        }
+        .round()
+    }
+}
+
+/// Which of an axis's three boxes in the editor is being edited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisEdit {
+    Cofactor,
+    Lower,
+    Upper,
+}
+
+impl AxisEdit {
+    /// What the box is called, for a message about it.
+    pub fn name(self) -> &'static str {
+        match self {
+            AxisEdit::Cofactor => "cofactor",
+            AxisEdit::Lower => "lower limit",
+            AxisEdit::Upper => "upper limit",
+        }
+    }
 }
 
 //cargo test axis_info_tests -- --nocapture
@@ -552,5 +642,107 @@ mod axis_info_tests {
         assert!(d.is_linear());
         assert_eq!(d.axis_lower, 0.0);
         assert_eq!(d.axis_upper, 4_194_304.0);
+    }
+
+    // ── an axis edited in the editor's boxes, or read from a file ────────────
+
+    fn arcsinh() -> AxisInfo {
+        AxisInfo::new_from_raw(
+            param("BV421-A"),
+            -1_000.0,
+            200_000.0,
+            TransformType::Arcsinh { cofactor: COFACTOR },
+        )
+    }
+
+    fn linear() -> AxisInfo {
+        AxisInfo::new_from_raw(param("FSC-A"), 0.0, 262_144.0, TransformType::Linear)
+    }
+
+    #[test]
+    fn a_usable_axis_has_no_problem() {
+        assert_eq!(arcsinh().problem(), None);
+        assert_eq!(linear().problem(), None);
+    }
+
+    #[test]
+    fn an_axis_the_wrong_way_round_or_empty_is_a_problem() {
+        for (lower, upper) in [(5.0, 1.0), (3.0, 3.0)] {
+            let axis = AxisInfo {
+                axis_lower: lower,
+                axis_upper: upper,
+                ..linear()
+            };
+            let problem = axis.problem().expect("refused");
+            assert!(problem.contains("FSC-A"), "{problem}");
+        }
+    }
+
+    #[test]
+    fn a_cofactor_of_zero_or_less_or_a_limit_that_is_not_a_number_is_a_problem() {
+        for cofactor in [0.0, -150.0, f32::NAN] {
+            let axis = AxisInfo {
+                transform: TransformType::Arcsinh { cofactor },
+                ..arcsinh()
+            };
+            assert!(axis.problem().unwrap().contains("cofactor"), "{cofactor}");
+        }
+        let axis = AxisInfo {
+            axis_upper: f32::INFINITY,
+            ..linear()
+        };
+        assert!(axis.problem().is_some());
+    }
+
+    #[test]
+    fn an_upper_limit_typed_below_the_lower_one_is_refused() {
+        // B-AX-1: "-5" typed in the upper box of a linear axis starting at 0.
+        let error = linear().edited(AxisEdit::Upper, -5.0).unwrap_err();
+        assert!(error.contains("lower limit"), "{error}");
+        let error = arcsinh().edited(AxisEdit::Lower, 300_000.0).unwrap_err();
+        assert!(error.contains("lower limit"), "{error}");
+    }
+
+    #[test]
+    fn a_usable_edit_gives_the_axis_the_box_would_set() {
+        assert_eq!(
+            linear().edited(AxisEdit::Upper, 100_000.0),
+            Ok(linear().into_new_upper(100_000.0))
+        );
+        assert_eq!(
+            arcsinh().edited(AxisEdit::Lower, -500.0),
+            Ok(arcsinh().into_new_lower(-500.0))
+        );
+        assert_eq!(
+            arcsinh().edited(AxisEdit::Cofactor, 150.0).unwrap(),
+            arcsinh().into_archsinh(150.0).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_cofactor_below_one_or_on_a_linear_axis_is_refused() {
+        for cofactor in [0.0, 0.5, -3.0] {
+            assert!(
+                arcsinh().edited(AxisEdit::Cofactor, cofactor).is_err(),
+                "{cofactor}"
+            );
+        }
+        assert!(linear().edited(AxisEdit::Cofactor, 150.0).is_err());
+    }
+
+    #[test]
+    fn a_number_that_is_not_a_number_is_refused() {
+        for edit in [AxisEdit::Cofactor, AxisEdit::Lower, AxisEdit::Upper] {
+            assert!(arcsinh().edited(edit, f64::NAN).is_err());
+            assert!(arcsinh().edited(edit, f64::INFINITY).is_err());
+        }
+    }
+
+    #[test]
+    fn a_box_shows_the_raw_value_rounded() {
+        assert_eq!(arcsinh().shown(AxisEdit::Lower), -1_000.0);
+        assert_eq!(arcsinh().shown(AxisEdit::Upper), 200_000.0);
+        assert_eq!(arcsinh().shown(AxisEdit::Cofactor), 6_000.0);
+        assert_eq!(linear().shown(AxisEdit::Cofactor), 0.0);
     }
 }

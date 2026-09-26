@@ -9,6 +9,7 @@ pub struct GateBoundary {
     pub y_lower: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriftType {
     /// Negative and positive shift by similar amounts — instrument moved uniformly.
     InstrumentDrift,
@@ -979,165 +980,235 @@ mod flow_tests_kde_shift {
         (make_df(qc.0, qc.1), make_df(test.0, test.1))
     }
 
-    fn run(label: &str, qc: &DataFrame, test: &DataFrame, expected_dx: f64, expected_dy: f64) {
-        let axis = ((-1.0f64, 4.5f64), (-1.0f64, 4.5f64));
-
-        let result = crate::gate_move::kde::kde_negative_shift(
-            (qc.column("x").unwrap(), qc.column("y").unwrap()),
-            (test.column("x").unwrap(), test.column("y").unwrap()),
-            axis.0,
-            axis.1,
-            512, // kde resolution
-            50,  // min events
-        );
-
-        match result {
-            Ok(s) => println!(
-                "[{label}]\n  shift:       dx={:.4}, dy={:.4}\n  expected:    dx={:.4}, dy={:.4}\n  error:       dx={:.4}, dy={:.4}\n  qc width:    x={:.4}, y={:.4}\n  test width:  x={:.4}, y={:.4}\n  width ratio: x={:.2}, y={:.2}{}{}\n",
-                s.dx,
-                s.dy,
-                expected_dx,
-                expected_dy,
-                (s.dx - expected_dx).abs(),
-                (s.dy - expected_dy).abs(),
-                s.qc_width_x,
-                s.qc_width_y,
-                s.test_width_x,
-                s.test_width_y,
-                s.width_ratio_x,
-                s.width_ratio_y,
-                if s.width_warning_x(1.5) {
-                    "  ⚠ x width increased"
-                } else {
-                    ""
-                },
-                if s.width_warning_y(1.5) {
-                    "  ⚠ y width increased"
-                } else {
-                    ""
-                },
-            ),
-            Err(e) => println!("[{label}] Err: {e}\n"),
-        }
+    /// What `analyse_population_shift` should make of a scenario.
+    struct Expect {
+        /// Where the negative moved, and how closely that must be recovered.
+        neg: (f64, f64),
+        within: f64,
+        drift: DriftType,
+        /// Where the positive moved; `None` for "there is no positive to
+        /// compare" rather than "it did not move".
+        pos: Option<(f64, f64)>,
     }
 
-    #[test]
-    fn test_wider_negative_x() {
-        // Negative is in same position — expect near-zero shift.
-        // The wider spread is a diagnostic signal, not a translation.
-        let (qc, test) = wider_negative_x(42);
-        run("wider_negative_x", &qc, &test, 0.0, 0.0);
-    }
+    /// The negative region's KDE grid is 512 points over about 2 units, so a
+    /// shift is expected to within a few grid steps. A widened negative is
+    /// held to half its widened spread instead: estimating a peak from a
+    /// wider cloud with the QC's narrower bandwidth is noisier.
+    const PEAK: f64 = 0.05;
+    const WIDENED: f64 = 0.175;
+    /// A positive is compared through a blend of its peak and its median,
+    /// which is looser than the negative's peak alone.
+    const POSITIVE: f64 = 0.1;
 
-    #[test]
-    fn test_wider_negative_y() {
-        let (qc, test) = wider_negative_y(42);
-        run("wider_negative_y", &qc, &test, 0.0, 0.0);
-    }
-
-    #[test]
-    fn test_negative_shifted_x() {
-        let (qc, test) = negative_shifted_x(42);
-        run("negative_shifted_x", &qc, &test, 0.3, 0.0);
-    }
-
-    #[test]
-    fn test_negative_shifted_y() {
-        let (qc, test) = negative_shifted_y(42);
-        run("negative_shifted_y", &qc, &test, 0.0, 0.3);
-    }
-
-    #[test]
-    fn test_positive_only_in_qc() {
-        // Negative identical — expect near-zero shift, no crash from missing positive.
-        let (qc, test) = positive_only_in_qc(42);
-        run("positive_only_in_qc", &qc, &test, 0.0, 0.0);
-    }
-
-    #[test]
-    fn test_positive_only_in_test() {
-        let (qc, test) = positive_only_in_test(42);
-        run("positive_only_in_test", &qc, &test, 0.0, 0.0);
-    }
-
-    #[test]
-    fn test_smeared_positive_only_in_qc() {
-        let (qc, test) = smeared_positive_only_in_qc(42);
-        run("smeared_positive_only_in_qc", &qc, &test, 0.0, 0.0);
-    }
-
-    #[test]
-    fn test_smeared_positive_only_in_test() {
-        let (qc, test) = smeared_positive_only_in_test(42);
-        run("smeared_positive_only_in_test", &qc, &test, 0.0, 0.0);
-    }
-
-    #[test]
-    fn test_positive_shifted_in_test() {
-        // Negative identical — alignment should report near-zero shift.
-        // Positive shift is biological and should NOT influence the result.
-        let (qc, test) = positive_shifted_in_test(42);
-        run("positive_shifted_in_test", &qc, &test, 0.0, 0.0);
-    }
-
-    fn run_shift(
-        label: &str,
-        qc: &DataFrame,
-        test: &DataFrame,
-        gate: &GateBoundary,
-        expected_neg_dx: f64,
-        expected_neg_dy: f64,
-    ) {
-        let result = analyse_population_shift(
+    fn check(label: &str, qc: &DataFrame, test: &DataFrame, expect: Expect) {
+        let gate = GateBoundary {
+            x_lower: 1.2,
+            y_lower: 1.2,
+        };
+        let r = analyse_population_shift(
             (qc.column("x").unwrap(), qc.column("y").unwrap()),
             (test.column("x").unwrap(), test.column("y").unwrap()),
             (-1.0, 4.5),
             (-1.0, 4.5),
-            gate,
+            &gate,
             0.1, // negative_margin — 0.1 units below gate edge
             512, // kde resolution
             50,  // min events
             0.1, // significant_shift threshold
             1.5, // significant_width_ratio threshold
-        );
+        )
+        .unwrap_or_else(|e| panic!("[{label}] Err: {e}"));
 
-        match result {
-            Ok(r) => println!(
-                "[{label}]\n  negative shift: dx={:.4}, dy={:.4}  (expected dx={:.4}, dy={:.4})\n  error:          dx={:.4}, dy={:.4}\n  width ratio:    x={:.2}, y={:.2}{}{}\n  positive shift: {}\n  smear score:    x={}, y={}\n  drift type:     {}\n",
-                r.negative_dx,
-                r.negative_dy,
-                expected_neg_dx,
-                expected_neg_dy,
-                (r.negative_dx - expected_neg_dx).abs(),
-                (r.negative_dy - expected_neg_dy).abs(),
-                r.width_ratio_x,
-                r.width_ratio_y,
-                if r.width_warning_x(1.5) {
-                    "  ⚠ x wider"
-                } else {
-                    ""
-                },
-                if r.width_warning_y(1.5) {
-                    "  ⚠ y wider"
-                } else {
-                    ""
-                },
-                match (r.positive_dx, r.positive_dy) {
-                    (Some(dx), Some(dy)) => format!("dx={dx:.4}, dy={dy:.4}"),
-                    _ => "no positive population".into(),
-                },
-                match r.positive_smear_score_x {
-                    Some(v) => format!("{:.3}", v),
-                    None => "-".into(),
-                },
-                match r.positive_smear_score_y {
-                    Some(v) => format!("{:.3}", v),
-                    None => "-".into(),
-                },
-                r.drift_type,
+        assert!(
+            (r.negative_dx - expect.neg.0).abs() <= expect.within
+                && (r.negative_dy - expect.neg.1).abs() <= expect.within,
+            "[{label}] negative moved ({:.4}, {:.4}); expected ({}, {}) to within {}",
+            r.negative_dx,
+            r.negative_dy,
+            expect.neg.0,
+            expect.neg.1,
+            expect.within,
+        );
+        match (expect.pos, r.positive_dx, r.positive_dy) {
+            (None, None, None) => {}
+            (Some((ex, ey)), Some(dx), Some(dy)) => assert!(
+                (dx - ex).abs() <= POSITIVE && (dy - ey).abs() <= POSITIVE,
+                "[{label}] positive moved ({dx:.4}, {dy:.4}); expected ({ex}, {ey})"
             ),
-            Err(e) => println!("[{label}] Err: {e}\n"),
+            (want, dx, dy) => panic!("[{label}] positive shift {dx:?}, {dy:?}; expected {want:?}"),
         }
+        assert_eq!(
+            r.drift_type, expect.drift,
+            "[{label}] width ratios ({:.2}, {:.2})",
+            r.width_ratio_x, r.width_ratio_y
+        );
+        for score in [r.positive_smear_score_x, r.positive_smear_score_y]
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "[{label}] smear score {score}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_wider_negative_x() {
+        // The negative stays put and spreads: a compensation or voltage
+        // problem, not a translation.
+        let (qc, test) = wider_negative_x(42);
+        check(
+            "wider_negative_x",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: WIDENED,
+                drift: DriftType::CompensationIssue,
+                pos: Some((0.0, 0.0)),
+            },
+        );
+    }
+
+    /// BUG (docs/test-audit.md, B-KDE-2): the mirror image of
+    /// `test_wider_negative_x`, and classified differently. The widened
+    /// negative's KDE peak lands 0.127 low on y from noise alone, which is
+    /// past the 0.1 significance threshold, so a negative that only widened
+    /// reads as having moved and widened: Ambiguous.
+    #[test]
+    #[ignore = "known bug B-KDE-2: a widened negative's noisy peak reads as a shift"]
+    fn test_wider_negative_y() {
+        let (qc, test) = wider_negative_y(42);
+        check(
+            "wider_negative_y",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::CompensationIssue,
+                pos: Some((0.0, 0.0)),
+            },
+        );
+    }
+
+    #[test]
+    fn test_negative_shifted_x() {
+        // The whole sample moved, positive with it: the instrument.
+        let (qc, test) = negative_shifted_x(42);
+        check(
+            "negative_shifted_x",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.3, 0.0),
+                within: PEAK,
+                drift: DriftType::InstrumentDrift,
+                pos: Some((0.3, 0.0)),
+            },
+        );
+    }
+
+    #[test]
+    fn test_negative_shifted_y() {
+        let (qc, test) = negative_shifted_y(42);
+        check(
+            "negative_shifted_y",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.3),
+                within: PEAK,
+                drift: DriftType::InstrumentDrift,
+                pos: Some((0.0, 0.3)),
+            },
+        );
+    }
+
+    #[test]
+    fn test_positive_only_in_qc() {
+        // A population that disappears is biology, and there is nothing to
+        // measure a positive shift against.
+        let (qc, test) = positive_only_in_qc(42);
+        check(
+            "positive_only_in_qc",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::Biological,
+                pos: None,
+            },
+        );
+    }
+
+    #[test]
+    fn test_positive_only_in_test() {
+        let (qc, test) = positive_only_in_test(42);
+        check(
+            "positive_only_in_test",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::Biological,
+                pos: None,
+            },
+        );
+    }
+
+    #[test]
+    fn test_smeared_positive_only_in_qc() {
+        let (qc, test) = smeared_positive_only_in_qc(42);
+        check(
+            "smeared_positive_only_in_qc",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::Biological,
+                pos: None,
+            },
+        );
+    }
+
+    #[test]
+    fn test_smeared_positive_only_in_test() {
+        let (qc, test) = smeared_positive_only_in_test(42);
+        check(
+            "smeared_positive_only_in_test",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::Biological,
+                pos: None,
+            },
+        );
+    }
+
+    #[test]
+    fn test_positive_shifted_in_test() {
+        // Only the positive moved: biology, and the negative must not
+        // follow it.
+        let (qc, test) = positive_shifted_in_test(42);
+        check(
+            "positive_shifted_in_test",
+            &qc,
+            &test,
+            Expect {
+                neg: (0.0, 0.0),
+                within: PEAK,
+                drift: DriftType::Biological,
+                pos: Some((0.4, 0.4)),
+            },
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1748,103 +1819,84 @@ mod flow_tests_kde_shift {
     mod extended_flow_tests {
         use super::*;
 
-        fn run_shift(
-            label: &str,
-            qc: &DataFrame,
-            test: &DataFrame,
-            gate: &GateBoundary,
-            expected_neg_dx: f64,
-            expected_neg_dy: f64,
-        ) {
-            let result = analyse_population_shift(
-                (qc.column("x").unwrap(), qc.column("y").unwrap()),
-                (test.column("x").unwrap(), test.column("y").unwrap()),
-                (-1.0, 4.5),
-                (-1.0, 4.5),
-                gate,
-                0.1, // negative_margin
-                512, // kde resolution
-                50,  // min events
-                0.1, // significant_shift
-                1.5, // significant_width_ratio
-            );
-
-            match result {
-                Ok(r) => println!(
-                    "[{label}]\n\
-                   neg shift:    dx={:.4}, dy={:.4}  (expected dx={:.4}, dy={:.4})\n\
-                   neg error:    dx={:.4}, dy={:.4}\n\
-                   width ratio:  x={:.2}, y={:.2}{}{}\n\
-                   pos shift:    {}\n\
-                   pos width:    {}\n\
-                   drift type:   {}\n",
-                    r.negative_dx,
-                    r.negative_dy,
-                    expected_neg_dx,
-                    expected_neg_dy,
-                    (r.negative_dx - expected_neg_dx).abs(),
-                    (r.negative_dy - expected_neg_dy).abs(),
-                    r.width_ratio_x,
-                    r.width_ratio_y,
-                    if r.width_warning_x(1.5) {
-                        "  ⚠ x wider"
-                    } else {
-                        ""
-                    },
-                    if r.width_warning_y(1.5) {
-                        "  ⚠ y wider"
-                    } else {
-                        ""
-                    },
-                    match (r.positive_dx, r.positive_dy) {
-                        (Some(dx), Some(dy)) => format!("dx={dx:.4}, dy={dy:.4}"),
-                        _ => "no positive population detected".into(),
-                    },
-                    match (r.test_positive_width_x, r.test_positive_width_y) {
-                        (Some(wx), Some(wy)) => format!("test x={wx:.4}, y={wy:.4}"),
-                        _ => "n/a".into(),
-                    },
-                    r.drift_type,
-                ),
-                Err(e) => println!("[{label}] Err: {e}\n"),
-            }
-        }
-
-        fn gate() -> GateBoundary {
-            GateBoundary {
-                x_lower: 1.2,
-                y_lower: 1.2,
-            }
-        }
-
         // ── Requested ──────────────────────────────────────────────────────────────
 
         #[test]
         fn test_distinct_positive_shifted() {
             // Neg should be clean, pos should show the shift as biological.
             let (qc, test) = distinct_positive_shifted_in_test(42);
-            run_shift("distinct_positive_shifted", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "distinct_positive_shifted",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Biological,
+                    pos: Some((0.4, 0.4)),
+                },
+            );
         }
 
         #[test]
         fn test_distinct_positive_wider() {
             // Neg clean, pos wider — no shift but increased spread in test.
             let (qc, test) = distinct_positive_wider_in_test(42);
-            run_shift("distinct_positive_wider", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "distinct_positive_wider",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Clean,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
         fn test_smear_positive_shifted() {
             // Neg clean. Smear has moved. Positive shift should be visible.
             let (qc, test) = smear_positive_shifted_in_test(42);
-            run_shift("smear_positive_shifted", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "smear_positive_shifted",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Biological,
+                    pos: Some((0.25, 0.25)),
+                },
+            );
         }
 
+        /// BUG (docs/test-audit.md, B-KDE-3): a uniform smear has no peak, so
+        /// its shift should come from the median, which moves by exactly 0.4
+        /// here. The smear score that chooses between the two sits near 0.5
+        /// for any population, so half the answer is the arbitrary peak of a
+        /// flat density: (0.23, 0.50) for a change that is the same on both
+        /// axes.
         #[test]
+        #[ignore = "known bug B-KDE-3: the smear score never approaches 1, so a smear's shift follows noise"]
         fn test_smear_positive_wider() {
             // Neg clean. Smear has broadened.
             let (qc, test) = smear_positive_wider_in_test(42);
-            run_shift("smear_positive_wider", &qc, &test, &gate(), 0.0, 0.0);
+            // The positive region starts at the gate edge, 1.2, so the part of
+            // each smear inside it is QC 1.2-2.0 and test 1.2-2.8: its middle
+            // moves by 0.4, which is what the blend reports.
+            check(
+                "smear_positive_wider",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Biological,
+                    pos: Some((0.4, 0.4)),
+                },
+            );
         }
 
         // ── Suggested ──────────────────────────────────────────────────────────────
@@ -1853,21 +1905,51 @@ mod flow_tests_kde_shift {
         fn test_uniform_instrument_drift() {
             // Both neg and pos shifted by same amount — should be InstrumentDrift.
             let (qc, test) = uniform_instrument_drift(42);
-            run_shift("uniform_instrument_drift", &qc, &test, &gate(), 0.3, 0.3);
+            check(
+                "uniform_instrument_drift",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.3, 0.3),
+                    within: PEAK,
+                    drift: DriftType::InstrumentDrift,
+                    pos: Some((0.3, 0.3)),
+                },
+            );
         }
 
         #[test]
         fn test_differential_drift() {
             // Neg and pos shifted by different amounts — Ambiguous.
             let (qc, test) = differential_drift(42);
-            run_shift("differential_drift", &qc, &test, &gate(), 0.3, 0.3);
+            check(
+                "differential_drift",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.3, 0.3),
+                    within: PEAK,
+                    drift: DriftType::Ambiguous,
+                    pos: Some((0.7, 0.7)),
+                },
+            );
         }
 
         #[test]
         fn test_negative_shifted_and_wider() {
             // Neg both shifted and broader — voltage change.
             let (qc, test) = negative_shifted_and_wider(42);
-            run_shift("negative_shifted_and_wider", &qc, &test, &gate(), 0.3, 0.3);
+            check(
+                "negative_shifted_and_wider",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.3, 0.3),
+                    within: WIDENED,
+                    drift: DriftType::Ambiguous,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
@@ -1875,35 +1957,85 @@ mod flow_tests_kde_shift {
             // Two clusters in the negative quadrant — KDE should lock onto the larger one.
             // No expected shift since the clusters are identical between QC and test.
             let (qc, test) = bimodal_negative(42);
-            run_shift("bimodal_negative", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "bimodal_negative",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Clean,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
         fn test_sparse_positive_in_test() {
             // Positive below min_events in test — should degrade to None gracefully.
             let (qc, test) = sparse_positive_in_test(42);
-            run_shift("sparse_positive_in_test", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "sparse_positive_in_test",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Biological,
+                    pos: None,
+                },
+            );
         }
 
         #[test]
         fn test_debris_cluster() {
             // Debris in lower-right — should not affect the negative region analysis.
             let (qc, test) = debris_cluster(42);
-            run_shift("debris_cluster", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "debris_cluster",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Clean,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
         fn test_high_expression_positive() {
             // Positive near axis ceiling — tests KDE doesn't get clipped.
             let (qc, test) = high_expression_positive(42);
-            run_shift("high_expression_positive", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "high_expression_positive",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Clean,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
         fn test_larger_positive_in_test() {
             // Much bigger positive in test — purely biological, neg should be clean.
             let (qc, test) = larger_positive_in_test(42);
-            run_shift("larger_positive_in_test", &qc, &test, &gate(), 0.0, 0.0);
+            check(
+                "larger_positive_in_test",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.0, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Clean,
+                    pos: Some((0.0, 0.0)),
+                },
+            );
         }
 
         #[test]
@@ -1911,49 +2043,66 @@ mod flow_tests_kde_shift {
             // Neg shifted on x only, pos shifted on both.
             // Tests that x and y are decomposed independently.
             let (qc, test) = asymmetric_drift(42);
-            run_shift("asymmetric_drift", &qc, &test, &gate(), 0.3, 0.0);
+            check(
+                "asymmetric_drift",
+                &qc,
+                &test,
+                Expect {
+                    neg: (0.3, 0.0),
+                    within: PEAK,
+                    drift: DriftType::Ambiguous,
+                    pos: Some((0.3, 0.3)),
+                },
+            );
         }
     }
 
     #[test]
-    fn test_all_scenarios() {
-        // Gate sits at (1.2, 1.2) — negatives cluster around (0.4, 0.4) so
-        // they sit well below the gate edge, positives around (2.5, 2.5).
-        let gate = GateBoundary {
-            x_lower: 1.2,
-            y_lower: 1.2,
-        };
+    fn a_quantile_reads_the_sorted_values() {
+        let mut v = vec![5.0, 1.0, 3.0, 2.0, 4.0];
+        assert_eq!(quantile(&mut v, 0.0), 1.0);
+        assert_eq!(quantile(&mut v, 0.5), 3.0);
+        assert_eq!(quantile(&mut v, 1.0), 5.0);
+        // Out-of-range q is clamped, not an index panic.
+        assert_eq!(quantile(&mut v, -1.0), 1.0);
+        assert_eq!(quantile(&mut v, 2.0), 5.0);
+        assert!(quantile(&mut [], 0.5).is_nan());
+    }
 
-        let cases: &[(&str, fn(u64) -> (DataFrame, DataFrame), f64, f64)] = &[
-            ("wider_negative_x", wider_negative_x, 0.0, 0.0),
-            ("wider_negative_y", wider_negative_y, 0.0, 0.0),
-            ("negative_shifted_x", negative_shifted_x, 0.3, 0.0),
-            ("negative_shifted_y", negative_shifted_y, 0.0, 0.3),
-            ("positive_only_in_qc", positive_only_in_qc, 0.0, 0.0),
-            ("positive_only_in_test", positive_only_in_test, 0.0, 0.0),
-            (
-                "smeared_positive_only_in_qc",
-                smeared_positive_only_in_qc,
-                0.0,
-                0.0,
-            ),
-            (
-                "smeared_positive_only_in_test",
-                smeared_positive_only_in_test,
-                0.0,
-                0.0,
-            ),
-            (
-                "positive_shifted_in_test",
-                positive_shifted_in_test,
-                0.0,
-                0.0,
-            ),
-        ];
+    #[test]
+    fn a_quantile_survives_a_nan() {
+        // total_cmp puts NaN after every number, so the lower quantiles are
+        // still read from real values.
+        let mut v = vec![f64::NAN, 1.0, 2.0];
+        assert_eq!(quantile(&mut v, 0.0), 1.0);
+    }
 
-        for (label, make_data, exp_dx, exp_dy) in cases {
-            let (qc, test) = make_data(42);
-            run_shift(label, &qc, &test, &gate, *exp_dx, *exp_dy);
-        }
+    #[test]
+    fn a_region_is_half_open_on_both_axes() {
+        let df = df!["x" => [0.0, 1.0, 0.5, 0.5], "y" => [0.5, 0.5, 0.0, 1.0]].unwrap();
+        let (xs, ys) = extract_region(
+            (df.column("x").unwrap(), df.column("y").unwrap()),
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        )
+        .unwrap();
+
+        assert_eq!(xs, vec![0.0, 0.5]);
+        assert_eq!(ys, vec![0.5, 0.0]);
+    }
+
+    #[test]
+    fn a_region_of_a_float32_column_is_an_error() {
+        let df = df!["x" => [0.5f32], "y" => [0.5f32]].unwrap();
+        let result = extract_region(
+            (df.column("x").unwrap(), df.column("y").unwrap()),
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        );
+        assert!(result.is_err());
     }
 }

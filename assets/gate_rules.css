@@ -26,14 +26,104 @@
 .gate_rules-form select,
 .gate_rules-form input { padding: 0.2rem 0.35rem; min-width: 12rem; }
 .gate_rules-band { display: flex; align-items: center; gap: 0.5rem; }
+/* A path field and its browse button sharing one cell of the form's grid, so
+   adding the button does not turn every other row into three columns. */
+.gate_rules-path { display: flex; align-items: center; gap: 0.4rem; }
+/* Save and its "choose where to write" button read as one control; the gap
+   after them separates that pair from Load. */
+.gate_rules-actions_row { gap: 0.15rem; }
+.gate_rules-gap { width: 0.9rem; }
+.gate_rules-path input { flex: 1; min-width: 6rem; }
 .gate_rules-band input { min-width: 6rem; }
 .gate_rules-add { grid-column: 2; justify-self: start; margin-top: 0.5rem; padding: 0.3rem 1rem; }
 .gate_rules-remove { padding: 0.1rem 0.5rem; opacity: 0.8; }
 .gate_rules-message { margin-top: 0.75rem; opacity: 0.85; }
 .gate_rules-span { grid-column: 1 / -1; margin: 0 0 0.25rem; }
+/* The pairing controls bring a grid of their own, so dropping them into a cell
+   of this one squeezed that grid into the 11rem label column: the labels
+   wrapped and the warning underneath overlapped them. They get the full width
+   of the row instead. */
+.gate_rules-form > .pairing-columns { grid-column: 1 / -1; }
 .gate_rules-span .gate_rules-table { margin-bottom: 0.5rem; }
 .gate_rules-report { margin-top: 1.25rem; }
 .gate_rules-report h3 { font-size: 0.95rem; margin: 0.75rem 0 0.35rem; opacity: 0.8; }
 .gate_rules-weak { color: hsl(35, 90%, 62%); }
 .gate_rules-skipped { margin: 0; padding-left: 1.1rem; opacity: 0.75; }
 .gate_rules-skipped li { margin-bottom: 0.15rem; }
+.gate_rules-note { font-size: 0.8rem; opacity: 0.6; margin: 0 0 0.5rem; max-width: 70ch; }
+
+/* ── run progress ──────────────────────────────────────────────────────── */
+.gate_rules-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.6rem 0 0.2rem;
+}
+.gate_rules-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: #3a3a3a;
+  overflow: hidden;
+}
+.gate_rules-bar_fill {
+  height: 100%;
+  border-radius: 3px;
+  background: hsl(210, 80%, 55%);
+  transition: width 120ms linear;
+}
+.gate_rules-progress_text {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  white-space: nowrap;
+  min-width: 14ch;
+}
+.gate_rules-cancel {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.gate_rules-actions { display: flex; gap: 0.3rem; justify-content: flex-end; }
+.gate_rules-secondary {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+/* The phenotype rule's marker picker. A panel runs to thirty channels and the
+   form has to stay a form, so the list scrolls inside its own cell rather than
+   pushing everything below it off the pane. Two columns, because a channel
+   name is much narrower than the space a single column wastes. */
+.gate_rules-markers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    gap: 0.1rem 0.5rem;
+    max-height: 11rem;
+    overflow-y: auto;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid #d0d7de;
+    border-radius: 3px;
+}
+/* Scoped inside the form so it out-specifies `.gate_rules-form label`, which
+   right-aligns captions. These are list items, not captions for the field
+   beside them, and a ragged left edge makes a panel of thirty unreadable. */
+.gate_rules-form .gate_rules-marker {
+    justify-self: start;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    opacity: 1;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.gate_rules-form .gate_rules-marker input { min-width: 0; margin: 0; }
+
+/* The verification table. Wider than the report's other tables because it
+   carries a column per marker, so it scrolls sideways rather than squeezing
+   the numbers into columns too narrow to read. */
+.gate_rules-verify { overflow-x: auto; }
+.gate_rules-verify table { font-size: 0.78rem; }
+.gate_rules-verify th { white-space: nowrap; }
+.gate_rules-doubt { color: #b45309; font-weight: 600; }

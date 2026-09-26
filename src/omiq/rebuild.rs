@@ -110,6 +110,23 @@ pub struct OmiqRebuildData {
     /// override fans back out to the same set rather than one derived from the
     /// metadata - which could differ.
     pub per_file_ids: Vec<FileId>,
+    /// Where Omiq put this gate's label.
+    ///
+    /// The gate itself carries one, but a gate the editor rebuilds from parts
+    /// does not: a skewed quadrant's four corners are built from the composite
+    /// and start with no label at all, so 24 of them lost theirs on the way
+    /// back out. Kept here so the export can fall back to it.
+    pub label_position: Option<crate::omiq::deserialise::Point>,
+    /// The two channels this gate arrived on, as the file names them: `f1`
+    /// on the x axis, `f2` on the y.
+    ///
+    /// Viewing a gate on a plot whose axes are the other way round rewrites
+    /// it with its channels and coordinates exchanged. It is the same region,
+    /// but Omiq draws a gate on the axes its file names, so the export turns
+    /// it back to these before writing it. `None` for a boolean, which has no
+    /// axes.
+    #[serde(default)]
+    pub source_axes: Option<(Arc<str>, Arc<str>)>,
 }
 
 impl OmiqRebuildData {
@@ -175,7 +192,15 @@ impl OmiqRebuildStore {
         for (id, container) in &experiment.tree.filter_containers {
             let placements = nodes_for_container.get(id).cloned().unwrap_or_default();
 
-            let (container_type, group_id, md, source_type, per_file_ids) = match container {
+            let (
+                container_type,
+                group_id,
+                md,
+                source_type,
+                per_file_ids,
+                label_position,
+                source_axes,
+            ) = match container {
                 FilterContainer::Atomic(atomic) => {
                     let mut files: Vec<FileId> = atomic.per_file_filters.keys().cloned().collect();
                     // Hash order is not stable; sort so exports are reproducible.
@@ -186,6 +211,8 @@ impl OmiqRebuildStore {
                         atomic.md.clone(),
                         OmiqGateType::of(&atomic.default_filter),
                         files,
+                        atomic.default_filter.label_position(),
+                        atomic.default_filter.get_params(),
                     )
                 }
                 FilterContainer::Compound(compound) => (
@@ -194,6 +221,8 @@ impl OmiqRebuildStore {
                     None,
                     None,
                     Vec::new(),
+                    None,
+                    None,
                 ),
             };
 
@@ -206,6 +235,8 @@ impl OmiqRebuildStore {
                     md,
                     source_type,
                     per_file_ids,
+                    label_position,
+                    source_axes,
                 },
             );
         }

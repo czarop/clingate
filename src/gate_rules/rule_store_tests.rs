@@ -219,7 +219,10 @@ fn the_pairing_columns_are_configurable() {
 #[test]
 fn a_store_round_trips_through_its_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.insert(
         RuleTarget::under("CD38+", "CD19+CD33-"),
         GateRule {
@@ -420,7 +423,10 @@ fn a_rule_measured_on_a_named_file_always_reads_it() {
 #[test]
 fn hand_set_references_survive_the_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.set_reference(Arc::from("fs_a"), Arc::from("FMX"), Arc::from("fmx_b"));
 
     let back: RuleStore = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
@@ -569,7 +575,10 @@ fn one_rule_covers_every_gate_of_that_name() {
     // The case this exists for: "CD279+" occupied twenty-five containers in a
     // real export, and a rule per container is both miserable and wrong.
     let mut s = store();
-    s.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    s.insert(
+        RuleTarget::named("CD279+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
 
     assert_eq!(s.len(), 1);
     for parent in [Some("CD4+"), Some("CD8+"), Some("anything at all"), None] {
@@ -583,7 +592,10 @@ fn one_rule_covers_every_gate_of_that_name() {
 #[test]
 fn a_rule_naming_a_parent_wins_over_one_that_does_not() {
     let mut s = store();
-    s.insert(RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    s.insert(
+        RuleTarget::named("Ki67+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     s.insert(
         RuleTarget::under("Ki67+", "CD4+"),
         gate_rule(Bound::Above, (0.05, 0.06)),
@@ -600,7 +612,10 @@ fn a_rule_naming_a_parent_wins_over_one_that_does_not() {
 fn the_specific_rule_wins_whichever_order_it_was_added() {
     for specific_first in [true, false] {
         let mut s = store();
-        let general = (RuleTarget::named("Ki67+"), gate_rule(Bound::Above, (0.002, 0.005)));
+        let general = (
+            RuleTarget::named("Ki67+"),
+            gate_rule(Bound::Above, (0.002, 0.005)),
+        );
         let specific = (
             RuleTarget::under("Ki67+", "CD4+"),
             gate_rule(Bound::Below, (0.002, 0.005)),
@@ -637,14 +652,20 @@ fn a_rule_for_one_parent_does_not_reach_another() {
 
 #[test]
 fn a_target_reads_the_way_a_gate_is_spoken_about() {
-    assert_eq!(RuleTarget::under("Ki67+", "CD4+").describe(), "Ki67+ of CD4+");
+    assert_eq!(
+        RuleTarget::under("Ki67+", "CD4+").describe(),
+        "Ki67+ of CD4+"
+    );
     assert_eq!(RuleTarget::named("Ki67+").describe(), "Ki67+");
 }
 
 #[test]
 fn targets_survive_the_sidecar() {
     let mut original = store();
-    original.insert(RuleTarget::named("CD279+"), gate_rule(Bound::Above, (0.002, 0.005)));
+    original.insert(
+        RuleTarget::named("CD279+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
     original.insert(
         RuleTarget::under("Ki67+", "CD4+"),
         gate_rule(Bound::Below, (0.01, 0.02)),
@@ -657,4 +678,299 @@ fn targets_survive_the_sidecar() {
         back.rule_for("Ki67+", Some("CD4+")).map(|r| r.bound),
         Some(Bound::Below)
     );
+}
+
+// ─── the order samples are listed in ─────────────────────────────────────────
+
+#[test]
+fn a_timepoint_column_sorts_the_way_a_person_reads_it() {
+    use crate::gate_rules::rule_store::human_order;
+    let mut days = ["D85", "D4", "D1", "D29"];
+    days.sort_by(|a, b| human_order(a, b));
+    assert_eq!(days, ["D1", "D4", "D29", "D85"], "not D1, D29, D4, D85");
+}
+
+#[test]
+fn digits_inside_a_name_compare_as_numbers() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("000602_D4", "000602_D29"), Ordering::Less);
+    assert_eq!(human_order("000602_D4", "000604_D1"), Ordering::Less);
+    assert_eq!(human_order("Plate_2", "Plate_10"), Ordering::Less);
+    assert_eq!(human_order("abc", "abc"), Ordering::Equal);
+}
+
+/// Was B-RS-1: the comparison read `D02` and `D2` as the same number and
+/// `a1` and `A1` as the same text, and so called two different names Equal.
+/// A sort then left them in whatever order they arrived - and the files
+/// arrive from a hash map - so two tabs, or two runs, could list the same
+/// samples differently.
+#[test]
+fn distinct_names_never_compare_equal() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    for (a, b) in [("D02", "D2"), ("a1", "A1"), ("Plate_007", "plate_7")] {
+        assert_ne!(human_order(a, b), Ordering::Equal, "{a} vs {b}");
+        assert_eq!(human_order(a, b), human_order(b, a).reverse(), "{a} vs {b}");
+    }
+}
+
+/// The tie-break decides only between names that read the same: the
+/// natural order still comes first, and any order of the same names sorts
+/// to the same list.
+#[test]
+fn a_sort_gives_one_order_whatever_order_the_names_arrive_in() {
+    use crate::gate_rules::rule_store::human_order;
+    use rand::prelude::*;
+    let names = [
+        "D2",
+        "D02",
+        "d2",
+        "D10",
+        "a1",
+        "A1",
+        "Plate_7",
+        "plate_007",
+        "D1",
+    ];
+    let mut expected = names.to_vec();
+    expected.sort_by(|a, b| human_order(a, b));
+    // Names that read alike sit together, in the order of their exact text.
+    assert_eq!(&expected[..2], ["A1", "a1"]);
+    let mut rng = StdRng::seed_from_u64(4);
+    for _ in 0..50 {
+        let mut shuffled = names.to_vec();
+        shuffled.shuffle(&mut rng);
+        shuffled.sort_by(|a, b| human_order(a, b));
+        assert_eq!(shuffled, expected);
+    }
+    // Still numbers before text and 2 before 10.
+    let at = |n: &str| expected.iter().position(|x| *x == n).unwrap();
+    assert!(at("D1") < at("D2") && at("D2") < at("D10"), "{expected:?}");
+    assert!(
+        at("D02") < at("D10") && at("d2") < at("D10"),
+        "{expected:?}"
+    );
+}
+
+#[test]
+fn case_does_not_decide_the_order_of_different_names() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("apple", "Banana"), Ordering::Less);
+    assert_eq!(human_order("Apple", "banana"), Ordering::Less);
+}
+
+#[test]
+fn a_shorter_name_that_is_a_prefix_comes_first() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    assert_eq!(human_order("D1", "D1_repeat"), Ordering::Less);
+    assert_eq!(human_order("", "a"), Ordering::Less);
+}
+
+#[test]
+fn an_id_too_long_for_a_number_still_compares() {
+    // A gating id is a long run of digits. Parsing it would overflow, so it
+    // falls back to text rather than panicking or wrapping.
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    let a = "178385878716855178385878716855178385878716855";
+    let b = "178385878716855178385878716855178385878716856";
+    assert_eq!(human_order(a, b), Ordering::Less);
+}
+
+/// Case does not split the ordering: `donor` and `DONOR` sort together,
+/// with nothing between them, rather than every capitalised name first. They
+/// are not equal - only a name equals itself (B-RS-1).
+#[test]
+fn case_does_not_split_the_ordering() {
+    use crate::gate_rules::rule_store::human_order;
+    use std::cmp::Ordering;
+    let mut names = vec!["donor", "Cell", "DONOR", "eve", "Donor"];
+    names.sort_by(|a, b| human_order(a, b));
+    assert_eq!(names, ["Cell", "DONOR", "Donor", "donor", "eve"]);
+    assert_eq!(human_order("Apple", "banana"), Ordering::Less);
+}
+
+#[test]
+fn sorting_is_off_until_a_column_is_named() {
+    use crate::gate_rules::rule_store::SamplePairing;
+    assert!(SamplePairing::default().sort_column.is_none());
+}
+
+// ─── moving a rule to another population ─────────────────────────────────────
+
+#[test]
+fn inserting_under_a_new_parent_leaves_the_old_rule_in_place() {
+    // What Duplicate relies on: two targets naming the same gate under
+    // different populations are two rules, not one.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::under("Ki67+", "CD4+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
+    store.insert(
+        RuleTarget::under("Ki67+", "CD8+"),
+        gate_rule(Bound::Above, (0.002, 0.005)),
+    );
+
+    assert_eq!(store.entries().len(), 2);
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD4+")).is_some());
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD8+")).is_some());
+}
+
+#[test]
+fn removing_the_old_target_is_what_makes_an_edit_a_move() {
+    // What Edit relies on: the rule has to leave where it was, or changing the
+    // population would silently copy it instead.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    let was = RuleTarget::under("Ki67+", "CD4+");
+    store.insert(was.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+
+    let now = RuleTarget::under("Ki67+", "CD8+");
+    store.remove(&was);
+    store.insert(now, gate_rule(Bound::Above, (0.002, 0.005)));
+
+    assert_eq!(store.entries().len(), 1);
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD4+")).is_none());
+    assert!(store.rule_for(&Arc::from("Ki67+"), Some("CD8+")).is_some());
+}
+
+#[test]
+fn re_inserting_the_same_target_replaces_rather_than_doubles() {
+    // And an edit that keeps the population is a plain replacement.
+    use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+    let mut store = RuleStore::default();
+    let target = RuleTarget::under("Ki67+", "CD4+");
+    store.insert(target.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+    store.insert(target.clone(), gate_rule(Bound::Above, (0.002, 0.005)));
+    assert_eq!(store.entries().len(), 1);
+}
+
+// ── the phenotype rule through a sidecar ─────────────────────────────────
+
+#[test]
+fn a_phenotype_rule_survives_a_save_and_a_load() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    // The whole rule, as the form writes it: the markers a person ticked, the
+    // way of fitting they chose, and the three numbers.
+    let mut store = RuleStore::default();
+    store.insert(
+        RuleTarget::under("MAIT", "CD3+"),
+        GateRule {
+            parameter: Arc::from("FSC-A"),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from("qc")),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![
+                    Arc::from("TCRVa7.2"),
+                    Arc::from("CD161"),
+                    Arc::from("CD127"),
+                    Arc::from("CD218a"),
+                ],
+                fit: ShapeFit::DrawPolygon,
+                keep: 0.9,
+                smoothing: 1.3,
+                vertices: 18,
+            }),
+        },
+    );
+
+    let text = serde_json::to_string(&store).expect("serialises");
+    let back: RuleStore = serde_json::from_str(&text).expect("deserialises");
+    let entry = back
+        .rule_for("MAIT", Some("CD3+"))
+        .expect("the rule is found where it was put");
+    let Rule::MatchThePhenotype(rule) = &entry.rule else {
+        panic!("the kind changed on the way through");
+    };
+    assert_eq!(rule.markers.len(), 4);
+    assert_eq!(&*rule.markers[0], "TCRVa7.2");
+    assert_eq!(rule.fit, ShapeFit::DrawPolygon);
+    assert_eq!(rule.keep, 0.9);
+    assert_eq!(rule.smoothing, 1.3);
+    assert_eq!(rule.vertices, 18);
+}
+
+#[test]
+fn a_phenotype_rule_with_no_markers_means_the_whole_panel_after_a_round_trip() {
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: Vec::new(),
+        fit: ShapeFit::KeepShape,
+        ..Default::default()
+    });
+    let back: Rule = serde_json::from_str(&serde_json::to_string(&rule).unwrap()).unwrap();
+    let Rule::MatchThePhenotype(back) = back else {
+        panic!("the kind changed");
+    };
+    assert!(back.markers.is_empty());
+}
+
+/// Write a sidecar holding one phenotype rule, for trying the rule in the app
+/// by hand. Set `PHENOTYPE_SIDECAR_OUT` to a path; skipped otherwise.
+///
+/// `PHENOTYPE_REFERENCE` is the gating id of the sample to calibrate from,
+/// which is awkward to find - the app's own "Calibrate on" menu is the easy
+/// way, so leaving it unset and setting it there is the expected route. The
+/// pairing is this dataset's: it groups a specimen by `GROUPNAME` and has no
+/// sample-type column, so the type comes out of the file name.
+#[test]
+fn a_phenotype_sidecar_can_be_written_for_trying_the_app() {
+    let Ok(out) = std::env::var("PHENOTYPE_SIDECAR_OUT") else {
+        return;
+    };
+    use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
+    use crate::gate_rules::rule_store::{DerivedSampleType, SampleTypeMarker};
+
+    let mut store = RuleStore::default();
+    store.pairing.sample_id_column = Arc::from("GROUPNAME");
+    store.pairing.sample_type_column = Arc::from("SampleType");
+    store.pairing.derive_type = Some(DerivedSampleType {
+        column: Arc::from("OriginalFileName"),
+        markers: vec![
+            SampleTypeMarker {
+                contains: Arc::from("_FMX_"),
+                sample_type: Arc::from("FMX"),
+            },
+            SampleTypeMarker {
+                contains: Arc::from("_FS_"),
+                sample_type: Arc::from("FS"),
+            },
+        ],
+    });
+    store.insert(
+        RuleTarget::under(
+            std::env::var("PHENOTYPE_GATE")
+                .unwrap_or_else(|_| "Singlets".to_string())
+                .as_str(),
+            std::env::var("PHENOTYPE_PARENT")
+                .unwrap_or_else(|_| "Cells".to_string())
+                .as_str(),
+        ),
+        GateRule {
+            // Neither is read by this rule. They are on every rule.
+            parameter: Arc::from("FSC-A"),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from(
+                std::env::var("PHENOTYPE_REFERENCE")
+                    .unwrap_or_default()
+                    .as_str(),
+            )),
+            rule: Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![
+                    Arc::from("BV421-A"),
+                    Arc::from("BV711-A"),
+                    Arc::from("BB700-A"),
+                ],
+                fit: ShapeFit::DrawPolygon,
+                ..Default::default()
+            }),
+        },
+    );
+    std::fs::write(&out, serde_json::to_string_pretty(&store).unwrap()).expect("written");
+    eprintln!("wrote {out}");
 }

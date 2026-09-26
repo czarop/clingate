@@ -973,3 +973,80 @@ fn RenderShape(
         rsx! {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flow_fcs::TransformType;
+
+    fn mapper() -> PlotMapper {
+        PlotMapper::new(
+            600.0,
+            600.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            TransformType::Linear,
+            TransformType::Linear,
+        )
+    }
+
+    fn square(id: &str, lo: f32, hi: f32) -> Arc<dyn DrawableGate> {
+        let geometry = flow_gates::create_rectangle_geometry(
+            vec![(lo, lo), (hi, lo), (hi, hi), (lo, hi)],
+            "x",
+            "y",
+        )
+        .unwrap();
+        Arc::new(
+            rectangle_gate::RectangleGate::try_new(
+                flow_gates::Gate {
+                    id: Arc::from(id),
+                    name: id.to_string(),
+                    geometry,
+                    mode: flow_gates::GateMode::Global,
+                    parameters: (Arc::from("x"), Arc::from("y")),
+                    label_position: None,
+                },
+                true,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn pixel(m: &PlotMapper, data: (f32, f32)) -> (f32, f32) {
+        m.data_to_pixel(data.0, data.1, None, None)
+    }
+
+    #[test]
+    fn a_click_on_an_edge_selects_that_gate() {
+        let m = mapper();
+        let gates = [square("small", 100.0, 300.0), square("big", 500.0, 900.0)];
+        let hit = was_gate_clicked(pixel(&m, (500.0, 700.0)), &m, &gates);
+        assert_eq!(hit.map(|g| g.get_id()), Some(Arc::from("big")));
+        let hit = was_gate_clicked(pixel(&m, (200.0, 100.0)), &m, &gates);
+        assert_eq!(hit.map(|g| g.get_id()), Some(Arc::from("small")));
+    }
+
+    #[test]
+    fn a_click_in_empty_space_or_well_inside_selects_nothing() {
+        // Selection is by the outline, so the middle of a gate is not a hit -
+        // that is where a person clicks to start drawing a new one.
+        let m = mapper();
+        let gates = [square("small", 100.0, 300.0)];
+        assert!(was_gate_clicked(pixel(&m, (800.0, 800.0)), &m, &gates).is_none());
+        assert!(was_gate_clicked(pixel(&m, (200.0, 200.0)), &m, &gates).is_none());
+        assert!(was_gate_clicked(pixel(&m, (200.0, 100.0)), &m, &[]).is_none());
+    }
+
+    #[test]
+    fn where_two_edges_are_both_in_reach_the_nearer_wins() {
+        let m = mapper();
+        // Two squares whose left edges are 4 data units apart - both within
+        // the five-pixel tolerance of a click between them.
+        let gates = [square("a", 500.0, 900.0), square("b", 504.0, 900.0)];
+        let hit = was_gate_clicked(pixel(&m, (503.5, 700.0)), &m, &gates);
+        assert_eq!(hit.map(|g| g.get_id()), Some(Arc::from("b")));
+    }
+}

@@ -5,14 +5,18 @@ edition = "2024"
 resolver = "2"
 
 [dependencies]
-dioxus = { version = "0.7.7", features = ["router"] }
+dioxus = { version = "0.7.10", features = ["router"] }
 thiserror = "2.0.12"
-tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread", "time"] }
 anyhow = "1"
-flow-fcs = { git = "https://github.com/czarop/flow" }
-flow-plots = { git = "https://github.com/czarop/flow", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow" }
-base64 = "0.22.1"
+# Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch: flow_fcs refuses
+# damaged files instead of panicking and keeps a file's own $GUID, and
+# flow_gates' event index leaves out NaN events. Back to the default branch once
+# it is merged there.
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
+base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"
 indexmap = "2.1"
@@ -22,11 +26,33 @@ im = "15"
 uuid = { version = "1.0", features = ["v4"] }
 serde = {version = "1"}
 serde_json = "1"
-itertools = "0.14.0"
+# Where the last workspace is remembered. Already in the tree - wry and
+# tray-icon depend on it - and pinned to the same version, so this adds nothing
+# to compile.
+dirs = "6.0.0"
+itertools = "0.15.0"
 rustfft = "^6.4"
 rand = "0.10"
 rand_distr = "0.6"
+# The native file dialogs. Already in the tree, since dioxus-desktop depends on
+# it; pinned to its version and features so there is only ever one copy.
+#
+# The features are not a choice. rfd's build script refuses `gtk3` and
+# `xdg-portal` together, and dioxus-desktop requires `xdg-portal`, so that is
+# the backend whether or not it suits - and it is a separate D-Bus service that
+# a machine may not be running. `PickPath` handles that: see the note there
+# about a dialog that closes faster than a person could have closed it.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 [features]
 default = ["desktop"]
 desktop = ["dioxus/desktop"]
+
+# The application is a desktop window and cannot be built without one. Saying
+# so lets `cargo test --no-default-features` build the library and every test
+# target without GTK; without it, cargo builds the binary for the integration
+# tests and fails on `dioxus::desktop`.
+[[bin]]
+name = "clingate"
+path = "src/main.rs"
+required-features = ["desktop"]

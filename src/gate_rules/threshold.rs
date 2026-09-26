@@ -5,13 +5,17 @@
 //! The caller decides which axis and which edge, so the same solvers serve a
 //! rectangle whose left edge moves, a bisector arm, or a quadrant centre line.
 //!
-//! Two conventions, both chosen to match what the rest of the editor already
-//! does rather than to be tidy in isolation:
+//! Two conventions:
 //!
-//! - A gate admits an event when its value is **strictly greater** than the
-//!   lower edge, because that is what `filter_events_to_mask` does
-//!   (`gt(min) & lt(max)`). Counting any other way would report a fraction the
-//!   gate does not actually capture.
+//! - The solvers count an event as admitted when its value is **strictly
+//!   greater** than the edge. This is a model for choosing a position. A gate
+//!   itself holds an event on its lower or left edge - a rectangle holds all
+//!   its edges, a polygon its left and bottom sides, as `filter_events_to_mask`
+//!   and the index behind every percentage agree - and `autogate` measures
+//!   what a placed gate holds on the gate itself (`admitted_by`) and reports
+//!   and scores that. The one exception is a composite moved by a rule with no
+//!   band: it has no single count to measure, so the model's count is
+//!   reported. The two differ only for an event exactly on the line.
 //! - Values arrive in the axis's **display space** - arcsinh for a fluorescence
 //!   channel, linear for scatter. Quantiles do not care, since a monotone
 //!   transform preserves order, but an offset in data units very much does: it
@@ -115,7 +119,8 @@ fn descending(values: &[f64]) -> Result<Vec<f64>, SolveError> {
     Ok(sorted)
 }
 
-/// What a gate at `x` admits, counted the way the filter counts it.
+/// What a gate at `x` admits, by the solvers' strict model - see the module
+/// notes for how that relates to what the placed gate holds.
 fn admitted(sorted_desc: &[f64], x: f64) -> (usize, f64) {
     let n = sorted_desc.partition_point(|v| *v > x);
     (n, n as f64 / sorted_desc.len() as f64)
@@ -309,4 +314,442 @@ pub fn percentile_of_descending(sorted_desc: &[f64], percentile: f64) -> f64 {
     }
     let weight = rank - lo as f64;
     ascending(lo) * (1.0 - weight) + ascending(hi) * weight
+}
+
+/// Where a population's negative sits, and how wide it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NegativePeak {
+    /// The centre of the negative population.
+    pub centre: f64,
+    /// Its width, as a one-sigma equivalent.
+    pub spread: f64,
+    /// How many events the width was measured from - the ones below the
+    /// centre. Reported because a width read off a handful of events is not
+    /// worth the gate it places, and nothing else in the report would say so.
+    pub flank_events: usize,
+}
+
+/// Where one sigma falls *within the left flank*.
+///
+/// One standard deviation below a Gaussian's centre is its 15.87th percentile,
+/// but only the events below the centre are being looked at - half the
+/// distribution - so the same point sits at 0.1587/0.5 of that slice. Using the
+/// whole-distribution figure against half the events reaches further down the
+/// tail and reads the peak as half again as wide as it is.
+const ONE_SIGMA_IN_LEFT_FLANK: f64 = 0.1587 / 0.5;
+
+/// How wide the negative is, given where its centre sits.
+///
+/// Measured on the left flank and mirrored. The right flank runs into the
+/// positives, so anything measured across the whole peak is inflated by however
+/// many positives that sample happens to have - precisely the variation this
+/// rule exists to see past, so measuring it into the answer would defeat the
+/// point. The left flank is uncontaminated.
+fn left_flank_sigma(values: &[f64], centre: f64) -> Option<(f64, usize)> {
+    let mut below: Vec<f64> = values.iter().copied().filter(|v| *v <= centre).collect();
+    if below.len() < 2 {
+        return None;
+    }
+    below.sort_by(f64::total_cmp);
+    let at = ((below.len() as f64) * ONE_SIGMA_IN_LEFT_FLANK) as usize;
+    let sigma = centre - below[at.min(below.len() - 1)];
+    (sigma > 0.0).then_some((sigma, below.len()))
+}
+
+fn median_of(sorted: &[f64]) -> f64 {
+    sorted[sorted.len() / 2]
+}
+
+/// The negative, read from the events below a line that already roughly
+/// separates it.
+///
+/// No peak finding and no density estimate: the line does the separating, so
+/// the events below it are the negative and a plain median is its centre. That
+/// removes both of the assumptions [`negative_peak`] depends on - a bandwidth,
+/// and a bump being tall enough to count - and replaces them with one that is
+/// true by construction: the gate starts roughly right, because it came from a
+/// sample someone gated by hand.
+///
+/// `at` is how far the gate has been slid from where it sits now, so `0.0`
+/// means the gate as it stands. A single pass is enough when the gate is
+/// already where it belongs, which is the calibration case; [`refine_from`]
+/// iterates for the case where it is not.
+pub fn negative_below(shadow: &[(f64, f64)], at: f64) -> Option<NegativePeak> {
+    // `shadow` pairs each event's value with its distance from the gate's
+    // boundary at that event's own height. The gate translates rigidly, so a
+    // gate slid by `at` has exactly the events with a smaller offset in its
+    // shadow - true whether the boundary is a straight edge or a slanted one,
+    // and silent about events the gate never reached.
+    let mut below: Vec<f64> = shadow
+        .iter()
+        .filter(|(_, offset)| *offset <= at)
+        .map(|(value, _)| *value)
+        .collect();
+    if below.len() < 2 {
+        return None;
+    }
+    below.sort_by(f64::total_cmp);
+    let centre = median_of(&below);
+    let (spread, flank_events) = left_flank_sigma(&below, centre)?;
+    Some(NegativePeak {
+        centre,
+        spread,
+        flank_events,
+    })
+}
+
+/// How many passes before the answer is taken as settled.
+const REFINE_PASSES: usize = 12;
+/// The furthest a single pass may move the line, in widths of the negative.
+///
+/// Without it, a line that started far too low sees only the bottom of the
+/// negative, reads a centre that is too low, moves down, and walks off the
+/// axis. The cap makes that failure stop rather than run away.
+const MAX_STEP_IN_WIDTHS: f64 = 1.0;
+
+/// Find the negative by improving on where the line already is.
+///
+/// Each pass sees more of the negative than the last, so each correction is
+/// smaller than the one before and the line closes on its place rather than
+/// swinging past it. It stops early when a pass stops moving it, and gives up
+/// the moment a pass moves it further than the pass before - a line that is
+/// getting worse rather than better is one this cannot rescue.
+///
+/// `place` turns a centre and a width into the line's next position.
+pub fn refine_from(
+    shadow: &[(f64, f64)],
+    start: f64,
+    place: impl Fn(NegativePeak) -> f64,
+) -> Option<NegativePeak> {
+    let mut at = start;
+    let mut found = negative_below(shadow, at)?;
+    let mut last_step = f64::INFINITY;
+
+    for _ in 0..REFINE_PASSES {
+        let wanted = place(found);
+        let step = wanted - at;
+        if step.abs() < f64::EPSILON {
+            break;
+        }
+        if step.abs() > last_step {
+            // Moving further than last time means it is diverging, not settling.
+            break;
+        }
+        let capped = step.clamp(
+            -MAX_STEP_IN_WIDTHS * found.spread,
+            MAX_STEP_IN_WIDTHS * found.spread,
+        );
+        at += capped;
+        last_step = step.abs();
+        let Some(next) = negative_below(shadow, at) else {
+            break;
+        };
+        found = next;
+    }
+    Some(found)
+}
+
+/// Find the negative population: its centre, and how wide it is.
+///
+/// Two things here are deliberate and neither is the obvious choice.
+///
+/// **The centre is the leftmost prominent mode, not the tallest.** On a marker
+/// where the positives outnumber the negatives the tallest peak *is* the
+/// positive one, and a gate placed off it would sit above the population it was
+/// meant to separate.
+///
+/// **The width is measured on the left flank and mirrored.** The right flank
+/// runs into the positives, so anything measured across the whole peak - a
+/// standard deviation most of all - is inflated by however many positives that
+/// sample happens to have. That is precisely the variation this rule exists to
+/// see past, so measuring it into the answer would defeat the point. The left
+/// flank is uncontaminated: the distance from the centre down to the 16th
+/// percentile of the events below it is a one-sigma width that does not care
+/// what the positives are doing.
+pub fn negative_peak(values: &[f64]) -> Option<NegativePeak> {
+    if values.len() < 2 {
+        return None;
+    }
+    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values);
+    if !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return None;
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+        return None;
+    }
+
+    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    let centre = leftmost_prominent_mode(&xs, &density)?;
+    let (spread, flank_events) = left_flank_sigma(values, centre)?;
+
+    Some(NegativePeak {
+        centre,
+        spread,
+        flank_events,
+    })
+}
+
+/// The first mode worth calling a population.
+///
+/// A local maximum counts only if it rises to a real fraction of the tallest
+/// one; without that, noise on the shoulder of the negative reads as a peak and
+/// the answer lands wherever the grid happened to wobble.
+fn leftmost_prominent_mode(xs: &[f64], density: &[f64]) -> Option<f64> {
+    /// How tall a bump must be, against the tallest, to count.
+    const PROMINENCE: f64 = 0.25;
+
+    let tallest = density
+        .iter()
+        .copied()
+        .filter(|d| d.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !tallest.is_finite() || tallest <= 0.0 {
+        return None;
+    }
+    let floor = tallest * PROMINENCE;
+
+    for i in 1..density.len().saturating_sub(1).min(xs.len()) {
+        if density[i] >= floor && density[i] >= density[i - 1] && density[i] > density[i + 1] {
+            return Some(xs[i]);
+        }
+    }
+    // No interior peak clears the bar - a single smooth rise, say. Fall back to
+    // the tallest point rather than refusing outright.
+    Some(crate::gate_move::kde::kde_peak(xs, density))
+}
+
+// ─── the valley between two populations ──────────────────────────────────────
+
+/// The dip between the negative and whatever sits above it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Valley {
+    /// Where the negative's own peak sits.
+    pub peak: f64,
+    /// The lowest point between that peak and the next one - the boundary a
+    /// person reads off a contour plot.
+    pub bottom: f64,
+    /// How deep the dip is, as a fraction of the lower of the two peaks either
+    /// side of it. Zero is no dip at all; one is a valley reaching the floor.
+    ///
+    /// Reported rather than thresholded here, because how shallow a valley may
+    /// be and still be gated is the caller's judgement, not this function's.
+    pub depth: f64,
+}
+
+/// A dip this shallow is noise on a shoulder rather than a boundary.
+const VALLEY_FLOOR: f64 = 0.02;
+/// How tall the far side of a dip must be, against the tallest peak, to count
+/// as a population rather than a wobble in the tail.
+///
+/// Without this the depth measure is worst exactly where it matters. Depth is
+/// read against the lower of the two flanking peaks, and out in a sparse tail
+/// that height is nearly zero - so a ripple of no consequence reads as a dip
+/// 15% to 29% deep and puts the gate far out in empty data. That is the very
+/// failure the rule exists to avoid, arriving by a different route.
+///
+/// Five percent admits a positive population a few percent the size of the
+/// negative while excluding tail noise. Below that a valley is not visible
+/// anyway, and above-the-negative is the rule for those.
+const FAR_SIDE_PROMINENCE: f64 = 0.05;
+
+/// Find the first real dip to the right of the negative's peak.
+///
+/// This is a different question from [`negative_peak`], and the reason for
+/// having both. That one measures the negative's centre and width and leaves
+/// the caller to work out where the boundary must be - which means multiplying
+/// a width, and a width read from a population that has merged with its
+/// neighbour is multiplied too. Across a real panel that turned a negative
+/// measured 2.47 times too wide into a gate six widths past where it belonged.
+///
+/// This reads the boundary directly. Nothing is extrapolated, so nothing is
+/// amplified, and a valley that is a fifth as deep as the reference's still has
+/// a lowest point in the right place.
+///
+/// `smoothing` scales the bandwidth. Below 1 finds shallower dips and more
+/// noise; above 1 smooths shallow ones away. It is exposed because which of
+/// those is wanted depends on the marker, and no automatic rule knows that.
+pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> {
+    if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
+        return Err(NoValley::NoPopulation);
+    }
+    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values) * smoothing;
+    if !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return Err(NoValley::NoPopulation);
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+        return Err(NoValley::NoPopulation);
+    }
+    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    // The density alone does not know how many events made it; this does.
+    let events = values.iter().filter(|v| v.is_finite()).count();
+    valley_in(&xs, &density).map_err(|why| match why {
+        NoValley::OnlyOnePeak { peak, .. } => NoValley::OnlyOnePeak {
+            peak,
+            events: Some(events),
+        },
+        other => other,
+    })
+}
+
+/// Why no boundary was found, in enough detail to tell the cases apart.
+///
+/// A bare "no valley" sent two rounds of debugging chasing the wrong thing.
+/// What the density actually looked like is the whole diagnosis, so it is
+/// carried out rather than discarded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NoValley {
+    /// Nothing here that could be a population at all.
+    NoPopulation,
+    /// One peak and then a decline that never rises again - a smear, or two
+    /// populations that have merged into one hump.
+    ///
+    /// `events` is how many events the density was read from, when that is
+    /// known: [`first_valley`] knows, [`valley_in`] - handed a density alone -
+    /// does not. It was a bare count that every construction set to 0, so the
+    /// report said "over 0 events" whatever the population (B-THR-1).
+    OnlyOnePeak { peak: f64, events: Option<usize> },
+    /// Dips exist, but none is a boundary: too shallow to be anything but
+    /// noise, or out in a tail where there is no population on the far side.
+    NothingDeepEnough {
+        peak: f64,
+        /// The best dip found, and how deep it was.
+        best_at: f64,
+        best_depth: f64,
+        /// The far side of that dip, against the tallest peak. A tiny figure
+        /// means the dip was in a tail rather than between two populations.
+        far_side: f64,
+    },
+}
+
+impl std::fmt::Display for NoValley {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoValley::NoPopulation => {
+                write!(f, "there is no population here to find a boundary in")
+            }
+            NoValley::OnlyOnePeak { peak, events } => {
+                write!(f, "one peak at {peak:.3}")?;
+                if let Some(events) = events {
+                    write!(f, " over {events} events")?;
+                }
+                write!(
+                    f,
+                    " and no second population after it - a smear, or two that have merged"
+                )
+            }
+            NoValley::NothingDeepEnough {
+                peak,
+                best_at,
+                best_depth,
+                far_side,
+            } => write!(
+                f,
+                "peak at {peak:.3}, but the best dip ({best_at:.3}) is only {:.1}% deep with a far \
+                 side {:.1}% of the tallest - not a boundary between two populations",
+                best_depth * 100.0,
+                far_side * 100.0
+            ),
+        }
+    }
+}
+
+/// The valley-finding itself, over a density already computed.
+///
+/// Split out so it can be exercised on a density built by hand, where the
+/// answer is known, rather than only through a kernel estimate.
+pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
+    let n = density.len().min(xs.len());
+    if n < 3 {
+        return Err(NoValley::NoPopulation);
+    }
+    let tallest = density[..n]
+        .iter()
+        .copied()
+        .filter(|d| d.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !tallest.is_finite() || tallest <= 0.0 {
+        return Err(NoValley::NoPopulation);
+    }
+
+    // The negative: the leftmost bump tall enough to be a population rather
+    // than a wobble. The same bar `negative_peak` uses, so the two agree about
+    // which peak is the negative.
+    const PROMINENCE: f64 = 0.25;
+    let floor = tallest * PROMINENCE;
+    let Some(left) = (1..n - 1).find(|&i| {
+        density[i] >= floor && density[i] >= density[i - 1] && density[i] > density[i + 1]
+    }) else {
+        return Err(NoValley::NoPopulation);
+    };
+
+    // Walk right: down into a dip, then up to whatever is on the far side. The
+    // first dip with a real population after it is the boundary.
+    let mut i = left;
+    let mut best: Option<(f64, f64, f64)> = None;
+    while i < n - 1 {
+        // Descend to the bottom of this dip.
+        let mut bottom = i;
+        while bottom < n - 1 && density[bottom + 1] <= density[bottom] {
+            bottom += 1;
+        }
+        if bottom >= n - 1 {
+            // It fell away to the end of the data without rising again, so
+            // there is no population on the other side and no boundary here.
+            return Err(match best {
+                Some((best_at, best_depth, far_side)) => NoValley::NothingDeepEnough {
+                    peak: xs[left],
+                    best_at,
+                    best_depth,
+                    far_side,
+                },
+                None => NoValley::OnlyOnePeak {
+                    peak: xs[left],
+                    events: None,
+                },
+            });
+        }
+        // Climb the far side to its summit.
+        let mut right = bottom;
+        while right < n - 1 && density[right + 1] >= density[right] {
+            right += 1;
+        }
+
+        let flanking = density[left].min(density[right]);
+        let depth = if flanking > 0.0 {
+            (flanking - density[bottom]) / flanking
+        } else {
+            0.0
+        };
+        let far_side = density[right] / tallest;
+        if best.is_none_or(|(_, d, _)| depth > d) {
+            best = Some((xs[bottom], depth, far_side));
+        }
+        if depth >= VALLEY_FLOOR && density[right] >= tallest * FAR_SIDE_PROMINENCE {
+            return Ok(Valley {
+                peak: xs[left],
+                bottom: xs[bottom],
+                depth,
+            });
+        }
+        if right <= i {
+            break;
+        }
+        i = right;
+    }
+    Err(match best {
+        Some((best_at, best_depth, far_side)) => NoValley::NothingDeepEnough {
+            peak: xs[left],
+            best_at,
+            best_depth,
+            far_side,
+        },
+        None => NoValley::OnlyOnePeak {
+            peak: xs[left],
+            events: None,
+        },
+    })
 }

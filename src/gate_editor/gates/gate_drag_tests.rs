@@ -43,7 +43,11 @@ fn a_continued_drag_reports_the_incremental_movement() {
     let first = GateDragData::new(id(), (0.0, 0.0), (2.0, 2.0));
     let second = GateDragData::clone_from_data((5.0, 6.0), first);
 
-    assert_eq!(second.start_loc(), (2.0, 2.0), "the old current becomes the new start");
+    assert_eq!(
+        second.start_loc(),
+        (2.0, 2.0),
+        "the old current becomes the new start"
+    );
     assert_eq!(second.current_loc(), (5.0, 6.0));
     assert_eq!(second.offset(), (-3.0, -4.0), "increment, not total");
 }
@@ -71,7 +75,11 @@ fn a_point_drag_keeps_its_index_as_the_location_moves() {
     let first = PointDragData::new(2, (1.0, 1.0));
     let moved = PointDragData::clone_from_data((9.0, 9.0), first);
 
-    assert_eq!(moved.point_index(), 2, "the vertex being dragged does not change");
+    assert_eq!(
+        moved.point_index(),
+        2,
+        "the vertex being dragged does not change"
+    );
     assert_eq!(moved.loc(), (9.0, 9.0));
 }
 
@@ -113,7 +121,11 @@ fn rotating_the_other_way_flips_the_sign() {
 #[test]
 fn a_half_turn_is_a_hundred_and_eighty_degrees() {
     let r = rotation((1.0, 0.0), (-1.0, 0.0));
-    assert!((r.rotation_deg().abs() - 180.0).abs() < 1e-3, "got {}", r.rotation_deg());
+    assert!(
+        (r.rotation_deg().abs() - 180.0).abs() < 1e-3,
+        "got {}",
+        r.rotation_deg()
+    );
 }
 
 /// Rotation is about the pivot, so the distance from it is irrelevant - only the
@@ -131,7 +143,11 @@ fn rotation_is_measured_about_the_given_pivot() {
     // Pivot at (10, 10); start due east of it, end due north of it.
     let r = RotationData::new(id(), (10.0, 10.0), (11.0, 10.0), (10.0, 11.0));
 
-    assert!((r.rotation_deg() - -90.0).abs() < 1e-3, "got {}", r.rotation_deg());
+    assert!(
+        (r.rotation_deg() - -90.0).abs() < 1e-3,
+        "got {}",
+        r.rotation_deg()
+    );
     assert_eq!(r.pivot_point(), (10.0, 10.0));
 }
 
@@ -152,7 +168,8 @@ fn a_continued_rotation_rebases_onto_the_previous_position() {
 fn cloning_with_a_point_preserves_the_drag_variant() {
     let point = GateDragType::Point(PointDragData::new(1, (0.0, 0.0)));
     let gate = GateDragType::Gate(GateDragData::new(id(), (0.0, 0.0), (0.0, 0.0)));
-    let rotate = GateDragType::Rotation(RotationData::new(id(), (0.0, 0.0), (1.0, 0.0), (1.0, 0.0)));
+    let rotate =
+        GateDragType::Rotation(RotationData::new(id(), (0.0, 0.0), (1.0, 0.0), (1.0, 0.0)));
 
     assert!(matches!(
         point.clone_with_point((5.0, 5.0)),

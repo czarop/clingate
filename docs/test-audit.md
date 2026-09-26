@@ -1,0 +1,563 @@
+# Test audit
+
+A file-by-file pass over the test suite: tests that could not fail, code with
+no test, bugs found on the way, and where each module reaches into another -
+the seams the integration tests in the second pass are written against.
+
+## Conventions
+
+- **A known bug is a failing test, marked `#[ignore]`.** The reason names the
+  bug's id below: `#[ignore = "known bug B-KDE-1: ..."]`. `cargo test` stays
+  green; `cargo test -- --ignored` runs every known bug, and every one of them
+  should fail. One that passes has been fixed - delete its `#[ignore]` and
+  move its entry to *Fixed*. (Doctests are the exception: rustdoc never runs
+  a block marked `ignore`, even under `--ignored`, and reports it as passing.
+  None is marked so today.)
+- **A vacuous test** is one that cannot fail whatever the code does: no
+  assertion, an assertion that always holds, or an early `return` that turns a
+  missing input into a pass. Each one found is listed with what was done.
+- Tests that need a real file (`OMIQ_GATING_FILE`, `CLINGATE_FCS_DIR` and the
+  like) skip when the variable is unset. That is deliberate and listed here so
+  nobody mistakes a green run for coverage of them.
+
+## Where things stand
+
+- **1,163 unit tests and 38 integration tests pass**, plus 12 doctests.
+- **4 known-bug tests (3 bugs) are pinned as failing tests** (`#[ignore]`d
+  with their id); all of them fail today. B-AUTO-1 is left as it is by
+  decision and flagged; B-KDE-2 and B-KDE-3, in the shift classifier the app
+  does not call, each need a decision about method, set out in their rows.
+  Every other bug found has been fixed - B-RULE-1 by removing the setting,
+  and B-FCS-1, B-FCS-2, B-FCS-3 and B-IDX-1 in `czarop/flow` on the branch
+  `claude/fcs-errors-not-panics`, which `Cargo.toml` pins until it is merged
+  there. B-STAT-1 is kept by decision.
+- **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
+  printed their results and passed whatever happened (40 now assert, one
+  loop over the others deleted), and one FCS equality test that discarded
+  its answer. 15 more that asserted only that *something* was returned, or
+  that an edit was refused, now assert what came back and that a refused
+  edit changed nothing.
+
+Run everything without GTK:
+
+    cargo test --no-default-features                          # the suite
+    cargo test --no-default-features --no-fail-fast -- --ignored   # the known bugs: every one should fail
+
+The table is ordered by severity. The **High** entries change what a
+person sees or gates without saying so, or crash the app, and are the ones
+to fix first.
+
+## Summary of bugs
+
+| Id | Where | What | Severity |
+|---|---|---|---|
+| B-AUTO-1 | `gate_rules::rule::AboveTheNegativeRule` with the default `NegativeFinder::BelowTheGate` (`threshold::refine_from`) | Refines from where the gate sits on the sample - the reference's position. A negative that drifted past it (300 -> 600 in the test) is seen only from below, read low, and the gate settles at 584, inside the negative: 69% of the sample admitted against 10% on the reference, **scored 0.87**, so a run ranks it as needing no review. The `NegativePeak` finder follows the same drift to 800. **Left as it is, by decision:** the refinement is right in most situations, and changing it risks those; flagged here so a gate placed this way is checked by eye | **High** - confidently wrong gating |
+| B-KDE-2 | `gate_move::kde_shift::analyse_population_shift` | A widened negative's KDE peak moves by noise (0.127) past the 0.1 significance threshold; the same scenario is `CompensationIssue` on X and `Ambiguous` on Y | Low - not called by the app. **Needs a decision:** the 0.1 significance threshold is fixed, and the peak of a wide population (sd 0.35, 3,000 events) cannot be located more closely than about that - even found on a density smoothed for each sample it lands 0.10 off. Fixing it means choosing a threshold scaled to how precisely the peak can be located, or a steadier estimate of the centre than the highest point of the curve. The x-axis case passes only because its test is held to a looser tolerance |
+| B-KDE-3 | `gate_move::kde_shift::compute_smear_score` | Entropy term is normalised by `ln(grid points)`: a tight cluster scores ~0.35-0.49, never near its documented 0, the score changes with the grid, and the peak/median blend it drives follows noise for a smear | Low - not called by the app. **Needs a decision:** making the entropy term grid-independent (the density's effective width as a share of the axis) gives the documented ends and passes its own test - but a smear covering a quarter of the axis then scores lower, and the end-to-end smear test gets worse (x 0.23 -> 0.10 against 0.4). The question is what a smear is: flat relative to the axis, as documented, or flat wherever it lies. Reverted until that is decided |
+| B-FCS-2 (fixed, in flow) | `file_load::FcsSampleStub::open`, flow_fcs `Fcs::open` | A file whose data could not be read - one digit of the header's data offset damaged - was accepted by the workspace, and reading its events failed an assertion inside flow_fcs; a rules run reads files in parallel, so that one panic ended the whole run. Fixed in `czarop/flow` (branch `claude/fcs-errors-not-panics`): `Fcs::locate_events` finds exactly the `$TOT` events' bytes and refuses what it cannot place, and `Fcs::open` answers with an error, never a panic. Where the header and `$BEGINDATA`/`$ENDDATA` disagree it uses whichever places exactly `$TOT` events, so a damaged header offset over intact keywords now reads correctly; where neither does, the file is refused. The workspace calls the same `locate_events`, so such a file is refused when the workspace opens; in a run it is reported and every other file still placed | - |
+| B-FCS-3 (fixed, in flow) | flow_fcs `Header::from_mmap`, `Metadata::from_mmap`, `Fcs::open` | Sliced by the header's offsets without checking them: truncated or damaged files panicked. Fixed in `czarop/flow`: every slice is bounds-checked, `Header::from_mmap` refuses a TEXT segment outside the file, the count assertions are errors, sizes are overflow-checked. clingate's own copies of those checks in `FcsSampleStub::open` are gone. The fuzz of 600 damaged files passes | - |
+| B-FCS-1 (fixed, in flow) | flow_fcs `Metadata::validate_guid` | Looked for `GUID` among keywords stored as `$GUID`, never found it, and wrote a random `$GUID` over the file's own. Fixed in `czarop/flow`: a file keeps its `$GUID` and only one without is given one; concatenation, a new dataset, gets a new one (`assign_new_guid`). Note: `FcsSampleStub` compares files by `$GUID` (the original design), so two copies of one acquisition now compare equal where before no two files ever did | - |
+| B-IDX-1 (fixed, in flow) | flow_gates `EventIndex::build` | Panicked on an event with a NaN value (`rstar`'s bulk load); a plot holding one showed no percentages. Fixed in `czarop/flow`: events with a NaN or infinite coordinate are left out of the tree - no gate can hold them, as the filter agrees - and still count in `len()` | - |
+| B-DOC-1 (fixed) | `GateState::link_node_to_gate` / `link_composite` | Linking - pointing a position at another gate so the two share it, Omiq's linked gate - kept the gate it replaced registered "since a boolean may still reference it", whether one did or not; such gates accumulated until the next delete and were exported as containers on no plot. Added with linking by an earlier session (commit 12f8239, 14 Sep), not in the original code. Fixed: a link runs the same sweep a delete does (`collect_stranded_ghosts`), after every corner for a composite - a gate a boolean still reaches is kept, anything else is collected. The document fuzzer no longer sweeps after a link itself | - |
+| B-OMIQ-1 (fixed) | `omiq::deserialise` (`labelLoc`) | Omiq writes `"labelLoc": {}` for a label not yet placed; `Point` read a missing coordinate as 0, so it came in as (0, 0) and went back out as an explicit `{"f1Val": 0, "f2Val": 0}`. Fixed: `{}`, `null` or no key reads as no position, and no position is written as `{}`, as Omiq writes it | - |
+| B-THR-1 (fixed) | `gate_rules::threshold::valley_in` / `first_valley` | `NoValley::OnlyOnePeak { events }` was always built with `events: 0`, so the refusal said "one peak ... over 0 events". Fixed: `events` is an `Option` - `first_valley`, which has the values, fills in how many finite ones the density was read from; `valley_in`, handed a density alone, says it does not know, and the message quotes a count only when there is one | - |
+| B-HIER-1 (fixed) | `gate_hierarchy::GateHierarchy::clone_subtree` | Both branches after `add_child` returned `Err`, so cloning any subtree with a child failed. Fixed: each error is reported only when it happens; the copied root is a root of the new tree with its order, so a lone gate clones to itself; a gate not in the tree is an error, as documented. Its doctest now runs | - |
+| B-HIER-3 (fixed) | `gate_hierarchy::GateHierarchy::reparent_subtree` | Refused moving a gate that was already below the new parent, calling it a cycle. The check is gone; the real one - a gate under itself or its own descendant - stays, in `reparent` | - |
+| B-WS-1 (fixed) | `workspace::program_name` | "Outside the workspace" was decided by `strip_prefix`, which does not resolve `..`. Both paths are now resolved lexically first - `.` dropped, `..` taking the folder before it, the disk not consulted - so `/w/../elsewhere/A1.fcs` keeps its own name and `/w/Plate_1/../Plate_2/A1.fcs` is `Plate_2_A1.fcs` | - |
+| B-RS-1 (fixed) | `gate_rules::rule_store::human_order` | Called distinct names equal (`D02`/`D2`, `a1`/`A1`), so sorted lists kept the order a hash map gave. Names that read alike are now put in the order of their exact text: the natural order is unchanged and only a name equals itself. `case_does_not_split_the_ordering` asserted the old equality and now checks what its name says | - |
+| B-KDE-1 (fixed) | `gate_move::kde::kde_negative_shift` | The negative's width was the std-dev of everything below the axis midpoint, so a smeared positive read as a widened negative. It is now read off the negative's own peak: full width at half height as a standard deviation, the kernel's share taken out - 0.92 to 0.99 of the true spread, and unmoved by a smear | - |
+| B-GRID-1 (fixed) | `DensityGrid::from_column` | A NaN coordinate was cast to cell 0 and counted; events with a coordinate that is not a finite number are now left out | - |
+| B-GRID-2 (fixed) | `DensityGrid::from_column` | `unwrap`ped `.f64()`, so a Float32 column (FCS data) panicked. Any numeric column is read; a column that is not numbers is an error, and `from_column` returns a `Result` | - |
+| B-GRID-3 (fixed) | `gate_move::density_grid::apply_constraints` | Capping a move scaled `dx_data`/`dy_data` but not the bin counts; they are scaled with it, to the nearest bin | - |
+| B-GRID-4 (fixed) | `gate_move::density_grid::gaussian_blur` | `sigma = 0` gave a NaN kernel and a NaN grid; a sigma of 0 or less, or not a number, is now no blur | - |
+| B-GRID-5 (fixed) | `gate_move::density_grid::calculate_dynamic_radii` | The noise guard compared a spread measured on the lower half of the axis with 25% of the whole axis, and only on X, so it could not fire. It now compares with 25% of the window it measured, on both axes: uniform scatter over the window has a spread of about 29% of it | - |
+| B-STAT-1 (kept, by decision) | `gate_stats::get_percent_and_counts_gate` | `count / parent * 100`: a gate over an empty parent shows NaN%. Kept on purpose - it tells "no events to gate" apart from "none of the events are in the gate", which shows 0%. Both are pinned (`a_gate_over_an_empty_parent_shows_nan_and_an_empty_gate_shows_zero`) | - |
+| B-PHEN-1 (fixed) | `gate_rules::phenotype::Baseline::of` | Non-finite values were not dropped: the first median was sorted with NaN in it (by a comparator that is not an order) and landed on one, so the baseline came back `median: NaN` and the marker was disabled for the match. Fixed: NaN and infinite values are left out, exactly - the baseline is the one of the finite values alone; a marker with none reads as an empty one | - |
+| B-CONF-1 (fixed) | `gate_rules::confidence::Component::new` / `Confidence::from_components` | `NaN.clamp(0, 1)` is NaN, and the `f64::min` fold passed over it: an unmeasurable component left the overall score untouched, ranking the gate as trustworthy. Fixed: a component that could not be measured scores 0 and its detail says so ("could not be measured: ..."); the overall also counts a NaN put straight into the public field as 0 | - |
+| B-CONF-2 (fixed) | `gate_rules::confidence::displacement_score` | Divided by `displacement_limit`, read from the rules file, without the guard `stability_score` has; 0 scored an unmoved gate as NaN. Fixed: a limit of 0 or below means no move is tolerated - an unmoved gate scores 1, any move 0 | - |
+| B-RULE-1 (fixed, by removal) | `gate_rules::rule::ValleyRule::min_depth_fraction` | Edited in the Gate Rules tab and saved, but read nowhere: it used to refuse a placement whose dip was shallower than this fraction of the reference's, and when refusing gave way to placing and scoring by the depth ratio (commit a045937) the setting was left behind. Removed from the rule, the tab and the tests; a rules file that still has it loads as the same rule, the value ignored (pinned) | - |
+| B-CNT-1 (fixed) | `gate_filtering::filter_events_to_mask` vs `gate_stats` (`EventIndex`) | The filter - the population a gate's children are drawn on, gated from, and positioned against by a rules run - admitted an event only strictly inside a rectangle, while the index behind the percentage on the gate counts one on the edge (240 vs 246 in the test, the six edge events); and its ellipse test was an equivalent formula that rounded differently, so events on or next to an ellipse's boundary fell either way (both directions seen on whole-number data). Whole-hierarchy percentages matched Omiq because on decimal data an event almost never sits exactly on an edge. Fixed: every shape decides membership exactly as the index does - rectangles hold their edges, the ellipse uses the index's own formula, and polygons call the index's `point_in_polygon` rather than a copy of it (the copy agreed in every case tried, but nothing held it to). New tests compare the two event by event with events placed on every corner, side and boundary of every gate type, and over 150 random gates on whole-number data. The rules' one-dimensional solver model still counts strictly; what a placed gate holds is measured on the gate, so it only shows through for a composite moved by a rule with no band, and only for an event exactly on the line | - |
+| B-HIER-2 (fixed) | `gate_hierarchy::GateHierarchy::would_create_cycle` (used by `add_child`, `add_gate_child`, `reparent`, `delete_node_keep_children`) | Checked only whether the parent was among the child's descendants; a gate is not its own, so a gate could be made its own parent - directly, or by deleting a gate and handing its children to one of them - and `get_ancestors` then looped forever. Fixed: a gate as its own parent is refused, as is handing a deleted gate's children to the gate being deleted. The random edit sequences now include both | - |
+| B-META-1 (fixed) | `omiq::metadata::parse_metadata_csv` | A row with no id or file name was skipped when ids were collected, but metadata was then read by position in the shortened list: every later file got the previous row's metadata, so its group - and the gates it was given - were wrong. Fixed: each row is read whole - id, file name and metadata together. A row with no id or no file name is left out and reported (`ParsedMetaData::skipped`), by row number and whichever of the two it has, as a warning when the metadata loads; an entirely empty row is passed over. Two rows with one id are refused, naming both. A file name on two rows - Omiq allows two plates' `A1.fcs`, told apart by id - keeps both rows under their ids but ties no file on disk to either, with a warning (`ParsedMetaData::shared_names`); it used to go to whichever row came last, silently | - |
+| B-AX-4 (fixed) | quadrant / skewed quadrant `recalculate_gate_for_rescaled_axis`, `recalculate_gate_for_new_axis_limits`, `DataPoints::new_from_data_center`, `draw_self` | A cofactor change or a new axis range clamped the stored centre (and a skewed quadrant's skew handles) into the middle 80% of the new axis - a margin meant to keep the centre handle grabbable, applied to the gate itself - and snapped the arm ends to the new edges, turning a slanted arm; the Omiq import clamped a centre beyond the axes onto them. A centre in the outer 10% at either end moved: on a cofactor-6000 axis from -1,000 to 262,144 any split below raw ~1,813 or above ~164,854; 120-264 of 2,784 events changed quarter on a cofactor change, up to 1,104 on a narrowed range. Fixed: a rescale carries every point through raw data with nothing clamped or snapped; a range change moves only where the arms end, along their own lines (`gate_composite::arm_to_edge`); the import keeps the file's centre. Where the lines are drawn follows from the centre and the arms' directions, clipped to the plot, and a centre off the plot has its handle drawn at the nearest point of it (`drawn_centre`); picking a line up follows the drawing. The margin is still applied when a person places or drags a centre. Both known-bug tests pass, and a sweep over seven positions, three kinds of quadrant and seven changes of axis moves no event | - |
+| B-AX-1 (fixed) | the editor's axis boxes (`main_window`), `AxisInfo::edited`, `gate_composite::usable_range` | An upper limit typed below the lower one (or a cofactor below 1, or something that is not a number) went into the store and then into every quadrant on the axis, whose `f32::clamp` panicked: the app crashed. Fixed: an edit is checked first (`AxisInfo::edited`), and a refused one raises a warning and the box goes back to the value it had; the quadrant relimit and rescale also refuse an unusable range with an error, as a second line | - |
+| B-AX-2 (fixed) | the editor's axis boxes | Every keystroke was applied, so typing 400000 applied 4, 40, 400 ... and each clamped the quadrants into that range. Fixed: the boxes (`CommittedNumber`) apply a number on Enter or on leaving the box. A deliberate narrowing moved quadrants too, until B-AX-4 was fixed | - |
+| B-AX-3 (fixed) | `read_axis_configs`, `carry_to_scaling`, `GateState::upload_gates_from_file` | A scaling file with a Min not below its Max, or a cofactor of 0 or less, crashed the app when loaded, and a gating file imported over such a scaling crashed too. Fixed: the file is refused, naming every unusable channel and why, with a warning and nothing changed; the replace and the gating import each refuse an unusable axis again rather than panic | - |
+| B-SCALE-1 (fixed) | `plots::axis_store::read_axis_configs` | Columns were read by position under a fixed schema, so a reordered export read the wrong columns and one with a column missing read shifted values. Fixed: columns are found by their header names; a file missing one is refused, naming it. Numbers are read as decimals, so a cofactor of 150.5 no longer refuses the whole file | - |
+| B-OMIQ-2 (fixed) | `GateState::upload_gates_from_file` (the depth sort) | A gating file in which a node is its own parent - or two are each other's - hung the import. Such a tree is never legitimate: Omiq writes a tree, and a node cannot be its own ancestor. Fixed: the depth walk notices a node it has already seen and refuses the file as damaged, naming the node, with a warning | - |
+| B-UI-1 (fixed) | `pairing_controls` (Sample ID, Sample type, Sort by) and the rules form's file pickers | Found by driving the app: the Sample type box read "SampleID" while the pairing used SampleType. Those selects are given their `value` before their options - which arrive with the metadata - exist, and a select given a value it has no option for shows its first option. The gate and parameter pickers already marked the chosen option `selected` for exactly this reason; these now do too. Checked in the running app | - |
+| B-PAIR-1 (fixed) | `plots::sample_pairs`, the editor (`main_window`) and the gallery (`gallery::window`, and so its PDF) | A specimen got one slot per plot-order type, filled by the first file of that type, and both screens showed two slots: a second file of one type (a re-acquired tube), a third type in the plot order, and a third file of an untyped specimen were listed but never drawn anywhere. Fixed. The editor always shows the selected file (`sample_pairs::shown`): the first plot keeps the specimen's left-hand file, and the second shows the selected file or, where the specimen has more than one other file, whichever is picked in a selector above it. That choice is remembered by type and place among that type (`SecondChoice`), so stepping to the next specimen shows its file of the same kind (`landing`). The gallery gives a specimen's further files rows of their own, "D1 (2)", under the column of their type (`gallery_rows`). Tested: every file of 400 random folders is drawn when selected and exactly once in the gallery | - |
+| B-PDF-1 (fixed) | `gallery::export::contact_sheet`, `gallery::pdf` | A paired file that failed to render, or had no metadata row, left an empty slot printed "no paired file", and the export reported success. Fixed: a slot is one of three things (`pdf::Cell`: no file, drawn, failed with a reason); a failed one is framed like a plot, names the file and gives the reason, wrapped to fit ("no metadata for this file", in the gallery's own words, or the render error); the export's message says which plots could not be drawn and why. `a_plot_that_fails_to_render_is_not_called_a_missing_file` now passes | - |
+| B-GRP-2 (fixed) | `GateSubStore::position_for`, used by `get_current_sample` and `gate_for_file` | A file's own position beat its group's whatever their ages, so a rules run - which positions whole specimens - was hidden from any file that had an older position of its own, while the report said it was positioned (815.7 reported, drawn at 450). Fixed: per-sample writes are numbered on the same count as per-group ones (`set_sample_position`), and a file takes whichever was written last - a run beats an older adjustment on one sample, a later adjustment beats the run. `a_file_the_run_reports_positioned_is_drawn_where_it_was_put` now passes | - |
+| B-GRP-1 (fixed) | `GateState::get_current_sample` and `gate_for_file` (group tier), fed by `omiq::deserialise` and `autogate::place_for_specimen` | A gate holding per-group positions under two metadata columns - the file's `md` column and the pairing's sample id column, or two sample id columns either side of a change in the pairing controls - gave a sample whichever column its metadata hash map yielded first, so a run's answer could be silently ignored. Fixed: every per-group write is numbered (`GateSubStore::set_group_position`), and a file takes the newest position that applies to it (`newest_group_position`); an older position still holds for files nothing newer covers. The export names a grouping column only if grouping by it gives every file the position the session gives it (`serialise::grouping_column`), trying columns newest first, and otherwise writes the positions file by file, which read back exactly. `a_position_placed_under_another_column_is_the_one_its_samples_get` now passes both ways round; new tests cover the rule and a save that the old export got wrong | - |
+| B-RUN-1 (fixed) | `gate_rules_window` (the Solve and apply button's task) | A run finishing after the gating file, metadata or scaling was replaced wrote its placements into the new document. Fixed two ways. `use_stop_run_on_change` raises the run's stop flag the moment the gating, files, metadata, scaling or rules change, so it stops at the next file. And before writing, the run compares everything it read with what is there now (`RunInputs`, and `GateState::unchanged_since` for the gates) and writes nothing if any of it differs, whatever the flag says - an effect runs after the change that fires it, and a run can finish first. Selecting a gate or showing another file is not a change; `match_gates_to_plot`, which runs on every change of file, no longer writes the store when it has nothing to write. Tested with the real hook in a headless `VirtualDom`: each kind of change stops a run, the two non-changes do not, and each of those two tests fails if its half of the fix is undone | - |
+| B-NAV-1 (fixed) | `plots::sample_pairs::step_from` (the editor's Previous / Next) | Landed on the arrived-at specimen's *left* file; a specimen with no FMO keeps its left side empty, so nothing was selected and the buttons could not get past it. Fixed: it lands on the first file the specimen shows. `next_steps_onto_a_specimen_with_no_fmo` now passes, and a new test steps both ways through 300 random folders and visits every specimen | - |
+| B-BUILD-1 (fixed) | `Cargo.toml` | The binary needs `dioxus::desktop`, so `cargo test --no-default-features` - documented as the way to test without GTK - failed building it for any target but `--lib`. Fixed: `required-features = ["desktop"]` on the `[[bin]]` | - |
+## Modules
+
+### gate_move
+
+**Reach.** Only `kde::kde_1d`, `kde::kde_peak` and `kde::silverman_bandwidth`
+are called from outside the module - by `gate_rules::threshold`. Everything
+else (`density_grid`, `kde_negative_shift`, `analyse_population_shift`) is
+exploratory code with no caller in the application, so its bugs are latent.
+
+**Vacuous tests found and repaired (41).**
+
+- `density_grid::flow_tests` - 9 scenario tests printed their translation and
+  passed whether it was right, wrong or an `Err`. `run` now asserts the shift to
+  within one bin (the correlation has no sub-bin refinement: 0.3 comes back as
+  0.2578, three bins of 0.086) and a finite, positive peak.
+- `kde::flow_tests` - 9 scenario tests, the same. `run` now asserts the peak
+  shift and which axes are flagged as widened; one exposed B-KDE-1.
+- `kde_shift::flow_tests_kde_shift` - its first 9 tests were verbatim copies of
+  the `kde.rs` ones and never called this file's `analyse_population_shift`.
+  They now do, asserting the negative shift, the positive shift (or its
+  absence) and the `DriftType`; one exposed B-KDE-2. `DriftType` gained
+  `Debug, Clone, Copy, PartialEq, Eq` to be compared.
+- `kde_shift::extended_flow_tests` - 13 scenario tests printed only; they now
+  assert the same way. One exposed B-KDE-3.
+- `kde_shift::test_all_scenarios` looped over the first nine scenarios and
+  printed; deleted, as the nine now assert individually.
+
+**Added.** Tests for `gaussian_blur` (mass and symmetry), `make_gaussian_kernel`,
+`find_lower_quadrant_peak`, `isolate_peak_elliptical`, half-open binning,
+infinite events, `compute_negative_shift` (follows the negative, not the
+positive; errors with no negative), `compute_total_shift` (recovers a
+translation; an empty test is an error), `kde_negative_shift` errors,
+`quantile`, `extract_region`.
+
+### file_load, workspace, searchable_select
+
+**Reach.** `FcsFiles` is built by the Workspace tab
+(`gate_editor::workspace_window`) and read by every tab through the
+`Shell` context: the sample list and plots (`main_window`, `plot_window`),
+the pairing (`pairing_controls`), the gallery, and the rules window's
+`files_to_read`. `program_name` is the join key for the metadata
+(`omiq::metadata::file_name_to_gating_id`), so a file's program name must be
+what the metadata's file-name column says. `Remembered` is written by
+`workspace_window::remember` and read on start-up.
+
+**Vacuous test found and repaired (1).**
+`comparing_two_files_does_not_need_a_guid` did `let _ = a == b;` - it
+compared two different files and discarded the answer. It now asserts they
+are unequal. Writing the tests beside it found B-FCS-1.
+
+**Added.** The FCS fixture takes channels, labels and extra keywords
+(`write_fcs_with`). Tests for the extension check (any case; `.txt` and none
+refused), a missing file, the program name vs the file's own, the transform
+chosen per channel (scatter and `Time` linear, the rest the default), labels
+falling back to the channel name, case-insensitive `find_parameter` and
+`find_mutable_parameter`, keyword lookup across keyword types, GUID
+equality. In the workspace: `Found::one` for several candidates,
+`Remembered::is_empty`, a corrupt or older remembered file, a failed file
+being retried when added again, a name clash reported once, only `.fcs`
+collected from sub-folders.
+
+`searchable_select`'s three copies of the search filter are one tested
+predicate, `matches_search`.
+
+### omiq
+
+**Reach.** `deserialise` is driven by `GateState::upload_gates_from_file`
+(`gate_editor::gates::gate_store`), which builds every drawable gate, the
+node tree, the per-group overrides keyed by `MetaDataKey`, and the
+`OmiqRebuildStore` (`rebuild`) the export needs. It reads the axis settings
+(`AxisStore`) for composite ranges and infinite bounds. `serialise` is driven
+by the Workspace tab's *Write gating file* and reads the same three: gates,
+metadata (`MetaDataFileMap`) and axes. `metadata::parse_metadata_csv` feeds
+`MetaDataStore`, whose `file_name_to_gating_id` is the join between an FCS
+file's program name (`workspace::program_name`) and its gating id.
+
+**Weak tests strengthened (9).** Five link/unlink/delete tests asserted only
+`is_err()`; they now also assert the refused edit left every placement and
+registration as it was (`layout`). `a_missing_axis_setting_is_an_error` now
+checks the error names the axis. `every_atomic_container_keeps_its_type`
+checked a type was present, not that it was the same one; it now compares,
+and fails if the fixture gave it nothing to compare. `every_gate_keeps_the_
+label_it_came_in_with` likewise checked presence only; it now compares at f32
+precision (coordinates are held as f32 and written widened, so `51.0513`
+comes back as `51.051300048828125`) - which found B-OMIQ-1.
+
+**Dead code.** `deserialise::validate_metadata_requirements` is never
+called and only prints. Nothing checks that a gating file's groups exist in
+the metadata - see the integration pass.
+
+**Added.** A new skewed quadrant is written as four `AngleGate`s grouped
+`_SKEWEDQUAD0..3`; a new quadrant, skewed quadrant and bisector each come
+back from export and re-import as the same kind with the same pieces. In
+metadata: incomplete rows left out, blank values absent, numbers kept as
+text, a missing id column or file an error; B-META-1, and random exports
+with random cells blanked, every kept file checked against its own row.
+
+**Observation (dealt with under B-META-1).** Two metadata rows with the same
+file name were accepted silently, the later winning. Now neither is tied to a
+file of that name, and a warning names the rows.
+
+### gate_rules: threshold, confidence
+
+**Reach.** `threshold` is plain arithmetic over `&[f64]`, used by `rule`
+(`Rule::solve`, which picks the axis and builds each gate's *shadow* for
+`negative_below` / `refine_from`) and through it `autogate`. It borrows
+`kde_1d`, `silverman_bandwidth` and `kde_peak` from `gate_move::kde`.
+`confidence` scores `Threshold`s for `rule` and `MatchEvidence` for the
+phenotype rule (`autogate`); its `ConfidenceLimits` are serialised in the
+rules sidecar (`rule_store`).
+
+**Weak tests strengthened (4).** The four "no boundary" valley tests asserted
+only `is_err()`; each now names the refusal it expects (`OnlyOnePeak` for a
+merged hump and a smear, `NothingDeepEnough` at the right place for a
+shoulder wobble and a tail ripple), so a fixture that fails for another
+reason no longer passes.
+
+**Added.** `negative_below` and `refine_from` had no direct test: the
+negative under a gate, sliding the gate, too little below it, refining from a
+gate set too high, not running off the axis from one set too low, and a gate
+already in place staying put. `interquartile_spread`, the count swing in a gap
+and in a continuum, `first_valley`'s refusals of bad input. `assess_match`
+- the whole phenotype confidence model - had no test; it now has six, plus
+clamping, empty confidence, the zero `swing_half` guard and the limits'
+round trip through serde.
+
+### gate_rules: rule, rule_store, shape_fit, phenotype, autogate
+
+**Reach.** `autogate` is where the rules meet everything else: it reads the
+FCS files (`file_load`, through `measure_file` into `parent_values` and the
+event index `flow_gates` builds), the gate store (`GateState::gate_for_file`,
+`resolve_drawable`, the per-file overrides), the metadata
+(`MetaDataFileMap`, for specimens and sample types via `rule_store`'s
+pairing), and writes placements back with `apply_placements`
+(`GateState::set_gate_for_file`). The Gate Rules tab
+(`gate_editor::gate_rules_window`) drives it through `files_to_read`,
+`measure_all` and `run_solve`, and saves `RuleStore` as JSON.
+
+**Found.** B-RULE-1: the test that claimed to check a shallow valley is
+flagged against the bar (`a_shallow_valley_is_placed_and_flagged_rather_than_refused`)
+passed 0.9 as the bar, but its "shallower than the bar" assertion checked the
+fixture, not the code - with the bar at 0 the result was identical. The bar
+has since been removed, and the test checks what it always could: that a
+shallow dip is placed and scored low.
+
+**Added.** `ValleyRule::calibrate` and `place` directly (the offset from the
+bottom, following a shifted dip, refusing one hump), `describe`,
+`accepted_band` for every kind, calibrated rules refusing to solve alone,
+every threshold rule being assessable. `simplify` (the contour thinning that
+makes a traced outline a drawable gate) had no test: corners kept, area kept,
+small outlines untouched, never below a triangle, degenerate input.
+`Rows::select`, `z_into`. `human_order` on case and prefixes.
+
+**Env-gated, and pass when unset.** `harness_tests::a_real_workflow_shows_what_the_manual_gates_capture`
+(`OMIQ_GATING_FILE`, `OMIQ_METADATA_FILE`, `OMIQ_SCALING_FILE`,
+`OMIQ_FCS_DIR`), and two tools that write a file for looking at by hand and
+assert nothing: `shape_fit_tests::a_fitted_shape_can_be_looked_at`
+(`SHAPE_FIT_OUT`) and `rule_store_tests::a_phenotype_sidecar_can_be_written_for_trying_the_app`.
+
+**Observations.**
+- `RuleStore::reference_file` takes "the one file" of the wanted type in a
+  specimen; with two it returns whichever the map yields first. Refusing, as
+  the workspace does with two candidate files, would be consistent.
+- `Rule::solve` / `Rule::apply` refuse the calibrated rules with
+  `SolveError::BadBand { band: (0, 0) }`, whose message ("a band of 0 to 0 is
+  not a fraction range") names the wrong reason. `autogate` never reaches it,
+  since those rules take their own branch.
+- `RuleStore::save` writes in place; `Remembered::save_to` writes beside and
+  renames. A crash mid-save loses the rules file.
+
+### gate_editor/gates
+
+**Reach.** `GateState` (`gate_store`) is the document: the three-tier gate
+store (global registry, per-group and per-sample overrides keyed by
+`MetaDataKey` / file id), the node tree (`gate_hierarchy`), and the Omiq
+rebuild data. It is written by the import (`omiq::deserialise`), the editor
+(drag, rotate, draw - `gate_single`, `gate_composite`, `gate_drag`), the
+autogater (`place_gate`, per-file overrides), the rescale (`rescale_channel`,
+`relimit_channel`, from `axis_store` and the Workspace tab) and link/unlink.
+It is read by filtering (`gate_filtering`, a polars mask), the on-screen
+statistics (`gate_stats`, an R-tree `EventIndex`), drawing (`draw_gates`),
+the gallery, and the export (`omiq::serialise`).
+
+**Weak tests strengthened (2).** `an_ellipse_can_be_rotated` only checked a
+rotation returned something; it now checks the angle changed and the size
+and centre did not. `composite_figures_are_retrievable_by_subgate_id` only
+checked each quarter had a figure; it now checks the quarters' counts tile
+the ten events and their percentages sum to 100.
+
+**Added.** `swap_tests`: every gate type transposed onto swapped axes holds
+exactly the same events - in the same named piece for a composite - and
+transposing twice gives the gate back; the ellipse, line gate, skewed
+quadrant and bisector had no swap test. `gate_store`: which files have a
+position of their own (what the export writes per file), collecting a
+stranded ghost, walking the tree (`root_nodes`, `child_nodes`,
+`parent_node`, `gate_chain_for_node`, `node_order`), reading a UI id as a
+position (`as_parent_node`), `place_new_gate`. `draw_gates::was_gate_clicked`:
+an edge selects its gate, the interior and empty space do not, the nearer of
+two edges wins.
+
+**Observations.**
+- The same question - which events a gate holds - is answered two ways: a
+  polars mask in `gate_filtering` (used for the plotted population) and an
+  R-tree in `gate_stats` (used for the percentage shown). Nothing checked
+  they agree; the integration pass does.
+- `filter_events_by_hierarchy_to_mask` and `rescale_helper` print to stdout
+  on every call.
+
+### gate_editor: axis_info, plots, gallery, windows
+
+**Reach.** `AxisStore` (`plots::axis_store`) is filled from the scaling file
+(`read_axis_configs`) and edited in the editor's axis boxes
+(`main_window` -> `update_lower` / `update_upper` -> `GateState::set_current_axis_limits`,
+which relimits the composites) and cofactor box (-> `rescale_gates`). Its
+settings reach the import (composite ranges), the export (infinite bounds),
+the plots (`draw_plot`'s `PlotMapper`), the gallery and the rules window
+(`cofactors_carried_by`). The gallery (`select`, `cache`, `render`,
+`overlay`, `pdf`) reads `GateState` through a resolver per file and caches
+pictures by the addresses of the gates they depend on.
+
+**Found.** B-AX-1 and B-AX-2, from reading `main_window`'s limit handlers
+against the quadrant relimit. The handlers also print errors to stdout
+rather than showing them. The sidebar's context menu offers *Rename*, whose
+handler is empty - choosing it does nothing - and its Delete and
+Add NOT/AND/OR items report a failure only with `println!`, so a refused
+edit looks to the person like one that was ignored.
+
+**Added.** `data_helpers`: plotted points skip incomplete events and keep
+their order, a missing column is an error, the event index covers the two
+named columns, a non-Float32 column is refused. Gallery: a picture depends
+on its filter chain then its drawn gates (`dependencies`), moving a drawn
+gate on one file stales that file's picture and no other,
+`flatten_gates`. `param_for_fluoro`. `workspace_window` had no tests: the
+rule for which actions discard gates (moved into `Pending::discards_gates`
+so it can be tested beside the text that warns about it), what each
+confirmation names, `Part`, `Which`, `flatten`, `file_name`.
+
+**Not unit-tested, and why.** The Dioxus components themselves -
+`main_window`, `plot_window`, `gate_sidebar`, `route`, the `Handles`
+operations in `workspace_window`, the `components/` widgets - need a
+running runtime with stores and signals. Their logic is tested where it
+has been pulled out into plain functions; the rest was checked by driving
+the app (see the Workspace entries in the changelog).
+
+## Second pass: integration tests
+
+In `tests/`, against the library's public API, with files written to disk
+where the seam is a file (`tests/common` writes FCS, metadata and scaling
+files). Run with `cargo test --no-default-features --tests`.
+
+- `workspace_to_metadata` - folder -> `detect` -> `FcsFiles` (program names
+  for plate sub-folders) -> `parse_metadata_csv` -> each file's row; a
+  metadata export using bare well names reaches no file rather than the
+  wrong one; a remembered workspace reopens the same files under the same
+  names, without a file removed by hand; B-META-1 end to end; bare well
+  names shared by two plates are reported and tied to neither file.
+- `gate_counting` - every gate type counted by the filter and by the
+  on-screen index over the same events: they agree event for event, on
+  every corner, side and boundary of every gate type and over random gates
+  on whole-number data (B-CNT-1, fixed); the quadrant's quarters account for
+  every event once; NaN% over an empty parent, kept on purpose (B-STAT-1);
+  B-IDX-1 (a NaN event in the index).
+- `document_round_trip` - a real fixture imported with metadata; a position
+  set for one sample, and one set per specimen (as the autogater writes),
+  survive save and reopen on exactly the samples they were set for; a
+  second save changes nothing; every gate keeps its placements and parent.
+  The moves are a tenth of the edge's value: the first draft used a fixed
+  0.5 on an edge near a million, inside any float tolerance, so it could
+  not have failed.
+- `scaling_replace` - scaling files on disk, real stores in a headless
+  `VirtualDom`, and the Workspace tab's own `carry_to_scaling` (moved out of
+  its loader for this): a new cofactor leaves rectangles and quadrants
+  holding exactly the same cells and an ellipse over 98%; the same scaling
+  changes nothing; a channel the new file drops is reported and its gates
+  left alone. A guard asserts the uncarried gates *would* differ, so the
+  fixture can tell carrying from doing nothing.
+- `gate_rules_window::tests::a_run_from_files_on_disk` (in-crate, since
+  `run_solve` is private to the tab) - the Run button's pipeline from FCS
+  files on disk: an unreadable file is reported by name and the rest run, a
+  cancelled run places nothing, the density finder follows a drifted
+  negative; B-AUTO-1.
+
+## Leftover output
+
+Debug `println!`s that run in normal use, noted rather than removed since
+removing them is not a test change: `gate_single::rescale_helper` (every
+point of every rescaled gate), `gate_filtering::filter_events_by_hierarchy_to_mask`
+(on every filtered plot), `GateState`'s import (a line per gate built), `plots::data_helpers::get_filtered_dataframe` (the
+whole gate chain), `plots::axis_store::read_axis_configs` (skipped channels),
+`deserialise::validate_metadata_requirements` (dead). `main_window`'s axis
+boxes print their errors instead of showing them.
+
+### Doctests
+
+Eight of `gate_hierarchy`'s twelve doctests wrapped their example in
+`# fn example() -> Result<..> { .. }` and never called it, so rustdoc
+compiled them and ran nothing - their assertions had never executed. Each now
+ends `# example().unwrap();`. Run, three failed: `reparent` and
+`reparent_subtree` moved a gate under a parent that was never added, which
+the functions correctly refuse (the examples were wrong, and now add it);
+`clone_subtree` failed on a real bug, B-HIER-1 - since fixed, and its
+example now runs.
+
+### Random edit sequences
+
+`gate_hierarchy_tests::any_sequence_of_edits_leaves_a_valid_tree` runs 2,000
+seeded sequences of 40 random edits - add, reparent, reparent a subtree,
+delete a subtree, delete keeping children, delete - and checks `validate()`
+after every step. It found B-HIER-2 twice: a direct self-edge on the first
+seed, and on seed 21 a 25-step sequence that shrinks (by removing steps while
+it still fails) to two: `add_child(g6, g7); delete_node_keep_children(g6,
+Some(g7))`. Both routes are pinned by the B-HIER-2 test and stepped around
+in the random sequences, which otherwise pass.
+
+### Random document edits
+
+`tests/document_fuzz.rs` applies seeded random sequences of the edits the
+editor makes - add a gate of every kind (rectangle, ellipse, polygon, line,
+quadrant, bisector, skewed quadrant) under any position or the root, delete a
+position, link one position to another's gate, unlink - to an empty document
+or to the checked-in fixture (which brings a boolean and the ghost it keeps
+alive). After every edit: every position names a registered gate, every
+parent is a position, every chain is as long as the position is deep, and
+nothing is registered that nothing reaches. After a sequence, the document is
+exported and re-imported and must come back identical. 600 sequences of 30
+edits and 150 round trips; over 200 seeds every add and delete succeeded,
+about a third of the links (the rest correctly refused), and unlinks are
+aimed at linked positions.
+
+It found B-DOC-1 on its second seed. Positions are chosen by a key built from
+gate names rather than ids, since gates are given random UUIDs and a seed
+would otherwise pick different positions each run.
+
+flow_gates prints `🔧 [TRANSFORM]` lines on every pixel conversion; they fill
+the output of any test that adds gates. That is upstream, in `czarop/flow`.
+
+### Random gate edits
+
+`gate_editor::gates::edit_fuzz_tests`, over every gate type: 25 random drags
+each followed by the opposite drag leave the gate holding exactly the cells
+it held (with a guard that a drag moves cells at all - except the bisector,
+whose whole-gate drag slides its handle along the split by design); and 200
+random moves of the handles each gate draws never panic or leave a
+coordinate that is not finite. An early draft pulled handle index 5 on every
+type and hit the skewed quadrant's `unreachable!()` - it draws five handles,
+so that index cannot come from the editor, and the test now pulls only drawn
+handles.
+
+### Damaged gating files
+
+`tests/import_robustness.rs` imports the fixture with one random damage at a
+time - 600 trials of a key removed, a value nulled, turned into a string, or
+made enormous - and requires each to load or be refused, within five seconds,
+without a panic. None panicked or hung; loops through `parentId` are left
+out as the known B-OMIQ-2. The import also prints `CREATED GLOBAL GATE!` /
+`CREATED FILE-SPECIFIC GATE!` for every gate it builds.
+
+### Damaged FCS files
+
+`tests/fcs_robustness.rs` changes random bytes in a valid file's header and
+keywords (400 trials) and cuts files short at random (200), and requires the
+workspace's reader, `FcsSampleStub::open`, to refuse each without a panic -
+it does. flow_fcs's full reader panics on many of the same files (B-FCS-3,
+pinned there). What matters is the overlap: of 3,000 damaged files, one was
+accepted by the workspace and then panicked the event reader - a header
+data-offset digit read as whitespace, so the data segment appeared to hold
+88 events for 50. That is B-FCS-2, reproduced deterministically in
+`file_load_tests` and, for its consequence, in the rules run tests.
+
+A first draft of the rules-run test cut a file short in its data and
+claimed the run died; it did not - flow_fcs refuses that case cleanly - so
+that claim was dropped and the passing behaviour is now a test of its own.
+
+### Damaged metadata and scaling exports
+
+`tests/csv_robustness.rs` damages each export 500 times - a cell blanked, a
+cell holding a comma, a row cut short, an enormous number, a whole column
+dropped - and requires each to be read or refused without a panic; none
+panicked. Checking what the scaling reader *accepted* found B-SCALE-1: a
+dropped column was read shifted, not refused. A decimal cofactor or range
+(`150.5`, `-500.5`) refuses the whole file with a polars parse error, since
+every number is read as `Int64` - worth knowing if Omiq ever writes one.
+
+### Exports re-saved by a spreadsheet
+
+Opening an export in Excel and saving it adds a byte-order mark, CRLF line
+endings and quotes around any cell with a comma. The metadata and scaling
+readers are now tested on each against the plain export and read the same;
+a quoted comma stays in its cell. Headers padded with spaces - which Omiq
+does not write, but a hand-edited file might - are refused, naming the
+column that could not be found.
+
+### The band search, over random populations
+
+`autogate_tests::the_band_search_lands_in_any_band_a_population_can_satisfy`:
+120 random populations of one to three clusters, a third of them rounded to
+whole numbers so values tie, each given a random band that some edge can
+actually reach. A gate open to either side is slid by `position_by_capture`
+and must land inside the band, and what it reports holding must equal what
+the moved gate holds when asked afresh. It does, every time.
+
+### The exported contact sheet
+
+The PDF tests looked for strings in the output, which a file with one
+cross-reference offset wrong still contains - and most readers then call it
+damaged. `gallery::tests::assert_well_formed` checks what a reader checks
+first: `startxref` finds the table, every entry is twenty bytes and points
+at its object's first byte, `/Size` agrees, every stream is exactly its
+`/Length`, and no coordinate is `NaN` or `inf`. It holds for multi-page
+sheets and for 200 random headings, titles and file names drawn from
+brackets, backslashes, accents and control characters, each of whose text
+strings must close on its own line.
+
+The export's render-and-lay-out step was inside the Export button's
+closure; it is now `export::contact_sheet`, called from the same place,
+so it can be driven with FCS files on disk. Plots land in their own
+specimen's slot whatever order they finish in, a gate is drawn with its
+percentage, a stopped run writes nothing. Reading it found B-PDF-1.
+
+Checked and found sound: the editor and gallery plot sizes are fixed (600;
+200/260/340), so the pixel mapping's panic on an empty plotting area cannot
+be reached; the frames reaching the event filter are single-chunk (flow_fcs
+builds each column from one `Vec`), so the ellipse and polygon filters'
+contiguous-slice requirement always holds; a rotation handle's angle wraps
+at +/-180 degrees, but the rotation itself is taken from the pointer's
+absolute position, so the wrap only affects the preview and is invisible.
+
+### Which files reach the screen
+
+`sample_pairs_tests::on_screen` states the rule both screens follow - a
+file is drawn only from one of its pair's first two slots - and the tests
+hold every file of a folder to it. A folder of one FMX and one FS per
+specimen, some missing one and some unknown to the metadata, passes.
+A re-acquired full stain and a three-file untyped specimen do not
+(B-PAIR-1). The rules run is not affected in the same way: a specimen
+shares one position, read from its highest-ranked file, by design.
+
+Previous and Next were a closure in `main_window`; the step is now
+`sample_pairs::step_from`, beside `pair_of`, and is tested: it lands on
+the next specimen's left file and wraps both ways, and a file no pair
+holds steps from the first specimen. Found B-NAV-1. `listing_order` (the
+editor's file list) had no tests; it now has four, one of them over 300
+random pairings: every file listed exactly once, a file in no slot kept
+beside its specimen, stale indices dropped.
+
+### A gate positioned by two columns
+
+The fixture groups `QCVn` by `Type` and `0lmI` by `test`.
+`document_round_trip` gives each a per-specimen position through the
+autogater's own `place_for_specimen`: under the file's column the new
+position replaces the old, on screen and in the export; under the other
+column it is ignored for one of the two gates, whichever way the hash
+falls (B-GRP-1). The test runs both ways round for that reason.
+
+The same precedence hides a run from any file with a position of its own
+(B-GRP-2): `a_run_from_files_on_disk` gives the donor's file a per-sample
+position before the run, and the run then reports that file positioned
+at 815.7 while it is drawn at 450. The test accepts either fix - the file
+drawn where the report says, or the report not claiming it.
+
+The random save-and-reopen test moves only single gates, because the
+autogater's `translate_edge_to` refuses composites. Composites get
+per-file positions from the import and from a drag on one sample, so
+two tests drag the fixture's quadrant by its centre handle - the
+editor's own `replace_point`, on a plot over the fixture's axes - for one
+sample and for one specimen, save, reopen, and compare every quarter's
+extents on both axes for both files, each quarter resolved through its
+own id as filtering reads it. Both hold.

@@ -106,6 +106,13 @@ pub struct SamplePairing {
     /// the dataset's business, not this crate's.
     #[serde(default = "default_display_order")]
     pub display_order: Vec<Arc<str>>,
+    /// The metadata column the samples are ordered by, everywhere they are
+    /// listed. Empty means the order the folder happens to be in.
+    ///
+    /// It lives here rather than in either tab because both show the same
+    /// specimens and disagreeing about their order is worse than either order.
+    #[serde(default)]
+    pub sort_column: Option<Arc<str>>,
 }
 
 fn default_display_order() -> Vec<Arc<str>> {
@@ -119,11 +126,79 @@ impl Default for SamplePairing {
             sample_type_column: Arc::from("SampleType"),
             derive_type: None,
             display_order: default_display_order(),
+            sort_column: None,
+        }
+    }
+}
+
+/// Compare two metadata values the way a person reads them, so that a column
+/// of D1, D4, D29, D85 sorts in that order rather than D1, D29, D4, D85.
+///
+/// Runs of digits compare as numbers and everything else as text. Without it a
+/// timepoint column - which is the obvious thing to sort by - comes out in an
+/// order nobody wants.
+///
+/// Names that read the same that way but are not the same - `D02` and `D2`,
+/// `a1` and `A1` - are put in the order of their exact text, so only a name
+/// equals itself. They used to compare equal, and a sort left them in
+/// whatever order they arrived in, which comes from a hash map: the same
+/// samples could be listed differently from one tab or run to the next
+/// (B-RS-1).
+pub fn human_order(a: &str, b: &str) -> std::cmp::Ordering {
+    read_as_a_person_would(a, b).then_with(|| a.cmp(b))
+}
+
+/// The comparison itself, which calls some different names equal.
+fn read_as_a_person_would(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(p), Some(q)) => {
+                if p.is_ascii_digit() && q.is_ascii_digit() {
+                    let mut n = String::new();
+                    while x.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        n.push(x.next().unwrap());
+                    }
+                    let mut m = String::new();
+                    while y.peek().is_some_and(|c| c.is_ascii_digit()) {
+                        m.push(y.next().unwrap());
+                    }
+                    // Long runs of digits are an id rather than a number, so
+                    // fall back to text rather than overflowing.
+                    let order = match (n.parse::<u128>(), m.parse::<u128>()) {
+                        (Ok(i), Ok(j)) => i.cmp(&j),
+                        _ => n.cmp(&m),
+                    };
+                    if order != Ordering::Equal {
+                        return order;
+                    }
+                } else {
+                    let order = p.to_ascii_lowercase().cmp(&q.to_ascii_lowercase());
+                    if order != Ordering::Equal {
+                        return order;
+                    }
+                    x.next();
+                    y.next();
+                }
+            }
         }
     }
 }
 
 impl SamplePairing {
+    /// What this file sorts by, under the column the pairing names.
+    ///
+    /// A file the column says nothing about sorts last rather than first, so a
+    /// gap in the metadata does not push those files to the top of every list.
+    pub fn sort_key(&self, columns: &FxHashMap<Arc<str>, Arc<str>>) -> Option<Arc<str>> {
+        let column = self.sort_column.as_ref()?;
+        columns.get(column).cloned()
+    }
+
     /// A file's sample type: its own column where there is one, otherwise
     /// derived from whichever column carries the distinction.
     pub fn sample_type_of(&self, columns: &FxHashMap<Arc<str>, Arc<str>>) -> Option<Arc<str>> {

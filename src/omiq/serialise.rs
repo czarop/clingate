@@ -154,13 +154,17 @@ pub fn gate_to_serialized(
     container_id: &GateId,
     source_type: Option<OmiqGateType>,
     axes: &AxisSettings,
+    captured_label: Option<crate::omiq::deserialise::Point>,
 ) -> anyhow::Result<GateSerialized> {
     let inner = gate
         .get_gate_ref(Some(container_id))
         .ok_or_else(|| anyhow!("gate {container_id} has no geometry to write"))?;
 
     let (x_param, y_param) = inner.parameters.clone();
-    let label_position = label(&inner.label_position);
+    // The gate's own label, or the one it came in with. A gate the editor
+    // rebuilds from parts - a skewed quadrant's corners - carries none of its
+    // own, so without the fallback 24 of them lost the label Omiq gave them.
+    let label_position = label(&inner.label_position).or(captured_label);
     let bounds = (
         axis_unbounded(&x_param, axes),
         axis_unbounded(&y_param, axes),
@@ -328,6 +332,42 @@ fn container_name(gate: &Arc<dyn DrawableGate>, container_id: &GateId) -> Arc<st
         .unwrap_or_else(|| Arc::from(gate.get_name()))
 }
 
+/// The gate on the axes the file had it on.
+///
+/// Viewing a gate on a plot whose axes are the other way round rewrites it
+/// with its two channels, and every coordinate, exchanged - see
+/// `match_gates_to_plot`. That is the same region, but Omiq draws a gate on
+/// the axes its file names, so written as held it would come back on flipped
+/// axes; and a range gate, which writes only its x extent, would write the
+/// wrong one. So a gate held the other way round from `source_axes` is turned
+/// back before it is written. Each tier is turned on its own: only the
+/// position shown is rewritten, so a gate's global and per-file positions
+/// can be held in different orientations.
+///
+/// A gate with no source axes - drawn here, or a boolean - is written as it is
+/// held, as is one on channels other than the file's two: that is a gate on
+/// different channels, and turning it would not make it the file's.
+fn as_imported(
+    gate: &Arc<dyn DrawableGate>,
+    container_id: &GateId,
+    source_axes: Option<&(Arc<str>, Arc<str>)>,
+) -> anyhow::Result<Arc<dyn DrawableGate>> {
+    let Some((x, y)) = source_axes else {
+        return Ok(gate.clone());
+    };
+    let Some(inner) = gate.get_gate_ref(Some(container_id)) else {
+        return Ok(gate.clone());
+    };
+    let (held_x, held_y) = &inner.parameters;
+    if held_x != y || held_y != x || x == y {
+        return Ok(gate.clone());
+    }
+    let turned = gate
+        .match_to_plot_axis(x, y)?
+        .ok_or_else(|| anyhow!("gate {container_id} is held on {held_x} by {held_y} but did not turn back to {x} by {y}"))?;
+    Ok(Arc::from(turned))
+}
+
 /// Build the filter container for one gate.
 fn container_for(
     state: &GateState,
@@ -359,7 +399,15 @@ fn container_for(
     let source_type = rebuild
         .and_then(|r| r.source_type)
         .or(synthesised.as_ref().map(|(_, written_as)| *written_as));
-    let default_filter = gate_to_serialized(gate, container_id, source_type, axes)?;
+    let captured_label = rebuild.and_then(|r| r.label_position);
+    let source_axes = rebuild.and_then(|r| r.source_axes.as_ref());
+    let default_filter = gate_to_serialized(
+        &as_imported(gate, container_id, source_axes)?,
+        container_id,
+        source_type,
+        axes,
+        captured_label,
+    )?;
 
     // Omiq stores one entry per file, even when a metadata column is what
     // actually drives the position. So write the files this container already
@@ -385,7 +433,13 @@ fn container_for(
         let Some(for_file) = state.gate_for_file(container_id, file_id, metadata) else {
             continue;
         };
-        let filter = gate_to_serialized(&for_file, container_id, source_type, axes)?;
+        let filter = gate_to_serialized(
+            &as_imported(&for_file, container_id, source_axes)?,
+            container_id,
+            source_type,
+            axes,
+            captured_label,
+        )?;
         per_file_filters.insert(file_id.clone(), filter);
     }
 
@@ -403,9 +457,64 @@ fn container_for(
         group_id: rebuild
             .and_then(|r| r.group_id.clone())
             .or(synthesised.map(|(group_id, _)| group_id)),
-        md: rebuild.and_then(|r| r.md.clone()),
+        // Which metadata column drives these positions. Where the session
+        // grouped this gate, a column it grouped by - but only one that gives
+        // every file the position the session gives it (see
+        // `grouping_column`); failing that, none, and the positions stand file
+        // by file. Where the session grouped nothing, whatever the document
+        // arrived with stands.
+        md: if state.group_columns_newest_first(container_id).is_empty() {
+            rebuild.and_then(|r| r.md.clone())
+        } else {
+            grouping_column(state, container_id, known_files, metadata)
+        },
         per_file_filters,
     }))
+}
+
+/// The metadata column to name as what groups this gate's positions, if one
+/// holds every file's.
+///
+/// Omiq groups a gate by one column, and a file reading the export back takes
+/// one position per group - the first file's of that group it reads. The
+/// session can hold positions under several columns, the newest applying to
+/// each file, and a file can have a position of its own. So a column is named
+/// only if grouping by it gives every file the document knows exactly the
+/// position the session gives it: every file of a group at the same position,
+/// and a file the column says nothing about at the gate's default. The columns
+/// are tried most recently written first. If none holds, the export names
+/// none, and the per-file positions - which are always written as the session
+/// resolves them - are read back file by file, exactly.
+fn grouping_column(
+    state: &GateState,
+    container_id: &GateId,
+    known_files: &rustc_hash::FxHashSet<crate::gate_editor::gates::gate_store::FileId>,
+    metadata: &MetaDataFileMap,
+) -> Option<crate::omiq::metadata::MetaDataParameter> {
+    let default = state.registered_gate(container_id);
+    state
+        .group_columns_newest_first(container_id)
+        .into_iter()
+        .find(|column| {
+            let mut held: rustc_hash::FxHashMap<Arc<str>, Arc<dyn DrawableGate>> =
+                Default::default();
+            known_files.iter().all(|file| {
+                let Some(resolved) = state.gate_for_file(container_id, file, metadata) else {
+                    return true;
+                };
+                match metadata.get(file).and_then(|columns| columns.get(column)) {
+                    Some(group) => {
+                        let first = held
+                            .entry(group.clone())
+                            .or_insert_with(|| resolved.clone());
+                        Arc::ptr_eq(first, &resolved)
+                    }
+                    None => default
+                        .as_ref()
+                        .is_some_and(|default| Arc::ptr_eq(default, &resolved)),
+                }
+            })
+        })
 }
 
 /// Which registry ids are containers in the file.

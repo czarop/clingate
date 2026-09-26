@@ -1,0 +1,175 @@
+//! A browse button beside a path field.
+//!
+//! Every file this program reads or writes is named by a path in a text box -
+//! the gating file, the rules sidecar, the FCS folder, the exported document.
+//! The box stays, and this sits next to it.
+//!
+//! Both, rather than one or the other. A dialog is the easy way to find a file
+//! you can see; a pasted path is the easy way to reach one you cannot - a
+//! mounted share, a directory behind a symlink, a name copied out of a ticket.
+//! And the dialog is an XDG desktop portal, a D-Bus service separate from this
+//! application, so on a machine that is not running one the box is the only way
+//! in at all.
+//!
+//! The backend is not a choice this program gets to make: rfd's build script
+//! refuses `gtk3` and `xdg-portal` together, and dioxus-desktop requires the
+//! latter, so the portal it is - even though this application is itself a GTK
+//! window whose own toolkit would always have been available.
+
+use dioxus::prelude::*;
+
+use crate::components::toast::{use_toast, warn};
+
+/// Which dialog to open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Pick {
+    /// Choose a file that exists, to read.
+    OpenFile,
+    /// Name a file to write, which need not exist yet.
+    ///
+    /// A separate dialog from `OpenFile`, not a flag on it: an open dialog
+    /// cannot name a file that is not there, and most of the paths this
+    /// program writes to are files that are not there yet.
+    SaveFile,
+    /// Choose a directory.
+    Folder,
+}
+
+/// What a dialog came back with.
+pub enum Chosen {
+    Picked(Vec<std::path::PathBuf>),
+    /// The person pressed Cancel.
+    Cancelled,
+    /// No dialog could be shown. See [`choose`].
+    Unavailable,
+}
+
+/// Show a dialog and wait for it.
+///
+/// `start` is where it opens: the folder itself for [`Pick::Folder`], the
+/// file's folder otherwise, and for [`Pick::SaveFile`] the file's name is
+/// offered too. `many` lets [`Pick::OpenFile`] return several files.
+///
+/// Where no portal is running rfd reports exactly what it reports for
+/// Cancel - nothing - so the two are told apart by how long it took: nobody
+/// dismisses a dialog in under 300ms. Saying so beats a button that appears
+/// to do nothing.
+pub async fn choose(
+    mode: Pick,
+    start: &std::path::Path,
+    label: &str,
+    extensions: &[String],
+    many: bool,
+) -> Chosen {
+    let opened = std::time::Instant::now();
+    let mut dialog = rfd::AsyncFileDialog::new();
+    if !extensions.is_empty() {
+        let refs: Vec<&str> = extensions.iter().map(String::as_str).collect();
+        dialog = dialog
+            .add_filter(label, &refs)
+            .add_filter("Every file", &["*"]);
+    }
+    let folder = match mode {
+        Pick::Folder => Some(start.to_path_buf()),
+        _ => start.parent().map(|p| p.to_path_buf()),
+    };
+    if let Some(folder) = folder.filter(|p| p.is_dir()) {
+        dialog = dialog.set_directory(folder);
+    }
+    if mode == Pick::SaveFile
+        && let Some(name) = start.file_name().and_then(|n| n.to_str())
+    {
+        dialog = dialog.set_file_name(name);
+    }
+
+    let picked: Vec<std::path::PathBuf> = match mode {
+        Pick::OpenFile if many => dialog
+            .pick_files()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|h| h.path().to_path_buf())
+            .collect(),
+        Pick::OpenFile => dialog
+            .pick_file()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+        Pick::SaveFile => dialog
+            .save_file()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+        Pick::Folder => dialog
+            .pick_folder()
+            .await
+            .map(|h| h.path().to_path_buf())
+            .into_iter()
+            .collect(),
+    };
+
+    if !picked.is_empty() {
+        Chosen::Picked(picked)
+    } else if opened.elapsed() < std::time::Duration::from_millis(300) {
+        Chosen::Unavailable
+    } else {
+        Chosen::Cancelled
+    }
+}
+
+/// What to say when a dialog could not be shown.
+pub const UNAVAILABLE: &str = "Could not open the file dialog - type or paste the path instead";
+
+#[component]
+pub fn PickPath(
+    /// The field to fill in. Left alone if the dialog is cancelled.
+    path: Signal<String>,
+    mode: Pick,
+    /// What to call the file type in the dialog's filter list.
+    #[props(default = String::new())]
+    label: String,
+    /// Extensions the filter offers, without dots. Empty offers no filter,
+    /// which is right for a folder.
+    #[props(default = Vec::new())]
+    extensions: Vec<String>,
+    #[props(default = false)] disabled: bool,
+) -> Element {
+    let mut path = path;
+    let toasts = use_toast();
+
+    let browse = move |_| {
+        let current = std::path::PathBuf::from(path().trim());
+        let label = label.clone();
+        let extensions = extensions.clone();
+        spawn(async move {
+            // Opens where the box already points, so the dialog starts beside
+            // the last file rather than in the home directory. Cancel leaves
+            // what was typed alone.
+            match choose(mode, &current, &label, &extensions, false).await {
+                Chosen::Picked(mut chosen) => {
+                    if let Some(first) = chosen.drain(..).next() {
+                        path.set(first.display().to_string());
+                    }
+                }
+                Chosen::Cancelled => {}
+                Chosen::Unavailable => warn(&toasts, UNAVAILABLE),
+            }
+        });
+    };
+
+    rsx! {
+        button {
+            class: "path-picker",
+            disabled,
+            title: match mode {
+                Pick::OpenFile => "Choose a file",
+                Pick::SaveFile => "Choose where to write",
+                Pick::Folder => "Choose a folder",
+            },
+            onclick: browse,
+            "..."
+        }
+    }
+}

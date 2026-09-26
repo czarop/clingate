@@ -38,8 +38,12 @@ fn mapper() -> PlotMapper {
 
 /// Ten events: four inside 0..400 on both axes, six outside.
 fn index() -> EventIndexMapped {
-    let xs: Vec<f32> = vec![100.0, 200.0, 300.0, 350.0, 500.0, 600.0, 700.0, 800.0, 900.0, 950.0];
-    let ys: Vec<f32> = vec![100.0, 200.0, 300.0, 350.0, 500.0, 600.0, 700.0, 800.0, 900.0, 950.0];
+    let xs: Vec<f32> = vec![
+        100.0, 200.0, 300.0, 350.0, 500.0, 600.0, 700.0, 800.0, 900.0, 950.0,
+    ];
+    let ys: Vec<f32> = vec![
+        100.0, 200.0, 300.0, 350.0, 500.0, 600.0, 700.0, 800.0, 900.0, 950.0,
+    ];
 
     EventIndexMapped {
         event_index: Arc::new(EventIndex::build(&xs, &ys).unwrap()),
@@ -48,12 +52,8 @@ fn index() -> EventIndexMapped {
 }
 
 fn rectangle(id: &str, min: (f32, f32), max: (f32, f32)) -> Arc<dyn DrawableGate> {
-    let geometry = create_rectangle_geometry(
-        vec![min, (max.0, min.1), max, (min.0, max.1)],
-        X,
-        Y,
-    )
-    .unwrap();
+    let geometry =
+        create_rectangle_geometry(vec![min, (max.0, min.1), max, (min.0, max.1)], X, Y).unwrap();
     let gate = flow_gates::Gate {
         id: Arc::from(id),
         name: id.to_string(),
@@ -219,10 +219,22 @@ fn composite_figures_are_retrievable_by_subgate_id() {
     let ids = quad.get_inner_gate_ids();
     let stats = get_percent_and_counts_gate(quad, &index(), 10.0).unwrap();
 
+    let mut total = 0.0;
+    let mut percent = 0.0;
     for id in ids {
-        assert!(stats.get_count_for_id(id.clone()).is_some());
-        assert!(stats.get_percent_for_id(id).is_some());
+        total += stats
+            .get_count_for_id(id.clone())
+            .expect("a count per quarter");
+        percent += stats
+            .get_percent_for_id(id)
+            .expect("a percentage per quarter");
     }
+    // The quarters tile the plane: every event is in exactly one of them.
+    assert_eq!(total, 10.0, "the ten events split across the quarters");
+    assert!(
+        (percent - 100.0).abs() < 1e-3,
+        "the quarters' percentages sum to {percent}"
+    );
 }
 
 // ─── Draft gates ──────────────────────────────────────────────────────────────
@@ -278,7 +290,11 @@ fn three_clicks_draw_a_closed_polygon() {
     assert_eq!(shapes.len(), 1);
     match &shapes[0] {
         crate::gate_editor::gates::gate_types::GateRenderShape::Polygon { points, .. } => {
-            assert_eq!(points.len(), 4, "the loop is closed by repeating the first point");
+            assert_eq!(
+                points.len(),
+                4,
+                "the loop is closed by repeating the first point"
+            );
             assert_eq!(points[0], points[3]);
         }
         _ => panic!("expected a polygon"),
@@ -294,9 +310,18 @@ fn a_draft_is_tagged_so_the_mouse_handlers_ignore_it() {
     ] {
         for shape in draft(points).draw_self() {
             let tagged = match shape {
-                crate::gate_editor::gates::gate_types::GateRenderShape::Circle { shape_type, .. }
-                | crate::gate_editor::gates::gate_types::GateRenderShape::PolyLine { shape_type, .. }
-                | crate::gate_editor::gates::gate_types::GateRenderShape::Polygon { shape_type, .. } => {
+                crate::gate_editor::gates::gate_types::GateRenderShape::Circle {
+                    shape_type,
+                    ..
+                }
+                | crate::gate_editor::gates::gate_types::GateRenderShape::PolyLine {
+                    shape_type,
+                    ..
+                }
+                | crate::gate_editor::gates::gate_types::GateRenderShape::Polygon {
+                    shape_type,
+                    ..
+                } => {
                     matches!(shape_type, ShapeType::DraftGate)
                 }
                 _ => false,

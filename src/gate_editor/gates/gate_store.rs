@@ -67,7 +67,7 @@ impl GatesOnPlotKey {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct GateMap(pub FxHashMap<GateId, Arc<dyn DrawableGate + 'static>>);
 
 impl Deref for GateMap {
@@ -94,11 +94,25 @@ pub enum GateSource {
 pub type GroupGateMap = FxHashMap<(GateId, MetaDataKey), Arc<dyn DrawableGate>>;
 pub type SampleGateMap = FxHashMap<(GateId, FileId), Arc<dyn DrawableGate>>;
 
-#[derive(Default, Store)]
+#[derive(Clone, Default, Store)]
 pub struct GateSubStore {
     pub primary_and_subgate_registry: GateMap,
     pub sample_position_overrides: SampleGateMap,
     pub group_position_overrides: GroupGateMap,
+    /// When each per-group and per-sample position was written, as a count
+    /// of writes: the larger, the more recent. See
+    /// [`GateSubStore::position_for`].
+    ///
+    /// Kept beside the maps rather than in them so everything that reads a
+    /// position - filtering, drawing, the export - keeps reading the maps it
+    /// always has. Written only by [`GateSubStore::set_group_position`] and
+    /// [`GateSubStore::set_sample_position`], trimmed only by the matching
+    /// `retain_` methods, so they cannot drift from the maps.
+    group_written: FxHashMap<(GateId, MetaDataKey), u64>,
+    sample_written: FxHashMap<(GateId, FileId), u64>,
+    /// One count for both tiers, so a per-sample position and a per-group
+    /// one can be told apart by age.
+    writes: u64,
 }
 
 /// The plain-data half of the gate store.
@@ -107,6 +121,148 @@ pub struct GateSubStore {
 /// exercised without a Dioxus runtime; the store methods are thin wrappers that
 /// keep the same write granularity.
 impl GateSubStore {
+    /// Write one per-group position, as the newest.
+    pub fn set_group_position(&mut self, key: (GateId, MetaDataKey), gate: Arc<dyn DrawableGate>) {
+        self.writes += 1;
+        self.group_written.insert(key.clone(), self.writes);
+        self.group_position_overrides.insert(key, gate);
+    }
+
+    /// Write one per-sample position, as the newest.
+    pub fn set_sample_position(&mut self, key: (GateId, FileId), gate: Arc<dyn DrawableGate>) {
+        self.writes += 1;
+        self.sample_written.insert(key.clone(), self.writes);
+        self.sample_position_overrides.insert(key, gate);
+    }
+
+    /// Drop every per-sample position `keep` says no to.
+    pub fn retain_sample_positions(&mut self, mut keep: impl FnMut(&(GateId, FileId)) -> bool) {
+        self.sample_position_overrides.retain(|key, _| keep(key));
+        self.sample_written.retain(|key, _| keep(key));
+    }
+
+    /// Where `gate_id` sits for one file: of the file's own position and the
+    /// newest position of any group it is in, whichever was written last -
+    /// or `None`, for the gate's global position.
+    ///
+    /// The one rule every reader follows: the plots, the filtering and the
+    /// statistics through [`GateState::get_current_sample`], the export through
+    /// [`GateState::gate_for_file`]. A file's own position used to win
+    /// whatever its age, so a rules run - which positions a whole specimen -
+    /// was hidden from any file of it that had been given a position of its
+    /// own, while the report said it had been positioned (B-GRP-2). Now the
+    /// last position written applies, whichever kind it is: a run beats an
+    /// older adjustment on one sample, and a later adjustment beats the run.
+    ///
+    /// Positions of equal age - only possible when they were put straight
+    /// into the maps rather than through the `set_` methods - go to the
+    /// file's own, as they always did.
+    pub fn position_for<'a>(
+        &self,
+        gate_id: &GateId,
+        file_id: &FileId,
+        groups: impl IntoIterator<Item = (&'a MetaDataParameter, &'a GroupId)>,
+    ) -> Option<(GateSource, &Arc<dyn DrawableGate>)> {
+        let own_key = (gate_id.clone(), file_id.clone());
+        let own = self.sample_position_overrides.get(&own_key).map(|gate| {
+            let written = self.sample_written.get(&own_key).copied().unwrap_or(0);
+            (written, gate)
+        });
+        let group = self
+            .newest_group_position(gate_id, groups)
+            .map(|(key, gate)| {
+                let written = self
+                    .group_written
+                    .get(&(gate_id.clone(), key.clone()))
+                    .copied()
+                    .unwrap_or(0);
+                (written, key, gate)
+            });
+        match (own, group) {
+            (Some((own_at, own)), Some((group_at, key, group))) => {
+                if group_at > own_at {
+                    Some((GateSource::Group((gate_id.clone(), key)), group))
+                } else {
+                    Some((GateSource::Sample(own_key), own))
+                }
+            }
+            (Some((_, own)), None) => Some((GateSource::Sample(own_key), own)),
+            (None, Some((_, key, group))) => {
+                Some((GateSource::Group((gate_id.clone(), key)), group))
+            }
+            (None, None) => None,
+        }
+    }
+
+    /// Drop every per-group position `keep` says no to.
+    pub fn retain_group_positions(&mut self, mut keep: impl FnMut(&(GateId, MetaDataKey)) -> bool) {
+        self.group_position_overrides.retain(|key, _| keep(key));
+        self.group_written.retain(|key, _| keep(key));
+    }
+
+    /// Of the per-group positions `gate_id` holds for a file in `groups` - one
+    /// `(column, value)` pair per metadata column the file has - the one
+    /// written last.
+    ///
+    /// A file is in a group under every column it has: its SampleID, its
+    /// Type, its Donor. A gate can hold positions under more than one of them -
+    /// the gating file groups it by one column, a rules run by the pairing's
+    /// sample id column, and a run after that column is changed by another.
+    /// The newest applies, so a file shows the last position anything gave
+    /// it, and an older position still holds for the files nothing newer
+    /// covers. This used to be whichever column the file's metadata hash map
+    /// happened to yield first (B-GRP-1).
+    ///
+    /// A tie is only possible between positions put straight into the map
+    /// rather than through [`GateSubStore::set_group_position`]; it goes to the
+    /// column whose name sorts first, so the answer never depends on hashing.
+    pub fn newest_group_position<'a>(
+        &self,
+        gate_id: &GateId,
+        groups: impl IntoIterator<Item = (&'a MetaDataParameter, &'a GroupId)>,
+    ) -> Option<(MetaDataKey, &Arc<dyn DrawableGate>)> {
+        groups
+            .into_iter()
+            .filter_map(|(parameter, group)| {
+                let key = (
+                    gate_id.clone(),
+                    MetaDataKey {
+                        parameter: parameter.clone(),
+                        group: group.clone(),
+                    },
+                );
+                let gate = self.group_position_overrides.get(&key)?;
+                let written = self.group_written.get(&key).copied().unwrap_or(0);
+                Some((written, key.1, gate))
+            })
+            .max_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| b.1.parameter.cmp(&a.1.parameter))
+            })
+            .map(|(_, key, gate)| (key, gate))
+    }
+
+    /// The metadata columns `gate_id` holds per-group positions under, the
+    /// most recently written first.
+    pub fn group_columns_newest_first(&self, gate_id: &GateId) -> Vec<MetaDataParameter> {
+        let mut newest: FxHashMap<MetaDataParameter, u64> = FxHashMap::default();
+        for (id, key) in self.group_position_overrides.keys() {
+            if id != gate_id {
+                continue;
+            }
+            let written = self
+                .group_written
+                .get(&(id.clone(), key.clone()))
+                .copied()
+                .unwrap_or(0);
+            let at = newest.entry(key.parameter.clone()).or_insert(0);
+            *at = (*at).max(written);
+        }
+        let mut columns: Vec<(MetaDataParameter, u64)> = newest.into_iter().collect();
+        columns.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        columns.into_iter().map(|(column, _)| column).collect()
+    }
+
     /// Every key a gate occupies. A composite is registered under its own id
     /// *and* under each of its subgate ids, all aliased to the same `Arc`.
     pub fn ids_for(gate: &Arc<dyn DrawableGate>, gate_id: &GateId) -> Vec<GateId> {
@@ -139,14 +295,20 @@ impl GateSubStore {
                         .insert(id.clone(), gate.clone());
                 }
                 GateSource::Group((_, group_key)) => {
-                    self.group_position_overrides
-                        .insert((id.clone(), group_key.clone()), gate.clone());
+                    self.set_group_position((id.clone(), group_key.clone()), gate.clone());
                 }
                 GateSource::Sample((_, file_id)) => {
-                    self.sample_position_overrides
-                        .insert((id.clone(), file_id.clone()), gate.clone());
+                    self.set_sample_position((id.clone(), file_id.clone()), gate.clone());
                 }
             }
+        }
+    }
+
+    /// Write the gates [`oriented_to_plot`] turned, each into the tier it
+    /// was resolved from.
+    pub fn apply_orientation(&mut self, updates: Vec<OrientedGate>) {
+        for (id, gate, origin) in updates {
+            self.insert_for_source(&[id], &gate, &origin);
         }
     }
 
@@ -189,6 +351,88 @@ impl GateSubStore {
         self.primary_and_subgate_registry = GateMap(registry);
         self.sample_position_overrides = samples;
         self.group_position_overrides = groups;
+    }
+
+    /// Carry every gate drawn on `marker` from one transform to another.
+    ///
+    /// Gate coordinates are held in the transformed space the plot is drawn
+    /// in, so a new cofactor would otherwise leave each gate at the same place
+    /// on screen and around different cells. Each point goes back to raw data
+    /// through the old transform and out through the new one, so a gate keeps
+    /// admitting the same events.
+    ///
+    /// Every tier - drawn, per specimen, per sample - through [`map_gates`],
+    /// which also makes sure a gate shared between tiers or aliased under a
+    /// composite's several keys is carried once and not compounded.
+    ///
+    /// A gate that cannot be carried keeps its old geometry and its error is
+    /// returned; the others are carried regardless.
+    ///
+    /// [`map_gates`]: GateSubStore::map_gates
+    pub fn rescale_channel(
+        &mut self,
+        marker: &Arc<str>,
+        old: &AxisInfo,
+        new: &AxisInfo,
+    ) -> Result<(), Vec<String>> {
+        let mut errors = vec![];
+        self.map_gates(|gate| {
+            let (x_marker, y_marker) = gate.get_params();
+            if marker != &x_marker && marker != &y_marker {
+                return gate.clone();
+            }
+            match gate.recalculate_gate_for_rescaled_axis(
+                marker.clone(),
+                &old.transform,
+                &new.transform,
+                (new.axis_lower, new.axis_upper),
+            ) {
+                Ok(new_gate) => Arc::from(new_gate),
+                Err(e) => {
+                    errors.push(e.to_string());
+                    gate.clone()
+                }
+            }
+        });
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Carry every gate drawn on `axis` to a new axis range.
+    ///
+    /// Only the gates whose extent comes from the axis range change - the
+    /// quadrants, whose outer edges run to the ends of the axes. Everything
+    /// else answers `None` and is kept as the same gate.
+    pub fn relimit_channel(
+        &mut self,
+        axis: &Arc<str>,
+        lower: f32,
+        upper: f32,
+        transform: &TransformType,
+    ) -> Result<(), Vec<String>> {
+        let mut errors = vec![];
+        self.map_gates(|gate| {
+            let (x_marker, y_marker) = gate.get_params();
+            if axis != &x_marker && axis != &y_marker {
+                return gate.clone();
+            }
+            match gate.recalculate_gate_for_new_axis_limits(axis.clone(), lower, upper, transform) {
+                Ok(Some(new_gate)) => Arc::from(new_gate),
+                Ok(None) => gate.clone(),
+                Err(e) => {
+                    errors.push(e.to_string());
+                    gate.clone()
+                }
+            }
+        });
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
     }
 }
 
@@ -234,13 +478,66 @@ impl GateOverrideResolver {
     //         .ok_or_else(|| anyhow::anyhow!("Gate {} has no internal data", id))
     // }
 
-    fn resolve_drawable(&self, id: &str) -> anyhow::Result<Arc<dyn DrawableGate + 'static>> {
+    /// The gate this resolver holds for `id`.
+    ///
+    /// Public because the gallery resolves gates outside the component that
+    /// draws them - twenty plots at once, off the UI thread - rather than
+    /// through the editor's `gate_ids_by_view` cache, which is written as a
+    /// side effect of drawing.
+    pub fn resolve_drawable(&self, id: &str) -> anyhow::Result<Arc<dyn DrawableGate + 'static>> {
         let drawable = self
             .active_gates
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("Gate {} not found in active set", id))?;
         Ok(drawable.deref().clone())
     }
+}
+
+/// A gate turned to a plot's axes: the id to write it under, the gate, and
+/// the tier it was resolved from.
+pub type OrientedGate = (GateId, Arc<dyn DrawableGate>, GateSource);
+
+/// The gates among `ids` held the other way round from a plot of `x` by `y`,
+/// turned to it.
+///
+/// Only the position `resolver` shows is turned - the global one, or the
+/// group's or sample's that overrides it - and it is written back into that
+/// tier, so the same gate can be held on its axes one way globally and the
+/// other for one sample. The export turns each back to the file's axes; see
+/// `omiq::serialise::as_imported`.
+///
+/// A composite is written under its own id and each of its parts'.
+pub fn oriented_to_plot(
+    ids: &[GateId],
+    x: &str,
+    y: &str,
+    resolver: &GateOverrideResolver,
+) -> anyhow::Result<Vec<OrientedGate>> {
+    let mut updates = Vec::new();
+    for k in ids {
+        let Some(new_gate) = resolver.resolve_drawable(k)?.match_to_plot_axis(x, y)? else {
+            continue;
+        };
+        let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
+        let gate_origin = resolver
+            .gate_origins
+            .get(k)
+            .ok_or_else(|| anyhow!("error finding gate source for {}", k))?
+            .clone();
+
+        updates.push((
+            new_gate_arc.get_id(),
+            new_gate_arc.clone(),
+            gate_origin.clone(),
+        ));
+
+        if new_gate_arc.is_composite() {
+            for sub_id in new_gate_arc.get_inner_gate_ids() {
+                updates.push((sub_id, new_gate_arc.clone(), gate_origin.clone()));
+            }
+        }
+    }
+    Ok(updates)
 }
 
 /// a plot is selected for a file,
@@ -301,7 +598,10 @@ pub struct GatePlacement {
     pub collapsed: bool,
 }
 
-#[derive(Default, Store)]
+/// `Clone` is a snapshot, not a deep copy: every gate is behind an `Arc`, so
+/// cloning bumps refcounts. That is what lets a long solve run on a worker
+/// thread against a consistent view while the editor stays live.
+#[derive(Clone, Default, Store)]
 pub struct GateState {
     // file_id: FileId,
     selected_gate: Option<Arc<str>>,
@@ -330,6 +630,61 @@ pub struct GateState {
 
 impl GateState {
     /// What the imported Omiq file carried, for writing a new one.
+    /// Whether the document is still the one `earlier` was taken from: the
+    /// same gates at the same positions - global, per group and per sample -
+    /// in the same tree.
+    ///
+    /// What a rules run needs to know before it writes its answers. It solves
+    /// against a snapshot, and answers worked out on one document mean nothing
+    /// in another - a moved gate, a new file's gating, a whole document loaded
+    /// over it. Every edit replaces the `Arc` of the gate it touches, so gates
+    /// are compared by identity: cheap, and a gate moved away and back again
+    /// still counts as changed, which is the safe answer. Which gate is
+    /// selected, and which tree nodes are folded, say nothing about the
+    /// gating and are not compared.
+    pub fn unchanged_since(&self, earlier: &GateState) -> bool {
+        fn same<K: Eq + std::hash::Hash>(
+            a: &FxHashMap<K, Arc<dyn DrawableGate>>,
+            b: &FxHashMap<K, Arc<dyn DrawableGate>>,
+        ) -> bool {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, g)| b.get(k).is_some_and(|h| Arc::ptr_eq(g, h)))
+        }
+        let (now, then) = (&self.gate_store, &earlier.gate_store);
+        same(
+            &now.primary_and_subgate_registry.0,
+            &then.primary_and_subgate_registry.0,
+        ) && same(
+            &now.sample_position_overrides,
+            &then.sample_position_overrides,
+        ) && same(
+            &now.group_position_overrides,
+            &then.group_position_overrides,
+        ) && self.placements.len() == earlier.placements.len()
+            && self.placements.iter().all(|(node, placed)| {
+                earlier
+                    .placements
+                    .get(node)
+                    .is_some_and(|was| was.gate_id == placed.gate_id)
+                    && self.parent_node(node) == earlier.parent_node(node)
+            })
+    }
+
+    /// Turn the gates among `ids` to a plot of `x` by `y`, as viewing that
+    /// plot does. See [`oriented_to_plot`].
+    pub fn orient_to_plot(
+        &mut self,
+        ids: &[GateId],
+        x: &str,
+        y: &str,
+        resolver: &GateOverrideResolver,
+    ) -> anyhow::Result<()> {
+        let updates = oriented_to_plot(ids, x, y, resolver)?;
+        self.gate_store.apply_orientation(updates);
+        Ok(())
+    }
+
     pub fn omiq_rebuild(&self) -> &crate::omiq::rebuild::OmiqRebuildStore {
         &self.omiq_rebuild
     }
@@ -523,11 +878,9 @@ impl GateState {
             .primary_and_subgate_registry
             .retain(|id, _| !dropped.contains(id));
         self.gate_store
-            .sample_position_overrides
-            .retain(|(id, _file), _| !dropped.contains(id));
+            .retain_sample_positions(|(id, _file)| !dropped.contains(id));
         self.gate_store
-            .group_position_overrides
-            .retain(|(id, _group), _| !dropped.contains(id));
+            .retain_group_positions(|(id, _group)| !dropped.contains(id));
         self.omiq_rebuild
             .gates
             .retain(|id, _| !dropped.contains(id));
@@ -630,8 +983,11 @@ impl GateState {
     /// one gate - Omiq's linked gate.
     ///
     /// The gate `node` used to show is discarded at this position. If that was
-    /// its only position it stays registered as a ghost rather than being
-    /// dropped, since a boolean may still reference it.
+    /// its only position, what happens next is what happens when a last
+    /// position is deleted: a boolean built on it keeps it registered and
+    /// evaluable, and with nothing reaching it `collect_stranded_ghosts` takes
+    /// it. It used to be kept whether anything reached it or not, and such
+    /// gates were written out on export as containers on no plot (B-DOC-1).
     ///
     /// Refused when the two are on different parameters - the result would be a
     /// gate drawn on axes it was not measured against - and for composites,
@@ -682,6 +1038,7 @@ impl GateState {
         self.record_placement(node.clone(), to, collapsed);
         self.unindex_view_at(&plot, &from);
         self.reindex_view(node);
+        self.collect_stranded_ghosts();
         Ok(())
     }
 
@@ -744,6 +1101,10 @@ impl GateState {
             self.unindex_view_at(&plot, &old_gate);
             self.reindex_view(&corner_node);
         }
+        // After every corner, not inside the loop: a composite is reachable
+        // while any corner holds a position, so a sweep between corners would
+        // see a half-linked group and keep it.
+        self.collect_stranded_ghosts();
         Ok(())
     }
 
@@ -1003,10 +1364,11 @@ impl GateState {
             .contains_key(gate_id)
     }
 
-    /// The gate that applies to one sample: a per-sample override wins, then a
-    /// per-group override, then the global position.
+    /// The gate that applies to one sample: the more recently written of its
+    /// own position and its groups' (see [`GateSubStore::position_for`]), else
+    /// the global position.
     ///
-    /// The same precedence `get_current_sample` uses, for one gate rather than
+    /// The same rule `get_current_sample` uses, for one gate rather than
     /// all of them - the export needs it per file when writing `perFileFilters`.
     pub fn gate_for_file(
         &self,
@@ -1014,28 +1376,9 @@ impl GateState {
         file_id: &FileId,
         metadata: &crate::omiq::metadata::MetaDataFileMap,
     ) -> Option<Arc<dyn DrawableGate>> {
-        if let Some(gate) = self
-            .gate_store
-            .sample_position_overrides
-            .get(&(gate_id.clone(), file_id.clone()))
-        {
+        let groups = metadata.get(file_id).into_iter().flatten();
+        if let Some((_, gate)) = self.gate_store.position_for(gate_id, file_id, groups) {
             return Some(gate.clone());
-        }
-
-        if let Some(groups) = metadata.get(file_id) {
-            for (parameter, group) in groups {
-                let key = MetaDataKey {
-                    parameter: parameter.clone(),
-                    group: group.clone(),
-                };
-                if let Some(gate) = self
-                    .gate_store
-                    .group_position_overrides
-                    .get(&(gate_id.clone(), key))
-                {
-                    return Some(gate.clone());
-                }
-            }
         }
 
         self.registered_gate(gate_id)
@@ -1066,6 +1409,33 @@ impl GateState {
     /// Returned as sets rather than answered per gate: the sidebar asks for
     /// every row it draws, and the override maps hold an entry per specimen or
     /// file, so a scan each time would be a scan of thousands per row.
+    /// The metadata column this gate's positions are grouped by, if any.
+    ///
+    /// Omiq stores one filter per file whatever drives it, and names the
+    /// grouping column separately. Without that name a set of per-file
+    /// positions reads as per-sample even when every file of a specimen holds
+    /// the same one, so the same run came back group-specific for containers
+    /// that already carried the name and sample-specific for the rest.
+    ///
+    /// A gate can hold positions under more than one column (see
+    /// [`GateSubStore::newest_group_position`]); this is the one written most
+    /// recently, and [`GateState::group_columns_newest_first`] lists them all.
+    pub fn group_override_column(
+        &self,
+        gate_id: &GateId,
+    ) -> Option<crate::omiq::metadata::MetaDataParameter> {
+        self.group_columns_newest_first(gate_id).into_iter().next()
+    }
+
+    /// Every column this gate's per-group positions are held under, the most
+    /// recently written first.
+    pub fn group_columns_newest_first(
+        &self,
+        gate_id: &GateId,
+    ) -> Vec<crate::omiq::metadata::MetaDataParameter> {
+        self.gate_store.group_columns_newest_first(gate_id)
+    }
+
     pub fn overridden_ids(&self) -> (FxHashSet<GateId>, FxHashSet<GateId>) {
         let groups = self
             .gate_store
@@ -1276,11 +1646,9 @@ impl GateState {
         // Drop the position overrides for every gate that went, not just the one
         // that was asked for.
         self.gate_store
-            .sample_position_overrides
-            .retain(|(gid, _file_id), _| !gates_to_delete.contains(gid));
+            .retain_sample_positions(|(gid, _file_id)| !gates_to_delete.contains(gid));
         self.gate_store
-            .group_position_overrides
-            .retain(|(gid, _group_id), _| !gates_to_delete.contains(gid));
+            .retain_group_positions(|(gid, _group_id)| !gates_to_delete.contains(gid));
 
         // A deleted gate must not be written back into an Omiq file, so its
         // rebuild entry goes with it. Ghost containers are untouched: they are
@@ -1466,8 +1834,9 @@ impl GateState {
 }
 
 impl GateState {
-    /// Resolve every gate for one sample: a per-sample override wins, then a
-    /// per-group override, then the global position.
+    /// Resolve every gate for one sample: the more recently written of its own
+    /// position and its groups' (see [`GateSubStore::position_for`]), else the
+    /// global position.
     pub fn get_current_sample(
         &self,
         file_id: FileId,
@@ -1481,24 +1850,14 @@ impl GateState {
 
         {
             let registry = &self.gate_store.primary_and_subgate_registry;
-            let sample_overrides = &self.gate_store.sample_position_overrides;
-            let group_overrides = &self.gate_store.group_position_overrides;
 
             for (default_id, base_arc) in &registry.0 {
-                if let Some((key, s_ovr)) =
-                    sample_overrides.get_key_value(&(default_id.clone(), file_id.clone()))
+                if let Some((source, gate)) = self
+                    .gate_store
+                    .position_for(default_id, &file_id, group_ids)
                 {
-                    active_gates.insert(default_id.clone(), s_ovr.clone().into());
-                    gate_origins.insert(default_id.clone(), GateSource::Sample(key.clone()));
-                } else if let Some((key, g_ovr)) = group_ids.iter().find_map(|gid| {
-                    let key = MetaDataKey {
-                        parameter: gid.0.clone(),
-                        group: gid.1.clone(),
-                    };
-                    group_overrides.get_key_value(&(default_id.clone(), key))
-                }) {
-                    active_gates.insert(default_id.clone(), g_ovr.clone().into());
-                    gate_origins.insert(default_id.clone(), GateSource::Group(key.clone()));
+                    active_gates.insert(default_id.clone(), gate.clone().into());
+                    gate_origins.insert(default_id.clone(), source);
                 } else {
                     active_gates.insert(default_id.clone(), base_arc.clone().into());
                     gate_origins.insert(default_id.clone(), GateSource::Global);
@@ -1514,6 +1873,48 @@ impl GateState {
 }
 
 impl GateState {
+    /// Replace every gate with the ones in an Omiq export.
+    ///
+    /// A second import is a *replacement*, not an addition.
+    /// [`upload_gates_from_file`](Self::upload_gates_from_file) registers what
+    /// the file holds alongside whatever is already there, which is right for
+    /// filling an empty document and wrong for loading a different one: the
+    /// previous document's gates would stay in the registry, unreachable from
+    /// the new tree but still resolved into every sample and still written back
+    /// out on export.
+    ///
+    /// The new document is built in a state of its own and swapped in only once
+    /// it has parsed, so a malformed file costs nothing - what is on screen
+    /// afterwards is what was there before, rather than half of a document that
+    /// failed to load.
+    pub fn replace_gates_from_file(
+        &mut self,
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<()> {
+        *self = Self::from_gating_file(path, metadata, axis_settings)?;
+        Ok(())
+    }
+
+    /// A whole document, read from an Omiq export into a state of its own.
+    ///
+    /// Separate from [`replace_gates_from_file`](Self::replace_gates_from_file)
+    /// because reading one is slow enough to want a worker thread - a real file
+    /// is hundreds of kilobytes over a few hundred containers - and a `Store`
+    /// cannot be written from one. The editor parses through this, then swaps
+    /// the result in on the thread that owns the store; the two paths share this
+    /// one definition of what loading a file means.
+    pub fn from_gating_file(
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<Self> {
+        let mut fresh = GateState::default();
+        fresh.upload_gates_from_file(path, metadata, axis_settings)?;
+        Ok(fresh)
+    }
+
     /// Build the gate tree from an Omiq experiment export.
     pub fn upload_gates_from_file(
         &mut self,
@@ -1521,6 +1922,21 @@ impl GateState {
         metadata: &crate::omiq::metadata::MetaDataFileMap,
         axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
     ) -> anyhow::Result<()> {
+        // Quadrants are built against the axes, by clamping into their range:
+        // an unusable axis would panic partway through the import (B-AX-3).
+        // The scaling reader refuses such a file, so this is the second line.
+        let mut problems: Vec<String> = axis_settings
+            .values()
+            .filter_map(AxisInfo::problem)
+            .collect();
+        if !problems.is_empty() {
+            problems.sort();
+            return Err(anyhow!(
+                "the scaling cannot be used to lay out the gates: {}",
+                problems.join("; ")
+            ));
+        }
+
         // 1. Open the file
         let text = std::fs::read_to_string(&path)?;
 
@@ -1597,26 +2013,41 @@ impl GateState {
                 .push((group_position, container.clone()));
         }
 
-        let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
-
-        // 2. Sort nodes by their depth in the tree
-        // This ensures parents always exist before children
-        sorted_nodes.sort_by_cached_key(|node| {
+        // 2. Sort nodes by their depth in the tree, so parents always exist
+        // before their children.
+        //
+        // Depth is found by walking each node's `parentId` to the root. A tree
+        // has no loops, and Omiq never writes one, so a node that is its own
+        // parent - or two that are each other's - is a damaged file: refused
+        // by name, rather than walked round forever. That walk used to hang
+        // the Workspace tab on "Loading" (B-OMIQ-2).
+        let mut depths: FxHashMap<&str, usize> = FxHashMap::default();
+        for node in experiment.tree.nodes.values() {
             let mut depth = 0;
+            let mut seen: FxHashSet<&str> = FxHashSet::default();
+            seen.insert(&node.id);
             let mut current_parent: &str = &node.parent_id;
-
-            // Walk up the tree to the root to find the depth
-            while current_parent != "" {
-                if let Some(parent) = experiment.tree.nodes.get(current_parent) {
-                    current_parent = &parent.parent_id;
-                    depth += 1;
-                } else {
-                    // Parent ID exists but isn't in the map (shouldn't happen with clean data)
-                    break;
+            while !current_parent.is_empty() {
+                if !seen.insert(current_parent) {
+                    return Err(anyhow!(
+                        "the file is damaged: its gate tree loops - node {} is its own ancestor, by way of node {current_parent}",
+                        node.id
+                    ));
+                }
+                match experiment.tree.nodes.get(current_parent) {
+                    Some(parent) => {
+                        current_parent = &parent.parent_id;
+                        depth += 1;
+                    }
+                    // A parent the file does not contain. It opens anyway, the
+                    // node under the root; see the test of that case.
+                    None => break,
                 }
             }
-            depth
-        });
+            depths.insert(&node.id, depth);
+        }
+        let mut sorted_nodes: Vec<_> = experiment.tree.nodes.values().collect();
+        sorted_nodes.sort_by_key(|node| depths[&*node.id]);
 
         // Build the tree. The hierarchy is keyed by node, so Omiq's own node ids
         // go in directly and a parent is just `node.parent_id` - no mapping from
@@ -1692,10 +2123,10 @@ impl GateState {
                         }
                     }
                     GateSource::Group(key) => {
-                        self.gate_store.group_position_overrides.insert(key, gate);
+                        self.gate_store.set_group_position(key, gate);
                     }
                     GateSource::Sample(key) => {
-                        self.gate_store.sample_position_overrides.insert(key, gate);
+                        self.gate_store.set_sample_position(key, gate);
                     }
                 }
             }
@@ -1744,22 +2175,18 @@ impl GateState {
                     }
                     GateSource::Group(key) => {
                         self.gate_store
-                            .group_position_overrides
-                            .insert(key.clone(), gate.clone());
+                            .set_group_position(key.clone(), gate.clone());
                         for sub_id in subgate_ids {
                             self.gate_store
-                                .group_position_overrides
-                                .insert((sub_id, key.1.clone()), gate.clone());
+                                .set_group_position((sub_id, key.1.clone()), gate.clone());
                         }
                     }
                     GateSource::Sample(key) => {
                         self.gate_store
-                            .sample_position_overrides
-                            .insert(key.clone(), gate.clone());
+                            .set_sample_position(key.clone(), gate.clone());
                         for sub_id in subgate_ids {
                             self.gate_store
-                                .sample_position_overrides
-                                .insert((sub_id, key.1.clone()), gate.clone());
+                                .set_sample_position((sub_id, key.1.clone()), gate.clone());
                         }
                     }
                 }
@@ -1807,6 +2234,16 @@ impl GateState {
 
 #[store(pub name = GateStateImplExt)]
 impl<Lens> Store<GateState, Lens> {
+    /// Subscribe the caller to every change in the gating - the gates at
+    /// every tier, and the tree - and to nothing else. Selecting a gate writes
+    /// the store as well, and a caller asking whether the gating changed should
+    /// not wake for that.
+    fn subscribe_to_gating(&self) {
+        let _ = self.gate_store().read();
+        let _ = self.hierarchy().read();
+        let _ = self.placements().read();
+    }
+
     fn get_current_sample(
         &mut self,
         file_id: FileId,
@@ -2052,95 +2489,42 @@ impl<Lens> Store<GateState, Lens> {
             y_axis_title.into(),
             parental_gate_id.map(|id| id.into()),
         );
-        let mut updates = Vec::new();
-        {
+        let updates = {
             let key_bind = self.gate_ids_by_view();
             let kbp = &*key_bind.peek();
             let Some(ids) = kbp.get(&key) else {
                 return Err(anyhow::anyhow!("No keys found"));
             };
-
-            for k in ids {
-                let Some(new_gate) = resolver.resolve_drawable(k)?.match_to_plot_axis(&x, &y)?
-                else {
-                    continue;
-                };
-                let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
-                let gate_origin = resolver
-                    .gate_origins
-                    .get(k)
-                    .ok_or_else(|| anyhow!("error finding gate source for {}", k))?
-                    .clone();
-
-                updates.push((
-                    new_gate_arc.get_id(),
-                    new_gate_arc.clone(),
-                    gate_origin.clone(),
-                ));
-
-                if new_gate_arc.is_composite() {
-                    for sub_id in new_gate_arc.get_inner_gate_ids() {
-                        updates.push((sub_id, new_gate_arc.clone(), gate_origin.clone()));
-                    }
-                }
-            }
+            oriented_to_plot(ids, &x, &y, resolver)?
+        };
+        // Almost always nothing to do: a gate needs writing only when the plot
+        // shows its axes the other way round. Writing regardless notified
+        // everything subscribed to the gates on every change of file or plot -
+        // re-rendering what had not changed, and stopping a rules run as if
+        // the gating had been edited.
+        if updates.is_empty() {
+            return Ok(());
         }
-        self.gate_store().with_mut(|s| {
-            for (id, gate, origin) in updates {
-                s.insert_for_source(&[id], &gate, &origin);
-            }
-        });
+        self.gate_store().with_mut(|s| s.apply_orientation(updates));
 
         Ok(())
     }
 
-    // to do
-
+    /// See [`GateSubStore::rescale_channel`].
     fn rescale_gates(
         &mut self,
         marker: &Arc<str>,
         old_axis_options: &AxisInfo,
         new_axis_options: &AxisInfo,
     ) -> Result<(), Vec<String>> {
-        let mut errors = vec![];
-
+        let mut result = Ok(());
         self.gate_store().with_mut(|s| {
-            s.map_gates(|gate| {
-                let (x_marker, y_marker) = gate.get_params();
-                // let is_x = marker == &x_marker;
-                // let data_range = if is_x {
-                //     (*(plot_map.x_data_min_max().start()), *(plot_map.x_data_min_max().end()))
-                // } else {
-                //     (*(plot_map.y_data_min_max().start()), *(plot_map.y_data_min_max().end()))
-                // };
-
-                if marker == &x_marker || marker == &y_marker {
-                    let new_gate = match gate.recalculate_gate_for_rescaled_axis(
-                        marker.clone(),
-                        &old_axis_options.transform,
-                        &new_axis_options.transform,
-                        // data_range,
-                        (new_axis_options.axis_lower, new_axis_options.axis_upper),
-                    ) {
-                        Ok(new_gate) => Arc::from(new_gate),
-                        Err(e) => {
-                            errors.push(e.to_string());
-                            gate.clone()
-                        }
-                    };
-                    new_gate
-                } else {
-                    gate.clone()
-                }
-            });
+            result = s.rescale_channel(marker, old_axis_options, new_axis_options);
         });
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        result
     }
 
+    /// See [`GateSubStore::relimit_channel`].
     fn set_current_axis_limits(
         &mut self,
         axis_name: Arc<str>,
@@ -2148,37 +2532,11 @@ impl<Lens> Store<GateState, Lens> {
         upper: f32,
         transform: TransformType,
     ) -> Result<(), Vec<String>> {
-        let mut errors = vec![];
-
+        let mut result = Ok(());
         self.gate_store().with_mut(|s| {
-            s.map_gates(|gate| {
-                let (x_marker, y_marker) = gate.get_params();
-                if axis_name == x_marker || axis_name == y_marker {
-                    let new_gate = match gate.recalculate_gate_for_new_axis_limits(
-                        axis_name.clone(),
-                        lower,
-                        upper,
-                        &transform,
-                    ) {
-                        Ok(Some(new_gate)) => Arc::from(new_gate),
-                        Ok(None) => gate.clone(),
-                        Err(e) => {
-                            errors.push(e.to_string());
-                            gate.clone()
-                        }
-                    };
-                    new_gate
-                } else {
-                    gate.clone()
-                }
-            });
+            result = s.relimit_channel(&axis_name, lower, upper, &transform);
         });
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        result
     }
 
     fn get_gate_name(&self, id: GateId) -> Option<String> {
@@ -2202,6 +2560,17 @@ impl<Lens> Store<GateState, Lens> {
     ) -> anyhow::Result<()> {
         self.write()
             .upload_gates_from_file(path, metadata, axis_settings)
+    }
+
+    /// See [`GateState::replace_gates_from_file`].
+    fn replace_gates_from_file(
+        &mut self,
+        path: PathBuf,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axis_settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    ) -> anyhow::Result<()> {
+        self.write()
+            .replace_gates_from_file(path, metadata, axis_settings)
     }
 }
 
@@ -2795,6 +3164,279 @@ mod gate_store_tests {
             .collect()
     }
 
+    // ── per-group positions under more than one column: the newest applies ──
+
+    /// A registered gate `r`, and a file in group `one` under both `Type` and
+    /// `SampleID`.
+    fn grouped_twice() -> (GateState, GateId, FxHashMap<MetaDataParameter, GroupId>) {
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state
+            .gate_store
+            .insert_for_source(&[global.get_id()], &global, &GateSource::Global);
+        let groups = groups(&[("Type", "one"), ("SampleID", "one")]);
+        (state, global.get_id(), groups)
+    }
+
+    fn place(
+        state: &mut GateState,
+        id: &GateId,
+        column: &str,
+        group: &str,
+    ) -> Arc<dyn DrawableGate> {
+        let gate = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(id),
+            &gate,
+            &GateSource::Group((id.clone(), group_key(column, group))),
+        );
+        gate
+    }
+
+    fn resolved(
+        state: &GateState,
+        id: &GateId,
+        groups: &FxHashMap<MetaDataParameter, GroupId>,
+    ) -> Arc<dyn DrawableGate> {
+        state
+            .get_current_sample(file("f"), groups)
+            .active_gates
+            .get(id)
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn the_newest_group_position_applies_whichever_column_it_is_under() {
+        // Both orders, so no hash order can make this pass by luck.
+        for (first, second) in [("Type", "SampleID"), ("SampleID", "Type")] {
+            let (mut state, id, groups) = grouped_twice();
+            place(&mut state, &id, first, "one");
+            let newest = place(&mut state, &id, second, "one");
+            assert!(
+                Arc::ptr_eq(&resolved(&state, &id, &groups), &newest),
+                "{first} then {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_older_group_position_still_holds_where_nothing_newer_applies() {
+        let (mut state, id, _) = grouped_twice();
+        let by_type = place(&mut state, &id, "Type", "one");
+        place(&mut state, &id, "SampleID", "one");
+        // Another specimen of the same type: the newer position is not its.
+        let other = groups(&[("Type", "one"), ("SampleID", "two")]);
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &other), &by_type));
+    }
+
+    #[test]
+    fn writing_a_column_again_makes_it_the_newest() {
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "Type", "one");
+        place(&mut state, &id, "SampleID", "one");
+        let again = place(&mut state, &id, "Type", "one");
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &again));
+        assert_eq!(
+            state.group_columns_newest_first(&id),
+            vec![Arc::from("Type"), Arc::from("SampleID")] as Vec<MetaDataParameter>
+        );
+    }
+
+    #[test]
+    fn the_export_and_the_screen_resolve_a_file_the_same_way() {
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "SampleID", "one");
+        place(&mut state, &id, "Type", "one");
+        let mut metadata: crate::omiq::metadata::MetaDataFileMap =
+            im::HashMap::with_hasher(FxBuildHasher);
+        metadata.insert(file("f"), groups.clone());
+        assert!(Arc::ptr_eq(
+            &state.gate_for_file(&id, &file("f"), &metadata).unwrap(),
+            &resolved(&state, &id, &groups)
+        ));
+    }
+
+    #[test]
+    fn positions_written_straight_into_the_map_tie_by_column_name() {
+        // Only tests write the map directly; the rule still must not hash.
+        let (mut state, id, groups) = grouped_twice();
+        let by_sample = rectangle("r");
+        state
+            .gate_store
+            .group_position_overrides
+            .insert((id.clone(), group_key("Type", "one")), rectangle("r"));
+        state.gate_store.group_position_overrides.insert(
+            (id.clone(), group_key("SampleID", "one")),
+            by_sample.clone(),
+        );
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &by_sample));
+    }
+
+    #[test]
+    fn deleting_a_gate_forgets_when_its_positions_were_written() {
+        let (mut state, id, _) = grouped_twice();
+        state.place_new_gate(None, id.clone()).unwrap();
+        place(&mut state, &id, "Type", "one");
+        state.remove_gate(id.clone()).unwrap();
+        assert!(state.group_columns_newest_first(&id).is_empty());
+        assert!(state.gate_store.group_written.is_empty());
+        assert!(state.gate_store.sample_written.is_empty());
+    }
+
+    // ── a sample's own position against its group's: the newer applies ─────
+
+    #[test]
+    fn a_group_position_written_after_a_samples_own_applies_to_it() {
+        // A rules run positions the specimen after someone adjusted one of
+        // its samples by hand: the run's answer is what that sample shows.
+        let (mut state, id, groups) = grouped_twice();
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        let run = place(&mut state, &id, "SampleID", "one");
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &run));
+    }
+
+    #[test]
+    fn a_samples_own_position_written_after_its_groups_applies_to_it() {
+        // And an adjustment made after the run beats the run.
+        let (mut state, id, groups) = grouped_twice();
+        place(&mut state, &id, "SampleID", "one");
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        assert!(Arc::ptr_eq(&resolved(&state, &id, &groups), &own));
+        // The other samples of the group keep the group's position.
+        let other = state
+            .get_current_sample(file("g"), &groups)
+            .active_gates
+            .get(&id)
+            .unwrap()
+            .0
+            .clone();
+        assert!(!Arc::ptr_eq(&other, &own));
+    }
+
+    #[test]
+    fn the_resolver_names_the_tier_it_resolved_from() {
+        // The editor writes a drag back into this tier, so it must be the one
+        // the position actually came from.
+        let (mut state, id, groups) = grouped_twice();
+        let own = rectangle("r");
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), file("f"))),
+        );
+        place(&mut state, &id, "SampleID", "one");
+        let resolver = state.get_current_sample(file("f"), &groups);
+        assert_eq!(
+            resolver.gate_origins.get(&id),
+            Some(&GateSource::Group((
+                id.clone(),
+                group_key("SampleID", "one")
+            )))
+        );
+    }
+
+    // ── GateState::unchanged_since: whether a run's answers still apply ──────
+
+    /// A document with one gate drawn at the root, and that gate's id.
+    fn drawn() -> (GateState, GateId) {
+        let mut state = GateState::default();
+        let g = rectangle("r");
+        state
+            .gate_store
+            .insert_for_source(&[g.get_id()], &g, &GateSource::Global);
+        state.place_new_gate(None, g.get_id()).unwrap();
+        (state, g.get_id())
+    }
+
+    #[test]
+    fn a_snapshot_is_unchanged_since_itself() {
+        let (state, _) = drawn();
+        let snapshot = state.clone();
+        assert!(state.unchanged_since(&snapshot));
+    }
+
+    #[test]
+    fn any_edit_to_the_gating_is_a_change() {
+        let (before, id) = drawn();
+        let edits: Vec<(&str, Box<dyn Fn(&mut GateState)>)> = vec![
+            (
+                "the gate moved",
+                Box::new(|s: &mut GateState| {
+                    let moved = rectangle("r");
+                    s.gate_store
+                        .insert_for_source(&[moved.get_id()], &moved, &GateSource::Global);
+                }),
+            ),
+            (
+                "a sample given its own position",
+                Box::new(|s: &mut GateState| {
+                    let own = rectangle("r");
+                    s.place_gate(
+                        &[own.get_id()],
+                        &own,
+                        &GateSource::Sample((own.get_id(), file("s1"))),
+                    );
+                }),
+            ),
+            (
+                "a specimen given its own position",
+                Box::new(|s: &mut GateState| {
+                    let own = rectangle("r");
+                    s.place_gate(
+                        &[own.get_id()],
+                        &own,
+                        &GateSource::Group((own.get_id(), group_key("SampleID", "A"))),
+                    );
+                }),
+            ),
+            (
+                "a gate added",
+                Box::new(|s: &mut GateState| {
+                    let other = rectangle("q");
+                    s.gate_store
+                        .insert_for_source(&[other.get_id()], &other, &GateSource::Global);
+                    s.place_new_gate(None, other.get_id()).unwrap();
+                }),
+            ),
+            (
+                "the gate deleted",
+                Box::new({
+                    let id = id.clone();
+                    move |s: &mut GateState| s.remove_gate(id.clone()).unwrap()
+                }),
+            ),
+            (
+                "the whole document replaced",
+                Box::new(|s: &mut GateState| *s = drawn().0),
+            ),
+        ];
+        for (what, edit) in edits {
+            let mut after = before.clone();
+            edit(&mut after);
+            assert!(!after.unchanged_since(&before), "{what}");
+        }
+    }
+
+    #[test]
+    fn selecting_a_gate_is_not_a_change() {
+        let (before, id) = drawn();
+        let mut after = before.clone();
+        after.selected_gate = Some(id);
+        assert!(after.unchanged_since(&before));
+    }
+
     #[test]
     fn a_gate_with_no_override_resolves_to_its_global_position() {
         let mut state = GateState::default();
@@ -2868,7 +3510,9 @@ mod gate_store_tests {
         ));
     }
 
-    /// Precedence is sample, then group, then global.
+    /// Written straight into the maps - so of no known age - a sample's own
+    /// position beats its group's, as it always has. Written through the
+    /// store, the newer wins; see the tests after this one.
     #[test]
     fn a_sample_override_beats_a_group_override() {
         let mut state = GateState::default();
@@ -3055,5 +3699,156 @@ mod gate_store_tests {
 
         assert!(state.is_ghost(&id), "registered, but nowhere in the tree");
         assert!(!state.is_ghost(&Arc::from("never-existed")));
+    }
+
+    // ── which files have a position of their own ──────────────────────────────
+
+    fn metadata_for(files: &[(&str, &[(&str, &str)])]) -> crate::omiq::metadata::MetaDataFileMap {
+        let mut map = im::HashMap::with_hasher(FxBuildHasher);
+        for (f, columns) in files {
+            map.insert(file(f), groups(columns));
+        }
+        map
+    }
+
+    #[test]
+    fn only_files_whose_gate_resolves_differently_have_their_own_position() {
+        // The export writes a per-file position only for these, so a file
+        // listed here that has none - or one missed that has one - is a gate
+        // written to the wrong place.
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state.place_gate(&[global.get_id()], &global, &GateSource::Global);
+        state.place_gate(
+            &[global.get_id()],
+            &rectangle("r"),
+            &GateSource::Sample((global.get_id(), file("s1"))),
+        );
+        state.place_gate(
+            &[global.get_id()],
+            &rectangle("r"),
+            &GateSource::Group((global.get_id(), group_key("Plate", "P2"))),
+        );
+        let metadata = metadata_for(&[
+            ("s1", &[("Plate", "P1")]),
+            ("s2", &[("Plate", "P1")]),
+            ("s3", &[("Plate", "P2")]),
+        ]);
+
+        let mut own = state.files_with_own_position(&global.get_id(), &metadata);
+        own.sort();
+        assert_eq!(own, vec![file("s1"), file("s3")]);
+    }
+
+    #[test]
+    fn a_gate_with_no_overrides_has_no_file_of_its_own() {
+        let mut state = GateState::default();
+        let global = rectangle("r");
+        state.place_gate(&[global.get_id()], &global, &GateSource::Global);
+        let metadata = metadata_for(&[("s1", &[]), ("s2", &[])]);
+        assert!(
+            state
+                .files_with_own_position(&global.get_id(), &metadata)
+                .is_empty()
+        );
+    }
+
+    // ── ghosts ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_gate_nothing_reaches_is_collected_and_one_on_a_plot_is_kept() {
+        let mut state = GateState::default();
+        let placed = add_rect(&mut state, None);
+        let ghost = rectangle("ghost");
+        state.place_gate(&[ghost.get_id()], &ghost, &GateSource::Global);
+
+        let dropped = state.collect_stranded_ghosts();
+        assert_eq!(dropped, vec![ghost.get_id()]);
+        assert!(!state.is_registered(&ghost.get_id()));
+        assert!(state.is_registered(&placed));
+        assert!(
+            state.collect_stranded_ghosts().is_empty(),
+            "nothing left to collect"
+        );
+    }
+
+    // ── walking the tree ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_tree_can_be_walked_from_the_root_down_and_back_up() {
+        let mut state = GateState::default();
+        let parent = add_rect(&mut state, None);
+        let parent_node = state.primary_node_for_gate(&parent).expect("placed");
+        let child = {
+            state
+                .add_gate(
+                    &mapper(),
+                    300.0,
+                    300.0,
+                    Arc::from(X),
+                    Arc::from(Y),
+                    None,
+                    Some(parent.clone()),
+                    PrimaryGateType::Rectangle,
+                    Some("the child".to_string()),
+                )
+                .unwrap();
+            state
+                .registered_ids()
+                .into_iter()
+                .find(|id| {
+                    state
+                        .registered_gate(id)
+                        .is_some_and(|g| g.get_name() == "the child")
+                })
+                .unwrap()
+        };
+        let child_node = state.primary_node_for_gate(&child).unwrap();
+
+        assert_eq!(state.root_nodes(), vec![NodeId::from(ROOTGATE.clone())]);
+        assert!(
+            state
+                .child_nodes(&NodeId::from(ROOTGATE.clone()))
+                .contains(&parent_node)
+        );
+        assert_eq!(state.child_nodes(&parent_node), vec![child_node.clone()]);
+        assert_eq!(state.parent_node(&child_node), Some(parent_node.clone()));
+        assert_eq!(
+            state.gate_chain_for_node(&child_node),
+            vec![parent.clone(), child]
+        );
+        assert!(state.node_order(&child_node).is_some());
+    }
+
+    #[test]
+    fn an_id_from_the_ui_is_read_as_a_tree_position() {
+        let mut state = GateState::default();
+        let gate = add_rect(&mut state, None);
+        let node = state.primary_node_for_gate(&gate).unwrap();
+
+        // A node id, a gate id, and the root all resolve; an unknown id
+        // falls back to the root rather than inventing a position.
+        assert_eq!(state.as_parent_node(node.as_arc()), node);
+        assert_eq!(state.as_parent_node(&gate), node);
+        assert_eq!(
+            state.as_parent_node(&ROOTGATE),
+            NodeId::from(ROOTGATE.clone())
+        );
+        assert_eq!(
+            state.as_parent_node(&Arc::from("nowhere")),
+            NodeId::from(ROOTGATE.clone())
+        );
+    }
+
+    #[test]
+    fn a_new_gate_is_placed_at_its_own_node() {
+        let mut state = GateState::default();
+        let g = rectangle("fresh");
+        state.place_gate(&[g.get_id()], &g, &GateSource::Global);
+        let node = state.place_new_gate(None, g.get_id()).unwrap();
+
+        assert_eq!(node, NodeId::from(g.get_id()));
+        assert_eq!(state.gate_for_node(&node), Some(&g.get_id()));
+        assert_eq!(state.placement_count(&g.get_id()), 1);
     }
 }

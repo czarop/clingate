@@ -17,8 +17,11 @@
 
 pub mod autogate;
 pub mod confidence;
+pub mod phenotype;
+pub mod phenotype_gate;
 pub mod rule;
 pub mod rule_store;
+pub mod shape_fit;
 pub mod threshold;
 
 #[cfg(test)]
@@ -26,6 +29,12 @@ mod autogate_tests;
 #[cfg(test)]
 mod confidence_tests;
 mod harness_tests;
+#[cfg(test)]
+mod phenotype_gate_tests;
+#[cfg(test)]
+mod phenotype_tests;
 mod rule_store_tests;
 mod rule_tests;
+#[cfg(test)]
+mod shape_fit_tests;
 mod threshold_tests;

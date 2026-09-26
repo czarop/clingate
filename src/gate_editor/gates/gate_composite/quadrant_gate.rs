@@ -2,7 +2,9 @@ use flow_fcs::TransformType;
 
 use crate::gate_editor::{
     gates::{
-        gate_composite::skewed_quadrant_gate::{DataPoints, create_skewed_quadrant_geos, get_infinite_bounds},
+        gate_composite::skewed_quadrant_gate::{
+            DataPoints, create_skewed_quadrant_geos, get_infinite_bounds,
+        },
         gate_drag::{GateDragData, PointDragData},
         gate_single::{polygon_gate::PolygonGate, rescale_helper_point},
         gate_traits::DrawableGate,
@@ -15,7 +17,7 @@ use flow_gates::Gate;
 
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
-use std::{sync::Arc};
+use std::sync::Arc;
 type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
 #[derive(PartialEq, Clone)]
@@ -26,7 +28,7 @@ pub struct QuadrantGate {
     points: DataPoints,
     axis_matched: bool,
     parameters: (Arc<str>, Arc<str>),
-    infs: (f32, f32)
+    infs: (f32, f32),
 }
 
 impl QuadrantGate {
@@ -56,7 +58,7 @@ impl QuadrantGate {
             true,
             None,
             None,
-            infs
+            infs,
         )
     }
 
@@ -69,7 +71,7 @@ impl QuadrantGate {
         axis_matched: bool,
         subgate_ids: Option<Vec<Arc<str>>>,
         subgate_names: Option<(String, String, String, String)>,
-        infs: (f32, f32)
+        infs: (f32, f32),
     ) -> Result<Self> {
         // FORCE ORTHOGONALITY: Overwrite any skew with center alignment
         data_points.left.1 = data_points.center.1;
@@ -81,7 +83,13 @@ impl QuadrantGate {
         let parameters = (x_axis_param.clone(), y_axis_param.clone());
 
         // Reuse the skewed geometry generator (orthogonal is just 0 skew)
-        let geos = create_skewed_quadrant_geos(data_points.clone(), &x_axis_param, &y_axis_param, infs.0, infs.1)?;
+        let geos = create_skewed_quadrant_geos(
+            data_points.clone(),
+            &x_axis_param,
+            &y_axis_param,
+            infs.0,
+            infs.1,
+        )?;
 
         let sub_ids = if let Some(ids) = subgate_ids {
             ids
@@ -131,7 +139,7 @@ impl QuadrantGate {
             points: data_points,
             axis_matched,
             parameters,
-            infs
+            infs,
         })
     }
 
@@ -154,7 +162,11 @@ impl QuadrantGate {
             self.axis_matched,
             Some(gate_ids),
             Some(gate_names),
-            if infs.is_some() {infs.unwrap()} else {self.infs}
+            if infs.is_some() {
+                infs.unwrap()
+            } else {
+                self.infs
+            },
         )
     }
 
@@ -174,7 +186,7 @@ impl QuadrantGate {
                 points: new_points,
                 axis_matched: !self.axis_matched,
                 parameters: new_parameters,
-                infs
+                infs,
             })
         } else {
             Box::new(Self {
@@ -184,7 +196,7 @@ impl QuadrantGate {
                 points: self.points.clone(),
                 axis_matched: self.axis_matched,
                 parameters: self.parameters.clone(),
-                infs: self.infs.clone()
+                infs: self.infs.clone(),
             })
         }
     }
@@ -250,7 +262,9 @@ impl DrawableGate for QuadrantGate {
             (*a.start(), *a.end())
         };
 
-        let mut center = self.points.center;
+        // Drawn on the plot even when a narrowed axis has left the real centre
+        // off it; see `drawn_centre`.
+        let mut center = super::drawn_centre(self.points.center, (xmin, xmax), (ymin, ymax));
 
         if let Some(dd) = drag_point {
             let x_span = (xmax - xmin).abs();
@@ -463,25 +477,21 @@ impl DrawableGate for QuadrantGate {
         upper: f32,
         _transform: &TransformType,
     ) -> Result<Option<Box<dyn DrawableGate>>> {
+        super::usable_range(lower, upper)?;
+        // An axis range says what is shown, not what is gated. Only where the
+        // arms end moves; the centre, and so every event's quarter, stays put.
+        // It used to be clamped into the middle 80% of the new range, which
+        // moved any quadrant near the end of the axis (B-AX-4).
         let is_x = param == self.parameters.0;
-        let mut new_points = self.points.clone();
-        let buffer = (upper - lower).abs() * 0.1;
-
+        let mut p = self.points.clone();
         if is_x {
-            new_points.center.0 = new_points.center.0.clamp(lower + buffer, upper - buffer);
-            new_points.left.0 = lower;
-            new_points.right.0 = upper;
-            new_points.top.0 = new_points.center.0;
-            new_points.bottom.0 = new_points.center.0;
+            p.left = super::arm_to_edge(p.center, p.left, true, lower);
+            p.right = super::arm_to_edge(p.center, p.right, true, upper);
         } else {
-            new_points.center.1 = new_points.center.1.clamp(lower + buffer, upper - buffer);
-            new_points.top.1 = upper;
-            new_points.bottom.1 = lower;
-            new_points.left.1 = new_points.center.1;
-            new_points.right.1 = new_points.center.1;
+            p.bottom = super::arm_to_edge(p.center, p.bottom, false, lower);
+            p.top = super::arm_to_edge(p.center, p.top, false, upper);
         }
-
-        Ok(Some(Box::new(self.clone_with_point(new_points, None)?)))
+        Ok(Some(Box::new(self.clone_with_point(p, None)?)))
     }
 
     fn recalculate_gate_for_rescaled_axis(
@@ -492,52 +502,33 @@ impl DrawableGate for QuadrantGate {
         // data_range: (f32, f32),
         axis_range: (f32, f32),
     ) -> Result<Box<dyn DrawableGate>> {
+        super::usable_range(axis_range.0, axis_range.1)?;
         let (x_param, _) = &self.parameters;
         let is_x = x_param == &param;
-
-        let mut c = rescale_helper_point(
-            self.points.center,
-            &param,
-            x_param,
-            old_transform,
-            new_transform,
-        )?;
-
-        // Orthogonal quadrants only care about the center and the edges
-        let new_lower = axis_range.0;
-        let new_upper = axis_range.1;
-        let buffer = (new_upper - new_lower).abs() * 0.1;
-
-        if is_x {
-            c.0 = c.0.clamp(new_lower + buffer, new_upper - buffer);
-        } else {
-            c.1 = c.1.clamp(new_lower + buffer, new_upper - buffer);
-        }
-
+        // Every point goes back to raw data through the old transform and out
+        // through the new one - nothing clamped, nothing snapped - so the
+        // quadrant splits the same events it did. The centre used to be
+        // clamped into the middle 80% of the new axis, which moved a quadrant
+        // near either end of it (B-AX-4). A change of range, if the new
+        // scaling has one, is the range change's to carry.
+        let convert = |point: (f32, f32)| {
+            rescale_helper_point(point, &param, x_param, old_transform, new_transform)
+        };
         let new_pts = DataPoints {
-            center: c,
-            left: (if is_x { new_lower } else { self.points.left.0 }, c.1),
-            right: (if is_x { new_upper } else { self.points.right.0 }, c.1),
-            bottom: (
-                c.0,
-                if !is_x {
-                    new_lower
-                } else {
-                    self.points.bottom.1
-                },
-            ),
-            top: (c.0, if !is_x { new_upper } else { self.points.top.1 }),
-            
+            center: convert(self.points.center)?,
+            left: convert(self.points.left)?,
+            right: convert(self.points.right)?,
+            bottom: convert(self.points.bottom)?,
+            top: convert(self.points.top)?,
         };
         let infs = {
-            
             let new_inf = get_infinite_bounds(&new_transform);
             if is_x {
                 (new_inf, self.infs.1)
             } else {
                 (self.infs.0, new_inf)
             }
-    };
+        };
         Ok(Box::new(self.clone_with_point(new_pts, Some(infs))?))
     }
 
@@ -589,30 +580,14 @@ impl DrawableGate for QuadrantGate {
             (*axis.start(), *axis.end())
         };
 
-        let (left, bottom, right, top, center) = {
-            (
-                (xmin, self.points.left),
-                (self.points.bottom, ymin),
-                (xmax, self.points.right),
-                (self.points.top, ymax),
-                self.points.center,
-            )
-        };
-
-        let mut closest = f32::INFINITY;
-
-        if let Some(dis) = self.is_near_segment(point, left.1, center, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, right.1, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, bottom.0, tolerance) {
-            closest = closest.min(dis);
-        }
-        if let Some(dis) = self.is_near_segment(point, center, top.0, tolerance) {
-            closest = closest.min(dis);
-        }
+        // The lines as drawn: level and upright through the drawn centre,
+        // across the whole plot. The arms' stored ends are left wherever the
+        // last change of axis put them and say nothing about where they show.
+        let c = super::drawn_centre(self.points.center, (xmin, xmax), (ymin, ymax));
+        let closest = [((xmin, c.1), (xmax, c.1)), ((c.0, ymin), (c.0, ymax))]
+            .iter()
+            .filter_map(|&(from, to)| self.is_near_segment(point, from, to, tolerance))
+            .fold(f32::INFINITY, f32::min);
 
         if closest == f32::INFINITY {
             None
