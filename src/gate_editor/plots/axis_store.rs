@@ -2,9 +2,8 @@ use anyhow::anyhow;
 use core::f32;
 use dioxus::prelude::*;
 use flow_fcs::{TransformType, Transformable};
-use flow_gates::transforms::{
-    Axis, get_plotting_area, pixel_to_raw, pixel_to_raw_y, raw_to_pixel, raw_to_pixel_y,
-};
+use flow_gates::transforms::{pixel_to_raw, pixel_to_raw_y, raw_to_pixel, raw_to_pixel_y};
+use flow_plots::BasePlotOptions;
 use polars::{
     frame::DataFrame,
     prelude::{CsvReadOptions, DataType, Field, Schema},
@@ -31,6 +30,8 @@ pub struct PlotMapper {
 }
 
 impl PlotMapper {
+    /// A mapper for a `width` x `height` plot drawn with the default margins
+    /// and label areas. See [`PlotMapper::for_plot`].
     pub fn new(
         width: f32,
         height: f32,
@@ -41,11 +42,39 @@ impl PlotMapper {
         x_transform: TransformType,
         y_transform: TransformType,
     ) -> Self {
-        let (x_pix_range, y_pix_range) = get_plotting_area(width as u32, height as u32);
+        let base = BasePlotOptions {
+            width: width as u32,
+            height: height as u32,
+            ..Default::default()
+        };
+        Self::for_plot(
+            &base,
+            x_data_axis_range,
+            y_data_axis_range,
+            x_data_range,
+            y_data_range,
+            x_transform,
+            y_transform,
+        )
+    }
+
+    /// A mapper for the plot drawn with `base`: the same options the image
+    /// is rendered with, so the plotting area is the one the events were
+    /// drawn in and a gate sits over the events it holds.
+    pub fn for_plot(
+        base: &BasePlotOptions,
+        x_data_axis_range: RangeInclusive<f32>,
+        y_data_axis_range: RangeInclusive<f32>,
+        x_data_range: RangeInclusive<f32>,
+        y_data_range: RangeInclusive<f32>,
+        x_transform: TransformType,
+        y_transform: TransformType,
+    ) -> Self {
+        let (x_pix_range, y_pix_range) = flow_plots::plotting_area(base);
 
         Self {
-            view_width: width,
-            view_height: height,
+            view_width: base.width as f32,
+            view_height: base.height as f32,
             x_data_axis_range,
             y_data_axis_range,
             x_transform,
@@ -70,28 +99,47 @@ impl PlotMapper {
         )
     }
 
+    /// The data under a pixel of the plot.
+    ///
+    /// An error where there is none: a plot too small to hold its margins
+    /// and labels, an axis range that is not finite or runs backwards, or a
+    /// pixel that is not a number. A pixel beyond the plotting area is taken
+    /// as the edge it is beyond.
     pub fn pixel_to_data(
         &self,
         px: f32,
         py: f32,
         x_t: Option<TransformType>,
         y_t: Option<TransformType>,
-    ) -> (f32, f32) {
-        let xt = x_t.unwrap_or(TransformType::Linear);
-        let yt = y_t.unwrap_or(TransformType::Linear);
-        let dx_raw = pixel_to_raw(px, &self.x_data_axis_range, &self.x_pix_range, &xt);
-        let dy_raw = pixel_to_raw_y(py, &self.y_data_axis_range, &self.y_pix_range, &yt);
-        (dx_raw, dy_raw)
+    ) -> anyhow::Result<(f32, f32)> {
+        Ok((
+            self.pixel_x_to_data(px, x_t)?,
+            self.pixel_y_to_data(py, y_t)?,
+        ))
     }
 
-    pub fn pixel_x_to_data(&self, x: f32, t: Option<TransformType>) -> f32 {
+    /// The x value under a pixel column. See [`PlotMapper::pixel_to_data`].
+    pub fn pixel_x_to_data(&self, x: f32, t: Option<TransformType>) -> anyhow::Result<f32> {
         let xt = t.unwrap_or(TransformType::Linear);
-        pixel_to_raw(x, &self.x_data_axis_range, &self.x_pix_range, &xt)
+        pixel_to_raw(x, &self.x_data_axis_range, &self.x_pix_range, &xt).ok_or_else(|| {
+            anyhow!(
+                "no data under pixel column {x}: plotting area {:?}, axis {:?}",
+                self.x_pix_range,
+                self.x_data_axis_range
+            )
+        })
     }
 
-    pub fn pixel_y_to_data(&self, y: f32, t: Option<TransformType>) -> f32 {
+    /// The y value under a pixel row. See [`PlotMapper::pixel_to_data`].
+    pub fn pixel_y_to_data(&self, y: f32, t: Option<TransformType>) -> anyhow::Result<f32> {
         let yt = t.unwrap_or(TransformType::Linear);
-        pixel_to_raw_y(y, &self.y_data_axis_range, &self.y_pix_range, &yt)
+        pixel_to_raw_y(y, &self.y_data_axis_range, &self.y_pix_range, &yt).ok_or_else(|| {
+            anyhow!(
+                "no data under pixel row {y}: plotting area {:?}, axis {:?}",
+                self.y_pix_range,
+                self.y_data_axis_range
+            )
+        })
     }
 
     pub fn data_to_pixel(

@@ -217,8 +217,10 @@ pub fn GateLayer(
                         let local_coords = &evt.data.coordinates().element();
                         let norm_x = local_coords.x as f32;
                         let norm_y = local_coords.y as f32;
-                        let (data_x, data_y) = mapper
-                            .pixel_to_data(norm_x, norm_y, None, None);
+                        let Ok((data_x, data_y)) = mapper
+                            .pixel_to_data(norm_x, norm_y, None, None) else {
+                            return;
+                        };
 
                         let mut clicked_gate = None;
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
@@ -260,7 +262,9 @@ pub fn GateLayer(
                     let py = local_coords.y as f32;
                     let x_param = &*x_channel.peek();
                     let y_param = &*y_channel.peek();
-                    let (_, dy) = mapper.pixel_to_data(px, py, None, None);
+                    let Ok((_, dy)) = mapper.pixel_to_data(px, py, None, None) else {
+                        return;
+                    };
 
                     let points = {
                         if let Some(curr_gate) = &*draft_gate.peek() {
@@ -350,7 +354,9 @@ pub fn GateLayer(
 
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
                         let current_resolver_move = current_resolver_move.clone();
-                        let data_coords = map.pixel_to_data(px as f32, py as f32, None, None);
+                        let Ok(data_coords) = map.pixel_to_data(px as f32, py as f32, None, None) else {
+                            return;
+                        };
                         let mut new_data = data.clone_with_point(data_coords);
                         if let Some(selected_gate_id) = selected_gate_op {
                             match &mut new_data {
@@ -395,7 +401,9 @@ pub fn GateLayer(
                         let Some(mapper_ref) = mapper.as_ref() else {
                             return;
                         };
-                        let data_coords = mapper_ref.pixel_to_data(px, py, None, None);
+                        let Ok(data_coords) = mapper_ref.pixel_to_data(px, py, None, None) else {
+                            return;
+                        };
 
                         let new_data = data.clone_with_point(data_coords);
                         let selected_gate_op = gate_store.selected_gate().peek().cloned();
@@ -455,7 +463,9 @@ pub fn GateLayer(
                                 let norm_x = local_coords.x as f32;
                                 let norm_y = local_coords.y as f32;
                                 let pixel_coords = (norm_x, norm_y);
-                                let data_coords = mapper.pixel_to_data(norm_x, norm_y, None, None);
+                                let Ok(data_coords) = mapper.pixel_to_data(norm_x, norm_y, None, None) else {
+                                    return;
+                                };
                                 let selected_gate_id = gate_store.selected_gate().peek().cloned();
                                 let gates = &*gates.read();
 
@@ -602,7 +612,9 @@ fn was_gate_clicked(
     mapper: &PlotMapper,
     gates: &[Arc<dyn DrawableGate>],
 ) -> Option<Arc<dyn DrawableGate>> {
-    let (data_x, data_y) = mapper.pixel_to_data(click_coords.0, click_coords.1, None, None);
+    let (data_x, data_y) = mapper
+        .pixel_to_data(click_coords.0, click_coords.1, None, None)
+        .ok()?;
 
     let mut closest_gate = None;
 
@@ -698,9 +710,10 @@ fn RenderShape(
                                                 let local_coords = &evt.data.coordinates().element();
                                                 let px = local_coords.x as f32;
                                                 let py = local_coords.y as f32;
-                                                let data_coords = plot_map()
-                                                    .unwrap()
-                                                    .pixel_to_data(px, py, None, None);
+                                                let Some(Ok(data_coords)) = plot_map()
+                                                    .map(|m| m.pixel_to_data(px, py, None, None)) else {
+                                                    return;
+                                                };
                                                 let point_drag_data = PointDragData::new(index, data_coords);
                                                 drag_data_signal.set(Some(GateDragType::Point(point_drag_data)));
                                             }
@@ -845,9 +858,10 @@ fn RenderShape(
                                 let local_coords = &evt.data.coordinates().element();
                                 let px = local_coords.x as f32;
                                 let py = local_coords.y as f32;
-                                let data_coords = plot_map()
-                                    .unwrap()
-                                    .pixel_to_data(px, py, None, None);
+                                let Some(Ok(data_coords)) = plot_map()
+                                    .map(|m| m.pixel_to_data(px, py, None, None)) else {
+                                    return;
+                                };
                                 drag_data_signal
                                     .set(
                                         Some(

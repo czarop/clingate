@@ -892,11 +892,11 @@ pub fn create_default_ellipse(
     x_channel: &str,
     y_channel: &str,
 ) -> anyhow::Result<GateGeometry> {
-    let data_coords = plot_map.pixel_to_data(cx_raw, cy_raw, None, None);
+    let data_coords = plot_map.pixel_to_data(cx_raw, cy_raw, None, None)?;
     let (click_x, click_y) = data_coords;
 
-    let edge_x_data = plot_map.pixel_to_data(cx_raw + rx_raw, cy_raw, None, None);
-    let edge_y_data = plot_map.pixel_to_data(cx_raw, cy_raw + ry_raw, None, None);
+    let edge_x_data = plot_map.pixel_to_data(cx_raw + rx_raw, cy_raw, None, None)?;
+    let edge_y_data = plot_map.pixel_to_data(cx_raw, cy_raw + ry_raw, None, None)?;
     let rx = (edge_x_data.0 - click_x).abs();
     let ry = (edge_y_data.1 - click_y).abs();
     let coords = vec![

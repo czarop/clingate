@@ -68,11 +68,11 @@ pub struct PlotJob {
 /// A drawn plot, and nothing that made it.
 #[derive(Clone)]
 pub struct PlotImage {
-    /// The JPEG, as an `<img src>` can take it.
+    /// The PNG, as an `<img src>` can take it.
     pub src: String,
-    /// The same JPEG unencoded, for the PDF - which embeds the bytes exactly as
-    /// they are rather than re-compressing them.
-    pub jpeg: Arc<Vec<u8>>,
+    /// The same PNG unencoded, for the PDF - which embeds its compressed
+    /// pixels exactly as they are rather than decoding and re-compressing.
+    pub png: Arc<Vec<u8>>,
     /// Data coordinates to pixels, for drawing the gates on top. The same
     /// mapper the editor's overlay uses, so an outline lands identically.
     pub mapper: Arc<PlotMapper>,
@@ -84,7 +84,7 @@ pub struct PlotImage {
 
 impl PartialEq for PlotImage {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.jpeg, &other.jpeg)
+        Arc::ptr_eq(&self.png, &other.png)
     }
 }
 
@@ -140,10 +140,10 @@ pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
     drop(mapped);
     drop(frame);
 
-    let (jpeg, mapper) = draw(points, job)?;
+    let (png, mapper) = draw(points, job)?;
     Ok(PlotImage {
-        src: format!("data:image/jpeg;base64,{}", BASE64_STANDARD.encode(&jpeg)),
-        jpeg: Arc::new(jpeg),
+        src: format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&png)),
+        png: Arc::new(png),
         mapper: Arc::new(mapper),
         parent_events,
         stats,
@@ -205,9 +205,10 @@ fn draw(points: Vec<(f32, f32)>, job: &PlotJob) -> anyhow::Result<(Vec<u8>, Plot
         .label(job.y_axis.param.to_string())
         .build()?;
 
-    let mapper = PlotMapper::new(
-        size as f32,
-        size as f32,
+    // Built from the options the image is drawn with, so the gates map to
+    // the plotting area the events are in.
+    let mapper = PlotMapper::for_plot(
+        &base,
         *x_options.range.start()..=*x_options.range.end(),
         *y_options.range.start()..=*y_options.range.end(),
         bounds.0,
@@ -217,7 +218,7 @@ fn draw(points: Vec<(f32, f32)>, job: &PlotJob) -> anyhow::Result<(Vec<u8>, Plot
     );
 
     let options = DensityPlotOptions::new()
-        .base(base)
+        .base(base.clone())
         .plot_type(flow_plots::PlotType::Density)
         .colormap(ColorMaps::Jet)
         .x_axis(x_options)

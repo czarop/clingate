@@ -96,7 +96,7 @@ fn pixel_to_data_and_back_is_a_round_trip() {
         (450.0, 200.0),
         (250.0, 500.0),
     ] {
-        let (dx, dy) = m.pixel_to_data(px, py, None, None);
+        let (dx, dy) = m.pixel_to_data(px, py, None, None).unwrap();
         let (rx, ry) = m.data_to_pixel(dx, dy, None, None);
 
         assert!((rx - px).abs() < 0.5, "x: {px} -> {dx} -> {rx}");
@@ -109,7 +109,7 @@ fn the_round_trip_holds_on_an_arcsinh_axis() {
     let m = arcsinh();
 
     for (px, py) in [(120.0, 120.0), (300.0, 400.0), (500.0, 250.0)] {
-        let (dx, dy) = m.pixel_to_data(px, py, None, None);
+        let (dx, dy) = m.pixel_to_data(px, py, None, None).unwrap();
         let (rx, ry) = m.data_to_pixel(dx, dy, None, None);
 
         assert!((rx - px).abs() < 0.5, "x: {px} -> {dx} -> {rx}");
@@ -120,10 +120,10 @@ fn the_round_trip_holds_on_an_arcsinh_axis() {
 #[test]
 fn the_single_axis_helpers_agree_with_the_pair() {
     let m = linear();
-    let (dx, dy) = m.pixel_to_data(200.0, 400.0, None, None);
+    let (dx, dy) = m.pixel_to_data(200.0, 400.0, None, None).unwrap();
 
-    assert!((m.pixel_x_to_data(200.0, None) - dx).abs() < 1e-4);
-    assert!((m.pixel_y_to_data(400.0, None) - dy).abs() < 1e-4);
+    assert!((m.pixel_x_to_data(200.0, None).unwrap() - dx).abs() < 1e-4);
+    assert!((m.pixel_y_to_data(400.0, None).unwrap() - dy).abs() < 1e-4);
 }
 
 // ─── Direction and monotonicity ───────────────────────────────────────────────
@@ -131,8 +131,8 @@ fn the_single_axis_helpers_agree_with_the_pair() {
 #[test]
 fn x_increases_to_the_right() {
     let m = linear();
-    let left = m.pixel_x_to_data(150.0, None);
-    let right = m.pixel_x_to_data(450.0, None);
+    let left = m.pixel_x_to_data(150.0, None).unwrap();
+    let right = m.pixel_x_to_data(450.0, None).unwrap();
 
     assert!(left < right, "data x should grow with pixel x");
 }
@@ -142,8 +142,8 @@ fn x_increases_to_the_right() {
 #[test]
 fn y_increases_upward() {
     let m = linear();
-    let top = m.pixel_y_to_data(150.0, None);
-    let bottom = m.pixel_y_to_data(450.0, None);
+    let top = m.pixel_y_to_data(150.0, None).unwrap();
+    let bottom = m.pixel_y_to_data(450.0, None).unwrap();
 
     assert!(top > bottom, "data y should shrink as pixel y grows");
 }
@@ -155,7 +155,7 @@ fn the_mapping_is_monotonic_across_the_plot() {
 
     for step in 0..20 {
         let px = 100.0 + step as f32 * 20.0;
-        let dx = m.pixel_x_to_data(px, None);
+        let dx = m.pixel_x_to_data(px, None).unwrap();
         assert!(dx > previous, "not monotonic at {px}");
         previous = dx;
     }
@@ -231,5 +231,72 @@ fn params_compare_by_both_marker_and_channel() {
     assert_ne!(
         a, c,
         "the same marker on a different channel is a different param"
+    );
+}
+
+// ─── No plotting area ─────────────────────────────────────────────────────────
+
+/// A plot too small to hold its margins and labels has no plotting area, so
+/// no pixel on it has data under it: that is an error to handle, not a
+/// panic on the UI thread, which is what it used to be.
+#[test]
+fn a_plot_with_no_plotting_area_maps_no_pixel() {
+    let m = PlotMapper::new(
+        60.0,
+        60.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    assert!(m.pixel_to_data(30.0, 30.0, None, None).is_err());
+    assert!(m.pixel_x_to_data(30.0, None).is_err());
+    assert!(m.pixel_y_to_data(30.0, None).is_err());
+}
+
+/// A pixel that is not a number has no data under it either.
+#[test]
+fn a_pixel_that_is_not_a_number_maps_to_nothing() {
+    let m = linear();
+    assert!(m.pixel_to_data(f32::NAN, 100.0, None, None).is_err());
+    assert!(m.pixel_to_data(100.0, f32::INFINITY, None, None).is_err());
+}
+
+/// The mapper built for a plot uses the plot's own layout: with other
+/// margins or label areas than the default, the same pixel is other data.
+#[test]
+fn a_mapper_for_a_plot_uses_its_layout() {
+    let wide_labels = flow_plots::BasePlotOptions {
+        width: 600,
+        height: 600,
+        y_label_area_size: 120,
+        ..Default::default()
+    };
+    let for_plot = PlotMapper::for_plot(
+        &wide_labels,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    let (x_area, _) = flow_plots::plotting_area(&wide_labels);
+    // The left edge of the plot's own area is the bottom of the x axis.
+    assert_eq!(
+        for_plot.pixel_x_to_data(x_area.start as f32, None).unwrap(),
+        0.0
+    );
+    assert_eq!(
+        for_plot.data_to_pixel(0.0, 0.0, None, None).0,
+        x_area.start as f32
+    );
+    let default = linear();
+    assert_ne!(
+        default.pixel_x_to_data(x_area.start as f32, None).unwrap(),
+        0.0,
+        "the premise: the default layout puts that pixel elsewhere"
     );
 }

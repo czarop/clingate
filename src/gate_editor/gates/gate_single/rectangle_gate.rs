@@ -363,8 +363,8 @@ pub fn create_default_rectangle(
     let half_width = width_raw / 2f32;
     let half_height = height_raw / 2f32;
 
-    let max = plot_map.pixel_to_data(cx_raw + half_width, cy_raw + half_height, None, None);
-    let min = plot_map.pixel_to_data(cx_raw - half_width, cy_raw - half_height, None, None);
+    let max = plot_map.pixel_to_data(cx_raw + half_width, cy_raw + half_height, None, None)?;
+    let min = plot_map.pixel_to_data(cx_raw - half_width, cy_raw - half_height, None, None)?;
     let coords = vec![min, max];
 
     flow_gates::geometry::create_rectangle_geometry(coords, x_channel, y_channel)

@@ -92,7 +92,7 @@ pub(super) fn contact_sheet(
                 Ok(plot) => match render_plot(&plot.job) {
                     Ok(image) => Cell::Drawn(Drawn {
                         name: entry.name.clone(),
-                        jpeg: image.jpeg.clone(),
+                        png: image.png.clone(),
                         shapes: flatten_gates(
                             &plot.drawn,
                             &image.stats,

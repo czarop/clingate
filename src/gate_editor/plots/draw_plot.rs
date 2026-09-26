@@ -73,9 +73,10 @@ pub fn PseudoColourPlot(
                         )
                     };
 
-                    let mapper = PlotMapper::new(
-                        width as f32,
-                        height as f32,
+                    // Built from the options the image is drawn with, so the
+                    // gates map to the plotting area the events are in.
+                    let mapper = PlotMapper::for_plot(
+                        &base_options,
                         inc_x,
                         inc_y,
                         RangeInclusive::new(bounds.0.0, bounds.0.1),
@@ -84,7 +85,7 @@ pub fn PseudoColourPlot(
                         y_axis_info.transform.clone(),
                     );
                     let options = DensityPlotOptions::new()
-                        .base(base_options)
+                        .base(base_options.clone())
                         .plot_type(flow_plots::PlotType::Density)
                         .colormap(ColorMaps::Jet)
                         .x_axis(x_axis_options)
@@ -98,7 +99,7 @@ pub fn PseudoColourPlot(
 
                     let base64_str = BASE64_STANDARD.encode(&plot_data);
                     Ok((
-                        format!("data:image/jpeg;base64,{}", base64_str),
+                        format!("data:image/png;base64,{}", base64_str),
                         Arc::new(mapper),
                     ))
                 },

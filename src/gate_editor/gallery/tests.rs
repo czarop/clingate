@@ -99,7 +99,7 @@ fn print(file: &str, gates: Vec<Arc<dyn DrawableGate>>) -> Fingerprint {
 fn picture() -> Arc<PlotImage> {
     Arc::new(PlotImage {
         src: String::new(),
-        jpeg: Arc::new(Vec::new()),
+        png: Arc::new(Vec::new()),
         mapper: Arc::new(mapper()),
         parent_events: 0,
         stats: Default::default(),
@@ -258,17 +258,42 @@ fn a_line_is_never_filled() {
 
 // ── the PDF ──────────────────────────────────────────────────────────────
 
-/// The smallest thing a decoder will accept as a JPEG frame header: the two
-/// start markers, then a baseline frame declaring its size and components.
-fn tiny_jpeg() -> Arc<Vec<u8>> {
-    let mut bytes = vec![0xFF, 0xD8];
-    bytes.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
-    bytes.extend_from_slice(&[0x01, 0x40]); // height 320
-    bytes.extend_from_slice(&[0x01, 0x40]); // width 320
-    bytes.push(0x03); // three components
-    bytes.extend_from_slice(&[0u8; 9]);
-    bytes.extend_from_slice(&[0xFF, 0xD9]);
-    Arc::new(bytes)
+/// A real plot as the renderer draws it: 320 pixels square, as PNG.
+fn tiny_png() -> Arc<Vec<u8>> {
+    use flow_plots::{BasePlotOptions, DensityPlot, DensityPlotOptions, Plot, ScatterPlotData};
+    let options = DensityPlotOptions::new()
+        .base(
+            BasePlotOptions::new()
+                .width(320u32)
+                .height(320u32)
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    let data = ScatterPlotData {
+        points: vec![(1.0, 1.0)],
+        gate_ids: None,
+        z_values: None,
+    };
+    let png = DensityPlot::new()
+        .render(data, &options, &mut flow_plots::RenderConfig::default())
+        .unwrap();
+    Arc::new(png)
+}
+
+/// The image data of a PNG: its IDAT chunks, joined.
+fn idat(png: &[u8]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut at = 8;
+    while at + 8 <= png.len() {
+        let length = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+        if &png[at + 4..at + 8] == b"IDAT" {
+            data.extend_from_slice(&png[at + 8..at + 8 + length]);
+        }
+        at += 12 + length;
+    }
+    data
 }
 
 fn sheet(title: &str) -> Sheet {
@@ -277,7 +302,7 @@ fn sheet(title: &str) -> Sheet {
         slots: vec![
             Cell::Drawn(Drawn {
                 name: format!("{title} FMX"),
-                jpeg: tiny_jpeg(),
+                png: tiny_png(),
                 shapes: flatten(
                     vec![GateRenderShape::Rectangle {
                         x: 10.0,
@@ -312,13 +337,59 @@ fn a_pdf_has_a_header_a_trailer_and_one_page_per_six_specimens() {
 }
 
 #[test]
-fn every_plot_is_embedded_once_as_a_jpeg() {
+fn every_plot_is_embedded_once_as_a_png() {
     let bytes = write_pdf("x", &[sheet("D1"), sheet("D2")]).expect("wrote");
     let text = String::from_utf8_lossy(&bytes);
     // One image per filled slot; the empty ones contribute nothing.
-    assert_eq!(text.matches("/Filter /DCTDecode").count(), 2);
-    // The frame header's size, not the size anything asked for.
+    assert_eq!(text.matches("/Filter /FlateDecode").count(), 2);
+    // The header's size, not the size anything asked for, and the PNG
+    // predictors that let the PDF read the PNG's rows as they are.
     assert!(text.contains("/Width 320 /Height 320"));
+    assert!(text.contains("/Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns 320"));
+}
+
+/// The image's compressed pixels go into the PDF byte for byte, and its
+/// stated length is theirs.
+#[test]
+fn a_plots_image_data_is_embedded_unchanged() {
+    let png = tiny_png();
+    let data = idat(&png);
+    assert!(!data.is_empty(), "the premise: the PNG has image data");
+    let bytes = write_pdf("x", &[sheet("D1")]).expect("wrote");
+    assert!(
+        bytes.windows(data.len()).any(|w| w == data.as_slice()),
+        "the image data is in the PDF as it was"
+    );
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains(&format!("/Length {} >>\nstream", data.len())));
+}
+
+/// Only the PNG the renderer draws - 8-bit RGB, not interlaced - can be
+/// declared as the image object is; anything else, or something that is
+/// not a PNG at all, is an error rather than a picture of noise.
+#[test]
+fn a_png_the_pdf_cannot_declare_is_refused() {
+    let with = |at: usize, value: u8| {
+        let mut png = (*tiny_png()).clone();
+        png[at] = value;
+        Arc::new(png)
+    };
+    // The header's body starts after the signature, the chunk's length and
+    // its type: bit depth at 24, colour type at 25, interlace at 28.
+    let cases = [
+        ("16-bit", with(24, 16)),
+        ("RGBA", with(25, 6)),
+        ("interlaced", with(28, 1)),
+        ("not a PNG", Arc::new(b"GIF89a".to_vec())),
+        ("cut short", Arc::new(tiny_png()[..40].to_vec())),
+    ];
+    for (what, png) in cases {
+        let mut one = sheet("D1");
+        if let Cell::Drawn(drawn) = &mut one.slots[0] {
+            drawn.png = png;
+        }
+        assert!(write_pdf("x", &[one]).is_err(), "{what} was embedded");
+    }
 }
 
 #[test]
@@ -366,7 +437,7 @@ fn a_gates_outline_is_stroked_not_filled() {
 //
 // The synthetic tests above check the format and the staleness rule. They
 // cannot check the thing most likely to be subtly wrong: that a real rendered
-// JPEG's frame header parses, that its dimensions reach the page, and that the
+// PNG's header parses, that its dimensions reach the page, and that the
 // pipeline from an FCS on disk to bytes in a file runs at all. Gated on an env
 // var and silently skipped without it, like the other real-file tests.
 //
@@ -417,15 +488,15 @@ fn a_real_gallery_page_renders_and_writes() {
 
     let image = render_plot(&job).expect("a real file renders");
     assert!(image.parent_events > 0, "the file had no events");
-    assert!(image.src.starts_with("data:image/jpeg;base64,"));
-    assert_eq!(&image.jpeg[..2], &[0xFF, 0xD8], "not a JPEG");
+    assert!(image.src.starts_with("data:image/png;base64,"));
+    assert_eq!(&image.png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
 
     let sheets = vec![Sheet {
         title: "real sample".to_string(),
         slots: vec![
             Cell::Drawn(Drawn {
                 name: "FMX".to_string(),
-                jpeg: image.jpeg.clone(),
+                png: image.png.clone(),
                 shapes: Vec::new(),
                 rendered_at: 320.0,
             }),
@@ -615,7 +686,7 @@ fn a_real_gate_that_admits_nothing_still_draws() {
         image.parent_events, 0,
         "the gate was meant to admit nothing"
     );
-    assert_eq!(&image.jpeg[..2], &[0xFF, 0xD8], "not a JPEG");
+    assert_eq!(&image.png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
 }
 
 // ── which gates land on a plot ───────────────────────────────────────────
@@ -896,7 +967,7 @@ fn a_whole_plot_flattens_every_gate_on_it() {
 /// "damaged" in most readers.
 fn assert_well_formed(bytes: &[u8]) {
     // Byte offsets, so bytes throughout: the file holds a binary comment and
-    // raw JPEGs, and any conversion to text would move every offset after them.
+    // raw image data, and any conversion to text would move every offset after them.
     let find = |needle: &[u8], from: usize| -> Option<usize> {
         bytes[from..]
             .windows(needle.len())
@@ -962,7 +1033,7 @@ fn assert_well_formed(bytes: &[u8]) {
     assert!(streams > 0, "every page has a content stream");
 
     // The content streams are ASCII, so these searches cannot be fooled by
-    // the conversion; a JPEG could only produce a false alarm, never hide one.
+    // the conversion; image data could only produce a false alarm, never hide one.
     let text = String::from_utf8_lossy(bytes);
     for bad in ["NaN", "inf"] {
         assert!(
@@ -1130,7 +1201,7 @@ mod the_export {
         assert_well_formed(&pdf);
 
         let text = String::from_utf8_lossy(&pdf);
-        assert_eq!(text.matches("/Filter /DCTDecode").count(), 3);
+        assert_eq!(text.matches("/Filter /FlateDecode").count(), 3);
         assert_eq!(text.matches("(no paired file) Tj").count(), 1);
         // Placed by card and slot, not by the order the jobs came in: each
         // name is drawn in the column its slot gives it, under its specimen.
@@ -1209,7 +1280,7 @@ mod the_export {
         );
         assert!(text.contains("(could not be drawn:) Tj"));
         assert_eq!(
-            text.matches("/Filter /DCTDecode").count(),
+            text.matches("/Filter /FlateDecode").count(),
             1,
             "the good plot is drawn"
         );
@@ -1283,5 +1354,87 @@ mod the_export {
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(joined.replace(' ', ""), reason.replace(' ', ""));
+    }
+}
+
+// ── the overlay and the picture ──────────────────────────────────────────
+
+mod overlay_alignment {
+    use super::*;
+    use crate::file_load_tests::{scratch, write_fcs_rows};
+    use crate::gate_editor::gallery::render::{PlotJob, render_plot};
+    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+
+    fn axis(name: &str) -> AxisInfo {
+        AxisInfo {
+            param: Param {
+                marker: Arc::from(name),
+                fluoro: Arc::from(name),
+            },
+            axis_lower: 0.0,
+            axis_upper: 1000.0,
+            transform: TransformType::Linear,
+        }
+    }
+
+    /// Where the mapper that draws the gates puts a point of data is the
+    /// screen pixel the renderer coloured for the events at that point.
+    ///
+    /// The two are built separately - the image by flow_plots, the mapper
+    /// here - and agree only because both take the plotting area from the
+    /// same options. Before the density was binned on that area, a point's
+    /// events were drawn up to a pixel away from where its gate was drawn.
+    #[test]
+    fn the_gates_mapper_points_at_the_pixel_its_events_were_drawn_in() {
+        let dir = scratch("overlay-alignment");
+        let path = dir.join("sample.fcs");
+        let spots: [((f32, f32), usize); 4] = [
+            ((505.0, 505.0), 40),
+            ((123.4, 876.5), 9),
+            ((999.0, 1.0), 3),
+            ((250.2, 250.7), 1),
+        ];
+        let rows: Vec<Vec<f32>> = spots
+            .iter()
+            .flat_map(|&((x, y), n)| std::iter::repeat_n(vec![x, y], n))
+            .collect();
+        write_fcs_rows(&path, &[("FSC-A", None), ("SSC-A", None)], &rows, &[]);
+
+        let job = PlotJob {
+            path,
+            cofactors: Vec::new(),
+            chain: Vec::new(),
+            resolver: GateOverrideResolver {
+                active_gates: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+                gate_origins: im::HashMap::with_hasher(rustc_hash::FxBuildHasher),
+            },
+            x: Arc::from("FSC-A"),
+            y: Arc::from("SSC-A"),
+            x_axis: axis("FSC-A"),
+            y_axis: axis("SSC-A"),
+            gates: Vec::new(),
+            size: 320,
+        };
+        let drawn = render_plot(&job).expect("renders");
+        let image = image::load_from_memory(&drawn.png)
+            .expect("the plot is an image")
+            .to_rgb8();
+
+        let white = image::Rgb([255, 255, 255]);
+        for ((x, y), n) in spots {
+            let (px, py) = drawn.mapper.data_to_pixel(x, y, None, None);
+            let at = image.get_pixel(px.floor() as u32, py.floor() as u32);
+            assert_ne!(
+                *at, white,
+                "{n} events at ({x}, {y}): nothing drawn at ({px}, {py})"
+            );
+        }
+        // The densest point has the top of the colour scale.
+        let (px, py) = drawn.mapper.data_to_pixel(505.0, 505.0, None, None);
+        let top = flow_plots::ColorMaps::Jet.map(1.0);
+        assert_eq!(
+            image.get_pixel(px.floor() as u32, py.floor() as u32).0,
+            [top.0, top.1, top.2]
+        );
     }
 }

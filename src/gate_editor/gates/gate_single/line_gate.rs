@@ -452,8 +452,8 @@ pub fn create_default_line(
     x_channel: &str,
     y_channel: &str,
 ) -> anyhow::Result<GateGeometry> {
-    let xmax = plot_map.pixel_x_to_data(cx_raw + (width_raw / 2f32), None);
-    let xmin = plot_map.pixel_x_to_data(cx_raw - (width_raw / 2f32), None);
+    let xmax = plot_map.pixel_x_to_data(cx_raw + (width_raw / 2f32), None)?;
+    let xmin = plot_map.pixel_x_to_data(cx_raw - (width_raw / 2f32), None)?;
     let max = (xmax, f32::MAX);
     let min = (xmin, f32::MIN);
     let coords = vec![min, max];

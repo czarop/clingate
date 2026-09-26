@@ -140,7 +140,7 @@ impl SkewedQuadrantGate {
         x_axis_param: Arc<str>,
         y_axis_param: Arc<str>,
     ) -> anyhow::Result<Self> {
-        let (cx, cy) = plot_map.pixel_to_data(click_loc_raw.0, click_loc_raw.1, None, None);
+        let (cx, cy) = plot_map.pixel_to_data(click_loc_raw.0, click_loc_raw.1, None, None)?;
         let points = DataPoints::new_from_click(cx, cy, plot_map);
 
         let x_inf = get_infinite_bounds(&plot_map.get_x_transform());

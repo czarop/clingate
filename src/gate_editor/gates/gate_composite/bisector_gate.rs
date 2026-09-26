@@ -40,7 +40,7 @@ impl BisectorGate {
     ) -> anyhow::Result<Self> {
         let mut gate_map = FxIndexMap::default();
         let parameters = (x_axis_param.clone(), y_axis_param.clone());
-        let click_data = plot_map.pixel_to_data(click_loc.0, click_loc.1, None, None);
+        let click_data = plot_map.pixel_to_data(click_loc.0, click_loc.1, None, None)?;
 
         let geos = create_default_bisector(plot_map, click_loc.0, &x_axis_param, &y_axis_param)?;
         let id_left = format!("{id}_L");
@@ -630,7 +630,7 @@ fn create_default_bisector(
     x_channel: &str,
     y_channel: &str,
 ) -> anyhow::Result<(GateGeometry, GateGeometry)> {
-    let cx_data = plot_map.pixel_x_to_data(cx_raw, None);
+    let cx_data = plot_map.pixel_x_to_data(cx_raw, None)?;
     create_default_bisector_from_data(cx_data, x_channel, y_channel)
 }
 

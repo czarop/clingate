@@ -10,12 +10,14 @@ thiserror = "2.0.12"
 tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread", "time"] }
 anyhow = "1"
 # Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch: flow_fcs refuses
-# damaged files instead of panicking and keeps a file's own $GUID, and
-# flow_gates' event index leaves out NaN events. Back to the default branch once
-# it is merged there.
-flow-fcs = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
-flow-plots = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow", rev = "2ee8376da4ab2a00d0e9ab8b8716a4b3e888a362" }
+# damaged files instead of panicking, keeps a file's own $GUID and reads
+# delimiters escaped inside keyword values; flow_gates' event index leaves out
+# NaN events and its pixel mapping returns None rather than panicking;
+# flow_plots bins the density on the plotting area and draws PNG. Back to the
+# default branch once it is merged there.
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "41315d05736acd5a773be5e5ddf5ef6f94732329" }
 base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"
@@ -43,6 +45,10 @@ rand_distr = "0.6"
 # a machine may not be running. `PickPath` handles that: see the note there
 # about a dialog that closes faster than a person could have closed it.
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+[dev-dependencies]
+# Only to decode the plots the renderer draws, so tests can look at them.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 default = ["desktop"]

@@ -6,10 +6,11 @@
 //!
 //! ## Why it is written by hand
 //!
-//! A PDF that holds JPEGs and line drawings is a small format, and the two
-//! things this needs are the two things it does best. A JPEG goes in
-//! *unchanged*, as a `DCTDecode` image: the bytes the renderer produced are the
-//! bytes in the file, with no decode-and-re-encode step to soften the picture.
+//! A PDF that holds pictures and line drawings is a small format, and the two
+//! things this needs are the two things it does best. A plot's PNG goes in
+//! *unchanged*: its compressed rows are a `FlateDecode` image with PNG
+//! predictors, so the bytes the renderer produced are the bytes in the file,
+//! with no decode-and-re-encode step.
 //! The outlines go in as path operators, so they stay vector-sharp at any zoom
 //! and the percentages stay real text that can be searched and copied.
 //!
@@ -44,7 +45,7 @@ pub const PER_PAGE: usize = ACROSS * DOWN;
 /// One plot: the picture, and the lines to draw over it.
 pub struct Drawn {
     pub name: String,
-    pub jpeg: Arc<Vec<u8>>,
+    pub png: Arc<Vec<u8>>,
     pub shapes: Vec<Flat>,
     /// The side of the square the shapes were flattened against, so they can be
     /// scaled to whatever size the page gives them.
@@ -179,7 +180,7 @@ pub fn write_pdf(heading: &str, sheets: &[Sheet]) -> anyhow::Result<Vec<u8>> {
                     }
                 };
                 let name = format!("Im{}_{}", at, slot);
-                let id = pdf.add_jpeg(&drawn.jpeg)?;
+                let id = pdf.add_png(&drawn.png)?;
                 images.push((name.clone(), id));
 
                 // `cm` places the unit square, so the image lands at exactly
@@ -486,20 +487,22 @@ impl Pdf {
         self.add(body)
     }
 
-    fn add_jpeg(&mut self, jpeg: &[u8]) -> anyhow::Result<usize> {
-        let (width, height, components) = jpeg_shape(jpeg)?;
-        let space = match components {
-            1 => "/DeviceGray",
-            3 => "/DeviceRGB",
-            4 => "/DeviceCMYK",
-            n => return Err(anyhow::anyhow!("JPEG with {n} components is not supported")),
-        };
+    /// An image object holding a PNG's pixels.
+    ///
+    /// A PNG's image data is a zlib stream of rows, each led by a PNG filter
+    /// byte, and a PDF reads exactly that with `/FlateDecode` and PNG
+    /// predictors - so the compressed bytes go in as they are, with nothing
+    /// decoded or re-compressed.
+    fn add_png(&mut self, png: &[u8]) -> anyhow::Result<usize> {
+        let image = read_png(png)?;
         let mut body = format!(
-            "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace {space} /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
-            jpeg.len()
+            "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns {w} >> /Length {} >>\nstream\n",
+            image.data.len(),
+            w = image.width,
+            h = image.height,
         )
         .into_bytes();
-        body.extend_from_slice(jpeg);
+        body.extend_from_slice(&image.data);
         body.extend_from_slice(b"\nendstream");
         Ok(self.add(body))
     }
@@ -548,43 +551,79 @@ impl Pdf {
     }
 }
 
-/// Width, height and component count, read off the JPEG's frame header.
+/// What the PDF needs of a PNG: its size, and its image data - the
+/// concatenated `IDAT` chunks.
+struct PngImage {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+/// Read a PNG as far as the PDF needs it.
 ///
-/// A PDF image object has to state these, and it must state what the data
-/// actually says - a wrong height is a torn or blank picture rather than an
-/// error - so they are read from the bytes rather than assumed from whatever
-/// size was requested of the renderer.
-fn jpeg_shape(jpeg: &[u8]) -> anyhow::Result<(u16, u16, u8)> {
-    if jpeg.len() < 4 || jpeg[0] != 0xFF || jpeg[1] != 0xD8 {
-        return Err(anyhow::anyhow!("not a JPEG"));
-    }
-    let mut at = 2usize;
-    while at + 3 < jpeg.len() {
-        if jpeg[at] != 0xFF {
-            at += 1;
-            continue;
-        }
-        let marker = jpeg[at + 1];
-        // Standalone markers carry no length.
-        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
-            at += 2;
-            continue;
-        }
-        if at + 4 > jpeg.len() {
-            break;
-        }
-        let length = u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]) as usize;
-        // Every start-of-frame except the four that are not frames at all.
-        let is_frame = (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
-        if is_frame {
-            if at + 9 >= jpeg.len() {
-                break;
+/// The size is read from the header rather than assumed from whatever size
+/// was asked of the renderer: an image object has to state what the data
+/// actually holds, and a wrong height is a torn or blank picture rather than
+/// an error.
+///
+/// Only the kind of PNG the plots are drawn as is accepted - 8-bit RGB, not
+/// interlaced - since the image object is declared as exactly that; anything
+/// else is refused rather than embedded as a picture of noise. Chunk CRCs
+/// are not checked: the bytes come from the renderer in this process.
+fn read_png(png: &[u8]) -> anyhow::Result<PngImage> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let rest = png
+        .strip_prefix(SIGNATURE)
+        .ok_or_else(|| anyhow::anyhow!("not a PNG"))?;
+
+    let mut header = None;
+    let mut data = Vec::new();
+    let mut at = 0usize;
+    loop {
+        let length_bytes = rest
+            .get(at..at + 4)
+            .ok_or_else(|| anyhow::anyhow!("PNG ends before its IEND chunk"))?;
+        let length = u32::from_be_bytes(length_bytes.try_into().unwrap()) as usize;
+        let kind = rest
+            .get(at + 4..at + 8)
+            .ok_or_else(|| anyhow::anyhow!("PNG ends inside a chunk header"))?;
+        let body = at
+            .checked_add(8 + length)
+            .and_then(|end| rest.get(at + 8..end))
+            .ok_or_else(|| anyhow::anyhow!("PNG chunk runs past the end of the file"))?;
+        match kind {
+            b"IHDR" => {
+                if body.len() != 13 {
+                    return Err(anyhow::anyhow!(
+                        "PNG header is {} bytes, not 13",
+                        body.len()
+                    ));
+                }
+                let width = u32::from_be_bytes(body[0..4].try_into().unwrap());
+                let height = u32::from_be_bytes(body[4..8].try_into().unwrap());
+                let (depth, colour, interlace) = (body[8], body[9], body[12]);
+                if depth != 8 || colour != 2 || interlace != 0 {
+                    return Err(anyhow::anyhow!(
+                        "PNG is not 8-bit RGB without interlacing (bit depth {depth}, colour type {colour}, interlace {interlace})"
+                    ));
+                }
+                header = Some((width, height));
             }
-            let height = u16::from_be_bytes([jpeg[at + 5], jpeg[at + 6]]);
-            let width = u16::from_be_bytes([jpeg[at + 7], jpeg[at + 8]]);
-            return Ok((width, height, jpeg[at + 9]));
+            b"IDAT" => data.extend_from_slice(body),
+            b"IEND" => break,
+            _ => {}
         }
-        at += 2 + length;
+        // Length, type, body and CRC.
+        at += 12 + length;
     }
-    Err(anyhow::anyhow!("JPEG has no frame header"))
+
+    let (width, height) = header.ok_or_else(|| anyhow::anyhow!("PNG has no header"))?;
+    if data.is_empty() {
+        return Err(anyhow::anyhow!("PNG has no image data"));
+    }
+    Ok(PngImage {
+        width,
+        height,
+        data,
+    })
 }

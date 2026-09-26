@@ -190,6 +190,22 @@
 
 ### Fixed
 
+- **Density plots showed an arbitrary neighbour's colour on many pixels.**
+  flow_plots binned events on a grid the size of the whole image and drew it
+  into the smaller area inside the axes, so several bins shared a screen
+  pixel and whichever was written last showed. Bins are now the plotting
+  area's pixels, one to one, placed at their centres so events sit exactly
+  under the gates drawn over them, and the same events always draw the same
+  picture. Events beyond an axis still pile up on its edge, as in FlowJo.
+- **Plots are PNG, not JPEG.** JPEG smeared each lone event's colour into its
+  neighbours; the gallery PDF now embeds the PNG's pixels unchanged.
+- **The gate overlay takes its plotting area from the options the plot is
+  drawn with**, rather than from constants that happened to match.
+- **A plot too small for its axes no longer takes the app down** on a mouse
+  move: a pixel with no data under it is ignored.
+- **A marker label holding the file's delimiter was cut short** (`CD45RA/RO`
+  in a file delimited by `/` read as `CD45RA`). It is now read whole.
+
 - **A gate viewed on swapped axes was saved to Omiq on those axes.** Viewing
   a gate on a plot with its channels the other way round rewrites the held
   gate with them exchanged. It gates the same events, but the export wrote it

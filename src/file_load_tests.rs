@@ -327,6 +327,33 @@ fn a_channel_is_labelled_with_its_marker_or_else_its_own_name() {
     assert_eq!(*stub.get_number_of_parameters().unwrap(), 2);
 }
 
+/// A marker label holding the file's delimiter - written doubled, as the
+/// standard escapes it - is read whole, and the channels after it keep
+/// their own labels. It used to be cut at the delimiter: `CD45RA/RO` read as
+/// `CD45RA`, and the axis was named, and matched to its scaling, wrongly.
+#[test]
+fn a_marker_label_holding_the_delimiter_is_read_whole() {
+    let dir = scratch("escaped-label");
+    let path = dir.join("panel.fcs");
+    write_fcs_with(
+        &path,
+        3,
+        &[
+            ("FSC-A", None),
+            ("BV421-A", Some("CD45RA//RO")),
+            ("PE-A", Some("CD3")),
+        ],
+        &[],
+    );
+    let stub = open(&path);
+    assert_eq!(
+        &*stub.find_parameter("BV421-A").unwrap().label_name,
+        "CD45RA/RO"
+    );
+    assert_eq!(&*stub.find_parameter("PE-A").unwrap().label_name, "CD3");
+    assert_eq!(*stub.get_number_of_parameters().unwrap(), 3);
+}
+
 #[test]
 fn a_parameter_is_found_whatever_the_case_of_its_name() {
     let dir = scratch("findparam");
