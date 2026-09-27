@@ -11,10 +11,14 @@ use flow_gates::EventIndex;
 use polars::prelude::*;
 use tokio::task;
 
-pub async fn get_flow_data(path: std::path::PathBuf) -> Result<Fcs, Arc<anyhow::Error>> {
+/// Open a file, compensated as `compensation` says - see
+/// [`crate::compensation::open_compensated`].
+pub async fn get_flow_data(
+    path: std::path::PathBuf,
+    compensation: crate::compensation::Choice,
+) -> Result<Fcs, Arc<anyhow::Error>> {
     task::spawn_blocking(move || {
-        let fcs_file = Fcs::open(path.to_str().unwrap_or_default())?;
-        Ok(fcs_file)
+        crate::compensation::open_compensated(&path, &compensation).map_err(Arc::new)
     })
     .await
     .map_err(|e| Arc::new(e.into()))?

@@ -262,6 +262,11 @@ pub struct Remembered {
     pub scaling: Option<PathBuf>,
     #[serde(default)]
     pub gating: Option<PathBuf>,
+    /// The compensation groups, their sources and which file is in which.
+    /// `None` for a workspace remembered before there were any: its files
+    /// are grouped afresh.
+    #[serde(default)]
+    pub compensation: Option<crate::compensation::groups::Saved>,
 }
 
 impl Remembered {
@@ -291,11 +296,19 @@ impl Remembered {
 
     /// The parts that no longer exist on disk, for saying so before opening.
     pub fn missing(&self) -> Vec<PathBuf> {
+        use crate::compensation::groups::SavedSource;
+        let matrices = self.compensation.iter().flat_map(|c| {
+            c.groups.iter().filter_map(|g| match &g.source {
+                SavedSource::Csv(path) => Some(path),
+                _ => None,
+            })
+        });
         self.fcs
             .iter()
             .chain(self.metadata.iter())
             .chain(self.scaling.iter())
             .chain(self.gating.iter())
+            .chain(matrices)
             .filter(|path| !path.exists())
             .cloned()
             .collect()

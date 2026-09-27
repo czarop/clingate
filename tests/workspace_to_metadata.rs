@@ -173,6 +173,7 @@ fn a_remembered_workspace_reopens_the_same_files_under_the_same_names() {
         metadata: found.metadata.one().map(|p| p.to_path_buf()),
         scaling: found.scaling.one().map(|p| p.to_path_buf()),
         gating: None,
+        compensation: None,
     };
     let at = dir.join("state").join("workspace.json");
     remembered.save_to(&at).unwrap();

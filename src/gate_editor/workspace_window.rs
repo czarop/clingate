@@ -298,6 +298,7 @@ impl Handles {
             metadata: loaded.metadata.path().map(Path::to_path_buf),
             scaling: loaded.scaling.path().map(Path::to_path_buf),
             gating: loaded.gating.path().map(Path::to_path_buf),
+            compensation: None,
         };
         if let Err(e) = remembered.save_to(&location) {
             warn(

@@ -50,6 +50,8 @@ use crate::gate_editor::plots::plot_store::EventIndexMapped;
 /// doing it here would mean holding a store lock on a worker thread.
 pub struct PlotJob {
     pub path: PathBuf,
+    /// What the file is compensated with.
+    pub compensation: crate::compensation::Choice,
     /// Channel and cofactor for every arcsinh axis, as the axis store has them.
     pub cofactors: Vec<(Arc<str>, f32)>,
     /// The gates that filter this plot, outermost first. Empty draws every
@@ -90,11 +92,7 @@ impl PartialEq for PlotImage {
 
 /// Open, scale, gate, index, measure and draw. Blocking; call it on a pool.
 pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
-    let fcs = Fcs::open(
-        job.path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("file path is not valid UTF-8"))?,
-    )?;
+    let fcs = crate::compensation::open_compensated(&job.path, &job.compensation)?;
 
     // Only the channels this file carries; see [`cofactors_carried_by`]. Shared
     // with the editor's plot so the two cannot answer differently.

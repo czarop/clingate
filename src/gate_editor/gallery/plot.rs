@@ -56,6 +56,7 @@ impl PartialEq for Permits {
 #[derive(Clone)]
 pub struct Setup {
     pub fingerprint: Fingerprint,
+    pub compensation: crate::compensation::Choice,
     pub chain: Vec<GateId>,
     pub resolver: GateOverrideResolver,
     pub cofactors: Vec<(Arc<str>, f32)>,
@@ -99,6 +100,7 @@ pub fn GalleryPlot(
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
     let mut cache = use_context::<SyncSignal<PlotCache>>();
     let permits = use_context::<Permits>();
+    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
 
     let setup = use_memo({
         let path = path.clone();
@@ -139,8 +141,11 @@ pub fn GalleryPlot(
                 .filter_map(|(k, v)| v.get_cofactor().map(|c| (k.clone(), c)))
                 .collect();
 
+            let compensation = compensation.read();
             Some(Setup {
+                compensation: compensation.matrix_for(&path),
                 fingerprint: Fingerprint {
+                    compensation: compensation.digest(&path),
                     scaling: scaling_digest(&cofactors),
                     file: file_id,
                     x: x.fluoro.clone(),
@@ -189,6 +194,7 @@ pub fn GalleryPlot(
             let key = setup.fingerprint.clone();
             let job = PlotJob {
                 path: setup.path.clone(),
+                compensation: setup.compensation.clone(),
                 cofactors: setup.cofactors.clone(),
                 chain: setup.chain.clone(),
                 resolver: setup.resolver.clone(),

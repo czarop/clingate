@@ -86,6 +86,12 @@ pub fn Shell() -> Element {
     let filehandler: Signal<Option<FcsFiles>> = use_signal(|| None);
     use_context_provider(|| filehandler);
 
+    // What each file is compensated with. Read wherever a file's events are
+    // read - the editor, the gallery, a rules run - so all three see the same
+    // events.
+    let compensation = use_signal(crate::compensation::groups::Compensation::default);
+    use_context_provider(|| compensation);
+
     // What the workspace holds besides the files, and the counts the other
     // tabs reset their own state on. The Workspace tab writes both; the rest
     // only read them.

@@ -294,6 +294,15 @@ fn a_remembered_workspace_survives_a_save_and_a_load() {
         metadata: Some(PathBuf::from("/data/run1/metadata.csv")),
         scaling: Some(PathBuf::from("/data/run1/scaling.csv")),
         gating: Some(PathBuf::from("/data/run1/gates.omiqgt")),
+        compensation: Some(crate::compensation::groups::Saved {
+            groups: vec![crate::compensation::groups::SavedGroup {
+                name: "Group 1".into(),
+                source: crate::compensation::groups::SavedSource::Csv(PathBuf::from(
+                    "/data/run1/comp.csv",
+                )),
+            }],
+            files: vec![(PathBuf::from("/data/run1/a.fcs"), 0)],
+        }),
     };
     saved.save_to(&at).unwrap();
     assert_eq!(Remembered::load_from(&at).unwrap(), saved);

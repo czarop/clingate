@@ -271,6 +271,8 @@ fn loaded_files(map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>) -> Vec<(Arc<st
 #[derive(Clone, PartialEq)]
 struct RunInputs {
     files: Vec<(Arc<str>, PathBuf)>,
+    /// What each file is compensated with.
+    compensation: crate::compensation::groups::Compensation,
     names: HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     axes: crate::omiq::serialise::AxisSettings,
     metadata: crate::omiq::metadata::MetaDataFileMap,
@@ -278,7 +280,8 @@ struct RunInputs {
 }
 
 /// Raise a running solve's stop flag the moment anything it reads changes:
-/// the gates, the files, the metadata, the scaling or the rules.
+/// the gates, the files, their compensation, the metadata, the scaling or the
+/// rules.
 ///
 /// A run works on a snapshot and writes its answers when it finishes. The tabs
 /// are hidden rather than unmounted, so it carries on while the Workspace tab
@@ -300,8 +303,10 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
     let axes = use_context::<crate::gate_editor::workspace_window::AxesStore>();
     let rules = use_context::<Signal<RuleStore>>();
     let files = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
+    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
     use_effect(move || {
         gates.subscribe_to_gating();
+        let _ = compensation.read();
         let _ = metadata.metadata().read();
         let _ = metadata.file_name_to_gating_id().read();
         let _ = axes.settings().read();
@@ -357,6 +362,7 @@ pub fn GateRulesWindow() -> Element {
     // the gallery show, so the three cannot be looking at different
     // experiments.
     let filehandler = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
+    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
@@ -1202,6 +1208,7 @@ pub fn GateRulesWindow() -> Element {
                                         .collect()
                                 })
                                 .unwrap_or_default(),
+                            compensation: compensation.read().clone(),
                             names: metadata_store.file_name_to_gating_id().read().clone(),
                             axes: axis_store.settings().read().clone(),
                             metadata: metadata_store.metadata().read().clone(),
@@ -1241,6 +1248,7 @@ pub fn GateRulesWindow() -> Element {
                                 run_solve(
                                     snapshot,
                                     started.files,
+                                    started.compensation,
                                     started.names,
                                     arcsinh,
                                     started.metadata,
@@ -1780,6 +1788,7 @@ fn files_to_read(
 fn measure_all(
     snapshot: &GateState,
     files: &[(Arc<str>, PathBuf)],
+    compensation: &crate::compensation::groups::Compensation,
     names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     arcsinh: &[(Arc<str>, f32)],
     metadata: &crate::omiq::metadata::MetaDataFileMap,
@@ -1813,7 +1822,11 @@ fn measure_all(
                 return out;
             }
             let frame = (|| -> anyhow::Result<DataFrame> {
-                let fcs = flow_fcs::Fcs::open(path.to_str().unwrap_or_default())?;
+                // Compensated as its group says, as the editor and the
+                // gallery read it, so a gate is placed on the events a person
+                // sees.
+                let fcs =
+                    crate::compensation::open_compensated(path, &compensation.matrix_for(path))?;
                 // Only the cofactors this file actually carries.
                 // `apply_arcsinh_transforms` errors on the first parameter it
                 // cannot find, and the cofactors describe the whole panel as
@@ -1869,6 +1882,7 @@ struct RunOutcome {
 fn run_solve(
     snapshot: GateState,
     files: Vec<(Arc<str>, PathBuf)>,
+    compensation: crate::compensation::groups::Compensation,
     names: HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
     arcsinh: Vec<(Arc<str>, f32)>,
     metadata: crate::omiq::metadata::MetaDataFileMap,
@@ -1881,6 +1895,7 @@ fn run_solve(
     let (measured, unmeasured, mut problems) = measure_all(
         &snapshot,
         &files,
+        &compensation,
         &names,
         &arcsinh,
         &metadata,
@@ -2101,6 +2116,9 @@ mod tests {
                     use_context_provider(|| axes);
                     use_context_provider(|| rules);
                     use_context_provider(|| files);
+                    let compensation =
+                        use_signal(crate::compensation::groups::Compensation::default);
+                    use_context_provider(|| compensation);
                     let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
                     use_stop_run_on_change(cancel);
                     // Pass 1 starts the run; pass 2 makes the change.
@@ -2355,6 +2373,7 @@ mod tests {
             run_solve(
                 state.clone(),
                 files,
+                crate::compensation::groups::Compensation::default(),
                 named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
                 Vec::new(),
                 specimens(),
@@ -2432,6 +2451,7 @@ mod tests {
             let outcome = run_solve(
                 state.clone(),
                 workspace("run-density"),
+                crate::compensation::groups::Compensation::default(),
                 named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
                 Vec::new(),
                 specimens(),
@@ -2492,6 +2512,7 @@ mod tests {
             let outcome = run_solve(
                 state.clone(),
                 workspace("run-own-position"),
+                crate::compensation::groups::Compensation::default(),
                 named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
                 Vec::new(),
                 specimens(),
@@ -2611,6 +2632,7 @@ mod tests {
             let outcome = run_solve(
                 state.clone(),
                 files,
+                crate::compensation::groups::Compensation::default(),
                 named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
                 vec![(Arc::from(M), 150.0)],
                 specimens(),
@@ -2661,6 +2683,7 @@ mod tests {
                 run_solve(
                     state.clone(),
                     files,
+                    crate::compensation::groups::Compensation::default(),
                     names,
                     Vec::new(),
                     specimens(),
@@ -2687,6 +2710,130 @@ mod tests {
                     .iter()
                     .map(|s| &s.reason)
                     .collect::<Vec<_>>()
+            );
+        }
+
+        /// The donor's events as its cytometer recorded them: its SSC spilling
+        /// into FSC at twice its value, so every event reads 200 higher on X
+        /// until compensated.
+        fn spilt_workspace(name: &str) -> Vec<(Arc<str>, PathBuf)> {
+            let files = workspace(name);
+            let spilt: Vec<Vec<f32>> = population(600.0, 2)
+                .into_iter()
+                .map(|e| vec![e[0] + 2.0 * e[1], e[1]])
+                .collect();
+            write_fcs_rows(&files[1].1, &[(X, None), (Y, None)], &spilt, &[]);
+            files
+        }
+
+        fn peak_rules() -> RuleStore {
+            use crate::gate_rules::rule::NegativeFinder;
+            let mut store = RuleStore::default();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule {
+                        find: NegativeFinder::NegativePeak,
+                        ..AboveTheNegativeRule::default()
+                    }),
+                },
+            );
+            store
+        }
+
+        fn run_with(
+            state: &GateState,
+            files: Vec<(Arc<str>, PathBuf)>,
+            compensation: crate::compensation::groups::Compensation,
+        ) -> RunOutcome {
+            let (progress, _) = tokio::sync::mpsc::unbounded_channel();
+            run_solve(
+                state.clone(),
+                files,
+                compensation,
+                named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]),
+                Vec::new(),
+                specimens(),
+                peak_rules(),
+                progress,
+                Arc::new(AtomicBool::new(false)),
+            )
+        }
+
+        /// A run measures the events as compensated. The donor's negative is
+        /// really at 600, which puts its gate at 800; read uncompensated it
+        /// sits at 800, and the gate at 1000.
+        #[test]
+        fn a_run_places_gates_on_compensated_events() {
+            use crate::compensation::Spillover;
+            use crate::compensation::groups::{Compensation, Source};
+            let (state, id) = positive_gate();
+            let files = spilt_workspace("run-compensated");
+
+            let mut compensation = Compensation::default();
+            for (_, path) in &files {
+                compensation.add_file(path.clone(), Ok(None));
+            }
+            let group = compensation.new_group("Recomputed");
+            let matrix =
+                Spillover::new(vec![Arc::from(X), Arc::from(Y)], vec![1.0, 0.0, 2.0, 1.0]).unwrap();
+            compensation
+                .set_source(
+                    group,
+                    Source::Loaded {
+                        path: "/m.csv".into(),
+                        matrix: Arc::new(matrix),
+                    },
+                )
+                .unwrap();
+            compensation.move_file(&files[1].1, group).unwrap();
+
+            let mut compensated = state.clone();
+            let outcome = run_with(&state, files.clone(), compensation);
+            crate::gate_rules::autogate::apply_placements(&mut compensated, &outcome.placements);
+            let at = left_edge(&compensated, &id, "fs_b");
+            assert!(
+                (at - 800.0).abs() < 30.0,
+                "compensated, the donor's gate is at {at}"
+            );
+
+            let mut raw = state.clone();
+            let outcome = run_with(&state, files, Compensation::default());
+            crate::gate_rules::autogate::apply_placements(&mut raw, &outcome.placements);
+            let at = left_edge(&raw, &id, "fs_b");
+            assert!(
+                (at - 1000.0).abs() < 30.0,
+                "the premise: uncompensated it is at {at}"
+            );
+        }
+
+        /// A file that cannot be compensated as its group says is reported,
+        /// and not measured uncompensated in its place.
+        #[test]
+        fn a_file_that_cannot_be_compensated_is_reported_not_measured_raw() {
+            use crate::compensation::groups::Compensation;
+            let (state, _) = positive_gate();
+            let files = workspace("run-uncompensatable");
+            let mut compensation = Compensation::default();
+            compensation.add_file(files[0].1.clone(), Ok(None));
+            compensation.add_file(
+                files[1].1.clone(),
+                Err("its $SPILLOVER is not a spillover matrix".into()),
+            );
+            let outcome = run_with(&state, files, compensation);
+            assert!(
+                !outcome.report.positioned.iter().any(|p| &*p.file == "fs_b"),
+                "the donor was not placed"
+            );
+            let reasons: Vec<&String> = outcome.report.skipped.iter().map(|s| &s.reason).collect();
+            assert!(
+                reasons
+                    .iter()
+                    .any(|r| r.contains("fs_b.fcs") && r.contains("cannot be compensated")),
+                "{reasons:?}"
             );
         }
 

@@ -71,11 +71,17 @@ pub fn PlotWindow(
 
     // RESOURCE 1: Load FCS File
     let mut fcs_file: SyncSignal<Option<flow_fcs::Fcs>> = use_signal_sync(|| None);
+    // Why the file could not be read, shown where the plot would be. It used
+    // to go to the console, and the plot sat on its spinner.
+    let mut load_error: Signal<Option<String>> = use_signal(|| None);
+    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
     let _ = use_resource(move || async move {
         let (sample_path, file_name) = {
             let stub = sample_stub.read();
             (stub.get_filepath().to_owned(), stub.name.clone())
         };
+        // Read here, so a change of compensation reloads the file.
+        let choice = compensation.read().matrix_for(&sample_path);
         // Looked up by the file's name in the program, not the name on disk -
         // for a file from a sub-folder the two differ.
         let Some(id) = metadata_store
@@ -87,14 +93,15 @@ pub fn PlotWindow(
             return;
         };
 
-        match get_flow_data(sample_path).await {
+        match get_flow_data(sample_path, choice).await {
             Ok(f) => {
                 *plot_store.current_file_id().write() = id.clone();
+                load_error.set(None);
                 fcs_file.set(Some(f))
             }
             Err(e) => {
                 fcs_file.set(None);
-                println!("error generating fcs file {}", e);
+                load_error.set(Some(format!("This file could not be read: {e}")));
             }
         }
     });
@@ -362,6 +369,12 @@ pub fn PlotWindow(
             div { class: "spinner-container", style: plot_box(),
                 "The metadata has no file called {name}, so this file cannot be matched to a sample and is not drawn. For a file in a sub-folder, the metadata has to use the folder in the name as well."
             }
+        };
+    }
+
+    if let Some(why) = load_error() {
+        return rsx! {
+            div { class: "spinner-container", style: plot_box(), "{why}" }
         };
     }
 

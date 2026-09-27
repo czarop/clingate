@@ -156,6 +156,7 @@ pub fn ExportPdf(
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
 
     let toasts = use_toast();
     let mut path = use_signal(|| "gate_gallery.pdf".to_string());
@@ -228,6 +229,7 @@ pub fn ExportPdf(
                         plot: Ok(ToDraw {
                             job: PlotJob {
                                 path: file.path.clone(),
+                                compensation: compensation.read().matrix_for(&file.path),
                                 cofactors: cofactors.clone(),
                                 chain: select::chain_of(&state, &node),
                                 resolver,

@@ -69,6 +69,10 @@ pub struct Fingerprint {
     /// nothing else here would have noticed. A digest is cheap enough that
     /// relying on a subtle invariant in another module is not worth it.
     pub scaling: u64,
+    /// What the file is compensated with - see
+    /// [`crate::compensation::groups::Compensation::digest`]. A new matrix
+    /// moves every event without touching anything else here.
+    pub compensation: u64,
     /// Every gate this picture depends on - the filtering chain first, then the
     /// gates drawn on it. Held, not merely hashed: see the module comment.
     pub gates: Vec<Arc<dyn DrawableGate>>,
@@ -95,6 +99,7 @@ impl PartialEq for Fingerprint {
             && self.y == other.y
             && self.size == other.size
             && self.scaling == other.scaling
+            && self.compensation == other.compensation
             && self.x_axis == other.x_axis
             && self.y_axis == other.y_axis
             && self.gates.len() == other.gates.len()
@@ -115,6 +120,7 @@ impl Hash for Fingerprint {
         self.y.hash(state);
         self.size.hash(state);
         self.scaling.hash(state);
+        self.compensation.hash(state);
         // An axis is floats, which do not hash. The bits do, and two axes with
         // identical bits are the same axis - including the NaN case, where bit
         // equality is stricter than `==` rather than looser, so it can only
