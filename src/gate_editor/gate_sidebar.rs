@@ -314,7 +314,11 @@ fn GateNode(
                                 x_axis_param.set(new_x);
                                 y_axis_param.set(new_y);
                                 selected.set(Some(parent.clone()));
-                                *gate_store.selected_gate().write() = Some(gate_id_clone.clone());
+                                // Showing a gate's plot is not choosing a gate
+                                // on it: whatever was selected on the plot
+                                // before is cleared, and nothing is selected
+                                // until a gate on the plot is clicked.
+                                *gate_store.selected_gate().write() = None;
                             }
 
                         },
@@ -356,6 +360,7 @@ fn GateNode(
                                         // below shows the population *this* node
                                         // sees.
                                         selected.set(Some(node_id.clone()));
+                                        *gate_store.selected_gate().write() = None;
                                     }
                                 },
                                 "🎯"
