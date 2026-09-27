@@ -41,6 +41,16 @@ use std::sync::Arc;
 
 pub type GroupId = u32;
 
+/// What a matrix given as the one applied in Omiq is called once it is the
+/// one wanted too.
+const OMIQS: &str = "Omiq's matrix";
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// What [`Compensation::check`] needs to know of a file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileFacts {
@@ -156,26 +166,34 @@ pub enum Source {
     /// until it is replaced or the source changed: drawn uncompensated they
     /// would look like a result.
     Unreadable { path: PathBuf, why: String },
-    /// A matrix edited here. `from` names what it was edited from.
+    /// A matrix held here rather than in a file: pasted, started here, or
+    /// edited from another. `from` names where it came from; `changed` is
+    /// whether it has been edited since.
     Edited {
         matrix: Arc<Spillover>,
         from: Option<String>,
+        changed: bool,
     },
 }
 
 impl Source {
     pub fn describe(&self) -> String {
         match self {
-            Source::None => "no compensation".to_string(),
-            Source::FilesOwn => "each file's own matrix".to_string(),
-            Source::Loaded { path, .. } | Source::Unreadable { path, .. } => path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string()),
+            Source::None => "No compensation".to_string(),
+            Source::FilesOwn => "Each file's own matrix".to_string(),
+            Source::Loaded { path, .. } => file_name(path),
+            Source::Unreadable { path, .. } => format!("{} (can't be read)", file_name(path)),
             Source::Edited {
-                from: Some(from), ..
-            } => format!("{from}, edited here"),
-            Source::Edited { from: None, .. } => "a matrix made here".to_string(),
+                from: Some(from),
+                changed: false,
+                ..
+            } => from.clone(),
+            Source::Edited {
+                from: Some(from),
+                changed: true,
+                ..
+            } => format!("{from}, edited"),
+            Source::Edited { from: None, .. } => "New matrix".to_string(),
         }
     }
 }
@@ -283,7 +301,10 @@ impl Compensation {
                 .filter_map(|m| m.involved())
                 .find_map(|m| m.resolve(&lookup).err());
             if let Some(why) = unfit {
-                notes.push(format!("{}: the matrix does not fit it: {why}", name(path)));
+                notes.push(format!(
+                    "{}: the matrix doesn't fit its channels ({why})",
+                    name(path)
+                ));
                 continue;
             }
             let Some(matrix) = correction.apply else {
@@ -301,14 +322,12 @@ impl Compensation {
         }
         if swapped > 0 {
             notes.push(format!(
-                "The loaded matrix is closer to {swapped} of these files' own matrices read the other way round. \
-                 A spillover matrix has each fluorochrome in a row and each detector in a column; check how it was exported."
+                "This matrix matches {swapped} file(s)' own matrix better with rows and columns swapped - check it was exported the right way round."
             ));
         }
         if far > 0 {
             notes.push(format!(
-                "The loaded matrix differs from {far} of these files' own matrices by more than {FAR_FROM_OWN} percentage points somewhere. \
-                 That is expected after recomputing compensation, but check it is the matrix meant for these files."
+                "This matrix differs from {far} file(s)' own matrix by more than {FAR_FROM_OWN} points in places - check it's the right one."
             ));
         }
         notes
@@ -428,16 +447,23 @@ impl Compensation {
         id
     }
 
-    pub fn move_file(&mut self, path: &Path, to: GroupId) -> Result<(), String> {
+    /// Move several files to a group at once. Refused, with nothing moved,
+    /// if the group or any of the files is unknown.
+    pub fn move_files(&mut self, paths: &[PathBuf], to: GroupId) -> Result<(), String> {
         if !self.groups.iter().any(|g| g.id == to) {
-            return Err(format!("there is no group {to}"));
+            return Err("that group no longer exists".to_string());
         }
-        let member = self
-            .files
-            .get_mut(path)
-            .ok_or_else(|| format!("{} is not in the workspace", path.display()))?;
-        member.group = to;
+        if let Some(missing) = paths.iter().find(|p| !self.files.contains_key(*p)) {
+            return Err(format!("{} is not in the workspace", missing.display()));
+        }
+        for path in paths {
+            self.files.get_mut(path).expect("checked").group = to;
+        }
         Ok(())
+    }
+
+    pub fn move_file(&mut self, path: &Path, to: GroupId) -> Result<(), String> {
+        self.move_files(&[path.to_path_buf()], to)
     }
 
     /// What the group's files are to be compensated with.
@@ -471,7 +497,8 @@ impl Compensation {
                 },
                 None => Source::Edited {
                     matrix: matrix.clone(),
-                    from: None,
+                    from: Some(OMIQS.to_string()),
+                    changed: false,
                 },
             };
         }
@@ -481,9 +508,8 @@ impl Compensation {
 
     /// What to say to a group holding Omiq exports that has not said what was
     /// applied to them.
-    pub const ASK: &'static str = "these files were exported from Omiq, which applies its compensation \
-        to the events and records nothing of it in the file: say whether they were compensated in Omiq \
-        before giving them a matrix here";
+    pub const ASK: &'static str =
+        "Omiq-exported files: first say whether compensation was applied in Omiq";
 
     /// Whether the group holds a file Omiq wrote.
     pub fn holds_omiq_exports(&self, group: GroupId) -> bool {
@@ -544,7 +570,7 @@ impl Compensation {
             return Err("a channel's spillover into itself is 100%".to_string());
         }
         if !percent.is_finite() {
-            return Err(format!("{percent} is not a percentage"));
+            return Err(format!("{percent} isn't a percentage"));
         }
         let base = self
             .wanted(group)
@@ -558,11 +584,14 @@ impl Compensation {
         let from_name = match &self.group(group).map(|g| &g.source) {
             Some(Source::Edited { from, .. }) => from.clone(),
             Some(source @ (Source::Loaded { .. } | Source::FilesOwn)) => Some(source.describe()),
+            // Nothing wanted: the edit starts from Omiq's matrix, if any.
+            _ if self.applied(group).is_some() => Some(OMIQS.to_string()),
             _ => None,
         };
         self.group_mut(group)?.source = Source::Edited {
             matrix: Arc::new(edited),
             from: from_name,
+            changed: true,
         };
         Ok(())
     }
@@ -584,7 +613,7 @@ impl Compensation {
     pub fn remove_group(&mut self, group: GroupId) -> Result<(), String> {
         let held = self.files.values().filter(|m| m.group == group).count();
         if held > 0 {
-            return Err(format!("it still holds {held} files"));
+            return Err(format!("it still has {held} file(s)"));
         }
         self.groups.retain(|g| g.id != group);
         Ok(())
@@ -631,7 +660,7 @@ impl Compensation {
             Source::Loaded { matrix, .. } | Source::Edited { matrix, .. } => Some(matrix.clone()),
             Source::Unreadable { path, why } => {
                 return Err(format!(
-                    "its group's matrix {} could not be read: {why}",
+                    "its group's matrix {} can't be read: {why}",
                     path.display()
                 ));
             }
@@ -639,11 +668,11 @@ impl Compensation {
                 Ok(Some(own)) => Some(own.clone()),
                 Ok(None) => {
                     return Err(format!(
-                        "{} compensates with each file's own matrix, and this file has none",
+                        "it has no matrix of its own ({} is set to use each file's own)",
                         group.name
                     ));
                 }
-                Err(why) => return Err(format!("its own matrix could not be read: {why}")),
+                Err(why) => return Err(format!("its own matrix can't be read: {why}")),
             },
         };
         let applied = if member.omiq {
@@ -655,7 +684,7 @@ impl Compensation {
                 Applied::Unknown => return Err(Self::ASK.to_string()),
                 Applied::Unreadable { path, why } => {
                     return Err(format!(
-                        "the matrix it was compensated with in Omiq, {}, could not be read: {why}",
+                        "the matrix applied in Omiq, {}, can't be read: {why}",
                         path.display()
                     ));
                 }
@@ -712,9 +741,14 @@ impl Compensation {
                         Source::Loaded { path, .. } | Source::Unreadable { path, .. } => {
                             SavedSource::Csv(path.clone())
                         }
-                        Source::Edited { matrix, from } => SavedSource::Edited {
+                        Source::Edited {
+                            matrix,
+                            from,
+                            changed,
+                        } => SavedSource::Edited {
                             matrix: SavedMatrix::of(matrix),
                             from: from.clone(),
+                            changed: *changed,
                         },
                     },
                     applied: match &g.applied {
@@ -766,10 +800,15 @@ impl Compensation {
                             why,
                         },
                     },
-                    SavedSource::Edited { matrix, from } => match matrix.read() {
+                    SavedSource::Edited {
+                        matrix,
+                        from,
+                        changed,
+                    } => match matrix.read() {
                         Ok(matrix) => Source::Edited {
                             matrix: Arc::new(matrix),
                             from: from.clone(),
+                            changed: *changed,
                         },
                         Err(why) => Source::Unreadable {
                             path: PathBuf::from("(the matrix edited here)"),
@@ -885,7 +924,14 @@ pub enum SavedSource {
     Edited {
         matrix: SavedMatrix,
         from: Option<String>,
+        #[serde(default = "edited_by_default")]
+        changed: bool,
     },
+}
+
+/// A matrix saved before `changed` was kept was always an edited one.
+fn edited_by_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

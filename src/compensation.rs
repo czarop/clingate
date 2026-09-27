@@ -84,26 +84,26 @@ impl Spillover {
     pub fn new(channels: Vec<Arc<str>>, values: Vec<f64>) -> Result<Self> {
         let n = channels.len();
         if n == 0 {
-            return Err(anyhow!("the matrix names no channels"));
+            return Err(anyhow!("No channels"));
         }
         if values.len() != n * n {
             return Err(anyhow!(
-                "{n} channels need {} values, and there are {}",
+                "{n} channels need {} values, found {}",
                 n * n,
                 values.len()
             ));
         }
         for (i, name) in channels.iter().enumerate() {
             if name.trim().is_empty() {
-                return Err(anyhow!("channel {} has no name", i + 1));
+                return Err(anyhow!("Column {} has no channel name", i + 1));
             }
             if channels[..i].contains(name) {
-                return Err(anyhow!("channel {name} is named twice"));
+                return Err(anyhow!("{name} is listed twice"));
             }
         }
         if let Some(at) = values.iter().position(|v| !v.is_finite()) {
             return Err(anyhow!(
-                "the value for {} into {} is not a number",
+                "{} → {} isn't a number",
                 channels[at / n],
                 channels[at % n]
             ));
@@ -112,7 +112,8 @@ impl Spillover {
             let d = values[i * n + i];
             if (d - 1.0).abs() > DIAGONAL_TOLERANCE {
                 return Err(anyhow!(
-                    "{name}'s spillover into itself is {d}, where a spillover matrix has 1"
+                    "{name} → {name} should be 100%, found {}%",
+                    d * 100.0
                 ));
             }
         }
@@ -143,12 +144,12 @@ impl Spillover {
                 matrix_values.iter().map(|&v| f64::from(v)).collect(),
             )
             .map(Some)
-            .map_err(|e| anyhow!("its {keyword} is not a spillover matrix: {e}")),
+            .map_err(|e| anyhow!("its {keyword} matrix is invalid: {e}")),
             // BD writes `SPILL` without the `$`, which flow keeps as text.
             Keyword::String(text) => Self::from_keyword_text(&text.get_str())
                 .map(Some)
-                .map_err(|e| anyhow!("its {keyword} is not a spillover matrix: {e}")),
-            _ => Err(anyhow!("its {keyword} could not be read as a matrix")),
+                .map_err(|e| anyhow!("its {keyword} matrix is invalid: {e}")),
+            _ => Err(anyhow!("its {keyword} matrix can't be read")),
         }
     }
 
@@ -159,10 +160,10 @@ impl Spillover {
         let n: usize = parts
             .first()
             .and_then(|p| p.parse().ok())
-            .ok_or_else(|| anyhow!("it does not start with a channel count"))?;
+            .ok_or_else(|| anyhow!("it doesn't start with a channel count"))?;
         if parts.len() != 1 + n + n * n {
             return Err(anyhow!(
-                "{n} channels need {} entries after the count, and there are {}",
+                "{n} channels need {} entries after the count, found {}",
                 n + n * n,
                 parts.len() - 1
             ));
@@ -171,37 +172,68 @@ impl Spillover {
             .iter()
             .map(|v| {
                 v.parse::<f64>()
-                    .map_err(|_| anyhow!("{v:?} is not a number"))
+                    .map_err(|_| anyhow!("'{v}' isn't a number"))
             })
             .collect::<Result<Vec<_>>>()?;
         Self::new(parts[1..=n].iter().map(|&c| Arc::from(c)).collect(), values)
     }
 
-    /// A matrix exported from Omiq as CSV. See the module documentation for
-    /// the layout.
+    /// A matrix exported from Omiq as CSV. See [`Spillover::from_omiq_text`].
     pub fn from_omiq_csv(text: &str) -> Result<Self> {
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-        let mut rows = text
-            .lines()
-            .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty())
-            .map(split_csv_line);
-        let header = rows.next().ok_or_else(|| anyhow!("the file is empty"))?;
-        let rows: Vec<Vec<String>> = rows.collect();
+        Self::from_omiq_text(text)
+    }
 
-        // Channels named down the first column too: the top-left cell is
-        // empty and every row starts with its channel's name.
-        let row_names = header.first().is_some_and(|c| c.is_empty())
-            && rows.iter().all(|r| r.len() == header.len());
+    /// A matrix as copied out of Omiq and pasted, or saved as CSV: the
+    /// channel names across the top, then one row per channel in the same
+    /// order, in percent (or as fractions, with 1 on the diagonal).
+    ///
+    /// Tab-separated, as a paste from Omiq or a spreadsheet is, or comma-
+    /// separated. Rows may start with their channel's name - with the corner
+    /// cell empty or labelled, as Omiq's view has "Features" there - as long
+    /// as they are in the order the top row gives.
+    pub fn from_omiq_text(text: &str) -> Result<Self> {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(|l| l.trim_end_matches(['\r', '\n']))
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let first = *lines.first().ok_or_else(|| anyhow!("Nothing to read"))?;
+        let separator = if first.contains('\t') { '\t' } else { ',' };
+        let mut rows = lines.iter().map(|l| split_line(l, separator));
+        let mut header = rows.next().expect("not empty");
+        // A paste can carry a trailing separator on every line.
+        let trailing = header.len() > 1 && header.last().is_some_and(|c| c.is_empty());
+        if trailing {
+            header.pop();
+        }
+        let rows: Vec<Vec<String>> = rows
+            .map(|mut r| {
+                if trailing && r.last().is_some_and(|c| c.is_empty()) {
+                    r.pop();
+                }
+                r
+            })
+            .collect();
+
+        // Rows labelled with their channel: every row starts with a name,
+        // not a number.
+        let is_number = |cell: &str| cell.trim_end_matches('%').trim().parse::<f64>().is_ok();
+        let row_names = !rows.is_empty()
+            && rows.iter().all(|r| {
+                r.first()
+                    .is_some_and(|c| !c.trim().is_empty() && !is_number(c))
+            });
         let names: Vec<&str> = header
             .iter()
-            .skip(usize::from(row_names))
+            // The corner cell, when the header has one above the names.
+            .skip(usize::from(row_names && rows[0].len() == header.len()))
             .map(String::as_str)
             .collect();
         let n = names.len();
         if rows.len() != n {
             return Err(anyhow!(
-                "the top row names {n} channels, and there are {} rows of values under it",
+                "The header lists {n} channels but there are {} rows",
                 rows.len()
             ));
         }
@@ -211,7 +243,7 @@ impl Spillover {
             let cells: &[String] = if row_names {
                 if row[0] != names[i] {
                     return Err(anyhow!(
-                        "row {} is named {}, where the top row puts {} in that place",
+                        "Row {} is labelled {}, but the header has {} in that position",
                         i + 1,
                         row[0],
                         names[i]
@@ -223,18 +255,15 @@ impl Spillover {
             };
             if cells.len() != n {
                 return Err(anyhow!(
-                    "the row for {} has {} values, not {n}",
+                    "Row {} ({}) has {} values, expected {n}",
+                    i + 1,
                     names[i],
                     cells.len()
                 ));
             }
             for (j, cell) in cells.iter().enumerate() {
-                let value: f64 = cell.parse().map_err(|_| {
-                    anyhow!(
-                        "the value for {} into {}, {cell:?}, is not a number",
-                        names[i],
-                        names[j]
-                    )
+                let value: f64 = cell.trim_end_matches('%').trim().parse().map_err(|_| {
+                    anyhow!("'{cell}' in {} → {} isn't a number", names[i], names[j])
                 })?;
                 values.push(value);
             }
@@ -251,8 +280,8 @@ impl Spillover {
                 .find(|&(_, d)| (d - 100.0).abs() > 100.0 * DIAGONAL_TOLERANCE)
                 .expect("not all 100");
             return Err(anyhow!(
-                "each channel's spillover into itself should be 100 (or 1, in fractions), \
-                 and {}'s is {d}",
+                "The diagonal should be 100 throughout, but {} → {} is {d}",
+                names[i],
                 names[i]
             ));
         }
@@ -304,7 +333,7 @@ impl Spillover {
     /// [`Spillover::from_omiq_csv`], from a file.
     pub fn read_omiq_csv(path: &std::path::Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
-            .map_err(|e| anyhow!("could not read {}: {e}", path.display()))?;
+            .map_err(|e| anyhow!("Can't read {}: {e}", path.display()))?;
         Self::from_omiq_csv(&text)
     }
 
@@ -450,7 +479,7 @@ impl Spillover {
                 .expect("col < n");
             if a[pivot * n + col].abs() < 1e-12 {
                 return Err(anyhow!(
-                    "the matrix cannot be inverted: no combination of the channels separates {}",
+                    "The matrix can't be applied: {} can't be separated from the other channels",
                     self.channels[col]
                 ));
             }
@@ -595,7 +624,7 @@ fn find_channel(name: &str, channels: &[(&str, Option<&str>)]) -> Result<usize, 
             [] => continue,
             several => {
                 return Err(format!(
-                    "{name} could be any of {}",
+                    "{name} matches more than one channel: {}",
                     several
                         .iter()
                         .map(|&i| channels[i].0)
@@ -605,11 +634,12 @@ fn find_channel(name: &str, channels: &[(&str, Option<&str>)]) -> Result<usize, 
             }
         }
     }
-    Err(format!("the file has no channel {name}"))
+    Err(format!("no channel {name}"))
 }
 
-/// One CSV line's cells, trimmed, with any quotes around a cell taken off.
-fn split_csv_line(line: &str) -> Vec<String> {
+/// One line's cells, split at `separator`, trimmed, with any quotes around
+/// a cell taken off.
+fn split_line(line: &str, separator: char) -> Vec<String> {
     let mut cells = Vec::new();
     let mut cell = String::new();
     let mut quoted = false;
@@ -621,7 +651,9 @@ fn split_csv_line(line: &str) -> Vec<String> {
                 chars.next();
             }
             '"' => quoted = !quoted,
-            ',' if !quoted => cells.push(std::mem::take(&mut cell).trim().to_string()),
+            c if c == separator && !quoted => {
+                cells.push(std::mem::take(&mut cell).trim().to_string())
+            }
             c => cell.push(c),
         }
     }
@@ -728,12 +760,12 @@ pub type Choice = std::result::Result<groups::Correction, String>;
 pub fn open_compensated(path: &std::path::Path, choice: &Choice) -> Result<flow_fcs::Fcs> {
     let correction = choice
         .as_ref()
-        .map_err(|why| anyhow!("it cannot be compensated: {why}"))?;
+        .map_err(|why| anyhow!("it can't be compensated: {why}"))?;
     let mut fcs = flow_fcs::Fcs::open(
         path.to_str()
             .ok_or_else(|| anyhow!("file path is not valid UTF-8"))?,
     )?;
-    correct_fcs(&mut fcs, correction).map_err(|e| anyhow!("it cannot be compensated: {e}"))?;
+    correct_fcs(&mut fcs, correction).map_err(|e| anyhow!("it can't be compensated: {e}"))?;
     Ok(fcs)
 }
 

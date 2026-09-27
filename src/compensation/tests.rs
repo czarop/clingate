@@ -61,6 +61,32 @@ fn a_csv_in_fractions_is_read_too() {
     assert!(Spillover::from_omiq_csv(csv).unwrap().same_as(&three()));
 }
 
+/// A matrix pasted from Omiq's grid: tab-separated, with the channels down
+/// the first column under a corner label, trailing tabs, and percent signs.
+#[test]
+fn a_matrix_pasted_from_omiq_is_read() {
+    let pasted = "\u{feff}Features\tFITC-A\tPE-A\tAPC-A\t\r\n\
+                  FITC-A\t100%\t25\t2\t\r\n\
+                  PE-A\t5\t100\t10\r\n\
+                  APC-A\t0\t30\t100\r\n\r\n";
+    assert!(Spillover::from_omiq_text(pasted).unwrap().same_as(&three()));
+    let bare = "FITC-A\tPE-A\tAPC-A\n100\t25\t2\n5\t100\t10\n0\t30\t100";
+    assert!(Spillover::from_omiq_text(bare).unwrap().same_as(&three()));
+    let no_corner =
+        "FITC-A\tPE-A\tAPC-A\nFITC-A\t100\t25\t2\nPE-A\t5\t100\t10\nAPC-A\t0\t30\t100\n";
+    assert!(
+        Spillover::from_omiq_text(no_corner)
+            .unwrap()
+            .same_as(&three())
+    );
+    let short = "FITC-A\tPE-A\tAPC-A\n100\t25\t2\n5\t100\t10\n";
+    let refused = Spillover::from_omiq_text(short).unwrap_err().to_string();
+    assert!(
+        refused.contains("3 channels but there are 2 rows"),
+        "{refused}"
+    );
+}
+
 /// Channels named down the first column as well are read, and must be in
 /// the order the top row gives them.
 #[test]
@@ -69,20 +95,33 @@ fn a_csv_with_row_names_is_read_if_they_agree() {
     assert!(Spillover::from_omiq_csv(csv).unwrap().same_as(&three()));
     let swapped = ",FITC-A,PE-A,APC-A\nPE-A,100,25,2\nFITC-A,5,100,10\nAPC-A,0,30,100\n";
     let refused = Spillover::from_omiq_csv(swapped).unwrap_err().to_string();
-    assert!(refused.contains("row 1 is named PE-A"), "{refused}");
+    assert!(refused.contains("Row 1 is labelled PE-A"), "{refused}");
 }
 
 /// Anything that is not a spillover matrix is refused, saying why.
 #[test]
 fn a_csv_that_is_not_a_spillover_matrix_is_refused() {
     let cases = [
-        ("", "empty"),
-        ("A,B\n100,5\n", "2 channels, and there are 1 rows"),
-        ("A,B\n100,5\n5,100,3\n", "the row for B has 3 values"),
-        ("A,B\n100,x\n5,100\n", "\"x\", is not a number"),
-        ("A,B\n100,5\n5,90\n", "B's is 90"),
-        ("A,A\n100,5\n5,100\n", "named twice"),
-        ("A,\n100,5\n5,100\n", "no name"),
+        ("", "Nothing to read"),
+        (
+            "A,B\n100,5\n",
+            "The header lists 2 channels but there are 1 rows",
+        ),
+        (
+            "A,B\n100,5\n5,100,3\n",
+            "Row 2 (B) has 3 values, expected 2",
+        ),
+        ("A,B\n100,x\n5,100\n", "'x' in A → B isn't a number"),
+        ("A,B\n100,5\n5,90\n", "B → B is 90"),
+        ("A,A\n100,5\n5,100\n", "A is listed twice"),
+        (
+            "A,\n100,5\n5,100\n",
+            "The header lists 1 channels but there are 2 rows",
+        ),
+        (
+            "A,,B\n100,0,5\n0,100,0\n5,0,100\n",
+            "Column 2 has no channel name",
+        ),
     ];
     for (csv, why) in cases {
         let refused = Spillover::from_omiq_csv(csv).unwrap_err().to_string();
@@ -141,7 +180,7 @@ fn a_files_bad_matrix_is_an_error() {
     );
     let refused = own(&path).unwrap_err().to_string();
     assert!(
-        refused.contains("$SPILLOVER is not a spillover matrix"),
+        refused.contains("its $SPILLOVER matrix is invalid"),
         "{refused}"
     );
 }
@@ -176,14 +215,14 @@ fn a_matrix_that_does_not_fit_the_file_is_refused() {
             .unwrap_err()
             .to_string()
     };
-    assert!(refused(&["FITC-A", "APC-A"]).contains("the file has no channel APC-A"));
+    assert!(refused(&["FITC-A", "APC-A"]).contains("no channel APC-A"));
     let two = [("FITC-A", Some("CD3")), ("PE-A", Some("CD3"))];
     let ambiguous = matrix(&["CD3", "X"], &identity(2))
         .resolve(&two)
         .unwrap_err()
         .to_string();
     assert!(
-        ambiguous.contains("CD3 could be any of FITC-A, PE-A"),
+        ambiguous.contains("CD3 matches more than one channel: FITC-A, PE-A"),
         "{ambiguous}"
     );
     assert!(refused(&["PE-A", "pe-a"]).contains("both channel PE-A"));
@@ -259,7 +298,7 @@ fn a_matrix_that_cannot_be_inverted_is_refused() {
     let refused = compensate(&frame, &singular, |_| None)
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("cannot be inverted"), "{refused}");
+    assert!(refused.contains("B can't be separated"), "{refused}");
 }
 
 /// An opened file compensated in place: its own matrix, found by marker
@@ -349,6 +388,21 @@ fn other() -> Spillover {
 
 fn p(name: &str) -> PathBuf {
     PathBuf::from(format!("/data/{name}.fcs"))
+}
+
+/// Several files move at once, or none do if any is unknown.
+#[test]
+fn files_move_between_groups_together() {
+    let mut c = Compensation::default();
+    for name in ["a", "b", "c"] {
+        c.add_file(p(name), Ok(None));
+    }
+    let to = c.new_group("Moved");
+    c.move_files(&[p("a"), p("c")], to).unwrap();
+    assert_eq!(c.files_in(to).collect::<Vec<_>>(), [p("a"), p("c")]);
+    assert_ne!(c.group_of(&p("b")), Some(to));
+    assert!(c.move_files(&[p("b"), p("gone")], to).is_err());
+    assert_ne!(c.group_of(&p("b")), Some(to), "nothing moved");
 }
 
 /// Files join the group of the matrix they carry - the same matrix listed in
@@ -445,7 +499,7 @@ fn a_file_that_cannot_be_compensated_as_its_group_says_is_an_error() {
     assert!(
         c.matrix_for(&p("without"))
             .unwrap_err()
-            .contains("this file has none")
+            .contains("it has no matrix of its own")
     );
     assert!(
         c.matrix_for(&p("broken"))
@@ -463,7 +517,7 @@ fn a_file_that_cannot_be_compensated_as_its_group_says_is_an_error() {
     assert!(
         c.matrix_for(&p("with"))
             .unwrap_err()
-            .contains("could not be read: gone")
+            .contains("can't be read: gone")
     );
     c.set_source(with, Source::None).unwrap();
     assert_eq!(c.matrix_for(&p("with")).unwrap(), Correction::none());
@@ -628,7 +682,7 @@ fn a_group_is_told_what_is_wrong_with_it() {
     c.set_source(g, loaded(transposed)).unwrap();
     let notes = c.check(g, channels);
     assert!(
-        notes.iter().any(|n| n.contains("the other way round")),
+        notes.iter().any(|n| n.contains("rows and columns swapped")),
         "{notes:?}"
     );
 
@@ -642,9 +696,7 @@ fn a_group_is_told_what_is_wrong_with_it() {
     c.set_source(g, loaded(far)).unwrap();
     let notes = c.check(g, channels);
     assert!(
-        notes
-            .iter()
-            .any(|n| n.contains("more than 10 percentage points")),
+        notes.iter().any(|n| n.contains("more than 10 points")),
         "{notes:?}"
     );
 
@@ -657,8 +709,7 @@ fn a_group_is_told_what_is_wrong_with_it() {
     assert!(
         notes
             .iter()
-            .any(|n| n
-                .contains("a.fcs: the matrix does not fit it: the file has no channel BV421-A")),
+            .any(|n| n.contains("a.fcs: the matrix doesn't fit its channels (no channel BV421-A)")),
         "{notes:?}"
     );
 
@@ -673,7 +724,7 @@ fn a_group_is_told_what_is_wrong_with_it() {
     assert!(
         c.check(g, channels)
             .iter()
-            .any(|n| n.contains("could not be read: gone"))
+            .any(|n| n.contains("can't be read: gone"))
     );
 }
 
@@ -768,10 +819,7 @@ fn a_channel_the_matrix_does_not_mix_need_not_be_in_the_file() {
     let refused = compensate(&whole.drop("PE-A").unwrap(), &m, |_| None)
         .unwrap_err()
         .to_string();
-    assert!(
-        refused.contains("the file has no channel PE-A"),
-        "{refused}"
-    );
+    assert!(refused.contains("no channel PE-A"), "{refused}");
 
     // And a group is not told a file lacks a channel that takes no part.
     let mut c = Compensation::default();
@@ -1137,7 +1185,7 @@ fn an_edit_starts_from_what_is_there() {
     .unwrap();
     c.set_value(g, "PE-A", "APC-A", 20.0, &[]).unwrap();
     let group = c.group(g).unwrap();
-    assert_eq!(group.source.describe(), "comp.csv, edited here");
+    assert_eq!(group.source.describe(), "comp.csv, edited");
     assert_eq!(c.wanted(g).unwrap().value(1, 2), 0.2);
     assert_eq!(c.wanted(g).unwrap().value(0, 1), 0.25, "the rest kept");
 }

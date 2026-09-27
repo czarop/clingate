@@ -2832,7 +2832,7 @@ mod tests {
             assert!(
                 reasons
                     .iter()
-                    .any(|r| r.contains("fs_b.fcs") && r.contains("cannot be compensated")),
+                    .any(|r| r.contains("fs_b.fcs") && r.contains("can't be compensated")),
                 "{reasons:?}"
             );
         }

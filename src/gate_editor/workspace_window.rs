@@ -718,6 +718,7 @@ impl Handles {
                         Source::Edited {
                             matrix: std::sync::Arc::new(matrix),
                             from: None,
+                            changed: false,
                         },
                     ),
                     Err(e) => warn(
@@ -736,7 +737,11 @@ impl Handles {
                 {
                     let source = match path {
                         Some(path) => Source::Loaded { path, matrix },
-                        None => Source::Edited { matrix, from: None },
+                        None => Source::Edited {
+                            matrix,
+                            from: Some("Omiq's matrix".into()),
+                            changed: false,
+                        },
                     };
                     self.set_compensation(group, source);
                 }
