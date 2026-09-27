@@ -21,14 +21,16 @@ that makes the code usable as tools. Decided:
 Each stage leaves behaviour unchanged and is checked with the full suite and in
 the running app.
 
-- [ ] **Stage 1 - operations out of the UI files.** The rules run
+- [x] **Stage 1 - operations out of the UI files.** The rules run
       (`run_solve`, `measure_all`) out of `gate_rules_window.rs`; one events
       pipeline (open, compensate, scale, filter by the gate chain, index)
       shared by the editor, the gallery and the rules run, in place of three;
       workspace loading (metadata, scaling with gates carried across, gating)
       as plain functions the Workspace tab calls.
-- [ ] **Stage 2 - the core modules use only `dioxus-stores`.**
-- [ ] **Stage 3 - split the crates.** `git mv`, so history is kept.
+- [x] **Stage 2 - the core modules use only `dioxus-stores`.** And print
+      nothing: a stdio tool server's protocol runs on stdout.
+- [x] **Stage 3 - split the crates.** `crates/clingate-core` and the app at
+      the root; `git mv`, so history is kept.
 - [ ] **Stage 4 - a headless `Session`** holding workspace, gates, metadata,
       scaling, compensation and rules, with load and save, and serialisable
       operations with stable ids (samples by program name, populations by
@@ -41,8 +43,8 @@ the running app.
 
 Built and unit-tested - groups as in Omiq, the matrix applied in Omiq taken
 back out and the wanted one put in, export for Omiq and for the exported files,
-and the tabbed panel on the Workspace tab (`src/compensation.rs`,
-`src/compensation/groups.rs`, `src/gate_editor/compensation_panel.rs`). The
+and the tabbed panel on the Workspace tab (`clingate_core::compensation`,
+`clingate_core::compensation::groups`, `src/gate_editor/compensation_panel.rs`). The
 fixture tests pin the arithmetic against Omiq's own exports. What they cannot
 show is that it holds up on real work, and that is the user's to do.
 
@@ -91,7 +93,7 @@ commit (`b7a77c4`).
       `$SPILLOVER` orientation (row = fluorochrome, column = detector) needs
       `Σⱼ oⱼ·S⁻¹[j][i]`. They agree only for a symmetric matrix, and
       `apply_file_compensation` passes `$SPILLOVER` straight in. clingate does
-      not call it - it compensates in `src/compensation.rs` - but anyone else
+      not call it - it compensates in `clingate_core::compensation` - but anyone else
       using flow gets wrong values. `$COMP` is also read as if it had
       `$SPILLOVER`'s channel names. Fix or remove both (flow-review 16).
 - [ ] **GatingML import panics.** `gatingml_to_gates` is `todo!()` for

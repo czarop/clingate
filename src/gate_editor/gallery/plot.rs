@@ -20,12 +20,12 @@ use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 use tokio::sync::Semaphore;
 
-use crate::gate_editor::AxisInfo;
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateId, GateOverrideResolver, GateStateStoreExt};
-use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
-use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, GateStateStoreExt};
+use clingate_core::gates::gate_traits::DrawableGate;
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
 use super::cache::{Fingerprint, PlotCache, scaling_digest};
 use super::overlay::{Flat, StaticGates, flatten_gates};
@@ -56,7 +56,7 @@ impl PartialEq for Permits {
 #[derive(Clone)]
 pub struct Setup {
     pub fingerprint: Fingerprint,
-    pub compensation: crate::compensation::Choice,
+    pub compensation: clingate_core::compensation::Choice,
     pub chain: Vec<GateId>,
     pub resolver: GateOverrideResolver,
     pub cofactors: Vec<(Arc<str>, f32)>,
@@ -100,7 +100,7 @@ pub fn GalleryPlot(
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
     let mut cache = use_context::<SyncSignal<PlotCache>>();
     let permits = use_context::<Permits>();
-    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
 
     let setup = use_memo({
         let path = path.clone();

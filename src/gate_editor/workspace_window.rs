@@ -2,7 +2,7 @@
 //!
 //! A workspace is the FCS files, the metadata that says which file is which
 //! sample, the scaling that says how each channel is displayed, and the gating
-//! file that holds the gates - see [`crate::workspace`]. They were named by line
+//! file that holds the gates - see [`clingate_core::workspace`]. They were named by line
 //! number in a `file_paths.txt` beside the binary and read once at startup, so
 //! changing any of them meant editing a text file and restarting. Everything
 //! about them now happens here, and the other tabs only read the result.
@@ -21,7 +21,7 @@
 //!   range changed goes through the same `rescale_gates` and
 //!   `set_current_axis_limits` calls the editor's cofactor and range boxes
 //!   make, so drawn, per-specimen and per-sample positions all come through -
-//!   see [`crate::workspace::carry_to_scaling`].
+//!   see [`clingate_core::workspace::carry_to_scaling`].
 //! - **Metadata** re-imports the gating file. It defines the specimen groups
 //!   the per-specimen positions are keyed by, so new metadata can re-key every
 //!   one of them, and only the import knows how.
@@ -44,23 +44,25 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 
-use crate::compensation::groups::{Compensation, GroupId, Source};
-use crate::compensation::{Spillover, own_matrices};
 use crate::components::toast::{Toasts, note, say, use_toast, warn};
-use crate::file_load::FcsFiles;
 use crate::gate_editor::compensation_panel::{CompensationAction, CompensationPanel, ExportFor};
-use crate::gate_editor::gates::GateState;
 use crate::gate_editor::path_picker::{Chosen, Pick, UNAVAILABLE, choose};
-use crate::gate_editor::plots::axis_store::{
+use clingate_core::axis_store::{
     AxisStore, AxisStoreStoreExt, ScalingInfoSource, read_axis_configs,
 };
-use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::{
+use clingate_core::compensation::groups::{Compensation, GroupId, Source};
+use clingate_core::compensation::{Spillover, own_matrices};
+use clingate_core::file_load::FcsFiles;
+use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::gates::GateState;
+use clingate_core::omiq::metadata::{
     MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt, OMIQ_FILE_NAME_COLUMN,
     OMIQ_ID_COLUMN,
 };
-use crate::omiq::serialise::to_omiq_document;
-use crate::workspace::{Found, Remembered, ScalingCarried, carry_to_scaling, detect, gating_needs};
+use clingate_core::omiq::serialise::to_omiq_document;
+use clingate_core::workspace::{
+    Found, Remembered, ScalingCarried, carry_to_scaling, detect, gating_needs,
+};
 
 pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
 pub type MetadataStore = Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>;
@@ -526,7 +528,7 @@ impl Handles {
     /// Put the remembered groups back, reading each group's CSV again. A CSV
     /// that can no longer be read leaves its group unable to compensate, and
     /// says so, rather than quietly drawing its files uncompensated.
-    async fn restore_compensation(mut self, saved: crate::compensation::groups::Saved) {
+    async fn restore_compensation(mut self, saved: clingate_core::compensation::groups::Saved) {
         let owns = self
             .files
             .peek()
@@ -635,17 +637,17 @@ impl Handles {
             CompensationAction::Rename(group, name) => self.rename_compensation_group(group, name),
             CompensationAction::Remove(group) => self.remove_compensation_group(group),
             CompensationAction::AppliedNothing(group) => {
-                self.set_applied(group, crate::compensation::groups::Applied::Nothing)
+                self.set_applied(group, clingate_core::compensation::groups::Applied::Nothing)
             }
             CompensationAction::AppliedMatrix(group, matrix) => self.set_applied(
                 group,
-                crate::compensation::groups::Applied::Matrix { path: None, matrix },
+                clingate_core::compensation::groups::Applied::Matrix { path: None, matrix },
             ),
             // The matrix wanted is kept: it is what the files should end up
             // compensated with whatever the answer, and nothing is drawn
             // until the question is answered again.
             CompensationAction::AppliedForget(group) => {
-                self.set_applied(group, crate::compensation::groups::Applied::Unknown)
+                self.set_applied(group, clingate_core::compensation::groups::Applied::Unknown)
             }
             CompensationAction::SetValue(group, from, into, percent) => {
                 let channels = self.first_files_channels(group);
@@ -681,7 +683,8 @@ impl Handles {
                     .peek()
                     .group(group)
                     .map(|g| g.applied.clone());
-                if let Some(crate::compensation::groups::Applied::Matrix { path, matrix }) = applied
+                if let Some(clingate_core::compensation::groups::Applied::Matrix { path, matrix }) =
+                    applied
                 {
                     let source = match path {
                         Some(path) => Source::Loaded { path, matrix },
@@ -725,12 +728,16 @@ impl Handles {
                     .file_list()
                     .iter()
                     .find(|s| s.get_filepath() == path)
-                    .map(crate::compensation::fluorescence_channels)
+                    .map(clingate_core::compensation::fluorescence_channels)
             })
             .unwrap_or_default()
     }
 
-    fn set_applied(mut self, group: GroupId, applied: crate::compensation::groups::Applied) {
+    fn set_applied(
+        mut self,
+        group: GroupId,
+        applied: clingate_core::compensation::groups::Applied,
+    ) {
         let set = self.compensation.write().set_applied(group, applied);
         match set {
             Ok(()) => self.remember(),
@@ -748,9 +755,9 @@ impl Handles {
         let text = match export_for {
             ExportFor::Omiq => Ok(wanted.to_omiq_csv()),
             ExportFor::TheseFiles => match comp.applied(group) {
-                Some(applied) => crate::compensation::residual(&wanted, &applied)
+                Some(applied) => clingate_core::compensation::residual(&wanted, &applied)
                     .map(|(channels, values)| {
-                        crate::compensation::write_grid(&channels, &values, ',')
+                        clingate_core::compensation::write_grid(&channels, &values, ',')
                     })
                     .map_err(|e| e.to_string()),
                 // Nothing applied: the files are as recorded, and what they

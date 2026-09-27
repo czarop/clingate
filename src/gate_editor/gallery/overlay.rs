@@ -22,10 +22,10 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 
-use crate::gate_editor::gates::gate_single::rectangle_gate;
-use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_editor::gates::gate_types::{GateRenderShape, GateStats};
-use crate::gate_editor::plots::axis_store::PlotMapper;
+use clingate_core::axis_store::PlotMapper;
+use clingate_core::gates::gate_single::rectangle_gate;
+use clingate_core::gates::gate_traits::DrawableGate;
+use clingate_core::gates::gate_types::{GateRenderShape, GateStats};
 
 /// A drawn thing, in pixels, with nothing left to resolve.
 #[derive(Clone, Debug, PartialEq)]

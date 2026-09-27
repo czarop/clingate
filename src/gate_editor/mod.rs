@@ -1,15 +1,12 @@
-pub mod axis_info;
 pub mod compensation_panel;
-pub mod gates;
-pub mod macros;
-mod reactivity_tests;
-pub mod route;
-pub use axis_info::AxisInfo;
 pub mod gallery;
 pub mod gate_rules_window;
 pub mod gate_sidebar;
+pub mod gates;
 pub mod main_window;
 pub mod pairing_controls;
 pub mod path_picker;
 pub mod plots;
+mod reactivity_tests;
+pub mod route;
 pub mod workspace_window;

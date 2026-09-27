@@ -15,15 +15,15 @@
 //! cheap to keep warm, the image is not.
 
 use crate::components::toast::ToastProvider;
-use crate::file_load::FcsFiles;
 use crate::gate_editor::gallery::window::GalleryWindow;
 use crate::gate_editor::gate_rules_window::GateRulesWindow;
-use crate::gate_editor::gates::GateState;
 use crate::gate_editor::main_window::MainWindow;
-use crate::gate_editor::plots::axis_store::AxisStore;
 use crate::gate_editor::workspace_window::{Generation, Loaded, WorkspaceWindow};
-use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::MetaDataStore;
+use clingate_core::axis_store::AxisStore;
+use clingate_core::file_load::FcsFiles;
+use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::gates::GateState;
+use clingate_core::omiq::metadata::MetaDataStore;
 use dioxus::prelude::*;
 use dioxus::stores::use_store_sync;
 
@@ -89,7 +89,7 @@ pub fn Shell() -> Element {
     // What each file is compensated with. Read wherever a file's events are
     // read - the editor, the gallery, a rules run - so all three see the same
     // events.
-    let compensation = use_signal(crate::compensation::groups::Compensation::default);
+    let compensation = use_signal(clingate_core::compensation::groups::Compensation::default);
     use_context_provider(|| compensation);
 
     // What the workspace holds besides the files, and the counts the other

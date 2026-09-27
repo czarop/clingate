@@ -160,7 +160,7 @@ pub fn SearchableSelectList<T: Clone + PartialEq + std::fmt::Display + 'static>(
     }
 }
 
-use crate::FxIndexMap;
+use clingate_core::FxIndexMap;
 
 #[component]
 pub fn SearchableSelectMap<

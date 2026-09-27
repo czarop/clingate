@@ -160,7 +160,7 @@ predicate, `matches_search`.
 ### omiq
 
 **Reach.** `deserialise` is driven by `GateState::upload_gates_from_file`
-(`gate_editor::gates::gate_store`), which builds every drawable gate, the
+(`clingate_core::gates::gate_store`), which builds every drawable gate, the
 node tree, the per-group overrides keyed by `MetaDataKey`, and the
 `OmiqRebuildStore` (`rebuild`) the export needs. It reads the axis settings
 (`AxisStore`) for composite ranges and infinite bounds. `serialise` is driven
@@ -264,7 +264,7 @@ assert nothing: `shape_fit_tests::a_fitted_shape_can_be_looked_at`
 - `RuleStore::save` writes in place; `Remembered::save_to` writes beside and
   renames. A crash mid-save loses the rules file.
 
-### gate_editor/gates
+### gates (clingate-core)
 
 **Reach.** `GateState` (`gate_store`) is the document: the three-tier gate
 store (global registry, per-group and per-sample overrides keyed by
@@ -432,7 +432,7 @@ the output of any test that adds gates. That is upstream, in `czarop/flow`.
 
 ### Random gate edits
 
-`gate_editor::gates::edit_fuzz_tests`, over every gate type: 25 random drags
+`clingate_core::gates::edit_fuzz_tests`, over every gate type: 25 random drags
 each followed by the opposite drag leave the gate holding exactly the cells
 it held (with a guard that a drag moves cells at all - except the bisector,
 whose whole-gate drag slides its handle along the split by design); and 200

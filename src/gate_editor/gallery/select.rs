@@ -13,9 +13,9 @@
 
 use std::sync::Arc;
 
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateId, GateOverrideResolver, NodeId, ROOTGATE};
-use crate::gate_editor::gates::gate_traits::DrawableGate;
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, NodeId, ROOTGATE};
+use clingate_core::gates::gate_traits::DrawableGate;
 
 /// The gates drawn on the plot of `node`, resolved for one file.
 ///

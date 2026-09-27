@@ -1,9 +1,7 @@
 use crate::components::context_menu::*;
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{
-    GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE,
-};
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 use rustc_hash::FxHashSet;

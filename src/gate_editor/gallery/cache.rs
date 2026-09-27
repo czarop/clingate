@@ -37,8 +37,8 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::gate_editor::AxisInfo;
-use crate::gate_editor::gates::gate_traits::DrawableGate;
+use clingate_core::AxisInfo;
+use clingate_core::gates::gate_traits::DrawableGate;
 
 use super::render::PlotImage;
 
@@ -70,7 +70,7 @@ pub struct Fingerprint {
     /// relying on a subtle invariant in another module is not worth it.
     pub scaling: u64,
     /// What the file is compensated with - see
-    /// [`crate::compensation::groups::Compensation::digest`]. A new matrix
+    /// [`clingate_core::compensation::groups::Compensation::digest`]. A new matrix
     /// moves every event without touching anything else here.
     pub compensation: u64,
     /// Every gate this picture depends on - the filtering chain first, then the

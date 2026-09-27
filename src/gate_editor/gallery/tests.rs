@@ -9,13 +9,13 @@ use super::cache::{Fingerprint, PlotCache};
 use super::overlay::{Flat, flatten};
 use super::pdf::{Cell, Drawn, Sheet, write_pdf};
 use super::render::PlotImage;
-use crate::gate_editor::AxisInfo;
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::ROOTGATE;
-use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_editor::gates::gate_types::PrimaryGateType;
-use crate::gate_editor::gates::gate_types::{DEFAULT_LINE, GateRenderShape, ShapeType};
-use crate::gate_editor::plots::axis_store::{Param, PlotMapper};
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::{Param, PlotMapper};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::ROOTGATE;
+use clingate_core::gates::gate_traits::DrawableGate;
+use clingate_core::gates::gate_types::PrimaryGateType;
+use clingate_core::gates::gate_types::{DEFAULT_LINE, GateRenderShape, ShapeType};
 use flow_fcs::TransformType;
 
 fn mapper() -> PlotMapper {
@@ -463,13 +463,13 @@ fn a_real_gallery_page_renders_and_writes() {
     };
 
     use super::render::{PlotJob, render_plot};
-    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+    use clingate_core::gates::gate_store::GateOverrideResolver;
 
     // No chain and no gates: this is about the pipeline and the picture, not
     // about gating, and a scatter plot needs no gating file to exist.
     let job = PlotJob {
         path: file.clone(),
-        compensation: Ok(crate::compensation::groups::Correction::none()),
+        compensation: Ok(clingate_core::compensation::groups::Correction::none()),
         cofactors: Vec::new(),
         chain: Vec::new(),
         resolver: GateOverrideResolver {
@@ -673,7 +673,7 @@ fn a_real_gate_that_admits_nothing_still_draws() {
 
     let job = PlotJob {
         path: file,
-        compensation: Ok(crate::compensation::groups::Correction::none()),
+        compensation: Ok(clingate_core::compensation::groups::Correction::none()),
         cofactors: Vec::new(),
         chain,
         resolver,
@@ -701,7 +701,7 @@ fn drawn_under(
     gate_y: &str,
 ) -> (
     Vec<Arc<dyn DrawableGate>>,
-    crate::gate_editor::gates::gate_store::GateOverrideResolver,
+    clingate_core::gates::gate_store::GateOverrideResolver,
 ) {
     let mut state = GateState::default();
     state
@@ -775,11 +775,11 @@ fn a_real_file_renders_with_cofactors_it_does_not_have() {
     };
 
     use super::render::{PlotJob, render_plot};
-    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+    use clingate_core::gates::gate_store::GateOverrideResolver;
 
     let job = PlotJob {
         path: file,
-        compensation: Ok(crate::compensation::groups::Correction::none()),
+        compensation: Ok(clingate_core::compensation::groups::Correction::none()),
         cofactors: vec![
             // Not in any panel this program will meet.
             (Arc::from("No Such Channel-A"), 150.0),
@@ -822,7 +822,7 @@ fn a_real_panel_keeps_its_own_channels_and_drops_the_rest() {
     };
     let fcs = flow_fcs::Fcs::open(file.to_str().expect("utf-8 path")).expect("the file opens");
 
-    use crate::events::cofactors_carried_by;
+    use clingate_core::events::cofactors_carried_by;
     let real: Arc<str> = fcs
         .parameters
         .values()
@@ -906,7 +906,7 @@ fn moving_a_gate_drawn_over_a_picture_changes_what_it_depends_on() {
     // The cache asks "has anything this picture depends on changed", so a
     // child moved on one file must show up in that file's dependencies -
     // and only that file's.
-    use crate::gate_editor::gates::gate_store::GateSource;
+    use clingate_core::gates::gate_store::GateSource;
     let (mut state, node) = parent_and_child();
     let child = state
         .registered_ids()
@@ -1116,12 +1116,12 @@ fn any_name_leaves_the_file_well_formed() {
 
 mod the_export {
     use super::*;
-    use crate::file_load_tests::{scratch, write_fcs_rows};
     use crate::gate_editor::gallery::export::{
         ContactSheet, ExportJob, NO_METADATA, ToDraw, contact_sheet,
     };
     use crate::gate_editor::gallery::render::PlotJob;
-    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+    use clingate_core::file_load_tests::{scratch, write_fcs_rows};
+    use clingate_core::gates::gate_store::GateOverrideResolver;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1161,7 +1161,7 @@ mod the_export {
             plot: Ok(ToDraw {
                 job: PlotJob {
                     path,
-                    compensation: Ok(crate::compensation::groups::Correction::none()),
+                    compensation: Ok(clingate_core::compensation::groups::Correction::none()),
                     cofactors: Vec::new(),
                     chain: Vec::new(),
                     resolver: GateOverrideResolver {
@@ -1366,9 +1366,9 @@ mod the_export {
 
 mod overlay_alignment {
     use super::*;
-    use crate::file_load_tests::{scratch, write_fcs_rows};
     use crate::gate_editor::gallery::render::{PlotJob, render_plot};
-    use crate::gate_editor::gates::gate_store::GateOverrideResolver;
+    use clingate_core::file_load_tests::{scratch, write_fcs_rows};
+    use clingate_core::gates::gate_store::GateOverrideResolver;
 
     fn axis(name: &str) -> AxisInfo {
         AxisInfo {
@@ -1407,7 +1407,7 @@ mod overlay_alignment {
 
         let job = PlotJob {
             path,
-            compensation: Ok(crate::compensation::groups::Correction::none()),
+            compensation: Ok(clingate_core::compensation::groups::Correction::none()),
             cofactors: Vec::new(),
             chain: Vec::new(),
             resolver: GateOverrideResolver {

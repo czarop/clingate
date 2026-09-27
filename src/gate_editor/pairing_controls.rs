@@ -6,9 +6,9 @@
 //! nothing can be positioned. Being able to see and fix it where the symptom
 //! shows is worth the small amount of space.
 
-use crate::file_load::FcsFiles;
-use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::{MetaDataFileMap, MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::file_load::FcsFiles;
+use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
 use std::sync::Arc;
 

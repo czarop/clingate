@@ -10,7 +10,9 @@ use flow_plots::{
     render::RenderConfig,
 };
 
-use crate::gate_editor::{AxisInfo, gates::draw_gates::GateLayer, plots::axis_store::PlotMapper};
+use crate::gate_editor::gates::draw_gates::GateLayer;
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::PlotMapper;
 
 #[component]
 pub fn PseudoColourPlot(

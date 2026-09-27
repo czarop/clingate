@@ -1,18 +1,16 @@
-use crate::gate_editor::gates::gate_store::{GateOverrideResolver, GateStateStoreExt};
-use crate::gate_editor::plots::axis_store::AxisStore;
-use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
 use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
-use crate::gate_editor::{
-    gates::{
-        GateState,
-        gate_draft::GateDraft,
-        gate_drag::{GateDragData, GateDragType, PointDragData, RotationData},
-        gate_single::rectangle_gate,
-        gate_store::GateStateImplExt,
-        gate_traits::DrawableGate,
-        gate_types::{Direction, GateRenderShape, GateStats, PrimaryGateType, ShapeType},
-    },
-    plots::axis_store::PlotMapper,
+use clingate_core::axis_store::AxisStore;
+use clingate_core::axis_store::AxisStoreStoreExt;
+use clingate_core::axis_store::PlotMapper;
+use clingate_core::gates::gate_store::{GateOverrideResolver, GateStateStoreExt};
+use clingate_core::gates::{
+    GateState,
+    gate_draft::GateDraft,
+    gate_drag::{GateDragData, GateDragType, PointDragData, RotationData},
+    gate_single::rectangle_gate,
+    gate_store::GateStateImplExt,
+    gate_traits::DrawableGate,
+    gate_types::{Direction, GateRenderShape, GateStats, PrimaryGateType, ShapeType},
 };
 use dioxus::{prelude::*, stores::SyncStore};
 use rustc_hash::FxHashMap;
@@ -142,7 +140,7 @@ pub fn GateLayer(
                         for gate in gates_on_plot {
                             let id = gate.get_id();
                             let stats =
-                                crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate(
+                                clingate_core::gates::gate_stats::get_percent_and_counts_gate(
                                     gate,
                                     &event_index_map,
                                     parental_events,

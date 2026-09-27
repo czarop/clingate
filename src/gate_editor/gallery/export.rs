@@ -18,12 +18,12 @@ use dioxus::stores::SyncStore;
 use rayon::prelude::*;
 
 use crate::components::toast::{say, use_toast, warn};
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateStateStoreExt, ROOTGATE};
-use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::path_picker::{Pick, PickPath};
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
-use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{GateStateStoreExt, ROOTGATE};
+use clingate_core::gates::gate_traits::DrawableGate;
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
 use super::overlay::flatten_gates;
 use super::pdf::{Cell, Drawn, Sheet, write_pdf};
@@ -156,7 +156,7 @@ pub fn ExportPdf(
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
-    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
 
     let toasts = use_toast();
     let mut path = use_signal(|| "gate_gallery.pdf".to_string());

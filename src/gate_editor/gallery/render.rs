@@ -12,7 +12,7 @@
 //! everything else, and the caller runs it on a pool.
 //!
 //! It is deliberately the *same* pipeline the editor uses, step for step and
-//! function for function - [`crate::events`] to read, filter and index,
+//! function for function - [`clingate_core::events`] to read, filter and index,
 //! `get_percent_and_counts_gate`, `DensityPlot`. A gallery whose percentages
 //! disagreed with the editor's by a rounding step would be worse than no
 //! gallery, because the whole point of it is to be trusted at a glance.
@@ -28,12 +28,12 @@ use flow_plots::{
 };
 use rustc_hash::FxHashMap;
 
-use crate::gate_editor::AxisInfo;
-use crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
-use crate::gate_editor::gates::gate_store::{GateId, GateOverrideResolver};
-use crate::gate_editor::gates::gate_traits::DrawableGate;
-use crate::gate_editor::gates::gate_types::GateStats;
-use crate::gate_editor::plots::axis_store::PlotMapper;
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::PlotMapper;
+use clingate_core::gates::gate_stats::get_percent_and_counts_gate;
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver};
+use clingate_core::gates::gate_traits::DrawableGate;
+use clingate_core::gates::gate_types::GateStats;
 
 /// One plot's worth of work.
 ///
@@ -44,7 +44,7 @@ use crate::gate_editor::plots::axis_store::PlotMapper;
 pub struct PlotJob {
     pub path: PathBuf,
     /// What the file is compensated with.
-    pub compensation: crate::compensation::Choice,
+    pub compensation: clingate_core::compensation::Choice,
     /// Channel and cofactor for every arcsinh axis, as the axis store has them.
     pub cofactors: Vec<(Arc<str>, f32)>,
     /// The gates that filter this plot, outermost first. Empty draws every
@@ -85,17 +85,17 @@ impl PartialEq for PlotImage {
 
 /// Open, scale, gate, index, measure and draw. Blocking; call it on a pool.
 pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
-    // Read exactly as the editor reads it: see [`crate::events`].
-    let scaled = crate::events::read_scaled(&job.path, &job.compensation, &job.cofactors)?;
-    let frame = crate::events::under_chain(&scaled, &job.chain, &job.resolver)?;
+    // Read exactly as the editor reads it: see [`clingate_core::events`].
+    let scaled = clingate_core::events::read_scaled(&job.path, &job.compensation, &job.cofactors)?;
+    let frame = clingate_core::events::under_chain(&scaled, &job.chain, &job.resolver)?;
     drop(scaled);
     let parent_events = frame.height();
 
-    let points = crate::events::points(&frame, &job.x, &job.y)?;
+    let points = clingate_core::events::points(&frame, &job.x, &job.y)?;
     // The row index is carried because `get_percent_and_counts_gate` takes
     // the mapped pair, and sharing that function verbatim is what keeps the
     // numbers identical to the editor's; nothing here reads individual events.
-    let mapped = crate::events::index_mapped(&frame, &job.x, &job.y)?;
+    let mapped = clingate_core::events::index_mapped(&frame, &job.x, &job.y)?;
 
     let mut stats = FxHashMap::default();
     for gate in &job.gates {

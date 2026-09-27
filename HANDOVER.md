@@ -21,15 +21,28 @@ is the import/export/editing substrate it needs.
 - Import and export round-trip a real 658 KB Omiq file: 250 nodes, 299
   containers, unchanged.
 
+## Layout
+
+Two crates in one Cargo workspace:
+
+- `crates/clingate-core` - everything that computes: FCS reading and
+  compensation, the gates and the gating tree, axis settings, metadata, Omiq
+  gating files, the rules, the workspace. It depends on the reactive core of
+  Dioxus only (`dioxus-stores`, `dioxus-signals`) so the stores the app
+  watches can be declared there, and never on the renderer, webview or GTK:
+  anything driving clingate without a window uses it as the app does.
+- the root package, `clingate` - the desktop app: tabs, plots, editing, the
+  gallery.
+
 ## Building and testing
 
-    cargo test --lib --no-default-features   # no system packages needed
+    cargo test -p clingate-core              # the core; no system packages needed
+    cargo test --no-default-features         # the app's own tests
     cargo test                               # needs the GTK packages below
 
-Every test lives in the library, so `--no-default-features` runs them all: it
-drops dioxus's `desktop` feature, which pulls in `gdk-sys` and probes
-pkg-config for `gdk-3.0`. Without those packages a plain `cargo test` fails at
-that probe before running anything.
+`--no-default-features` drops dioxus's `desktop` feature, which pulls in
+`gdk-sys` and probes pkg-config for `gdk-3.0`. Without those packages a plain
+`cargo test` fails at that probe before running anything.
 
     libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
     libayatana-appindicator3-dev librsvg2-dev

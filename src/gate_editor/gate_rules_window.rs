@@ -5,22 +5,22 @@
 //! occupied twenty-five containers; four rules covered the whole panel.
 
 use crate::components::toast::{note, say, use_toast, warn};
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::GateStateImplExt;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt};
-use crate::gate_rules::autogate::{Report, describe};
-use crate::gate_rules::choices::{carry_over, choices, describe_phenotype, marker_label};
-use crate::gate_rules::rule::{
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
+use clingate_core::gate_rules::autogate::{Report, describe};
+use clingate_core::gate_rules::choices::{carry_over, choices, describe_phenotype, marker_label};
+use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit,
     TailFractionRule, ValleyRule,
 };
-use crate::gate_rules::rule_store::{
+use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
 };
-use crate::gate_rules::run::{Progress, RunInputs, run_rules};
-use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::GateStateImplExt;
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
@@ -106,8 +106,8 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
     let metadata = use_context::<crate::gate_editor::workspace_window::MetadataStore>();
     let axes = use_context::<crate::gate_editor::workspace_window::AxesStore>();
     let rules = use_context::<Signal<RuleStore>>();
-    let files = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
-    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
+    let files = use_context::<Signal<Option<clingate_core::file_load::FcsFiles>>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
     use_effect(move || {
         gates.subscribe_to_gating();
         let _ = compensation.read();
@@ -165,8 +165,8 @@ pub fn GateRulesWindow() -> Element {
     // The workspace's files: what a run measures. The same list the editor and
     // the gallery show, so the three cannot be looking at different
     // experiments.
-    let filehandler = use_context::<Signal<Option<crate::file_load::FcsFiles>>>();
-    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
+    let filehandler = use_context::<Signal<Option<clingate_core::file_load::FcsFiles>>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
     let mut sidecar = use_signal(|| "gate_rules.json".to_string());
@@ -1098,7 +1098,7 @@ pub fn GateRulesWindow() -> Element {
                         // Writing happens here, on the one thread that owns the
                         // store, and only once the document is known to be the
                         // one the run measured.
-                        crate::gate_rules::autogate::apply_placements(
+                        clingate_core::gate_rules::autogate::apply_placements(
                             &mut gate_store.write(),
                             &outcome.placements,
                         );
@@ -1512,10 +1512,10 @@ mod tests {
     /// signals the app provides.
     mod a_run_stops_when_anything_it_read_changes {
         use super::*;
-        use crate::gate_editor::gates::gate_store::{GateSource, GateStateStoreExt};
-        use crate::gate_editor::gates::gate_types::PrimaryGateType;
-        use crate::gate_editor::plots::axis_store::PlotMapper;
         use crate::gate_editor::workspace_window::{AxesStore, GateStore, MetadataStore};
+        use clingate_core::axis_store::PlotMapper;
+        use clingate_core::gates::gate_store::{GateSource, GateStateStoreExt};
+        use clingate_core::gates::gate_types::PrimaryGateType;
         use dioxus::stores::use_store_sync;
         use dioxus_core::{NoOpMutations, generation};
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1527,7 +1527,7 @@ mod tests {
             metadata: MetadataStore,
             axes: AxesStore,
             rules: Signal<RuleStore>,
-            files: Signal<Option<crate::file_load::FcsFiles>>,
+            files: Signal<Option<clingate_core::file_load::FcsFiles>>,
         }
 
         #[derive(Clone)]
@@ -1584,14 +1584,14 @@ mod tests {
                     let metadata = use_store_sync(MetaDataStore::default);
                     let axes = use_store_sync(AxisStore::default);
                     let rules = use_signal(RuleStore::default);
-                    let files = use_signal(|| None::<crate::file_load::FcsFiles>);
+                    let files = use_signal(|| None::<clingate_core::file_load::FcsFiles>);
                     use_context_provider(|| gates);
                     use_context_provider(|| metadata);
                     use_context_provider(|| axes);
                     use_context_provider(|| rules);
                     use_context_provider(|| files);
                     let compensation =
-                        use_signal(crate::compensation::groups::Compensation::default);
+                        use_signal(clingate_core::compensation::groups::Compensation::default);
                     use_context_provider(|| compensation);
                     let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
                     use_stop_run_on_change(cancel);
@@ -1685,9 +1685,7 @@ mod tests {
         fn a_new_scaling_stops_it() {
             assert!(stops_for(|held| {
                 let mut axes = held.axes;
-                axes.with_mut(|a| {
-                    a.replace_axis_configs(vec![crate::gate_editor::AxisInfo::default()])
-                });
+                axes.with_mut(|a| a.replace_axis_configs(vec![clingate_core::AxisInfo::default()]));
             }));
         }
 
@@ -1703,7 +1701,7 @@ mod tests {
         fn a_changed_file_list_stops_it() {
             assert!(stops_for(|held| {
                 let mut files = held.files;
-                files.set(Some(crate::file_load::FcsFiles::default()));
+                files.set(Some(clingate_core::file_load::FcsFiles::default()));
             }));
         }
 
@@ -1721,7 +1719,7 @@ mod tests {
             // The editor re-matches its gates to the plot whenever the file
             // changes. With nothing to transpose that must not write.
             assert!(!stops_for(|held| {
-                use crate::gate_editor::gates::gate_store::GateStateImplExt as _;
+                use clingate_core::gates::gate_store::GateStateImplExt as _;
                 let mut gates = held.gates;
                 let resolver = gates
                     .peek()
@@ -1729,7 +1727,7 @@ mod tests {
                 let parent =
                     gates
                         .peek()
-                        .parent_node(&crate::gate_editor::gates::gate_store::NodeId::from(
+                        .parent_node(&clingate_core::gates::gate_store::NodeId::from(
                             gates.peek().registered_ids()[0].clone(),
                         ));
                 gates

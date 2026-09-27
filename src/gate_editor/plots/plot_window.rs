@@ -1,21 +1,19 @@
-use crate::file_load::FcsSampleStub;
-use crate::gate_editor::gates::gate_store::{
-    ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
-};
 use crate::gate_editor::plots::data_helpers::{
     get_filtered_dataframe, get_flow_data, zip_cols_from_filtered_df,
 };
 use crate::gate_editor::plots::draw_plot::PseudoColourPlot;
-use crate::omiq::metadata::MetaDataStoreStoreExt;
-
-use crate::events::EventIndexMapped;
-use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
-use crate::gate_editor::{
-    AxisInfo,
-    gates::{GateState, gate_store::GateStateImplExt},
-    plots::axis_store::{AxisStore, AxisStoreImplExt, AxisStoreStoreExt, Param},
+use clingate_core::file_load::FcsSampleStub;
+use clingate_core::gates::gate_store::{
+    ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
 };
-use crate::omiq::metadata::MetaDataStore;
+use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+
+use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::events::EventIndexMapped;
+use clingate_core::gates::{GateState, gate_store::GateStateImplExt};
+use clingate_core::omiq::metadata::MetaDataStore;
 use dioxus::{CapturedError, prelude::*};
 use polars::frame::DataFrame;
 
@@ -74,7 +72,7 @@ pub fn PlotWindow(
     // Why the file could not be read, shown where the plot would be. It used
     // to go to the console, and the plot sat on its spinner.
     let mut load_error: Signal<Option<String>> = use_signal(|| None);
-    let compensation = use_context::<Signal<crate::compensation::groups::Compensation>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
     let _ = use_resource(move || async move {
         let (sample_path, file_name) = {
             let stub = sample_stub.read();
@@ -155,8 +153,8 @@ pub fn PlotWindow(
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("No data to scale"))?;
                 // Scaled as every other reader scales it - only the channels
-                // this file carries; see [`crate::events::cofactors_carried_by`].
-                Ok(Arc::new(crate::events::scaled(fcs, &params)?))
+                // this file carries; see [`clingate_core::events::cofactors_carried_by`].
+                Ok(Arc::new(clingate_core::events::scaled(fcs, &params)?))
             })
             .await;
 
@@ -319,7 +317,7 @@ pub fn PlotWindow(
 
             let join_result =
                 tokio::task::spawn_blocking(move || -> anyhow::Result<EventIndexMapped> {
-                    crate::events::index_mapped(&df, &x_name, &y_name)
+                    clingate_core::events::index_mapped(&df, &x_name, &y_name)
                         .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))
                 })
                 .await;

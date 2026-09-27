@@ -4,7 +4,7 @@
 //! menu. Files move between groups through one dialog that can search and
 //! pick many at once.
 //!
-//! What a group does is decided in [`crate::compensation::groups`]; this only
+//! What a group does is decided in [`clingate_core::compensation::groups`]; this only
 //! shows it and says what was asked for, as a [`CompensationAction`] the
 //! Workspace tab carries out.
 
@@ -14,13 +14,15 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 
-use crate::compensation::Spillover;
-use crate::compensation::groups::{Applied, Compensation, FileFacts, Group, GroupId, Source};
 use crate::components::toast::{use_toast, warn};
-use crate::file_load::FcsFiles;
 use crate::gate_editor::path_picker::{Chosen, Pick, UNAVAILABLE, choose};
 use crate::gate_editor::workspace_window::Loaded;
 use crate::searchable_select::matches_search;
+use clingate_core::compensation::Spillover;
+use clingate_core::compensation::groups::{
+    Applied, Compensation, FileFacts, Group, GroupId, Source,
+};
+use clingate_core::file_load::FcsFiles;
 
 /// Something done to the compensation groups from the tab.
 #[derive(Clone, PartialEq, Debug)]
@@ -81,7 +83,7 @@ fn facts(files: &Option<FcsFiles>, path: &Path) -> FileFacts {
     files
         .as_ref()
         .and_then(|f| f.file_list().iter().find(|s| s.get_filepath() == path))
-        .map(crate::compensation::facts_of)
+        .map(clingate_core::compensation::facts_of)
         .unwrap_or_default()
 }
 

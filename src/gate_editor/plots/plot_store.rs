@@ -1,5 +1,5 @@
-use crate::events::EventIndexMapped;
-use crate::gate_editor::gates::{gate_store::FileId, gate_types::GateStats};
+use clingate_core::events::EventIndexMapped;
+use clingate_core::gates::{gate_store::FileId, gate_types::GateStats};
 use dioxus::prelude::*;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;

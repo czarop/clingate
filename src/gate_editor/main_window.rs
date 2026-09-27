@@ -1,35 +1,28 @@
 use crate::components::toast::{use_toast, warn};
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
 use crate::gate_editor::pairing_controls::PairingColumns;
-use crate::gate_editor::plots::axis_store::AxisStore;
-use crate::gate_editor::plots::axis_store::AxisStoreImplExt;
-use crate::gate_editor::plots::axis_store::AxisStoreStoreExt;
-use crate::gate_editor::plots::axis_store::{index_of_fluoro, resolve_axes};
 use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
-use crate::gate_editor::plots::sample_pairs::{
-    Pair, SecondChoice, landing, pair_files, pair_of, shown,
-};
 use crate::gate_editor::workspace_window::Generation;
-use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::MetaDataStore;
+use clingate_core::axis_store::AxisStore;
+use clingate_core::axis_store::AxisStoreImplExt;
+use clingate_core::axis_store::AxisStoreStoreExt;
+use clingate_core::axis_store::{index_of_fluoro, resolve_axes};
+use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::omiq::metadata::MetaDataStore;
+use clingate_core::sample_pairs::{Pair, SecondChoice, landing, pair_files, pair_of, shown};
 
-use crate::omiq::metadata::MetaDataStoreStoreExt;
 use crate::searchable_select::SearchableSelectSet;
-use crate::{
-    file_load::FcsFiles,
-    gate_editor::{
-        AxisInfo,
-        axis_info::AxisEdit,
-        gate_sidebar::GateSidebar,
-        gates::{
-            GateState,
-            gate_store::{GateStateImplExt, ROOTGATE},
-            gate_types::PrimaryGateType,
-        },
-        plots::axis_store::Param,
-    },
-    searchable_select::SearchableSelectList,
+use crate::{gate_editor::gate_sidebar::GateSidebar, searchable_select::SearchableSelectList};
+use clingate_core::AxisInfo;
+use clingate_core::axis_info::AxisEdit;
+use clingate_core::axis_store::Param;
+use clingate_core::file_load::FcsFiles;
+use clingate_core::gates::{
+    GateState,
+    gate_store::{GateStateImplExt, ROOTGATE},
+    gate_types::PrimaryGateType,
 };
+use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
 use dioxus::prelude::*;
 
 use std::sync::Arc;
@@ -477,7 +470,7 @@ pub fn MainWindow() -> Element {
                         // show the same donor and timepoint - and the selected
                         // file itself, whichever of the specimen's it is. See
                         // `sample_pairs::shown`.
-                        let label = |stub: &crate::file_load::FcsSampleStub| {
+                        let label = |stub: &clingate_core::file_load::FcsSampleStub| {
                             stub.name().trim_end_matches(".fcs").to_string()
                         };
                         let shown = filehandler.read().as_ref().map(|files| {
@@ -626,7 +619,7 @@ fn CommittedNumber(
 #[cfg(test)]
 mod tests {
     use super::listing_order;
-    use crate::gate_editor::plots::sample_pairs::Pair;
+    use clingate_core::sample_pairs::Pair;
     use std::sync::Arc;
 
     fn pair(files: &[usize], slots: &[Option<usize>]) -> Pair {

@@ -22,16 +22,16 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 
-use crate::file_load::FcsFiles;
 use crate::gate_editor::gate_sidebar::GateSidebar;
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{NodeId, ROOTGATE};
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
-use crate::gate_editor::plots::sample_pairs::{Pair, gallery_rows, pair_files};
 use crate::gate_editor::route::Tab;
 use crate::gate_editor::workspace_window::Generation;
-use crate::gate_rules::rule_store::RuleStore;
-use crate::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::file_load::FcsFiles;
+use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{NodeId, ROOTGATE};
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::sample_pairs::{Pair, gallery_rows, pair_files};
 
 use super::cache::PlotCache;
 use super::plot::{GalleryPlot, Permits};
