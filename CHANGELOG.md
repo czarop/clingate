@@ -18,6 +18,11 @@
   Only the channels a matrix actually mixes have to be in a file, so a panel-wide
   Omiq export (mostly identity, for unmixed spectral data) can be applied to
   files that carry part of the panel.
+  Checked against Omiq on real exports: Omiq bakes its compensation into the
+  events it exports and writes no `$SPILLOVER`, so an Omiq export needs none
+  here; loading a matrix over Omiq exports is warned against as compensating
+  twice. Compensating an uncompensated Omiq export with Omiq's matrix here
+  reproduces Omiq's compensated export.
 
 - **A rule that finds a population by what it is, rather than where it sat.**
   The cells inside the gate on the reference sample are described by where they

@@ -1285,7 +1285,7 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
             let notes = comp.check(g.id, |p| {
                 stubs
                     .get(p)
-                    .map(|s| crate::compensation::channels_of(s))
+                    .map(|s| crate::compensation::facts_of(s))
                     .unwrap_or_default()
             });
             (g.clone(), members, notes)
@@ -1312,7 +1312,7 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
                 }
             }
             p { class: "workspace-hint",
-                "As in Omiq, the files are grouped by the spillover matrix they carry. Each group is compensated with its files' own matrices, a matrix loaded from a CSV exported from Omiq (channel names across the top, values in percent), or not at all. Move a file to another group to compensate it differently. The editor, the gallery and a rules run all read files compensated this way; gates stay where they are, so a new matrix moves the events under them."
+                "As in Omiq, the files are grouped by the spillover matrix they carry. Each group is compensated with its files' own matrices, a matrix loaded from a CSV exported from Omiq (channel names across the top, values in percent), or not at all. Move a file to another group to compensate it differently. A file exported from Omiq is already compensated as it was in Omiq, and carries no matrix: leave it uncompensated here unless it was exported without compensation. The editor, the gallery and a rules run all read files compensated this way; gates stay where they are, so a new matrix moves the events under them."
             }
             for (group, members, notes) in groups {
                 CompensationGroup {

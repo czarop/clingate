@@ -1,7 +1,7 @@
 //! Tests for compensation: reading matrices, matching them to files,
 //! compensating, and grouping files by matrix.
 
-use super::groups::{Compensation, Saved, SavedSource, Source};
+use super::groups::{Compensation, FileFacts, Saved, SavedSource, Source};
 use super::{Spillover, compensate, compensate_fcs};
 use crate::file_load::FcsSampleStub;
 use crate::file_load_tests::{scratch, write_fcs_rows, write_fcs_with};
@@ -574,12 +574,13 @@ fn groups_follow_the_workspaces_files() {
 /// far from the files' own.
 #[test]
 fn a_group_is_told_what_is_wrong_with_it() {
-    let channels = |_: &Path| {
-        vec![
+    let channels = |_: &Path| FileFacts {
+        channels: vec![
             ("FITC-A".to_string(), None),
             ("PE-A".to_string(), None),
             ("APC-A".to_string(), None),
-        ]
+        ],
+        written_by_omiq: false,
     };
     let mut c = Compensation::default();
     c.add_file(p("a"), Ok(Some(three())));
@@ -755,11 +756,147 @@ fn a_channel_the_matrix_does_not_mix_need_not_be_in_the_file() {
         },
     )
     .unwrap();
-    let notes = c.check(g, |_| {
-        ["FITC-A", "PE-A", "APC-A"]
+    let notes = c.check(g, |_| FileFacts {
+        channels: ["FITC-A", "PE-A", "APC-A"]
             .iter()
             .map(|n| (n.to_string(), None))
-            .collect()
+            .collect(),
+        written_by_omiq: false,
     });
     assert!(notes.is_empty(), "{notes:?}");
+}
+
+// ─── Omiq's own compensation, on a real file ────────────────────────────────
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
+
+fn column(fcs: &flow_fcs::Fcs, name: &str) -> Vec<f32> {
+    fcs.data_frame
+        .column(name)
+        .unwrap()
+        .f32()
+        .unwrap()
+        .into_no_null_iter()
+        .collect()
+}
+
+/// One Aurora file, exported from Omiq twice - once with no compensation,
+/// once with a compensation task putting 10% of BUV395 into BUV805 - and the
+/// matrix as Omiq shows it, copied into a spreadsheet: `BUV395-A`'s row,
+/// `BUV805-A`'s column, 10.
+///
+/// Compensating the first export with that matrix gives the second, event
+/// for event: BUV805 less a tenth of BUV395, every other channel untouched.
+/// So Omiq's matrix is the standard's way round - each fluorochrome in a
+/// row, each detector in a column - and is read here as Omiq means it.
+#[test]
+fn compensating_an_omiq_export_with_its_matrix_matches_omiqs_own_compensation() {
+    let matrix =
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
+    assert_eq!(matrix.channels().len(), 38);
+    let buv395 = matrix
+        .channels()
+        .iter()
+        .position(|c| &**c == "BUV395-A")
+        .unwrap();
+    let buv805 = matrix
+        .channels()
+        .iter()
+        .position(|c| &**c == "BUV805-A")
+        .unwrap();
+    assert_eq!(matrix.value(buv395, buv805), 0.10);
+    assert_eq!(matrix.involved().unwrap().channels().len(), 2);
+
+    let raw = fixture("omiq_export_uncompensated.fcs");
+    let ours = super::open_compensated(&raw, &Ok(Some(Arc::new(matrix)))).unwrap();
+    let omiqs =
+        flow_fcs::Fcs::open(fixture("omiq_export_compensated.fcs").to_str().unwrap()).unwrap();
+    let untouched = flow_fcs::Fcs::open(raw.to_str().unwrap()).unwrap();
+
+    let (a, b) = (column(&ours, "BUV805-A"), column(&omiqs, "BUV805-A"));
+    assert_eq!(a.len(), 1000);
+    let worst = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    assert!(worst < 0.05, "BUV805 differs from Omiq's by up to {worst}");
+    assert_ne!(
+        column(&untouched, "BUV805-A"),
+        b,
+        "the premise: Omiq's export is compensated"
+    );
+
+    for name in ours.data_frame.get_column_names() {
+        if name.as_str() != "BUV805-A" {
+            assert_eq!(
+                column(&ours, name),
+                column(&untouched, name),
+                "{name} was changed"
+            );
+        }
+    }
+}
+
+/// Omiq writes no `$SPILLOVER` when it exports - compensated or not - so an
+/// Omiq export has no matrix of its own: it is grouped with the files that
+/// have none, compensated with nothing, and shown as Omiq exported it.
+#[test]
+fn an_omiq_export_carries_no_matrix_of_its_own() {
+    for name in [
+        "omiq_export_compensated.fcs",
+        "omiq_export_uncompensated.fcs",
+    ] {
+        let stub = FcsSampleStub::open(&fixture(name).to_string_lossy()).unwrap();
+        assert_eq!(
+            Spillover::from_keywords(&stub.metadata).unwrap(),
+            None,
+            "{name}"
+        );
+        let mut c = Compensation::default();
+        c.sync(super::own_matrices(&[stub]));
+        assert_eq!(c.matrix_for(&fixture(name)).unwrap(), None, "{name}");
+    }
+}
+
+/// An Omiq export is already compensated as it was in Omiq, and says nothing
+/// of it. A matrix loaded over Omiq exports is pointed out as likely to
+/// compensate them twice; over files from anywhere else it is not.
+#[test]
+fn a_matrix_over_omiq_exports_is_pointed_out() {
+    let stub =
+        FcsSampleStub::open(&fixture("omiq_export_compensated.fcs").to_string_lossy()).unwrap();
+    assert!(super::written_by_omiq(&stub.metadata));
+    let dir = scratch("not-omiq");
+    let elsewhere =
+        FcsSampleStub::open(&file_with(&dir, "cytometer.fcs", &[]).to_string_lossy()).unwrap();
+    assert!(!super::written_by_omiq(&elsewhere.metadata));
+
+    let matrix =
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
+    for (stub, expected) in [(&stub, true), (&elsewhere, false)] {
+        let path = stub.get_filepath().to_path_buf();
+        let mut c = Compensation::default();
+        c.sync(super::own_matrices(std::slice::from_ref(stub)));
+        let g = c.group_of(&path).unwrap();
+        assert!(
+            c.check(g, |_| super::facts_of(stub)).is_empty(),
+            "nothing to say before a matrix is loaded"
+        );
+        c.set_source(
+            g,
+            Source::Loaded {
+                path: "/m.csv".into(),
+                matrix: Arc::new(matrix.clone()),
+            },
+        )
+        .unwrap();
+        let notes = c.check(g, |_| super::facts_of(stub));
+        let warned = notes.iter().any(|n| n.contains("applied twice"));
+        assert_eq!(warned, expected, "{notes:?}");
+    }
 }

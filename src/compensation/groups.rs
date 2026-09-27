@@ -22,6 +22,15 @@ use std::sync::Arc;
 
 pub type GroupId = u32;
 
+/// What [`Compensation::check`] needs to know of a file.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileFacts {
+    /// Its channels, as (`$PnN`, `$PnS`).
+    pub channels: Vec<(String, Option<String>)>,
+    /// Whether Omiq wrote it - see [`Compensation::check`].
+    pub written_by_omiq: bool,
+}
+
 /// How far, in percentage points, a loaded matrix may be from a file's own
 /// before [`Compensation::check`] mentions it.
 pub const FAR_FROM_OWN: f64 = 10.0;
@@ -110,19 +119,18 @@ impl Compensation {
     }
 
     /// What is wrong, or worth knowing, about how a group's files will be
-    /// compensated - for showing beside the group. `channels_of` gives a
-    /// file's channels, as (`$PnN`, `$PnS`).
+    /// compensated - for showing beside the group. `facts_of` gives what is
+    /// needed of each file.
     ///
     /// - A file that cannot be compensated as the group says, and why.
     /// - A loaded matrix that does not fit a file's channels.
     /// - A loaded matrix far from a file's own, or that fits it better read
     ///   the other way round - usually the wrong matrix, or rows and columns
     ///   swapped.
-    pub fn check(
-        &self,
-        group: GroupId,
-        channels_of: impl Fn(&Path) -> Vec<(String, Option<String>)>,
-    ) -> Vec<String> {
+    /// - A loaded matrix over files Omiq exported: Omiq applies its
+    ///   compensation to the events when it exports and records no matrix,
+    ///   so its matrix applied here again would be applied twice.
+    pub fn check(&self, group: GroupId, facts_of: impl Fn(&Path) -> FileFacts) -> Vec<String> {
         let mut notes = Vec::new();
         let Some(g) = self.group(group) else {
             return notes;
@@ -134,6 +142,7 @@ impl Compensation {
         };
         let mut far = 0usize;
         let mut swapped = 0usize;
+        let mut from_omiq = 0usize;
         for path in self.files_in(group) {
             let matrix = match self.matrix_for(path) {
                 Ok(Some(m)) => m,
@@ -143,8 +152,9 @@ impl Compensation {
                     continue;
                 }
             };
-            let channels = channels_of(path);
-            let lookup: Vec<(&str, Option<&str>)> = channels
+            let facts = facts_of(path);
+            let lookup: Vec<(&str, Option<&str>)> = facts
+                .channels
                 .iter()
                 .map(|(n, l)| (n.as_str(), l.as_deref()))
                 .collect();
@@ -155,6 +165,9 @@ impl Compensation {
             if let Err(why) = involved.resolve(&lookup) {
                 notes.push(format!("{}: the matrix does not fit it: {why}", name(path)));
                 continue;
+            }
+            if matches!(g.source, Source::Loaded { .. }) && facts.written_by_omiq {
+                from_omiq += 1;
             }
             if let (Source::Loaded { .. }, Some(Ok(Some(own)))) = (&g.source, self.own_matrix(path))
                 && let Some(c) = own.compare(&matrix)
@@ -170,6 +183,13 @@ impl Compensation {
             notes.push(format!(
                 "The loaded matrix is closer to {swapped} of these files' own matrices read the other way round. \
                  A spillover matrix has each fluorochrome in a row and each detector in a column; check how it was exported."
+            ));
+        }
+        if from_omiq > 0 {
+            notes.push(format!(
+                "{from_omiq} of these files were exported from Omiq. Omiq applies its compensation to the events when it exports them, \
+                 and records no matrix in the file, so the matrix used in Omiq applied here again would be applied twice. \
+                 Load a matrix for them only if they were exported with no compensation task, or with the compensation left at 0."
             ));
         }
         if far > 0 {

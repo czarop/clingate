@@ -23,6 +23,26 @@
 //! Which one a file is compensated with is the workspace's choice, per
 //! compensation group - see [`groups`].
 //!
+//! ## What Omiq does
+//!
+//! Established on one Aurora file exported from Omiq with no compensation
+//! task, with the compensation at 0, and with 10% of BUV395 put into BUV805
+//! (the fixtures `omiq_export_*.fcs` and
+//! `omiq_compensation_buv395_into_buv805.csv`):
+//!
+//! - Omiq applies its compensation to the events when it exports a file,
+//!   and writes no `$SPILLOVER`. The compensated export's BUV805 is the
+//!   uncompensated one's less a tenth of its BUV395, event for event; every
+//!   other channel is the same. No task and 0% export identically.
+//! - So an Omiq export has no matrix of its own, and needs none: it arrives
+//!   compensated as it was in Omiq. Loading Omiq's matrix over it again
+//!   would compensate it twice, which [`groups::Compensation::check`] says.
+//! - Omiq's matrix, copied from its compensation view, has the fluorochrome
+//!   that spills in the row and the detector it spills into in the column,
+//!   with the same channels in the same order down and across - the
+//!   standard's orientation. Compensating the uncompensated export with it
+//!   here gives Omiq's compensated export.
+//!
 //! ## Matching a matrix to a file
 //!
 //! A matrix names channels as the file's `$PnN` does. Each name is looked
@@ -540,6 +560,24 @@ pub fn channels_of(stub: &crate::file_load::FcsSampleStub) -> Vec<(String, Optio
             (p.channel_name.to_string(), label)
         })
         .collect()
+}
+
+/// Whether Omiq wrote the file: it signs its exports `WRITTEN_BY`
+/// `OMIQ (www.omiq.ai)`. Omiq applies its compensation to the events when it
+/// exports them and writes no `$SPILLOVER`, so an Omiq export is already
+/// compensated as it was in Omiq, if it was at all.
+pub fn written_by_omiq(metadata: &Metadata) -> bool {
+    ["$WRITTEN_BY", "WRITTEN_BY"].iter().any(|k| {
+        matches!(metadata.keywords.get(*k), Some(Keyword::String(v)) if v.get_str().to_ascii_uppercase().contains("OMIQ"))
+    })
+}
+
+/// What [`groups::Compensation::check`] needs to know of a file.
+pub fn facts_of(stub: &crate::file_load::FcsSampleStub) -> groups::FileFacts {
+    groups::FileFacts {
+        channels: channels_of(stub),
+        written_by_omiq: written_by_omiq(&stub.metadata),
+    }
 }
 
 /// What a file is to be compensated with: nothing, a matrix, or why it
