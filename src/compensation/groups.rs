@@ -124,7 +124,8 @@ pub enum Applied {
     /// Not said yet. The files are shown as exported, and the group cannot
     /// be given a matrix until it is.
     Unknown,
-    /// Nothing: exported from Omiq without compensation.
+    /// Nothing: exported from Omiq with no compensation task, or with one
+    /// left at 0% throughout - which export identically.
     Nothing,
     /// This matrix, the one they were compensated with in Omiq.
     Matrix {

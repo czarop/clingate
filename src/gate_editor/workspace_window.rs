@@ -970,7 +970,9 @@ enum CompensationAction {
     NewGroup,
     Rename(GroupId, String),
     Remove(GroupId),
-    /// The group's Omiq exports were exported without compensation.
+    /// Nothing was applied to the group's Omiq exports: exported with no
+    /// compensation task, or with one left at 0% throughout - the two export
+    /// identically.
     AppliedNothing(GroupId),
     /// The group's Omiq exports were compensated in Omiq with this CSV.
     AppliedCsv(GroupId, PathBuf),
@@ -1826,7 +1828,10 @@ fn AppliedQuestion(
     let mut typed = use_signal(String::new);
     let answered = match &applied {
         Applied::Unknown => None,
-        Applied::Nothing => Some("Exported from Omiq without compensation.".to_string()),
+        Applied::Nothing => Some(
+            "Exported from Omiq with no compensation applied (no compensation task, or all 0%)."
+                .to_string(),
+        ),
         Applied::Matrix {
             path: Some(path), ..
         } => Some(format!("Compensated in Omiq with {}.", file_name(path))),
@@ -1855,20 +1860,20 @@ fn AppliedQuestion(
                 }
             } else {
                 p {
-                    "Some of these files were exported from Omiq, which applies its compensation to the events and records nothing of it in the file. Were they compensated in Omiq when they were exported?"
+                    "Some of these files were exported from Omiq, which applies its compensation to the events and records nothing of it in the file. Was any compensation applied to them in Omiq when they were exported? A compensation task left at 0% applies none."
                 }
                 div { class: "workspace-buttons",
                     button {
                         disabled: busy,
                         onclick: move |_| on_action.call(CompensationAction::AppliedNothing(group)),
-                        "No - exported without compensation"
+                        "None - no compensation task, or all 0%"
                     }
                 }
                 div { class: "workspace-path",
                     input {
                         value: "{typed}",
                         disabled: busy,
-                        placeholder: "yes - the matrix they were exported with, copied out of Omiq as CSV",
+                        placeholder: "some - the matrix they were exported with, copied out of Omiq as CSV",
                         oninput: move |e| typed.set(e.value()),
                     }
                     button {
@@ -1897,7 +1902,7 @@ fn AppliedQuestion(
                             let path = PathBuf::from(typed.peek().trim());
                             on_action.call(CompensationAction::AppliedCsv(group, path));
                         },
-                        "Yes - with this matrix"
+                        "Some - this matrix"
                     }
                 }
             }

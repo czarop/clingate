@@ -1291,3 +1291,19 @@ fn omiq_exports_are_grouped_apart_from_raw_files_without_a_matrix() {
     assert_eq!(back.group_of(&p("omiq3")), back.group_of(&p("omiq1")));
     assert_ne!(back.group_of(&p("omiq3")), back.group_of(&p("raw")));
 }
+
+/// A compensation task left at 0% applies nothing: exported with one, and
+/// exported with no task at all, the same file's events are identical - so
+/// "no compensation applied" is the answer for both.
+#[test]
+fn an_omiq_export_at_zero_percent_is_one_with_no_compensation() {
+    let at_zero =
+        flow_fcs::Fcs::open(fixture("omiq_export_uncompensated.fcs").to_str().unwrap()).unwrap();
+    let no_task = flow_fcs::Fcs::open(
+        fixture("omiq_export_no_compensation_task.fcs")
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(*at_zero.data_frame, *no_task.data_frame);
+}
