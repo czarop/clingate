@@ -905,8 +905,7 @@ fn what_a_gate_captures_is_asked_through_the_screens_own_statistic() {
     // plot. Rather than count events past the line - which ignores the gate's
     // other sides - this delegates to the same function that draws the
     // percentage beside the gate, so the two agree by construction.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::admitted_by;
     use polars::prelude::*;
 
@@ -914,8 +913,7 @@ fn what_a_gate_captures_is_asked_through_the_screens_own_statistic() {
     let ys: Vec<f32> = vec![0.0; 1000];
     let frame = Arc::new(df![X => xs, Y => ys].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
-            .unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
 
@@ -940,8 +938,7 @@ fn a_slanted_gate_is_positioned_by_what_it_holds_not_by_its_corner() {
     // one-dimensional threshold moves the gate far too far - a gate meant to
     // hold 0.35% held 0.010%. Sliding it until it holds the band instead works
     // whatever the boundary does.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::admitted_by;
     use polars::prelude::*;
 
@@ -954,8 +951,7 @@ fn a_slanted_gate_is_positioned_by_what_it_holds_not_by_its_corner() {
     }
     let frame = Arc::new(df![X => xs, Y => ys].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
-            .unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
 
@@ -993,7 +989,7 @@ fn a_slanted_gate_is_positioned_by_what_it_holds_not_by_its_corner() {
 /// Drive the same search the autogater uses, for a gate keeping the bright side.
 fn slide_into_band(
     gate: &Arc<dyn DrawableGate>,
-    index: &crate::gate_editor::plots::plot_store::EventIndexMapped,
+    index: &crate::events::EventIndexMapped,
     values: &[f64],
     current: f64,
 ) -> Arc<dyn DrawableGate> {
@@ -1016,16 +1012,14 @@ fn a_gate_keeping_the_dim_side_slides_the_other_way() {
     // The same search drives a negative gate - Live, CD19-, Ki67- - and the
     // direction reverses: sliding such a gate *up* the parameter admits more,
     // not fewer, so a gate holding too much has to come down.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::{admitted_by, position_by_capture};
     use polars::prelude::*;
 
     let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
     let frame = Arc::new(df![X => xs, Y => vec![0.0f32; 1000]].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
-            .unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
 
@@ -1058,16 +1052,14 @@ fn a_gate_keeping_the_dim_side_slides_the_other_way() {
 fn a_gate_holding_too_little_moves_the_other_way_again() {
     // The search is not one-directional. A gate holding less than the band has
     // to open up, whichever side it keeps.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::{admitted_by, position_by_capture};
     use polars::prelude::*;
 
     let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
     let frame = Arc::new(df![X => xs, Y => vec![0.0f32; 1000]].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame.clone(), Arc::from(X), Arc::from(Y))
-            .unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
     let values: Vec<f64> = (1..=1000).map(|i| i as f64).collect();
@@ -1783,15 +1775,14 @@ fn a_snapshot_does_not_see_later_edits_to_the_store() {
 fn the_line_and_the_gate_agree_when_the_shape_does_not_interfere() {
     // A gate open on every other side takes exactly what the line takes, so the
     // two columns sitting side by side in the report mean nothing is wrong.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::{admitted_by, beyond_the_line};
     use polars::prelude::*;
 
     let xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
     let frame = Arc::new(df![X => xs.clone(), Y => vec![500.0f32; 1000]].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
     let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
@@ -1829,8 +1820,7 @@ fn a_gate_boxed_on_the_other_axis_takes_less_than_the_line() {
     // gate throws them away because its other axis does not reach them. In the
     // report that shows up as a capture far below the line's figure, which is
     // the only signal that separates a misplaced gate from a mis-read axis.
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::{admitted_by, beyond_the_line};
     use polars::prelude::*;
 
@@ -1838,7 +1828,7 @@ fn a_gate_boxed_on_the_other_axis_takes_less_than_the_line() {
     // Every event sits at y = 500.
     let frame = Arc::new(df![X => xs.clone(), Y => vec![500.0f32; 1000]].unwrap());
     let index = EventIndexMapped {
-        event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+        event_index: crate::events::index_over(&frame, X, Y).unwrap(),
         index_map: Arc::new((0..1000).collect()),
     };
     let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
@@ -2917,8 +2907,7 @@ fn the_other_rules_still_take_a_partner() {
 /// what the gate, asked afresh, holds.
 #[test]
 fn the_band_search_lands_in_any_band_a_population_can_satisfy() {
-    use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-    use crate::gate_editor::plots::plot_store::EventIndexMapped;
+    use crate::events::EventIndexMapped;
     use crate::gate_rules::autogate::{admitted_by, position_by_capture};
     use polars::prelude::*;
     use rand::prelude::*;
@@ -2941,7 +2930,7 @@ fn the_band_search_lands_in_any_band_a_population_can_satisfy() {
         let values: Vec<f64> = xs.iter().map(|v| *v as f64).collect();
         let frame = Arc::new(df![X => xs.clone(), Y => vec![0.0f32; n]].unwrap());
         let index = EventIndexMapped {
-            event_index: get_event_mask_from_scaled_df(frame, Arc::from(X), Arc::from(Y)).unwrap(),
+            event_index: crate::events::index_over(&frame, X, Y).unwrap(),
             index_map: Arc::new((0..n).collect()),
         };
 

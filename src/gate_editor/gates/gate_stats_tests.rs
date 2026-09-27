@@ -8,6 +8,7 @@
 
 #![cfg(test)]
 
+use crate::events::EventIndexMapped;
 use crate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
 use crate::gate_editor::gates::gate_draft::GateDraft;
 use crate::gate_editor::gates::gate_single::rectangle_gate::RectangleGate;
@@ -15,7 +16,6 @@ use crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::gates::gate_types::{GateStatValue, ShapeType};
 use crate::gate_editor::plots::axis_store::PlotMapper;
-use crate::gate_editor::plots::plot_store::EventIndexMapped;
 use flow_fcs::TransformType;
 use flow_gates::{EventIndex, create_rectangle_geometry};
 use std::sync::Arc;

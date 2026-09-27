@@ -148,7 +148,6 @@ pub fn measure_all(
     Vec<crate::gate_rules::autogate::Unmeasured>,
     Vec<String>,
 ) {
-    use polars::prelude::*;
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -169,26 +168,13 @@ pub fn measure_all(
             if cancel.load(Ordering::Relaxed) {
                 return out;
             }
-            let frame = (|| -> anyhow::Result<DataFrame> {
-                // Compensated as its group says, as the editor and the
-                // gallery read it, so a gate is placed on the events a person
-                // sees.
-                let fcs =
-                    crate::compensation::open_compensated(path, &compensation.matrix_for(path))?;
-                // Only the cofactors this file actually carries.
-                // `apply_arcsinh_transforms` errors on the first parameter it
-                // cannot find, and the cofactors describe the whole panel as
-                // the scaling file defines it - so one channel absent from one
-                // file failed every rule on every file, with the run reporting
-                // "Parameter AF P1-A not found" six times and nothing placed.
-                // The same filter the two plotting paths use.
-                let carried =
-                    crate::gate_editor::plots::data_helpers::cofactors_carried_by(&fcs, arcsinh);
-                let params: Vec<(&str, f32)> =
-                    carried.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-                let scaled = (*fcs.apply_arcsinh_transforms(&params)?).clone();
-                Ok(scaled.with_row_index("original_index".into(), None)?)
-            })();
+            // Compensated as its group says and scaled as it is drawn, as the
+            // editor and the gallery read it, so a gate is placed on the
+            // events a person sees. Only the cofactors this file carries: one
+            // channel absent from one file used to fail every rule on every
+            // file, the run reporting "Parameter AF P1-A not found" six times
+            // and placing nothing.
+            let frame = crate::events::read_scaled(path, &compensation.matrix_for(path), arcsinh);
             match frame {
                 Ok(df) => match measure_file(snapshot, id, &df, metadata, rules) {
                     Ok((m, u)) => {

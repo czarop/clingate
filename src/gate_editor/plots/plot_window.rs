@@ -3,13 +3,13 @@ use crate::gate_editor::gates::gate_store::{
     ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
 };
 use crate::gate_editor::plots::data_helpers::{
-    cofactors_carried_by, get_event_mask_from_scaled_df, get_filtered_dataframe, get_flow_data,
-    zip_cols_from_filtered_df,
+    get_filtered_dataframe, get_flow_data, zip_cols_from_filtered_df,
 };
 use crate::gate_editor::plots::draw_plot::PseudoColourPlot;
 use crate::omiq::metadata::MetaDataStoreStoreExt;
 
-use crate::gate_editor::plots::plot_store::{EventIndexMapped, PlotStore, PlotStoreStoreExt};
+use crate::events::EventIndexMapped;
+use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
 use crate::gate_editor::{
     AxisInfo,
     gates::{GateState, gate_store::GateStateImplExt},
@@ -154,17 +154,9 @@ pub fn PlotWindow(
                 let fcs = held
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("No data to scale"))?;
-                // Only the channels this file carries; see
-                // [`cofactors_carried_by`]. Without it a panel the scaling file
-                // describes more fully than the file itself left this plot
-                // spinning forever.
-                let carried = cofactors_carried_by(fcs, &params);
-                let param_refs: Vec<(&str, f32)> =
-                    carried.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-                let scaled_df = &*fcs.apply_arcsinh_transforms(param_refs.as_slice())?;
-                let df_with_index = scaled_df.with_row_index("original_index".into(), None)?;
-
-                Ok(Arc::new(df_with_index))
+                // Scaled as every other reader scales it - only the channels
+                // this file carries; see [`crate::events::cofactors_carried_by`].
+                Ok(Arc::new(crate::events::scaled(fcs, &params)?))
             })
             .await;
 
@@ -262,6 +254,15 @@ pub fn PlotWindow(
             // it here would put every gate edit back on the critical path.
             chain_gates.read();
             let current_resolver = resolver.peek().clone();
+            // `parental` is a tree position, not a gate. Resolving the chain
+            // through the node is what makes a linked gate's statistics right:
+            // the same gate at two points in the tree sits under different
+            // ancestors, so a chain taken from the gate alone was whichever
+            // placement won the import. Peeked: `chain_gates` above holds the
+            // dependency on the hierarchy.
+            let chain = parental
+                .map(|parent| gate_store.peek().gate_chain_for_node(&NodeId::from(parent)))
+                .unwrap_or_default();
             // Read here rather than in the async block below, for the reason
             // given above: a read inside the async block registers no
             // dependency. Reading it there meant this never re-ran when the FCS
@@ -283,14 +284,13 @@ pub fn PlotWindow(
                     plot_data_signal.set(vec![]);
                     return Err(anyhow::anyhow!("No data yet"));
                 };
-                let filtered_data =
-                    match get_filtered_dataframe(d.clone(), parental, resolver).await {
-                        Ok(d) => d.clone(),
-                        Err(e) => {
-                            plot_data_signal.set(vec![]);
-                            return Err(anyhow::anyhow!("No data to display {}", e));
-                        }
-                    };
+                let filtered_data = match get_filtered_dataframe(d.clone(), chain, resolver).await {
+                    Ok(d) => d.clone(),
+                    Err(e) => {
+                        plot_data_signal.set(vec![]);
+                        return Err(anyhow::anyhow!("No data to display {}", e));
+                    }
+                };
 
                 match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await {
                     Ok(d) => plot_data_signal.set(d),
@@ -319,22 +319,8 @@ pub fn PlotWindow(
 
             let join_result =
                 tokio::task::spawn_blocking(move || -> anyhow::Result<EventIndexMapped> {
-                    // std::thread::sleep(std::time::Duration::from_secs(3));
-                    // Build the R-Tree
-                    let ei = get_event_mask_from_scaled_df(df.clone(), x_name, y_name)
-                        .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))?;
-                    // Extract the mapping
-                    let map: Vec<usize> = df
-                        .column("original_index")?
-                        .u32()?
-                        .into_iter()
-                        .flatten()
-                        .map(|v| v as usize)
-                        .collect();
-                    Ok(EventIndexMapped {
-                        event_index: ei,
-                        index_map: Arc::new(map),
-                    })
+                    crate::events::index_mapped(&df, &x_name, &y_name)
+                        .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))
                 })
                 .await;
 

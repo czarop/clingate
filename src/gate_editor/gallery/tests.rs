@@ -822,7 +822,7 @@ fn a_real_panel_keeps_its_own_channels_and_drops_the_rest() {
     };
     let fcs = flow_fcs::Fcs::open(file.to_str().expect("utf-8 path")).expect("the file opens");
 
-    use crate::gate_editor::plots::data_helpers::cofactors_carried_by;
+    use crate::events::cofactors_carried_by;
     let real: Arc<str> = fcs
         .parameters
         .values()

@@ -318,12 +318,10 @@ pub fn place_for_specimen(
 
 // ── measuring what is there now ───────────────────────────────────────────
 
-use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
+use crate::events::EventIndexMapped;
 use crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
 use crate::gate_editor::gates::gate_store::{GroupId, NodeId};
 use crate::gate_editor::gates::gate_types::GateStatValue;
-use crate::gate_editor::plots::data_helpers::get_event_mask_from_scaled_df;
-use crate::gate_editor::plots::plot_store::EventIndexMapped;
 use crate::gate_rules::rule_store::{GateRule, RuleStore};
 use crate::omiq::metadata::MetaDataParameter;
 use polars::prelude::*;
@@ -681,11 +679,7 @@ fn parent_frame(
     chain: &[GateId],
     resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
 ) -> anyhow::Result<Arc<DataFrame>> {
-    if chain.is_empty() {
-        return Ok(Arc::new(df.clone()));
-    }
-    let mask = filter_events_by_hierarchy_to_mask(df, chain, resolver)?;
-    Ok(Arc::new(df.filter(&mask)?))
+    Ok(Arc::new(crate::events::under_chain(df, chain, resolver)?))
 }
 
 /// The plot's two axes, and the index the on-screen statistics come from.
@@ -697,8 +691,7 @@ fn parent_on_axes(
     let ys = frame.column(params.1.as_ref())?.f32()?;
     let points: Vec<(f32, f32)> = xs.into_no_null_iter().zip(ys.into_no_null_iter()).collect();
 
-    let event_index =
-        get_event_mask_from_scaled_df(frame.clone(), params.0.clone(), params.1.clone())?;
+    let event_index = crate::events::index_over(frame, &params.0, &params.1)?;
     // The frame is already the parent, so an event's row in it *is* its index
     // into everything else measured here. Keeping the identity explicit means
     // a matched row and a gated event name the same cell without a lookup.

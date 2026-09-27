@@ -24,7 +24,6 @@
 
 use crate::gate_editor::AxisInfo;
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
 use crate::gate_editor::gates::gate_store::{FileId, GateId};
 use crate::gate_editor::plots::axis_store::{ScalingInfoSource, read_axis_configs};
 use crate::gate_rules::confidence::{ConfidenceModel, CountAndSeparation};
@@ -193,8 +192,7 @@ fn rows_for_file(
 
     // Already compensated and scaled, so no transforms are applied here.
     let fcs = Fcs::open(file.to_str().unwrap_or_default())?;
-    let df = (*fcs.apply_arcsinh_transforms(&[])?).clone();
-    let df = df.with_row_index("original_index".into(), None)?;
+    let df = crate::events::scaled(&fcs, &[])?;
 
     let resolver = state.get_current_sample(file_id.clone(), &groups);
     let sample = name.trim_end_matches(".fcs").to_string();
@@ -328,12 +326,7 @@ fn parent_values(
     resolver: &crate::gate_editor::gates::gate_store::GateOverrideResolver,
     channel: &str,
 ) -> anyhow::Result<Vec<f64>> {
-    let frame = if chain.is_empty() {
-        df.clone()
-    } else {
-        let mask = filter_events_by_hierarchy_to_mask(df, chain, resolver)?;
-        df.filter(&mask)?
-    };
+    let frame = crate::events::under_chain(df, chain, resolver)?;
     Ok(frame
         .column(channel)?
         .f32()?

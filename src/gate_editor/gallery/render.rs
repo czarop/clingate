@@ -12,8 +12,7 @@
 //! everything else, and the caller runs it on a pool.
 //!
 //! It is deliberately the *same* pipeline the editor uses, step for step and
-//! function for function - `apply_arcsinh_transforms`,
-//! `filter_events_by_hierarchy_to_mask`, `EventIndex::build`,
+//! function for function - [`crate::events`] to read, filter and index,
 //! `get_percent_and_counts_gate`, `DensityPlot`. A gallery whose percentages
 //! disagreed with the editor's by a rounding step would be worse than no
 //! gallery, because the whole point of it is to be trusted at a glance.
@@ -23,24 +22,18 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use flow_fcs::Fcs;
-use flow_gates::EventIndex;
 use flow_plots::{
     BasePlotOptions, ColorMaps, DensityPlot, DensityPlotOptions, Plot, ScatterPlotData,
     render::RenderConfig,
 };
-use polars::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::gate_editor::AxisInfo;
-use crate::gate_editor::gates::gate_filtering::filter_events_by_hierarchy_to_mask;
 use crate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
 use crate::gate_editor::gates::gate_store::{GateId, GateOverrideResolver};
 use crate::gate_editor::gates::gate_traits::DrawableGate;
 use crate::gate_editor::gates::gate_types::GateStats;
 use crate::gate_editor::plots::axis_store::PlotMapper;
-use crate::gate_editor::plots::data_helpers::cofactors_carried_by;
-use crate::gate_editor::plots::plot_store::EventIndexMapped;
 
 /// One plot's worth of work.
 ///
@@ -92,38 +85,17 @@ impl PartialEq for PlotImage {
 
 /// Open, scale, gate, index, measure and draw. Blocking; call it on a pool.
 pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
-    let fcs = crate::compensation::open_compensated(&job.path, &job.compensation)?;
-
-    // Only the channels this file carries; see [`cofactors_carried_by`]. Shared
-    // with the editor's plot so the two cannot answer differently.
-    let carried = cofactors_carried_by(&fcs, &job.cofactors);
-    let refs: Vec<(&str, f32)> = carried.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-    let scaled = fcs.apply_arcsinh_transforms(refs.as_slice())?;
-    // The editor carries a row index through so a filtered event can be traced
-    // back to its row in the whole file. Nothing here needs that mapping - the
-    // gallery reads counts, never individual events - but the index is built
-    // anyway, because `get_percent_and_counts_gate` takes the mapped pair and
-    // sharing that function verbatim is what keeps the numbers identical.
-    let scaled = scaled.with_row_index("original_index".into(), None)?;
-
-    let frame = if job.chain.is_empty() {
-        scaled
-    } else {
-        let mask = filter_events_by_hierarchy_to_mask(&scaled, &job.chain, &job.resolver)?;
-        scaled.filter(&mask)?
-    };
+    // Read exactly as the editor reads it: see [`crate::events`].
+    let scaled = crate::events::read_scaled(&job.path, &job.compensation, &job.cofactors)?;
+    let frame = crate::events::under_chain(&scaled, &job.chain, &job.resolver)?;
+    drop(scaled);
     let parent_events = frame.height();
 
-    let points = zip_columns(&frame, &job.x, &job.y)?;
-
-    let index_map: Vec<usize> = frame
-        .column("original_index")?
-        .u32()?
-        .into_iter()
-        .flatten()
-        .map(|v| v as usize)
-        .collect();
-    let mapped = build_index(&frame, &job.x, &job.y, index_map)?;
+    let points = crate::events::points(&frame, &job.x, &job.y)?;
+    // The row index is carried because `get_percent_and_counts_gate` takes
+    // the mapped pair, and sharing that function verbatim is what keeps the
+    // numbers identical to the editor's; nothing here reads individual events.
+    let mapped = crate::events::index_mapped(&frame, &job.x, &job.y)?;
 
     let mut stats = FxHashMap::default();
     for gate in &job.gates {
@@ -145,39 +117,6 @@ pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
         mapper: Arc::new(mapper),
         parent_events,
         stats,
-    })
-}
-
-fn zip_columns(frame: &DataFrame, x: &str, y: &str) -> anyhow::Result<Vec<(f32, f32)>> {
-    let xs = frame.column(x)?.f32()?;
-    let ys = frame.column(y)?.f32()?;
-    Ok(xs
-        .into_iter()
-        .zip(ys.into_iter())
-        .filter_map(|(a, b)| match (a, b) {
-            (Some(a), Some(b)) => Some((a, b)),
-            _ => None,
-        })
-        .collect())
-}
-
-fn build_index(
-    frame: &DataFrame,
-    x: &str,
-    y: &str,
-    index_map: Vec<usize>,
-) -> anyhow::Result<EventIndexMapped> {
-    let xr = frame.column(x)?.f32()?.rechunk();
-    let yr = frame.column(y)?.f32()?.rechunk();
-    let xs = xr
-        .cont_slice()
-        .map_err(|_| anyhow::anyhow!("x column is not contiguous"))?;
-    let ys = yr
-        .cont_slice()
-        .map_err(|_| anyhow::anyhow!("y column is not contiguous"))?;
-    Ok(EventIndexMapped {
-        event_index: Arc::new(EventIndex::build(xs, ys).map_err(|e| anyhow::anyhow!("{e}"))?),
-        index_map: Arc::new(index_map),
     })
 }
 

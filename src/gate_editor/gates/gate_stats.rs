@@ -2,12 +2,10 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 
-use crate::gate_editor::{
-    gates::{
-        gate_traits::DrawableGate,
-        gate_types::{GateStatValue, GateStats},
-    },
-    plots::plot_store::EventIndexMapped,
+use crate::events::EventIndexMapped;
+use crate::gate_editor::gates::{
+    gate_traits::DrawableGate,
+    gate_types::{GateStatValue, GateStats},
 };
 
 pub fn get_percent_and_counts_gate(

@@ -12,6 +12,7 @@
 //! events placed exactly on the gate's edges, where the conventions differ
 //! if they are going to.
 
+use clingate::events::EventIndexMapped;
 use clingate::gate_editor::gates::GateState;
 use clingate::gate_editor::gates::gate_composite::bisector_gate::BisectorGate;
 use clingate::gate_editor::gates::gate_composite::quadrant_gate::QuadrantGate;
@@ -24,7 +25,6 @@ use clingate::gate_editor::gates::gate_stats::get_percent_and_counts_gate;
 use clingate::gate_editor::gates::gate_store::GateSource;
 use clingate::gate_editor::gates::gate_traits::DrawableGate;
 use clingate::gate_editor::plots::axis_store::PlotMapper;
-use clingate::gate_editor::plots::plot_store::EventIndexMapped;
 use flow_fcs::TransformType;
 use flow_gates::{EventIndex, create_polygon_geometry, create_rectangle_geometry};
 use polars::prelude::*;

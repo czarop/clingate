@@ -3,6 +3,7 @@ use rustc_hash::FxBuildHasher;
 pub mod clipboard;
 pub mod compensation;
 pub mod components;
+pub mod events;
 pub mod file_load;
 #[cfg(test)]
 mod file_load_tests;
