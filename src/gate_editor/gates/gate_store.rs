@@ -1,7 +1,8 @@
 use crate::gate_editor::gates::gate_hierarchy::GateHierarchy;
 use crate::gate_editor::gates::gate_single::boolean_gates::BooleanGate;
 use anyhow::anyhow;
-use dioxus::prelude::*;
+use dioxus_signals::*;
+use dioxus_stores::{Store, store};
 use flow_fcs::TransformType;
 use flow_gates::{BooleanOperation, Gate};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
@@ -1709,7 +1710,7 @@ impl GateState {
         parental_gate_id: Option<GateId>,
         gate_type: PrimaryGateType,
         name: Option<String>,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         // Normalise "no parent" to the root here as well as in the hierarchy
         // below. Keying the view index on a bare None would file the gate under
         // a key that remove_gate and get_gates_for_plot - which both ask for
@@ -1834,7 +1835,7 @@ impl GateState {
         if g.is_composite() {
             let gates = g.get_inner_gate_ids();
             for sg in gates {
-                println!("Adding composite subgate gate {sg} with parent {parent_node}");
+                tracing::debug!("Adding composite subgate gate {sg} with parent {parent_node}");
                 self.hierarchy
                     .add_gate_child(parent_node.as_arc().clone(), sg.clone(), None)?;
                 self.record_placement(NodeId::from(sg.clone()), sg.clone(), false);
@@ -1843,7 +1844,7 @@ impl GateState {
                     .insert(sg, g.clone());
             }
         } else {
-            println!("Adding gate {} with parent {parent_node}", g.get_id());
+            tracing::debug!("Adding gate {} with parent {parent_node}", g.get_id());
             self.hierarchy
                 .add_gate_child(parent_node.as_arc().clone(), g.get_id(), None)?;
             self.record_placement(NodeId::from(g.get_id()), g.get_id(), false);
@@ -2272,7 +2273,7 @@ impl<Lens> Store<GateState, Lens> {
         &mut self,
         file_id: FileId,
         group_ids: &FxHashMap<MetaDataParameter, GroupId>,
-    ) -> Result<GateOverrideResolver> {
+    ) -> anyhow::Result<GateOverrideResolver> {
         // Subscribe to the three tiers the resolver is built from.
         //
         // The plain-data function below reads through `peek`, which does not
@@ -2313,7 +2314,7 @@ impl<Lens> Store<GateState, Lens> {
         parental_gate_id: Option<GateId>,
         gate_type: PrimaryGateType,
         name: Option<String>,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         self.write().add_gate(
             mapper,
             click_x,
@@ -2412,7 +2413,7 @@ impl<Lens> Store<GateState, Lens> {
         &mut self,
         gate_drag_data: GateDragData,
         resolver: &GateOverrideResolver,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         let gate_id = gate_drag_data.gate_id();
 
         let new_gate = resolver
@@ -2469,7 +2470,7 @@ impl<Lens> Store<GateState, Lens> {
         y_axis_title: T,
         parental_gate_id: Option<T>,
         resolver: &GateOverrideResolver,
-    ) -> Result<Vec<Arc<dyn DrawableGate>>>
+    ) -> anyhow::Result<Vec<Arc<dyn DrawableGate>>>
     where
         T: Into<GateId> + Clone,
     {
@@ -2540,7 +2541,7 @@ impl<Lens> Store<GateState, Lens> {
         marker: &Arc<str>,
         old_axis_options: &AxisInfo,
         new_axis_options: &AxisInfo,
-    ) -> Result<(), Vec<String>> {
+    ) -> anyhow::Result<(), Vec<String>> {
         let mut result = Ok(());
         self.gate_store().with_mut(|s| {
             result = s.rescale_channel(marker, old_axis_options, new_axis_options);
@@ -2555,7 +2556,7 @@ impl<Lens> Store<GateState, Lens> {
         lower: f32,
         upper: f32,
         transform: TransformType,
-    ) -> Result<(), Vec<String>> {
+    ) -> anyhow::Result<(), Vec<String>> {
         let mut result = Ok(());
         self.gate_store().with_mut(|s| {
             result = s.relimit_channel(&axis_name, lower, upper, &transform);

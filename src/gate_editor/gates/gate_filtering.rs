@@ -1,4 +1,3 @@
-use dioxus::prelude::*;
 use flow_gates::{EventIndex, Gate, GateGeometry};
 use polars::prelude::*;
 
@@ -261,7 +260,6 @@ pub fn filter_events_by_hierarchy_to_mask(
 ) -> Result<BooleanChunked, anyhow::Error> {
     let event_count = scaled_data.height();
     let mut final_mask = BooleanChunked::full("mask".into(), true, event_count);
-    println!("called with gate chain length {}", gate_chain.len());
     for gate_id in gate_chain {
         let gate_mask = filter_events_to_mask(scaled_data, gate_id.clone(), resolver)?;
         final_mask = final_mask & gate_mask;
@@ -285,7 +283,7 @@ pub fn filter_events_by_hierarchy_to_mask(
 pub fn filter_events_by_gate_with_index(
     gate: &Gate,
     spatial_index: &EventIndex,
-) -> Result<Vec<usize>> {
+) -> anyhow::Result<Vec<usize>> {
     // Use provided index or build one
     let indices = spatial_index.filter_by_gate(gate)?;
 

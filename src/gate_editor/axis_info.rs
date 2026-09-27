@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use dioxus::prelude::*;
 use flow_fcs::TransformType;
 
 use crate::gate_editor::plots::axis_store::Param;
@@ -34,7 +33,7 @@ pub fn asinh_to_asinh(value: f32, old_cofactor: f32, new_cofactor: f32) -> anyho
     asinh_transform_f32(untransformed, new_cofactor)
 }
 
-#[derive(Debug, Clone, PartialEq, Props)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AxisInfo {
     pub param: Param,
     pub axis_lower: f32,

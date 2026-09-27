@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use dioxus::prelude::*;
+use dioxus_signals::*;
+use dioxus_stores::{Store, store};
 use polars::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 

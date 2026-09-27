@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use core::f32;
-use dioxus::prelude::*;
+use dioxus_signals::*;
+use dioxus_stores::{Store, store};
 use flow_fcs::{TransformType, Transformable};
 use flow_gates::transforms::{pixel_to_raw, pixel_to_raw_y, raw_to_pixel, raw_to_pixel_y};
 use flow_plots::BasePlotOptions;
@@ -624,7 +625,7 @@ pub fn read_axis_configs(
             },
             Some("None (linear)") => TransformType::Linear,
             Some(other) => {
-                println!("skipping axis {primary}: unsupported scaling type {other:?}");
+                tracing::warn!("skipping axis {primary}: unsupported scaling type {other:?}");
                 continue;
             }
             None => {

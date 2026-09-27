@@ -196,7 +196,7 @@ pub fn PlotWindow(
                 gate_resolver_store.set(Some(Arc::new(resolver.clone())));
                 Ok(resolver)
             }
-            Err(e) => Err(e),
+            Err(e) => Err(CapturedError::from_display(e)),
         }
     });
 

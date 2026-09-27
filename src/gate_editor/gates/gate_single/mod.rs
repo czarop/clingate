@@ -36,7 +36,6 @@ pub fn rescale_helper(
 ) -> anyhow::Result<Vec<(f32, f32)>> {
     let is_x = x_param == param;
     let mut new_pts = pts.to_vec();
-    println!("{:?}", new_pts);
     for p in new_pts.iter_mut() {
         let val = if is_x { &mut p.0 } else { &mut p.1 };
         let raw = match old {

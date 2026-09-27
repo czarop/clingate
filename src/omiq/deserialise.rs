@@ -144,7 +144,7 @@ impl AtomicContainer {
             flow_gates::GateMode::Global,
             rect_to_polygon,
         )?;
-        println!(
+        tracing::debug!(
             "CREATED GLOBAL GATE! ID: {}, Name: {}",
             global_gate.get_id(),
             global_gate.get_name()
@@ -197,7 +197,7 @@ impl AtomicContainer {
                     flow_gates::GateMode::Global,
                     rect_to_polygon,
                 )?;
-                println!(
+                tracing::debug!(
                     "CREATED FILE-SPECIFIC GATE! ID: {}, Name: {}, File: {}",
                     file_gate.get_id(),
                     file_gate.get_name(),
@@ -1324,9 +1324,11 @@ pub fn validate_metadata_requirements(
         {
             // Check if the metadata CSV actually has this column
             if !metadata_headers.contains(required_md) {
-                println!(
+                tracing::warn!(
                     "Gate '{}' ({}) requires metadata column '{}', but it's missing from the CSV!",
-                    atomic.name, atomic.id, required_md
+                    atomic.name,
+                    atomic.id,
+                    required_md
                 );
             }
         }
