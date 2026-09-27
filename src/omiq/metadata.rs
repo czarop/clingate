@@ -31,6 +31,37 @@ pub struct MetaDataStore {
     gating_id_to_actual_id_override_map: HashMap<FileId, String, FxBuildHasher>,
 }
 
+/// The columns of an Omiq metadata export that name each file: its id, which
+/// the gating file uses, and its name, which the file on disk has.
+pub const OMIQ_ID_COLUMN: &str = "OmiqID";
+pub const OMIQ_FILE_NAME_COLUMN: &str = "Filename";
+
+impl MetaDataStore {
+    /// Read an Omiq metadata export, and what a person should be told about
+    /// it - rows that could not be read, names on more than one row.
+    pub fn read_omiq(path: PathBuf) -> anyhow::Result<(Self, Vec<String>)> {
+        let parsed = parse_metadata_csv(
+            path,
+            OMIQ_ID_COLUMN,
+            OMIQ_FILE_NAME_COLUMN,
+            MetaDataOrigin::Omiq,
+        )?;
+        let mut store = Self::default();
+        let warnings = store.replace_with(parsed);
+        Ok((store, warnings))
+    }
+
+    /// Take a parsed export in place of what was held, returning what a
+    /// person should be told about it.
+    pub fn replace_with(&mut self, parsed: ParsedMetaData) -> Vec<String> {
+        let warnings = parsed.warnings();
+        self.metadata = parsed.metadata;
+        self.file_name_to_gating_id = parsed.file_name_to_gating_id;
+        self.gating_id_to_actual_id_override_map = parsed.gating_id_to_actual_id;
+        warnings
+    }
+}
+
 #[store(pub name = MetaDataImplExt)]
 impl<Lens> Store<MetaDataStore, Lens> {
     fn set_metadata_from_file(
@@ -41,14 +72,7 @@ impl<Lens> Store<MetaDataStore, Lens> {
         metadata_origin: MetaDataOrigin,
     ) -> anyhow::Result<Vec<String>> {
         let parsed = parse_metadata_csv(path, file_id_column, file_name_column, metadata_origin)?;
-        let warnings = parsed.warnings();
-        self.with_mut(|s| {
-            s.metadata = parsed.metadata;
-            s.file_name_to_gating_id = parsed.file_name_to_gating_id;
-            s.gating_id_to_actual_id_override_map = parsed.gating_id_to_actual_id;
-        });
-
-        Ok(warnings)
+        Ok(self.with_mut(|s| s.replace_with(parsed)))
     }
 }
 

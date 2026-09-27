@@ -21,7 +21,7 @@
 //!   range changed goes through the same `rescale_gates` and
 //!   `set_current_axis_limits` calls the editor's cofactor and range boxes
 //!   make, so drawn, per-specimen and per-sample positions all come through -
-//!   see [`scaling_diff`].
+//!   see [`crate::workspace::carry_to_scaling`].
 //! - **Metadata** re-imports the gating file. It defines the specimen groups
 //!   the per-specimen positions are keyed by, so new metadata can re-key every
 //!   one of them, and only the import knows how.
@@ -50,78 +50,21 @@ use crate::components::toast::{Toasts, note, say, use_toast, warn};
 use crate::file_load::FcsFiles;
 use crate::gate_editor::compensation_panel::{CompensationAction, CompensationPanel, ExportFor};
 use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::GateStateImplExt;
 use crate::gate_editor::path_picker::{Chosen, Pick, UNAVAILABLE, choose};
 use crate::gate_editor::plots::axis_store::{
-    AxisStore, AxisStoreStoreExt, ScalingDiff, ScalingInfoSource, read_axis_configs, scaling_diff,
+    AxisStore, AxisStoreStoreExt, ScalingInfoSource, read_axis_configs,
 };
 use crate::gate_rules::rule_store::RuleStore;
 use crate::omiq::metadata::{
-    MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt,
+    MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt, OMIQ_FILE_NAME_COLUMN,
+    OMIQ_ID_COLUMN,
 };
 use crate::omiq::serialise::to_omiq_document;
-use crate::workspace::{Found, Remembered, detect};
+use crate::workspace::{Found, Remembered, ScalingCarried, carry_to_scaling, detect, gating_needs};
 
 pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
 pub type MetadataStore = Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>;
 pub type AxesStore = Store<AxisStore, CopyValue<AxisStore, SyncStorage>>;
-
-/// What replacing the scaling did to the gates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScalingCarried {
-    /// Which channels changed, and which the new file does not have.
-    pub diff: ScalingDiff,
-    /// Gates that could not be carried, and why. They are left as they were.
-    pub problems: Vec<String>,
-}
-
-/// Replace the scaling, carrying every gate through each channel's change.
-///
-/// Channel by channel, the edits a person could make by hand in the editor -
-/// a new cofactor is a rescale, a new range a relimit - so whatever the gates
-/// hold comes through. Separate from the loading so the whole of it can be run
-/// on real stores without the tab around it.
-///
-/// Refused, with nothing changed, if any channel in `configs` could not be
-/// drawn on (see [`crate::gate_editor::AxisInfo::problem`]): `read_axis_configs` refuses such a
-/// file already, and this is the second line, before either store is touched.
-pub fn carry_to_scaling(
-    mut axes: AxesStore,
-    mut gates: GateStore,
-    configs: Vec<crate::gate_editor::AxisInfo>,
-) -> Result<ScalingCarried, String> {
-    let unusable: Vec<String> = configs
-        .iter()
-        .filter_map(crate::gate_editor::AxisInfo::problem)
-        .collect();
-    if !unusable.is_empty() {
-        return Err(format!(
-            "the scaling cannot be used: {}",
-            unusable.join("; ")
-        ));
-    }
-    let diff = scaling_diff(&axes.peek().settings, &configs);
-    axes.with_mut(|s| s.replace_axis_configs(configs));
-    let mut problems: Vec<String> = Vec::new();
-    for change in &diff.changed {
-        if change.transform_changed()
-            && let Err(errors) = gates.rescale_gates(&change.channel, &change.old, &change.new)
-        {
-            problems.extend(errors);
-        }
-        if change.range_changed()
-            && let Err(errors) = gates.set_current_axis_limits(
-                change.channel.clone(),
-                change.new.axis_lower,
-                change.new.axis_upper,
-                change.new.transform.clone(),
-            )
-        {
-            problems.extend(errors);
-        }
-    }
-    Ok(ScalingCarried { diff, problems })
-}
 
 /// Where one part of the workspace stands.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -337,7 +280,12 @@ impl Handles {
         let mut store = self.metadata;
         let reading = path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            store.set_metadata_from_file(reading, "OmiqID", "Filename", MetaDataOrigin::Omiq)
+            store.set_metadata_from_file(
+                reading,
+                OMIQ_ID_COLUMN,
+                OMIQ_FILE_NAME_COLUMN,
+                MetaDataOrigin::Omiq,
+            )
         })
         .await;
         match flatten(result) {
@@ -372,14 +320,17 @@ impl Handles {
             }
         };
 
-        let ScalingCarried { diff, problems } =
-            match carry_to_scaling(self.axes, self.gates, configs) {
-                Ok(carried) => carried,
-                Err(e) => {
-                    self.set_part(Which::Scaling, Part::Failed(path, e));
-                    return false;
-                }
-            };
+        // Written whole: a new scaling redraws everything anyway.
+        let mut axes = self.axes;
+        let mut gates = self.gates;
+        let carried = carry_to_scaling(&mut axes.write(), &mut gates.write(), configs);
+        let ScalingCarried { diff, problems } = match carried {
+            Ok(carried) => carried,
+            Err(e) => {
+                self.set_part(Which::Scaling, Part::Failed(path, e));
+                return false;
+            }
+        };
         self.set_part(Which::Scaling, Part::Loaded(path));
 
         if self.gates_loaded() && !diff.changed.is_empty() {
@@ -421,12 +372,7 @@ impl Handles {
     async fn load_gating(self, path: PathBuf) -> bool {
         let metadata = self.metadata.metadata().peek().clone();
         let axes = self.axes.settings().peek().clone();
-        let needs = match (metadata.is_empty(), axes.is_empty()) {
-            (true, true) => Some("the metadata and the scaling"),
-            (true, false) => Some("the metadata"),
-            (false, true) => Some("the scaling"),
-            (false, false) => None,
-        };
+        let needs = gating_needs(&metadata, &axes);
         if let Some(needs) = needs {
             self.set_part(Which::Gating, Part::Waiting(path, needs));
             return false;

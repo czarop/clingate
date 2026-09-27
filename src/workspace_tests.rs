@@ -503,3 +503,23 @@ fn only_fcs_files_are_collected_from_sub_folders() {
     let found = fcs_under(&dir).unwrap();
     assert_eq!(found, vec![dir.join("sub").join("a.fcs")]);
 }
+
+/// A gating file waits for the metadata and the scaling it is imported
+/// through, and says which it is still waiting for.
+#[test]
+fn a_gating_file_says_what_it_is_waiting_for() {
+    use crate::gate_editor::AxisInfo;
+    use crate::workspace::gating_needs;
+    let mut metadata = crate::omiq::metadata::MetaDataFileMap::default();
+    let mut axes = crate::omiq::serialise::AxisSettings::default();
+    assert_eq!(
+        gating_needs(&metadata, &axes),
+        Some("the metadata and the scaling")
+    );
+    metadata.insert(std::sync::Arc::from("f1"), Default::default());
+    assert_eq!(gating_needs(&metadata, &axes), Some("the scaling"));
+    axes.insert(std::sync::Arc::from("FSC-A"), AxisInfo::default());
+    assert_eq!(gating_needs(&metadata, &axes), None);
+    metadata.clear();
+    assert_eq!(gating_needs(&metadata, &axes), Some("the metadata"));
+}

@@ -629,6 +629,30 @@ pub struct GateState {
 }
 
 impl GateState {
+    /// Carry every gate drawn on `channel` through a change of its transform
+    /// - see [`GateSubStore::rescale_channel`].
+    pub fn rescale_channel(
+        &mut self,
+        channel: &Arc<str>,
+        old: &AxisInfo,
+        new: &AxisInfo,
+    ) -> Result<(), Vec<String>> {
+        self.gate_store.rescale_channel(channel, old, new)
+    }
+
+    /// Carry every gate drawn on `channel` to a new axis range - see
+    /// [`GateSubStore::relimit_channel`].
+    pub fn relimit_channel(
+        &mut self,
+        channel: &Arc<str>,
+        lower: f32,
+        upper: f32,
+        transform: &TransformType,
+    ) -> Result<(), Vec<String>> {
+        self.gate_store
+            .relimit_channel(channel, lower, upper, transform)
+    }
+
     /// What the imported Omiq file carried, for writing a new one.
     /// Whether the document is still the one `earlier` was taken from: the
     /// same gates at the same positions - global, per group and per sample -

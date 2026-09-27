@@ -22,10 +22,89 @@
 //!
 //! Nothing is guessed. Where a part is missing, or more than one file could be
 //! it, that is reported as such and the person chooses.
+//!
+//! ## Loading them
+//!
+//! The steps that need care - carrying the gates through a new scaling, and
+//! what a gating file waits for - are here as plain functions, so the app and
+//! anything driving clingate without a window load a workspace the same way.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// What replacing the scaling did to the gates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScalingCarried {
+    /// Which channels changed, and which the new file does not have.
+    pub diff: crate::gate_editor::plots::axis_store::ScalingDiff,
+    /// Gates that could not be carried, and why. They are left as they were.
+    pub problems: Vec<String>,
+}
+
+/// Replace the scaling, carrying every gate through each channel's change.
+///
+/// Channel by channel, the edits a person could make by hand in the editor -
+/// a new cofactor is a rescale, a new range a relimit - so whatever the gates
+/// hold comes through.
+///
+/// Refused, with nothing changed, if any channel in `configs` could not be
+/// drawn on (see [`crate::gate_editor::AxisInfo::problem`]): `read_axis_configs`
+/// refuses such a file already, and this is the second line, before either is
+/// touched.
+pub fn carry_to_scaling(
+    axes: &mut crate::gate_editor::plots::axis_store::AxisStore,
+    gates: &mut crate::gate_editor::gates::GateState,
+    configs: Vec<crate::gate_editor::AxisInfo>,
+) -> Result<ScalingCarried, String> {
+    let unusable: Vec<String> = configs
+        .iter()
+        .filter_map(crate::gate_editor::AxisInfo::problem)
+        .collect();
+    if !unusable.is_empty() {
+        return Err(format!(
+            "the scaling cannot be used: {}",
+            unusable.join("; ")
+        ));
+    }
+    let diff = crate::gate_editor::plots::axis_store::scaling_diff(&axes.settings, &configs);
+    axes.replace_axis_configs(configs);
+    let mut problems: Vec<String> = Vec::new();
+    for change in &diff.changed {
+        if change.transform_changed()
+            && let Err(errors) = gates.rescale_channel(&change.channel, &change.old, &change.new)
+        {
+            problems.extend(errors);
+        }
+        if change.range_changed()
+            && let Err(errors) = gates.relimit_channel(
+                &change.channel,
+                change.new.axis_lower,
+                change.new.axis_upper,
+                &change.new.transform,
+            )
+        {
+            problems.extend(errors);
+        }
+    }
+    Ok(ScalingCarried { diff, problems })
+}
+
+/// What a gating file has to wait for before it can be imported: the gates
+/// are imported *through* the metadata, which keys the per-specimen positions,
+/// and the scaling, which puts every coordinate where it is drawn. `None` when
+/// both are loaded.
+pub fn gating_needs(
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+    axes: &crate::omiq::serialise::AxisSettings,
+) -> Option<&'static str> {
+    match (metadata.is_empty(), axes.is_empty()) {
+        (true, true) => Some("the metadata and the scaling"),
+        (true, false) => Some("the metadata"),
+        (false, true) => Some("the scaling"),
+        (false, false) => None,
+    }
+}
 
 /// What a search turned up for one part of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]

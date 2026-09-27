@@ -2,12 +2,12 @@
 //!
 //! Four modules meet here. The scaling file is read by `axis_store`
 //! (`read_axis_configs`) and compared with what is loaded (`scaling_diff`);
-//! the Workspace tab's `carry_to_scaling` then drives the gate store's
-//! `rescale_gates` and `set_current_axis_limits` for every channel that
-//! changed; and each gate type does the carrying its own way. The rescale
-//! tests cover the last of these on a bare sub-store. This runs the whole of
-//! it - files on disk, real stores in a headless runtime - and asks the one
-//! thing a person relies on: do the gates hold the same cells afterwards.
+//! `workspace::carry_to_scaling`, which the Workspace tab calls, then drives
+//! the gate state's `rescale_channel` and `relimit_channel` for every channel
+//! that changed; and each gate type does the carrying its own way. The
+//! rescale tests cover the last of these on a bare sub-store. This runs the
+//! whole of it from files on disk and asks the one thing a person relies on:
+//! do the gates hold the same cells afterwards.
 
 mod common;
 
@@ -21,13 +21,9 @@ use clingate::gate_editor::gates::gate_traits::DrawableGate;
 use clingate::gate_editor::plots::axis_store::{
     AxisStore, PlotMapper, ScalingInfoSource, read_axis_configs,
 };
-use clingate::gate_editor::workspace_window::{ScalingCarried, carry_to_scaling};
+use clingate::workspace::{ScalingCarried, carry_to_scaling};
 use common::*;
-use dioxus::prelude::*;
-use dioxus::stores::use_store_sync;
 use flow_fcs::{TransformType, Transformable};
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 const X: &str = "BV421-A";
@@ -214,52 +210,11 @@ fn try_replace(
         drawn.place_gate(&ids, &gate, &GateSource::Global);
     }
 
-    type Out = Rc<RefCell<Option<(Result<ScalingCarried, String>, AxisStore, GateState)>>>;
-    let out: Out = Rc::new(RefCell::new(None));
-
-    #[derive(Clone)]
-    struct Setup {
-        drawn: GateState,
-        before: Vec<AxisInfo>,
-        after: Vec<AxisInfo>,
-        out: Out,
-    }
-    impl PartialEq for Setup {
-        fn eq(&self, _: &Self) -> bool {
-            true
-        }
-    }
-
-    let mut dom = VirtualDom::new_with_props(
-        |setup: Setup| {
-            let gates = use_store_sync({
-                let drawn = setup.drawn.clone();
-                move || drawn
-            });
-            let axes = use_store_sync({
-                let before = setup.before.clone();
-                move || {
-                    let mut store = AxisStore::default();
-                    store.apply_axis_configs(before);
-                    store
-                }
-            });
-            if setup.out.borrow().is_none() {
-                let carried = carry_to_scaling(axes, gates, setup.after.clone());
-                *setup.out.borrow_mut() =
-                    Some((carried, axes.peek().clone(), gates.peek().clone()));
-            }
-            rsx! {}
-        },
-        Setup {
-            drawn: drawn.clone(),
-            before,
-            after,
-            out: out.clone(),
-        },
-    );
-    dom.rebuild_in_place();
-    let (carried, axes, after) = out.borrow_mut().take().expect("the component ran");
+    let mut axes = AxisStore::default();
+    axes.apply_axis_configs(before);
+    let mut after_gates = drawn.clone();
+    let carried = carry_to_scaling(&mut axes, &mut after_gates, after);
+    let after = after_gates;
     (drawn, carried, axes, after)
 }
 
