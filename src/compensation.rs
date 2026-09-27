@@ -231,9 +231,14 @@ impl Spillover {
             .map(String::as_str)
             .collect();
         let n = names.len();
+        if rows.is_empty() {
+            return Err(anyhow!(
+                "Only the channel names were found - paste the whole matrix, names and values"
+            ));
+        }
         if rows.len() != n {
             return Err(anyhow!(
-                "The header lists {n} channels but there are {} rows",
+                "The top row names {n} channels but there are {} rows of values - paste the whole matrix",
                 rows.len()
             ));
         }

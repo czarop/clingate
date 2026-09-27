@@ -103,9 +103,10 @@ fn a_csv_with_row_names_is_read_if_they_agree() {
 fn a_csv_that_is_not_a_spillover_matrix_is_refused() {
     let cases = [
         ("", "Nothing to read"),
+        ("A\tB\n", "Only the channel names"),
         (
             "A,B\n100,5\n",
-            "The header lists 2 channels but there are 1 rows",
+            "The top row names 2 channels but there are 1 rows",
         ),
         (
             "A,B\n100,5\n5,100,3\n",
@@ -116,7 +117,7 @@ fn a_csv_that_is_not_a_spillover_matrix_is_refused() {
         ("A,A\n100,5\n5,100\n", "A is listed twice"),
         (
             "A,\n100,5\n5,100\n",
-            "The header lists 1 channels but there are 2 rows",
+            "The top row names 1 channels but there are 2 rows",
         ),
         (
             "A,,B\n100,0,5\n0,100,0\n5,0,100\n",
@@ -388,6 +389,69 @@ fn other() -> Spillover {
 
 fn p(name: &str) -> PathBuf {
     PathBuf::from(format!("/data/{name}.fcs"))
+}
+
+/// Groups made by hand, or around a file's matrix, are numbered with the
+/// first number free.
+#[test]
+fn groups_are_numbered_with_the_first_free_number() {
+    let mut c = Compensation::default();
+    c.add_file(p("a"), Ok(Some(three())));
+    let first = c.group_of(&p("a")).unwrap();
+    assert_eq!(c.group(first).unwrap().name, "Group 1");
+    assert_eq!(c.next_group_name(), "Group 2");
+    c.rename(first, "Panel A");
+    assert_eq!(c.next_group_name(), "Group 1");
+}
+
+/// A pasted matrix is taken only if it reads and fits every file in the
+/// group, and says why not otherwise.
+#[test]
+fn a_pasted_matrix_is_checked_against_the_groups_files() {
+    let mut c = Compensation::default();
+    c.add_file(p("a"), Ok(None));
+    let g = c.group_of(&p("a")).unwrap();
+    let facts = |names: &[&str]| FileFacts {
+        channels: names.iter().map(|n| (n.to_string(), None)).collect(),
+    };
+    let pasted = "FITC-A\tPE-A\tAPC-A\n100\t25\t2\n5\t100\t10\n0\t30\t100\n";
+    let fits = c.read_pasted(g, pasted, |_| facts(&["FITC-A", "PE-A", "APC-A"]));
+    assert!(fits.unwrap().same_as(&three()));
+    let refused = c
+        .read_pasted(g, pasted, |_| facts(&["FITC-A", "PE-A"]))
+        .unwrap_err();
+    assert!(
+        refused.contains("It doesn't fit a") && refused.contains("APC-A"),
+        "{refused}"
+    );
+    assert_eq!(
+        c.read_pasted(g, "  \n", |_| facts(&[])).unwrap_err(),
+        "Paste the matrix first"
+    );
+}
+
+/// Asking again what Omiq applied keeps the matrix wanted, and holds the
+/// files back until it is answered.
+#[test]
+fn asking_again_what_omiq_applied_keeps_the_matrix() {
+    let mut c = Compensation::default();
+    c.add(FileMatrix::from_omiq(p("omiq")));
+    let g = c.group_of(&p("omiq")).unwrap();
+    let m = Arc::new(three());
+    c.set_applied(
+        g,
+        Applied::Matrix {
+            path: None,
+            matrix: m.clone(),
+        },
+    )
+    .unwrap();
+    c.set_value(g, "FITC-A", "PE-A", 20.0, &[]).unwrap();
+    let wanted = c.wanted(g).unwrap();
+    c.set_applied(g, Applied::Unknown).unwrap();
+    assert_eq!(c.matrix_for(&p("omiq")).unwrap_err(), Compensation::ASK);
+    c.set_applied(g, Applied::Nothing).unwrap();
+    assert!(c.wanted(g).unwrap().same_as(&wanted), "the edit survives");
 }
 
 /// Several files move at once, or none do if any is unknown.
@@ -1322,8 +1386,13 @@ fn omiq_exports_are_grouped_apart_from_raw_files_without_a_matrix() {
     );
     assert_ne!(raw, omiq);
     assert_eq!(c.group_of(&p("omiq2")), Some(omiq));
-    assert!(c.group(omiq).unwrap().name.ends_with("Exported from Omiq"));
+    assert_eq!(c.group(omiq).unwrap().name, "Omiq exports");
     assert!(c.unanswered(omiq) && !c.unanswered(raw));
+    assert_eq!(c.group(raw).unwrap().name, "No matrix");
+    assert!(
+        c.check(omiq, |_| FileFacts::default()).is_empty(),
+        "the question is asked once for the group, not per file"
+    );
 
     // Remembered, a new Omiq export still joins them.
     let saved = c.saved();

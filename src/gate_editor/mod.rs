@@ -1,4 +1,5 @@
 pub mod axis_info;
+pub mod compensation_panel;
 pub mod gates;
 pub mod macros;
 mod reactivity_tests;

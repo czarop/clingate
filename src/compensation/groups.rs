@@ -58,6 +58,22 @@ pub struct FileFacts {
     pub channels: Vec<(String, Option<String>)>,
 }
 
+impl FileFacts {
+    /// Whether compensating with `matrix` finds every channel it needs here
+    /// - only the channels that take part, as compensating does.
+    pub fn fits(&self, matrix: &Spillover) -> Result<(), String> {
+        let lookup: Vec<(&str, Option<&str>)> = self
+            .channels
+            .iter()
+            .map(|(n, l)| (n.as_str(), l.as_deref()))
+            .collect();
+        match matrix.involved() {
+            Some(m) => m.resolve(&lookup).map(|_| ()).map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+}
+
 /// A file as the workspace found it: its own matrix, and whether Omiq wrote
 /// it - see [`crate::compensation::own_matrices`].
 #[derive(Clone, Debug, PartialEq)]
@@ -283,23 +299,18 @@ impl Compensation {
         for path in self.files_in(group) {
             let correction = match self.matrix_for(path) {
                 Ok(c) => c,
+                // Asked once for the group, not once per file.
+                Err(why) if why == Self::ASK => continue,
                 Err(why) => {
                     notes.push(format!("{}: {why}", name(path)));
                     continue;
                 }
             };
             let facts = facts_of(path);
-            let lookup: Vec<(&str, Option<&str>)> = facts
-                .channels
-                .iter()
-                .map(|(n, l)| (n.as_str(), l.as_deref()))
-                .collect();
-            // As compensating matches it: only the channels that take part.
             let unfit = [&correction.undo, &correction.apply]
                 .into_iter()
                 .flatten()
-                .filter_map(|m| m.involved())
-                .find_map(|m| m.resolve(&lookup).err());
+                .find_map(|m| facts.fits(m).err());
             if let Some(why) = unfit {
                 notes.push(format!(
                     "{}: the matrix doesn't fit its channels ({why})",
@@ -357,7 +368,7 @@ impl Compensation {
                 .find(|g| g.formed_around.as_ref().is_some_and(|f| f.same_as(matrix)))
                 .map(|g| g.id)
                 .unwrap_or_else(|| {
-                    let name = format!("{} channels, from the files", matrix.channels().len());
+                    let name = self.next_group_name();
                     self.push_group(name, Source::FilesOwn, Some(matrix.clone()), false)
                 }),
             Ok(None) if written_by_omiq => self
@@ -366,8 +377,7 @@ impl Compensation {
                 .find(|g| g.for_omiq_exports)
                 .map(|g| g.id)
                 .unwrap_or_else(|| {
-                    let id =
-                        self.push_group("Exported from Omiq".into(), Source::None, None, false);
+                    let id = self.push_group("Omiq exports".into(), Source::None, None, false);
                     self.group_mut(id).expect("just made").for_omiq_exports = true;
                     id
                 }),
@@ -376,12 +386,13 @@ impl Compensation {
                 .iter()
                 .find(|g| g.for_files_without)
                 .map(|g| g.id)
-                .unwrap_or_else(|| {
-                    self.push_group("No matrix in the files".into(), Source::None, None, true)
-                }),
+                .unwrap_or_else(|| self.push_group("No matrix".into(), Source::None, None, true)),
             // One group per unreadable file: nothing says two of them are
             // alike, and each needs a matrix chosen for it.
-            Err(_) => self.push_group("Matrix unreadable".into(), Source::FilesOwn, None, false),
+            Err(_) => {
+                let name = format!("{} (unreadable matrix)", self.next_group_name());
+                self.push_group(name, Source::FilesOwn, None, false)
+            }
         };
         self.files.insert(
             path,
@@ -393,6 +404,20 @@ impl Compensation {
         );
     }
 
+    /// "Group 1", "Group 2" and so on: the first not already a group's
+    /// name.
+    pub fn next_group_name(&self) -> String {
+        (1..)
+            .map(|n| format!("Group {n}"))
+            .find(|name| {
+                !self
+                    .groups
+                    .iter()
+                    .any(|g| g.name == *name || g.name.starts_with(&format!("{name} ")))
+            })
+            .expect("unbounded")
+    }
+
     fn push_group(
         &mut self,
         name: String,
@@ -402,7 +427,6 @@ impl Compensation {
     ) -> GroupId {
         let id = self.next_id;
         self.next_id += 1;
-        let name = format!("Group {} - {name}", self.groups.len() + 1);
         self.groups.push(Group {
             id,
             name,
@@ -510,6 +534,27 @@ impl Compensation {
     /// applied to them.
     pub const ASK: &'static str =
         "Omiq-exported files: first say whether compensation was applied in Omiq";
+
+    /// A matrix pasted for a group - copied from Omiq's grid or a
+    /// spreadsheet - read, and checked against each of the group's files, so
+    /// that a paste that could not be used is refused before it is taken.
+    pub fn read_pasted(
+        &self,
+        group: GroupId,
+        text: &str,
+        facts_of: impl Fn(&Path) -> FileFacts,
+    ) -> Result<Spillover, String> {
+        if text.trim().is_empty() {
+            return Err("Paste the matrix first".to_string());
+        }
+        let matrix = Spillover::from_omiq_text(text).map_err(|e| e.to_string())?;
+        for path in self.files_in(group) {
+            if let Err(why) = facts_of(path).fits(&matrix) {
+                return Err(format!("It doesn't fit {}: {why}", file_name(path)));
+            }
+        }
+        Ok(matrix)
+    }
 
     /// Whether the group holds a file Omiq wrote.
     pub fn holds_omiq_exports(&self, group: GroupId) -> bool {

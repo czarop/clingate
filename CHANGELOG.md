@@ -34,6 +34,15 @@
   or copied to the clipboard for pasting into Omiq, and - for software that
   compensates the exported files themselves - saved as the correction on top
   of what Omiq applied. Omiq exports get a group of their own.
+- **The compensation panel, laid out as Omiq's.** Each group is a tab, showing
+  its files beside its full matrix, with everything that can be done to it in
+  one Actions menu: paste a matrix, load one from CSV, start one, use each
+  file's own, none, reset to Omiq's, copy or save for Omiq, save for the
+  exported files, rename, delete. Files move between groups through one
+  dialog that searches, and picks many at once (shift-click for a run). A
+  group of Omiq exports says "Omiq exported FCS detected" and asks whether
+  compensation was applied in Omiq; if it was, Omiq's matrix is pasted
+  straight in, and checked against the group's files when OK is clicked.
 
 - **A rule that finds a population by what it is, rather than where it sat.**
   The cells inside the gate on the reference sample are described by where they
