@@ -248,7 +248,7 @@ fn lexically_normal(path: &Path) -> PathBuf {
 ///
 /// The rules are deliberately absent. They are exported to their own file and
 /// imported on purpose; a new workspace starts without any.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Remembered {
     /// The folder it was opened from, if it was - shown so a person knows
     /// which run they are looking at.

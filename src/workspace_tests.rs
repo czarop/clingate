@@ -300,6 +300,7 @@ fn a_remembered_workspace_survives_a_save_and_a_load() {
                 source: crate::compensation::groups::SavedSource::Csv(PathBuf::from(
                     "/data/run1/comp.csv",
                 )),
+                applied: crate::compensation::groups::SavedApplied::Nothing,
             }],
             files: vec![(PathBuf::from("/data/run1/a.fcs"), 0)],
         }),

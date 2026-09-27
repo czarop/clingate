@@ -671,7 +671,7 @@ impl Handles {
         self.remember();
     }
 
-    fn compensation_action(self, action: CompensationAction) {
+    fn compensation_action(mut self, action: CompensationAction) {
         match action {
             CompensationAction::Source(group, source) => self.set_compensation(group, source),
             CompensationAction::LoadCsv(group, path) => {
@@ -687,6 +687,149 @@ impl Handles {
             }
             CompensationAction::Rename(group, name) => self.rename_compensation_group(group, name),
             CompensationAction::Remove(group) => self.remove_compensation_group(group),
+            CompensationAction::AppliedNothing(group) => {
+                self.set_applied(group, crate::compensation::groups::Applied::Nothing)
+            }
+            CompensationAction::AppliedCsv(group, path) => {
+                spawn(self.load_applied(group, path));
+            }
+            CompensationAction::AppliedForget(group) => {
+                // Only with nothing wanted: otherwise the matrix wanted would
+                // be relative to an answer no longer given.
+                self.set_compensation(group, Source::None);
+                self.set_applied(group, crate::compensation::groups::Applied::Unknown);
+            }
+            CompensationAction::SetValue(group, from, into, percent) => {
+                let channels = self.first_files_channels(group);
+                let set = self
+                    .compensation
+                    .write()
+                    .set_value(group, &from, &into, percent, &channels);
+                match set {
+                    Ok(()) => self.remember(),
+                    Err(why) => warn(&self.toasts, format!("Not changed: {why}")),
+                }
+            }
+            CompensationAction::StartMatrix(group) => {
+                let channels = self.first_files_channels(group);
+                match Spillover::identity(&channels) {
+                    Ok(matrix) => self.set_compensation(
+                        group,
+                        Source::Edited {
+                            matrix: std::sync::Arc::new(matrix),
+                            from: None,
+                        },
+                    ),
+                    Err(e) => warn(
+                        &self.toasts,
+                        format!("No matrix could be made for these files: {e}"),
+                    ),
+                }
+            }
+            CompensationAction::ResetToApplied(group) => {
+                let applied = self
+                    .compensation
+                    .peek()
+                    .group(group)
+                    .map(|g| g.applied.clone());
+                if let Some(crate::compensation::groups::Applied::Matrix { path, matrix }) = applied
+                {
+                    let source = match path {
+                        Some(path) => Source::Loaded { path, matrix },
+                        None => Source::Edited { matrix, from: None },
+                    };
+                    self.set_compensation(group, source);
+                }
+            }
+            CompensationAction::Save(group, path, export_for) => {
+                self.save_matrix(group, &path, export_for)
+            }
+            CompensationAction::Copy(group) => {
+                let Some(wanted) = self.compensation.peek().wanted(group) else {
+                    warn(&self.toasts, "This group has no matrix to copy");
+                    return;
+                };
+                match crate::clipboard::copy_text(&wanted.to_omiq_paste()) {
+                    Ok(()) => say(
+                        &self.toasts,
+                        "Copied - paste it into Omiq's compensation matrix",
+                    ),
+                    Err(why) => warn(&self.toasts, why),
+                }
+            }
+        }
+    }
+
+    /// The fluorescence channels of the group's first file: what a matrix
+    /// made here from nothing is over.
+    fn first_files_channels(self, group: GroupId) -> Vec<std::sync::Arc<str>> {
+        let comp = self.compensation.peek();
+        let files = self.files.peek();
+        comp.files_in(group)
+            .find_map(|path| {
+                files
+                    .as_ref()?
+                    .file_list()
+                    .iter()
+                    .find(|s| s.get_filepath() == path)
+                    .map(crate::compensation::fluorescence_channels)
+            })
+            .unwrap_or_default()
+    }
+
+    fn set_applied(mut self, group: GroupId, applied: crate::compensation::groups::Applied) {
+        let set = self.compensation.write().set_applied(group, applied);
+        match set {
+            Ok(()) => self.remember(),
+            Err(why) => warn(&self.toasts, why),
+        }
+    }
+
+    /// Say the group's Omiq exports were compensated in Omiq with the matrix
+    /// in this CSV. One that cannot be read changes nothing.
+    async fn load_applied(self, group: GroupId, path: PathBuf) {
+        let reading = path.clone();
+        let read =
+            flatten(tokio::task::spawn_blocking(move || Spillover::read_omiq_csv(&reading)).await);
+        match read {
+            Ok(matrix) => self.set_applied(
+                group,
+                crate::compensation::groups::Applied::Matrix {
+                    path: Some(path),
+                    matrix: std::sync::Arc::new(matrix),
+                },
+            ),
+            Err(why) => warn(
+                &self.toasts,
+                format!("The matrix {} was not loaded: {why}", file_name(&path)),
+            ),
+        }
+    }
+
+    /// Write a group's matrix as Omiq lays it out.
+    fn save_matrix(self, group: GroupId, path: &Path, export_for: ExportFor) {
+        let comp = self.compensation.peek();
+        let Some(wanted) = comp.wanted(group) else {
+            warn(&self.toasts, "This group has no matrix to save");
+            return;
+        };
+        let text = match export_for {
+            ExportFor::Omiq => Ok(wanted.to_omiq_csv()),
+            ExportFor::TheseFiles => match comp.applied(group) {
+                Some(applied) => crate::compensation::residual(&wanted, &applied)
+                    .map(|(channels, values)| {
+                        crate::compensation::write_grid(&channels, &values, ',')
+                    })
+                    .map_err(|e| e.to_string()),
+                // Nothing applied: the files are as recorded, and what they
+                // need is the matrix itself.
+                None => Ok(wanted.to_omiq_csv()),
+            },
+        };
+        drop(comp);
+        match text.and_then(|t| std::fs::write(path, t).map_err(|e| e.to_string())) {
+            Ok(()) => say(&self.toasts, format!("Written to {}", path.display())),
+            Err(why) => warn(&self.toasts, format!("Could not write the matrix: {why}")),
         }
     }
 
@@ -827,6 +970,32 @@ enum CompensationAction {
     NewGroup,
     Rename(GroupId, String),
     Remove(GroupId),
+    /// The group's Omiq exports were exported without compensation.
+    AppliedNothing(GroupId),
+    /// The group's Omiq exports were compensated in Omiq with this CSV.
+    AppliedCsv(GroupId, PathBuf),
+    /// Ask again what Omiq applied.
+    AppliedForget(GroupId),
+    /// One entry of the wanted matrix, in percent: from, into, value.
+    SetValue(GroupId, String, String, f64),
+    /// A matrix over the files' fluorescence channels, compensating nothing.
+    StartMatrix(GroupId),
+    /// Want what Omiq applied again, dropping edits.
+    ResetToApplied(GroupId),
+    /// Write the matrix to `path`: for Omiq, or for the files as exported.
+    Save(GroupId, PathBuf, ExportFor),
+    /// Put the matrix for Omiq on the clipboard.
+    Copy(GroupId),
+}
+
+/// Who an exported matrix is for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExportFor {
+    /// Omiq, which holds the files as recorded: the matrix wanted.
+    Omiq,
+    /// Software compensating the files as Omiq exported them: what takes
+    /// them from what Omiq applied to what is wanted.
+    TheseFiles,
 }
 
 /// An action that discards the loaded gates, held until it is confirmed.
@@ -1252,6 +1421,7 @@ fn FcsSection(
 fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) -> Element {
     let files = use_context::<Signal<Option<FcsFiles>>>();
     let compensation = use_context::<Signal<Compensation>>();
+    let loaded = use_context::<Signal<Loaded>>();
     let comp = compensation.read();
     // Each file's name in the program and its channels, by path.
     let held = files.read();
@@ -1264,11 +1434,7 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
                 .collect()
         })
         .unwrap_or_default();
-    let groups: Vec<(
-        crate::compensation::groups::Group,
-        Vec<(PathBuf, String)>,
-        Vec<String>,
-    )> = comp
+    let groups: Vec<GroupView> = comp
         .groups()
         .iter()
         .map(|g| {
@@ -1288,7 +1454,15 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
                     .map(|s| crate::compensation::facts_of(s))
                     .unwrap_or_default()
             });
-            (g.clone(), members, notes)
+            GroupView {
+                group: g.clone(),
+                members,
+                notes,
+                holds_omiq: comp.holds_omiq_exports(g.id),
+                unanswered: comp.unanswered(g.id),
+                wanted: comp.wanted(g.id),
+                applied: comp.applied(g.id),
+            }
         })
         .collect();
     let choices: Vec<(GroupId, String)> = comp
@@ -1298,6 +1472,7 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
         .collect();
     drop(comp);
     drop(held);
+    let folder = loaded.read().folder.clone();
 
     if groups.is_empty() {
         return rsx! {};
@@ -1312,15 +1487,14 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
                 }
             }
             p { class: "workspace-hint",
-                "As in Omiq, the files are grouped by the spillover matrix they carry. Each group is compensated with its files' own matrices, a matrix loaded from a CSV exported from Omiq (channel names across the top, values in percent), or not at all. Move a file to another group to compensate it differently. A file exported from Omiq is already compensated as it was in Omiq, and carries no matrix: leave it uncompensated here unless it was exported without compensation. The editor, the gallery and a rules run all read files compensated this way; gates stay where they are, so a new matrix moves the events under them."
+                "As in Omiq, the files are grouped by the spillover matrix they carry, and each group is compensated with its files' own matrices, a matrix loaded from a CSV copied out of Omiq (channel names across the top, values in percent), one edited here, or not at all. Move a file to another group to compensate it differently. Omiq applies its compensation to the events when it exports a file and records nothing of it, so for files exported from Omiq you are asked what was applied: an edit here then applies only the change, and the matrix exported for Omiq is the whole of it. The editor, the gallery and a rules run all read files compensated this way; gates stay where they are, so a new matrix moves the events under them."
             }
-            for (group, members, notes) in groups {
+            for view in groups {
                 CompensationGroup {
-                    key: "{group.id}",
-                    group: group.clone(),
-                    members,
-                    notes,
+                    key: "{view.group.id}",
+                    view,
                     choices: choices.clone(),
+                    folder: folder.clone(),
                     busy,
                     on_action,
                 }
@@ -1336,16 +1510,40 @@ fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) 
     }
 }
 
-#[component]
-fn CompensationGroup(
+/// What the tab shows of one compensation group.
+#[derive(Clone, PartialEq)]
+struct GroupView {
     group: crate::compensation::groups::Group,
     members: Vec<(PathBuf, String)>,
     notes: Vec<String>,
+    /// Whether any of its files were exported from Omiq.
+    holds_omiq: bool,
+    /// Whether it holds Omiq exports and has not said what Omiq applied.
+    unanswered: bool,
+    /// The one matrix it wants, if it has one.
+    wanted: Option<std::sync::Arc<Spillover>>,
+    /// What Omiq applied to its exports, if a matrix.
+    applied: Option<std::sync::Arc<Spillover>>,
+}
+
+#[component]
+fn CompensationGroup(
+    view: GroupView,
     choices: Vec<(GroupId, String)>,
+    folder: Option<PathBuf>,
     busy: bool,
     on_action: EventHandler<CompensationAction>,
 ) -> Element {
     let toasts = use_toast();
+    let GroupView {
+        group,
+        members,
+        notes,
+        holds_omiq,
+        unanswered,
+        wanted,
+        applied,
+    } = view;
     let id = group.id;
     let mut typed = use_signal(|| None::<String>);
     let loaded_path = match &group.source {
@@ -1356,9 +1554,18 @@ fn CompensationGroup(
     let selected = match &group.source {
         Source::None => "none",
         Source::FilesOwn => "own",
-        Source::Loaded { .. } | Source::Unreadable { .. } => "csv",
+        Source::Loaded { .. } | Source::Unreadable { .. } | Source::Edited { .. } => "matrix",
     };
     let count = members.len();
+    // Where an export goes unless another place is typed.
+    let mut export_typed = use_signal(|| None::<String>);
+    let export_shown = export_typed().unwrap_or_else(|| {
+        let file = format!("{} compensation.csv", group.name.replace(['/', '\\'], "-"));
+        folder
+            .as_ref()
+            .map(|f| f.join(&file).display().to_string())
+            .unwrap_or(file)
+    });
 
     rsx! {
         div { class: "workspace-comp-group",
@@ -1373,8 +1580,8 @@ fn CompensationGroup(
                     if count == 1 { "1 file" } else { "{count} files" }
                 }
                 // Each option says whether it is the one chosen, rather than
-                // the select being given a value: the CSV option only exists
-                // once a matrix is loaded, and a value set before its option
+                // the select being given a value: the matrix option only
+                // exists once there is one, and a value set before its option
                 // exists is not applied, which left the list showing the
                 // group's old source.
                 select {
@@ -1384,10 +1591,15 @@ fn CompensationGroup(
                         "own" => on_action.call(CompensationAction::Source(id, Source::FilesOwn)),
                         _ => {}
                     },
-                    option { value: "own", selected: selected == "own", "each file's own matrix" }
+                    option {
+                        value: "own",
+                        selected: selected == "own",
+                        disabled: unanswered,
+                        "each file's own matrix"
+                    }
                     option { value: "none", selected: selected == "none", "no compensation" }
-                    if selected == "csv" {
-                        option { value: "csv", selected: true, "matrix from {group.source.describe()}" }
+                    if selected == "matrix" {
+                        option { value: "matrix", selected: true, "matrix from {group.source.describe()}" }
                     }
                 }
                 if count == 0 {
@@ -1398,15 +1610,25 @@ fn CompensationGroup(
                     }
                 }
             }
+
+            if holds_omiq {
+                AppliedQuestion {
+                    group: id,
+                    applied: group.applied.clone(),
+                    busy,
+                    on_action,
+                }
+            }
+
             div { class: "workspace-path",
                 input {
                     value: "{shown}",
-                    disabled: busy,
-                    placeholder: "a compensation matrix CSV exported from Omiq",
+                    disabled: busy || unanswered,
+                    placeholder: "a compensation matrix CSV copied out of Omiq",
                     oninput: move |e| typed.set(Some(e.value())),
                 }
                 button {
-                    disabled: busy,
+                    disabled: busy || unanswered,
                     onclick: {
                         let start = PathBuf::from(shown.trim());
                         move |_| {
@@ -1430,7 +1652,7 @@ fn CompensationGroup(
                 }
                 button {
                     class: "workspace-primary",
-                    disabled: busy || shown.trim().is_empty(),
+                    disabled: busy || unanswered || shown.trim().is_empty(),
                     onclick: {
                         let path = PathBuf::from(shown.trim());
                         move |_| {
@@ -1444,6 +1666,112 @@ fn CompensationGroup(
             for note in notes {
                 p { class: "workspace-problem", "{note}" }
             }
+
+            details { class: "workspace-comp-matrix",
+                summary { class: "workspace-dim",
+                    match &wanted {
+                        Some(m) => format!("Matrix - {} channels", m.channels().len()),
+                        None => "Matrix".to_string(),
+                    }
+                }
+                if unanswered {
+                    p { class: "workspace-hint", "Say what Omiq applied to these files first: an edit is made against it." }
+                } else {
+                    div { class: "workspace-buttons",
+                        if wanted.is_none() {
+                            button {
+                                disabled: busy || count == 0,
+                                onclick: move |_| on_action.call(CompensationAction::StartMatrix(id)),
+                                "Start a matrix"
+                            }
+                        }
+                        if let Some(a) = &applied {
+                            if wanted.as_ref().is_none_or(|w| !w.same_as(a)) {
+                                button {
+                                    disabled: busy,
+                                    onclick: move |_| on_action.call(CompensationAction::ResetToApplied(id)),
+                                    "Back to what Omiq applied"
+                                }
+                            }
+                        }
+                    }
+                    if let Some(matrix) = wanted.clone() {
+                        MatrixGrid {
+                            matrix,
+                            reference: applied.clone(),
+                            editable: !busy,
+                            on_set: move |(from, into, percent): (String, String, f64)| {
+                                on_action.call(CompensationAction::SetValue(id, from, into, percent))
+                            },
+                        }
+                        p { class: "workspace-hint",
+                            "Each row is the fluorochrome that spills, each column the detector it spills into, in percent - as Omiq shows it. "
+                            if applied.is_some() {
+                                "Entries that differ from what Omiq applied are marked; only the difference is applied to these files."
+                            }
+                        }
+                        div { class: "workspace-path",
+                            input {
+                                value: "{export_shown}",
+                                disabled: busy,
+                                oninput: move |e| export_typed.set(Some(e.value())),
+                            }
+                            button {
+                                disabled: busy,
+                                onclick: {
+                                    let start = PathBuf::from(export_shown.trim());
+                                    move |_| {
+                                        let start = start.clone();
+                                        spawn(async move {
+                                            let filter = ["csv".to_string()];
+                                            match choose(Pick::SaveFile, &start, "CSV", &filter, false).await {
+                                                Chosen::Picked(picked) => {
+                                                    if let Some(path) = picked.into_iter().next() {
+                                                        export_typed.set(Some(path.display().to_string()));
+                                                    }
+                                                }
+                                                Chosen::Cancelled => {}
+                                                Chosen::Unavailable => warn(&toasts, UNAVAILABLE),
+                                            }
+                                        });
+                                    }
+                                },
+                                "Choose..."
+                            }
+                        }
+                        div { class: "workspace-buttons",
+                            button {
+                                class: "workspace-primary",
+                                disabled: busy || export_shown.trim().is_empty(),
+                                title: "The whole matrix, for the files as Omiq holds them: paste it into Omiq's compensation.",
+                                onclick: {
+                                    let path = PathBuf::from(export_shown.trim());
+                                    move |_| on_action.call(CompensationAction::Save(id, path.clone(), ExportFor::Omiq))
+                                },
+                                "Save for Omiq"
+                            }
+                            button {
+                                disabled: busy,
+                                title: "The same, on the clipboard, to paste straight into Omiq.",
+                                onclick: move |_| on_action.call(CompensationAction::Copy(id)),
+                                "Copy for Omiq"
+                            }
+                            if applied.is_some() {
+                                button {
+                                    disabled: busy || export_shown.trim().is_empty(),
+                                    title: "What takes these files, as Omiq exported them, to this matrix: for software that will compensate the exported files themselves. Not needed here or in Omiq.",
+                                    onclick: {
+                                        let path = PathBuf::from(export_shown.trim());
+                                        move |_| on_action.call(CompensationAction::Save(id, path.clone(), ExportFor::TheseFiles))
+                                    },
+                                    "Save for these exported files"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if count > 0 {
                 details {
                     summary { class: "workspace-dim", "Files in this group" }
@@ -1478,6 +1806,257 @@ fn CompensationGroup(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The question a group of Omiq exports has to answer: what Omiq applied to
+/// them when they were exported, which the files do not record.
+#[component]
+fn AppliedQuestion(
+    group: GroupId,
+    applied: crate::compensation::groups::Applied,
+    busy: bool,
+    on_action: EventHandler<CompensationAction>,
+) -> Element {
+    use crate::compensation::groups::Applied;
+    let toasts = use_toast();
+    let mut typed = use_signal(String::new);
+    let answered = match &applied {
+        Applied::Unknown => None,
+        Applied::Nothing => Some("Exported from Omiq without compensation.".to_string()),
+        Applied::Matrix {
+            path: Some(path), ..
+        } => Some(format!("Compensated in Omiq with {}.", file_name(path))),
+        Applied::Matrix { path: None, .. } => {
+            Some("Compensated in Omiq with a matrix given earlier.".to_string())
+        }
+        Applied::Unreadable { path, why } => Some(format!(
+            "Compensated in Omiq with {}, which can no longer be read ({why}).",
+            file_name(path)
+        )),
+    };
+
+    let class = if answered.is_none() {
+        "workspace-confirm"
+    } else {
+        "workspace-comp-answer"
+    };
+    rsx! {
+        div { class,
+            if let Some(answer) = answered {
+                span { "{answer}" }
+                button {
+                    disabled: busy,
+                    onclick: move |_| on_action.call(CompensationAction::AppliedForget(group)),
+                    "change"
+                }
+            } else {
+                p {
+                    "Some of these files were exported from Omiq, which applies its compensation to the events and records nothing of it in the file. Were they compensated in Omiq when they were exported?"
+                }
+                div { class: "workspace-buttons",
+                    button {
+                        disabled: busy,
+                        onclick: move |_| on_action.call(CompensationAction::AppliedNothing(group)),
+                        "No - exported without compensation"
+                    }
+                }
+                div { class: "workspace-path",
+                    input {
+                        value: "{typed}",
+                        disabled: busy,
+                        placeholder: "yes - the matrix they were exported with, copied out of Omiq as CSV",
+                        oninput: move |e| typed.set(e.value()),
+                    }
+                    button {
+                        disabled: busy,
+                        onclick: move |_| {
+                            let start = PathBuf::from(typed.peek().trim());
+                            spawn(async move {
+                                let filter = ["csv".to_string()];
+                                match choose(Pick::OpenFile, &start, "CSV", &filter, false).await {
+                                    Chosen::Picked(picked) => {
+                                        if let Some(path) = picked.into_iter().next() {
+                                            on_action.call(CompensationAction::AppliedCsv(group, path));
+                                        }
+                                    }
+                                    Chosen::Cancelled => {}
+                                    Chosen::Unavailable => warn(&toasts, UNAVAILABLE),
+                                }
+                            });
+                        },
+                        "Choose..."
+                    }
+                    button {
+                        class: "workspace-primary",
+                        disabled: busy || typed().trim().is_empty(),
+                        onclick: move |_| {
+                            let path = PathBuf::from(typed.peek().trim());
+                            on_action.call(CompensationAction::AppliedCsv(group, path));
+                        },
+                        "Yes - with this matrix"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A matrix laid out as Omiq shows it - each row the fluorochrome that
+/// spills, each column the detector it spills into, in percent - with every
+/// entry off the diagonal editable. Entries that differ from `reference` are
+/// marked.
+#[component]
+fn MatrixGrid(
+    matrix: std::sync::Arc<Spillover>,
+    reference: Option<std::sync::Arc<Spillover>>,
+    editable: bool,
+    on_set: EventHandler<(String, String, f64)>,
+) -> Element {
+    // Only the channels that take part, unless asked for all: a panel-wide
+    // matrix is mostly identity, and forty columns of zeros hide the few
+    // entries that matter.
+    let mut all = use_signal(|| false);
+    let n = matrix.channels().len();
+    let mixing: Vec<usize> = match matrix.involved() {
+        Some(m) => (0..n)
+            .filter(|&i| m.channels().contains(&matrix.channels()[i]))
+            .collect(),
+        None => Vec::new(),
+    };
+    let shown: Vec<usize> = if all() || mixing.is_empty() {
+        (0..n).collect()
+    } else {
+        mixing.clone()
+    };
+    let differs = |i: usize, j: usize| -> bool {
+        let Some(r) = &reference else {
+            return false;
+        };
+        let (a, b) = (&matrix.channels()[i], &matrix.channels()[j]);
+        let at = |c: &std::sync::Arc<str>| r.channels().iter().position(|x| x == c);
+        let was = match (at(a), at(b)) {
+            (Some(x), Some(y)) => r.value(x, y),
+            _ if i == j => 1.0,
+            _ => 0.0,
+        };
+        (was - matrix.value(i, j)).abs() > 1e-9
+    };
+    let percent = |v: f64| {
+        let p = (v * 100.0 * 1e6).round() / 1e6;
+        let text = format!("{p:.6}");
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    };
+    // What to add to the grid to reach a channel not shown yet.
+    let mut add_from = use_signal(String::new);
+    let mut add_into = use_signal(String::new);
+    let mut add_value = use_signal(String::new);
+    let channels: Vec<String> = matrix.channels().iter().map(|c| c.to_string()).collect();
+
+    rsx! {
+        div { class: "workspace-buttons",
+            label {
+                input {
+                    r#type: "checkbox",
+                    checked: all(),
+                    onchange: move |e| all.set(e.checked()),
+                }
+                if mixing.is_empty() {
+                    " every channel (none spills into another)"
+                } else {
+                    " every channel, not only the {mixing.len()} that spill"
+                }
+            }
+        }
+        div { class: "workspace-comp-grid",
+            table {
+                thead {
+                    tr {
+                        th {}
+                        for &j in shown.iter() {
+                            th { class: "workspace-comp-col", title: "{matrix.channels()[j]}",
+                                span { "{matrix.channels()[j]}" }
+                            }
+                        }
+                    }
+                }
+                tbody {
+                    for &i in shown.iter() {
+                        tr { key: "{matrix.channels()[i]}",
+                            th { class: "workspace-comp-row", "{matrix.channels()[i]}" }
+                            for &j in shown.iter() {
+                                td {
+                                    class: if differs(i, j) { "workspace-comp-changed" } else { "" },
+                                    if i == j {
+                                        span { class: "workspace-dim", "100" }
+                                    } else {
+                                        input {
+                                            r#type: "number",
+                                            step: "0.1",
+                                            disabled: !editable,
+                                            title: "{matrix.channels()[i]} into {matrix.channels()[j]}",
+                                            value: "{percent(matrix.value(i, j))}",
+                                            onchange: {
+                                                let from = matrix.channels()[i].to_string();
+                                                let into = matrix.channels()[j].to_string();
+                                                move |e: FormEvent| {
+                                                    if let Ok(v) = e.value().trim().parse::<f64>() {
+                                                        on_set.call((from.clone(), into.clone(), v));
+                                                    }
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !all() {
+            // Setting a value between two channels that do not spill yet
+            // brings them into the grid.
+            div { class: "workspace-path",
+                span { class: "workspace-dim", "Set" }
+                select {
+                    disabled: !editable,
+                    onchange: move |e| add_from.set(e.value()),
+                    option { value: "", selected: add_from().is_empty(), "from..." }
+                    for c in channels.iter() {
+                        option { value: "{c}", selected: add_from() == *c, "{c}" }
+                    }
+                }
+                span { class: "workspace-dim", "into" }
+                select {
+                    disabled: !editable,
+                    onchange: move |e| add_into.set(e.value()),
+                    option { value: "", selected: add_into().is_empty(), "into..." }
+                    for c in channels.iter() {
+                        option { value: "{c}", selected: add_into() == *c, "{c}" }
+                    }
+                }
+                input {
+                    r#type: "number",
+                    step: "0.1",
+                    class: "workspace-comp-value",
+                    placeholder: "%",
+                    value: "{add_value}",
+                    oninput: move |e| add_value.set(e.value()),
+                }
+                button {
+                    disabled: !editable || add_from().is_empty() || add_into().is_empty() || add_value().trim().parse::<f64>().is_err(),
+                    onclick: move |_| {
+                        let value = add_value.peek().trim().parse::<f64>();
+                        if let Ok(v) = value {
+                            on_set.call((add_from.peek().clone(), add_into.peek().clone(), v));
+                            add_value.set(String::new());
+                        }
+                    },
+                    "Set"
                 }
             }
         }

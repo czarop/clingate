@@ -92,3 +92,37 @@
 .workspace-comp-group .workspace-comp-name { flex: 0 1 18rem; min-width: 10rem; }
 .workspace-comp-group details { margin-top: 0.35rem; }
 .workspace-comp-group summary { cursor: pointer; font-size: 0.85rem; }
+
+/* The question about what Omiq applied, once answered. */
+.workspace-comp-answer {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin: 0.35rem 0;
+    font-size: 0.85rem;
+}
+
+/* A compensation matrix as Omiq shows it. Scrolls inside its own box: a
+   panel-wide matrix is forty columns. */
+.workspace-comp-matrix { margin-top: 0.35rem; }
+.workspace-comp-grid {
+    overflow: auto;
+    max-height: 32rem;
+    margin: 0.35rem 0;
+    border: 1px solid #3a3a3a;
+}
+.workspace-comp-grid table { border-collapse: collapse; font-size: 0.75rem; }
+.workspace-comp-grid th,
+.workspace-comp-grid td { padding: 0.1rem 0.15rem; border: 1px solid #ddd; text-align: right; }
+.workspace-comp-grid thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
+.workspace-comp-grid .workspace-comp-row {
+    position: sticky; left: 0; background: #fff; text-align: left; white-space: nowrap;
+}
+.workspace-comp-grid .workspace-comp-col span {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+}
+.workspace-comp-grid input { width: 4.2rem; font-size: 0.75rem; text-align: right; }
+.workspace-comp-changed { background: #fde68a; }
+.workspace-comp-value { width: 5rem; }

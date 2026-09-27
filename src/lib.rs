@@ -1,5 +1,6 @@
 use indexmap::IndexMap;
 use rustc_hash::FxBuildHasher;
+pub mod clipboard;
 pub mod compensation;
 pub mod components;
 pub mod file_load;

@@ -41,6 +41,7 @@ rand_distr = "0.6"
 # the backend whether or not it suits - and it is a separate D-Bus service that
 # a machine may not be running. `PickPath` handles that: see the note there
 # about a dialog that closes faster than a person could have closed it.
+arboard = { version = "3", default-features = false }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 [dev-dependencies]

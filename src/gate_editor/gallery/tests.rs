@@ -469,7 +469,7 @@ fn a_real_gallery_page_renders_and_writes() {
     // about gating, and a scatter plot needs no gating file to exist.
     let job = PlotJob {
         path: file.clone(),
-        compensation: Ok(None),
+        compensation: Ok(crate::compensation::groups::Correction::none()),
         cofactors: Vec::new(),
         chain: Vec::new(),
         resolver: GateOverrideResolver {
@@ -673,7 +673,7 @@ fn a_real_gate_that_admits_nothing_still_draws() {
 
     let job = PlotJob {
         path: file,
-        compensation: Ok(None),
+        compensation: Ok(crate::compensation::groups::Correction::none()),
         cofactors: Vec::new(),
         chain,
         resolver,
@@ -779,7 +779,7 @@ fn a_real_file_renders_with_cofactors_it_does_not_have() {
 
     let job = PlotJob {
         path: file,
-        compensation: Ok(None),
+        compensation: Ok(crate::compensation::groups::Correction::none()),
         cofactors: vec![
             // Not in any panel this program will meet.
             (Arc::from("No Such Channel-A"), 150.0),
@@ -1161,7 +1161,7 @@ mod the_export {
             plot: Ok(ToDraw {
                 job: PlotJob {
                     path,
-                    compensation: Ok(None),
+                    compensation: Ok(crate::compensation::groups::Correction::none()),
                     cofactors: Vec::new(),
                     chain: Vec::new(),
                     resolver: GateOverrideResolver {
@@ -1407,7 +1407,7 @@ mod overlay_alignment {
 
         let job = PlotJob {
             path,
-            compensation: Ok(None),
+            compensation: Ok(crate::compensation::groups::Correction::none()),
             cofactors: Vec::new(),
             chain: Vec::new(),
             resolver: GateOverrideResolver {

@@ -1,7 +1,9 @@
 //! Tests for compensation: reading matrices, matching them to files,
 //! compensating, and grouping files by matrix.
 
-use super::groups::{Compensation, FileFacts, Saved, SavedSource, Source};
+use super::groups::{
+    Applied, Compensation, Correction, FileFacts, FileMatrix, Saved, SavedSource, Source,
+};
 use super::{Spillover, compensate, compensate_fcs};
 use crate::file_load::FcsSampleStub;
 use crate::file_load_tests::{scratch, write_fcs_rows, write_fcs_with};
@@ -370,10 +372,22 @@ fn files_are_grouped_by_the_matrix_they_carry() {
     assert_ne!(c.group_of(&p("a")), c.group_of(&p("c")));
     assert_eq!(c.group_of(&p("d")), c.group_of(&p("e")));
 
-    assert!(c.matrix_for(&p("b")).unwrap().unwrap().same_as(&three()));
-    assert!(c.matrix_for(&p("c")).unwrap().unwrap().same_as(&other()));
-    assert_eq!(c.matrix_for(&p("d")).unwrap(), None);
-    assert_eq!(c.matrix_for(&p("unknown")).unwrap(), None);
+    assert!(
+        c.matrix_for(&p("b"))
+            .unwrap()
+            .apply
+            .unwrap()
+            .same_as(&three())
+    );
+    assert!(
+        c.matrix_for(&p("c"))
+            .unwrap()
+            .apply
+            .unwrap()
+            .same_as(&other())
+    );
+    assert_eq!(c.matrix_for(&p("d")).unwrap(), Correction::none());
+    assert_eq!(c.matrix_for(&p("unknown")).unwrap(), Correction::none());
 }
 
 /// A group given a CSV compensates every file in it with that matrix; a
@@ -393,13 +407,22 @@ fn a_groups_source_decides_and_a_moved_file_follows_its_new_group() {
         },
     )
     .unwrap();
-    assert_eq!(c.matrix_for(&p("a")).unwrap(), Some(csv.clone()));
-    assert_eq!(c.matrix_for(&p("b")).unwrap(), Some(csv));
+    assert_eq!(
+        c.matrix_for(&p("a")).unwrap(),
+        Correction::apply(csv.clone())
+    );
+    assert_eq!(c.matrix_for(&p("b")).unwrap(), Correction::apply(csv));
 
     let own = c.new_group("Kept as acquired");
     c.set_source(own, Source::FilesOwn).unwrap();
     c.move_file(&p("b"), own).unwrap();
-    assert!(c.matrix_for(&p("b")).unwrap().unwrap().same_as(&three()));
+    assert!(
+        c.matrix_for(&p("b"))
+            .unwrap()
+            .apply
+            .unwrap()
+            .same_as(&three())
+    );
     assert_eq!(c.files_in(own).collect::<Vec<_>>(), [p("b").as_path()]);
     assert!(c.move_file(&p("b"), 999).is_err());
 }
@@ -443,7 +466,7 @@ fn a_file_that_cannot_be_compensated_as_its_group_says_is_an_error() {
             .contains("could not be read: gone")
     );
     c.set_source(with, Source::None).unwrap();
-    assert_eq!(c.matrix_for(&p("with")).unwrap(), None);
+    assert_eq!(c.matrix_for(&p("with")).unwrap(), Correction::none());
 }
 
 /// A group formed around files' matrices goes when its last file does; one
@@ -506,21 +529,27 @@ fn groups_are_remembered() {
 
     let files = || {
         vec![
-            (p("a"), Ok(Some(three()))),
-            (p("b"), Ok(Some(three()))),
-            (p("c"), Ok(None)),
-            (p("new"), Ok(Some(three()))),
+            FileMatrix::new(p("a"), Ok(Some(three()))),
+            FileMatrix::new(p("b"), Ok(Some(three()))),
+            FileMatrix::new(p("c"), Ok(None)),
+            FileMatrix::new(p("new"), Ok(Some(three()))),
         ]
     };
     let back = Compensation::restore(&saved, files(), |_| Ok(other()));
     assert_eq!(back.groups().len(), 3);
     assert_eq!(
-        back.matrix_for(&p("b")).unwrap().unwrap().as_ref(),
+        back.matrix_for(&p("b")).unwrap().apply.unwrap().as_ref(),
         &other()
     );
-    assert!(back.matrix_for(&p("a")).unwrap().unwrap().same_as(&three()));
+    assert!(
+        back.matrix_for(&p("a"))
+            .unwrap()
+            .apply
+            .unwrap()
+            .same_as(&three())
+    );
     assert_eq!(back.group_of(&p("new")), back.group_of(&p("a")));
-    assert_eq!(back.matrix_for(&p("c")).unwrap(), None);
+    assert_eq!(back.matrix_for(&p("c")).unwrap(), Correction::none());
 
     let unreadable = Compensation::restore(&saved, files(), |_| Err("no such file".into()));
     assert!(
@@ -554,14 +583,14 @@ fn the_digest_follows_what_a_file_is_compensated_with() {
 fn groups_follow_the_workspaces_files() {
     let mut c = Compensation::default();
     c.sync(vec![
-        (p("a"), Ok(Some(three()))),
-        (p("b"), Ok(Some(three()))),
+        FileMatrix::new(p("a"), Ok(Some(three()))),
+        FileMatrix::new(p("b"), Ok(Some(three()))),
     ]);
     let own = c.new_group("By hand");
     c.move_file(&p("b"), own).unwrap();
     c.sync(vec![
-        (p("b"), Ok(Some(three()))),
-        (p("c"), Ok(Some(three()))),
+        FileMatrix::new(p("b"), Ok(Some(three()))),
+        FileMatrix::new(p("c"), Ok(Some(three()))),
     ]);
     assert_eq!(c.group_of(&p("a")), None);
     assert_eq!(c.group_of(&p("b")), Some(own));
@@ -580,7 +609,6 @@ fn a_group_is_told_what_is_wrong_with_it() {
             ("PE-A".to_string(), None),
             ("APC-A".to_string(), None),
         ],
-        written_by_omiq: false,
     };
     let mut c = Compensation::default();
     c.add_file(p("a"), Ok(Some(three())));
@@ -666,7 +694,8 @@ fn a_files_channels_come_with_their_labels() {
     );
     let owns = super::own_matrices(&[stub]);
     assert_eq!(owns.len(), 1);
-    assert_eq!(owns[0].1, Ok(None));
+    assert_eq!(owns[0].own, Ok(None));
+    assert!(!owns[0].written_by_omiq);
 }
 
 // ─── A real Omiq export ──────────────────────────────────────────────────────
@@ -761,7 +790,6 @@ fn a_channel_the_matrix_does_not_mix_need_not_be_in_the_file() {
             .iter()
             .map(|n| (n.to_string(), None))
             .collect(),
-        written_by_omiq: false,
     });
     assert!(notes.is_empty(), "{notes:?}");
 }
@@ -812,7 +840,7 @@ fn compensating_an_omiq_export_with_its_matrix_matches_omiqs_own_compensation() 
     assert_eq!(matrix.involved().unwrap().channels().len(), 2);
 
     let raw = fixture("omiq_export_uncompensated.fcs");
-    let ours = super::open_compensated(&raw, &Ok(Some(Arc::new(matrix)))).unwrap();
+    let ours = super::open_compensated(&raw, &Ok(Correction::apply(Arc::new(matrix)))).unwrap();
     let omiqs =
         flow_fcs::Fcs::open(fixture("omiq_export_compensated.fcs").to_str().unwrap()).unwrap();
     let untouched = flow_fcs::Fcs::open(raw.to_str().unwrap()).unwrap();
@@ -859,44 +887,373 @@ fn an_omiq_export_carries_no_matrix_of_its_own() {
         );
         let mut c = Compensation::default();
         c.sync(super::own_matrices(&[stub]));
-        assert_eq!(c.matrix_for(&fixture(name)).unwrap(), None, "{name}");
+        assert_eq!(
+            c.matrix_for(&fixture(name)).unwrap(),
+            Correction::none(),
+            "{name}"
+        );
     }
 }
 
-/// An Omiq export is already compensated as it was in Omiq, and says nothing
-/// of it. A matrix loaded over Omiq exports is pointed out as likely to
-/// compensate them twice; over files from anywhere else it is not.
+/// Omiq-written files are known by their signature, others are not.
 #[test]
-fn a_matrix_over_omiq_exports_is_pointed_out() {
+fn omiq_exports_are_known_by_their_signature() {
     let stub =
         FcsSampleStub::open(&fixture("omiq_export_compensated.fcs").to_string_lossy()).unwrap();
     assert!(super::written_by_omiq(&stub.metadata));
+    let found = super::own_matrices(std::slice::from_ref(&stub));
+    assert!(found[0].written_by_omiq && found[0].own == Ok(None));
     let dir = scratch("not-omiq");
     let elsewhere =
         FcsSampleStub::open(&file_with(&dir, "cytometer.fcs", &[]).to_string_lossy()).unwrap();
     assert!(!super::written_by_omiq(&elsewhere.metadata));
+}
 
-    let matrix =
-        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
-    for (stub, expected) in [(&stub, true), (&elsewhere, false)] {
-        let path = stub.get_filepath().to_path_buf();
-        let mut c = Compensation::default();
-        c.sync(super::own_matrices(std::slice::from_ref(stub)));
-        let g = c.group_of(&path).unwrap();
-        assert!(
-            c.check(g, |_| super::facts_of(stub)).is_empty(),
-            "nothing to say before a matrix is loaded"
-        );
-        c.set_source(
-            g,
-            Source::Loaded {
-                path: "/m.csv".into(),
-                matrix: Arc::new(matrix.clone()),
-            },
-        )
-        .unwrap();
-        let notes = c.check(g, |_| super::facts_of(stub));
-        let warned = notes.iter().any(|n| n.contains("applied twice"));
-        assert_eq!(warned, expected, "{notes:?}");
+// ─── What Omiq already applied, and what is wanted ──────────────────────────
+
+/// The group for the compensated Omiq export, and the matrix Omiq used.
+fn omiq_group() -> (
+    Compensation,
+    super::groups::GroupId,
+    PathBuf,
+    Arc<Spillover>,
+) {
+    let path = fixture("omiq_export_compensated.fcs");
+    let stub = FcsSampleStub::open(&path.to_string_lossy()).unwrap();
+    let mut c = Compensation::default();
+    c.sync(super::own_matrices(&[stub]));
+    let g = c.group_of(&path).unwrap();
+    let matrix = Arc::new(
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap(),
+    );
+    (c, g, path, matrix)
+}
+
+fn read(path: &Path, correction: &Correction) -> flow_fcs::Fcs {
+    super::open_compensated(path, &Ok(correction.clone())).unwrap()
+}
+
+fn close_columns(a: &flow_fcs::Fcs, b: &flow_fcs::Fcs, name: &str) -> f32 {
+    column(a, name)
+        .iter()
+        .zip(column(b, name))
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
+}
+
+/// Until the group says what Omiq applied, its Omiq exports are shown as
+/// exported and cannot be given a matrix - nothing could say what the matrix
+/// would be relative to. No compensation stays allowed.
+#[test]
+fn an_unanswered_group_of_omiq_exports_shows_them_as_exported() {
+    let (mut c, g, path, matrix) = omiq_group();
+    assert!(c.holds_omiq_exports(g) && c.unanswered(g));
+    assert_eq!(c.matrix_for(&path).unwrap(), Correction::none());
+    let loaded = Source::Loaded {
+        path: "/m.csv".into(),
+        matrix: matrix.clone(),
+    };
+    assert_eq!(c.set_source(g, loaded).unwrap_err(), Compensation::ASK);
+    let channels = matrix.channels().to_vec();
+    assert!(
+        c.set_value(g, "BUV395-A", "BUV805-A", 5.0, &channels)
+            .is_err()
+    );
+    c.set_source(g, Source::None).unwrap();
+
+    // Files the cytometer wrote are never asked about.
+    let mut raw = Compensation::default();
+    raw.add_file(p("a"), Ok(None));
+    assert!(!raw.unanswered(raw.group_of(&p("a")).unwrap()));
+}
+
+/// Said to have been compensated in Omiq with its matrix, the export is
+/// wanted with that matrix too - no change to its events - and taking the
+/// matrix back out gives the export Omiq wrote without compensation.
+#[test]
+fn what_omiq_applied_can_be_taken_back_out() {
+    let (mut c, g, path, matrix) = omiq_group();
+    c.set_applied(
+        g,
+        Applied::Matrix {
+            path: Some("/m.csv".into()),
+            matrix: matrix.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.wanted(g).as_deref(), Some(matrix.as_ref()));
+    assert_eq!(c.matrix_for(&path).unwrap(), Correction::none());
+
+    let uncompensated =
+        flow_fcs::Fcs::open(fixture("omiq_export_uncompensated.fcs").to_str().unwrap()).unwrap();
+    c.set_source(g, Source::None).unwrap();
+    let back = read(&path, &c.matrix_for(&path).unwrap());
+    let worst = close_columns(&back, &uncompensated, "BUV805-A");
+    assert!(
+        worst < 0.05,
+        "BUV805 is {worst} from Omiq's uncompensated export"
+    );
+    assert_eq!(
+        column(&back, "BUV395-A"),
+        column(&uncompensated, "BUV395-A")
+    );
+}
+
+/// An edit here applies only the change. Omiq applied 10% of BUV395 into
+/// BUV805; wanting 4% instead, the compensated export read here is the
+/// uncompensated export compensated with 4% - the same events Omiq would
+/// show with 4% pasted into its compensation.
+#[test]
+fn an_edit_applies_only_the_change_from_what_omiq_applied() {
+    let (mut c, g, path, matrix) = omiq_group();
+    c.set_applied(
+        g,
+        Applied::Matrix {
+            path: None,
+            matrix: matrix.clone(),
+        },
+    )
+    .unwrap();
+    c.set_value(g, "BUV395-A", "BUV805-A", 4.0, &[]).unwrap();
+    let wanted = c.wanted(g).unwrap();
+    let (i, j) = (
+        wanted
+            .channels()
+            .iter()
+            .position(|x| &**x == "BUV395-A")
+            .unwrap(),
+        wanted
+            .channels()
+            .iter()
+            .position(|x| &**x == "BUV805-A")
+            .unwrap(),
+    );
+    assert!((wanted.value(i, j) - 0.04).abs() < 1e-12);
+    assert!(matches!(c.group(g).unwrap().source, Source::Edited { .. }));
+
+    let ours = read(&path, &c.matrix_for(&path).unwrap());
+    let direct = read(
+        &fixture("omiq_export_uncompensated.fcs"),
+        &Correction::apply(wanted),
+    );
+    let worst = close_columns(&ours, &direct, "BUV805-A");
+    assert!(
+        worst < 0.05,
+        "BUV805 is {worst} from compensating the raw export with 4%"
+    );
+    for name in ["BUV395-A", "CD3", "PerCP-A", "FSC-A"] {
+        if ours.data_frame.column(name).is_ok() {
+            assert_eq!(column(&ours, name), column(&direct, name), "{name}");
+        }
     }
+}
+
+/// Exported without compensation, an Omiq export is raw: what is wanted is
+/// applied to it as it is.
+#[test]
+fn an_omiq_export_said_to_be_uncompensated_is_compensated_as_it_is() {
+    let path = fixture("omiq_export_uncompensated.fcs");
+    let stub = FcsSampleStub::open(&path.to_string_lossy()).unwrap();
+    let mut c = Compensation::default();
+    c.sync(super::own_matrices(&[stub]));
+    let g = c.group_of(&path).unwrap();
+    let matrix = Arc::new(
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap(),
+    );
+    c.set_applied(g, Applied::Nothing).unwrap();
+    c.set_source(
+        g,
+        Source::Loaded {
+            path: "/m.csv".into(),
+            matrix: matrix.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.matrix_for(&path).unwrap(), Correction::apply(matrix));
+    let ours = read(&path, &c.matrix_for(&path).unwrap());
+    let omiqs =
+        flow_fcs::Fcs::open(fixture("omiq_export_compensated.fcs").to_str().unwrap()).unwrap();
+    assert!(close_columns(&ours, &omiqs, "BUV805-A") < 0.05);
+}
+
+/// A group whose files were not written by Omiq cannot have anything
+/// applied: its matrix is applied as it is, whatever the group says.
+#[test]
+fn what_omiq_applied_touches_only_omiq_exports() {
+    let mut c = Compensation::default();
+    c.add_file(p("cytometer"), Ok(None));
+    c.add(FileMatrix::from_omiq(p("omiq")));
+    let g = c.group_of(&p("cytometer")).unwrap();
+    assert_eq!(c.group_of(&p("omiq")), Some(g));
+    c.set_applied(
+        g,
+        Applied::Matrix {
+            path: None,
+            matrix: Arc::new(three()),
+        },
+    )
+    .unwrap();
+    c.set_source(
+        g,
+        Source::Loaded {
+            path: "/m.csv".into(),
+            matrix: Arc::new(three()),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.matrix_for(&p("omiq")).unwrap(), Correction::none());
+    assert_eq!(
+        c.matrix_for(&p("cytometer")).unwrap(),
+        Correction::apply(Arc::new(three()))
+    );
+}
+
+/// Editing starts from what is wanted, else from what Omiq applied, else from
+/// no compensation over the channels given; a channel into itself is not an
+/// entry to edit.
+#[test]
+fn an_edit_starts_from_what_is_there() {
+    let channels: Vec<Arc<str>> = ["FITC-A", "PE-A"].iter().map(|&c| Arc::from(c)).collect();
+    let mut c = Compensation::default();
+    c.add_file(p("a"), Ok(None));
+    let g = c.group_of(&p("a")).unwrap();
+    c.set_value(g, "FITC-A", "PE-A", 12.5, &channels).unwrap();
+    let m = c.wanted(g).unwrap();
+    assert_eq!(m.channels(), channels.as_slice());
+    assert_eq!((m.value(0, 1), m.value(1, 0)), (0.125, 0.0));
+    assert_eq!(c.matrix_for(&p("a")).unwrap(), Correction::apply(m.clone()));
+    assert!(c.set_value(g, "FITC-A", "FITC-A", 50.0, &channels).is_err());
+    assert!(c.set_value(g, "FITC-A", "APC-A", 5.0, &channels).is_err());
+
+    // From a loaded matrix, named as what it was edited from.
+    c.set_source(
+        g,
+        Source::Loaded {
+            path: "/data/comp.csv".into(),
+            matrix: Arc::new(three()),
+        },
+    )
+    .unwrap();
+    c.set_value(g, "PE-A", "APC-A", 20.0, &[]).unwrap();
+    let group = c.group(g).unwrap();
+    assert_eq!(group.source.describe(), "comp.csv, edited here");
+    assert_eq!(c.wanted(g).unwrap().value(1, 2), 0.2);
+    assert_eq!(c.wanted(g).unwrap().value(0, 1), 0.25, "the rest kept");
+}
+
+/// What Omiq applied, and a matrix edited here, are remembered with the
+/// workspace and come back as they were.
+#[test]
+fn what_was_applied_and_what_was_edited_are_remembered() {
+    let (mut c, g, path, matrix) = omiq_group();
+    c.set_applied(
+        g,
+        Applied::Matrix {
+            path: Some("/m.csv".into()),
+            matrix: matrix.clone(),
+        },
+    )
+    .unwrap();
+    c.set_value(g, "BUV395-A", "BUV805-A", 4.0, &[]).unwrap();
+    let saved = c.saved();
+    let json = serde_json::to_string(&saved).unwrap();
+    let saved: Saved = serde_json::from_str(&json).unwrap();
+    let stub = FcsSampleStub::open(&path.to_string_lossy()).unwrap();
+    let back = Compensation::restore(&saved, super::own_matrices(&[stub]), |_| {
+        Ok((*matrix).clone())
+    });
+    let bg = back.group_of(&path).unwrap();
+    assert!(back.applied(bg).unwrap().same_as(&matrix));
+    assert!(back.wanted(bg).unwrap().same_as(&c.wanted(g).unwrap()));
+    assert_eq!(
+        back.matrix_for(&path).unwrap(),
+        c.matrix_for(&path).unwrap()
+    );
+    assert!(!back.unanswered(bg));
+
+    // A workspace remembered before the question existed reads as unanswered.
+    let old = r#"{"groups":[{"name":"G","source":"None"}],"files":[]}"#;
+    let old: Saved = serde_json::from_str(old).unwrap();
+    assert_eq!(old.groups[0].applied, super::groups::SavedApplied::Unknown);
+}
+
+// ─── Exporting a matrix ─────────────────────────────────────────────────────
+
+/// Written for Omiq, a matrix is Omiq's layout - names across the top, rows
+/// in percent, no row names - and reads back as the same matrix.
+#[test]
+fn a_matrix_is_written_as_omiq_shows_it() {
+    let m = three();
+    let csv = m.to_omiq_csv();
+    assert_eq!(csv, "FITC-A,PE-A,APC-A\n100,25,2\n5,100,10\n0,30,100\n");
+    assert!(Spillover::from_omiq_csv(&csv).unwrap().same_as(&m));
+    assert_eq!(m.to_omiq_paste(), csv.replace(',', "\t"));
+
+    // The real export, a channel name with a comma, and a fine value.
+    let real =
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
+    assert!(
+        Spillover::from_omiq_csv(&real.to_omiq_csv())
+            .unwrap()
+            .same_as(&real)
+    );
+    let odd = matrix(&["A,1", "B"], &[1.0, 0.012345, 0.0, 1.0]);
+    let written = odd.to_omiq_csv();
+    assert!(written.starts_with("\"A,1\",B\n100,1.2345\n"), "{written}");
+    assert!(Spillover::from_omiq_csv(&written).unwrap().same_as(&odd));
+}
+
+/// For the local files: what compensates events Omiq already compensated
+/// with its matrix into events compensated with the one wanted. Applied to
+/// Omiq's compensated export, it gives the raw export compensated with the
+/// wanted matrix.
+#[test]
+fn the_matrix_for_already_compensated_files_is_the_difference() {
+    let applied =
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
+    let wanted = applied.with_value("BUV395-A", "BUV805-A", 0.04).unwrap();
+    let (channels, values) = super::residual(&wanted, &applied).unwrap();
+    assert_eq!(channels.as_slice(), wanted.channels());
+    let r = Spillover::new(channels, values).unwrap();
+    let (i, j) = (
+        r.channels()
+            .iter()
+            .position(|x| &**x == "BUV395-A")
+            .unwrap(),
+        r.channels()
+            .iter()
+            .position(|x| &**x == "BUV805-A")
+            .unwrap(),
+    );
+    assert!((r.value(i, j) + 0.06).abs() < 1e-12, "{}", r.value(i, j));
+
+    let on_compensated = read(
+        &fixture("omiq_export_compensated.fcs"),
+        &Correction::apply(Arc::new(r)),
+    );
+    let on_raw = read(
+        &fixture("omiq_export_uncompensated.fcs"),
+        &Correction::apply(Arc::new(wanted.clone())),
+    );
+    assert!(close_columns(&on_compensated, &on_raw, "BUV805-A") < 0.05);
+
+    // The same matrix both ways is no correction at all.
+    let (_, same) = super::residual(&applied, &applied).unwrap();
+    let n = applied.channels().len();
+    assert!((0..n * n).all(|k| (same[k] - if k / n == k % n { 1.0 } else { 0.0 }).abs() < 1e-12));
+}
+
+/// A matrix made here from nothing is over the channels Omiq's is: every
+/// channel but scatter and time, in the file's order - checked against the
+/// matrix Omiq showed for this export.
+#[test]
+fn a_new_matrix_is_over_the_channels_omiq_lists() {
+    let stub =
+        FcsSampleStub::open(&fixture("omiq_export_compensated.fcs").to_string_lossy()).unwrap();
+    let omiqs =
+        Spillover::read_omiq_csv(&fixture("omiq_compensation_buv395_into_buv805.csv")).unwrap();
+    assert_eq!(
+        super::fluorescence_channels(&stub).as_slice(),
+        omiqs.channels()
+    );
 }

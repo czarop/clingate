@@ -259,6 +259,48 @@ impl Spillover {
         Self::new(names.into_iter().map(Arc::from).collect(), values)
     }
 
+    /// No compensation over `channels`: 1 on the diagonal, 0 elsewhere.
+    pub fn identity(channels: &[Arc<str>]) -> Result<Self> {
+        let n = channels.len();
+        Self::new(
+            channels.to_vec(),
+            (0..n * n)
+                .map(|k| if k / n == k % n { 1.0 } else { 0.0 })
+                .collect(),
+        )
+    }
+
+    /// This matrix with one entry changed: `fraction` of `from`'s signal
+    /// showing up in `into`.
+    pub fn with_value(&self, from: &str, into: &str, fraction: f64) -> Result<Self> {
+        let at = |name: &str| {
+            self.channels
+                .iter()
+                .position(|c| c.as_ref() == name)
+                .ok_or_else(|| anyhow!("the matrix has no channel {name}"))
+        };
+        let (i, j) = (at(from)?, at(into)?);
+        if i == j {
+            return Err(anyhow!("a channel's spillover into itself is 1"));
+        }
+        let mut values = self.values.clone();
+        values[i * self.channels.len() + j] = fraction;
+        Self::new(self.channels.clone(), values)
+    }
+
+    /// The matrix as Omiq shows it, as CSV: the channel names across the top
+    /// row, then one row per channel in the same order with no names, in
+    /// percent. What [`Spillover::from_omiq_csv`] reads, so it round-trips.
+    pub fn to_omiq_csv(&self) -> String {
+        write_grid(&self.channels, &self.values, ',')
+    }
+
+    /// The same as tab-separated rows, as a spreadsheet or Omiq's
+    /// compensation view takes a paste.
+    pub fn to_omiq_paste(&self) -> String {
+        write_grid(&self.channels, &self.values, '\t')
+    }
+
     /// [`Spillover::from_omiq_csv`], from a file.
     pub fn read_omiq_csv(path: &std::path::Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
@@ -449,6 +491,92 @@ pub struct Comparison {
     pub transposed_fits_better: bool,
 }
 
+/// What to apply to events already compensated with `applied` to end with
+/// them compensated with `wanted`, in the same layout as a matrix: the
+/// channels of both, and `wanted · applied⁻¹` over them, row-major, as
+/// fractions. For software that will compensate files Omiq has already
+/// compensated - applying this to them is applying `wanted` to the events as
+/// recorded.
+///
+/// Not always a spillover matrix: where the two differ in both directions
+/// between a pair of channels, its diagonal is not exactly 1.
+pub fn residual(wanted: &Spillover, applied: &Spillover) -> Result<(Vec<Arc<str>>, Vec<f64>)> {
+    let mut channels: Vec<Arc<str>> = wanted.channels.clone();
+    for c in &applied.channels {
+        if !channels.contains(c) {
+            channels.push(c.clone());
+        }
+    }
+    let n = channels.len();
+    let over = |m: &Spillover| -> Spillover {
+        let index: Vec<Option<usize>> = channels
+            .iter()
+            .map(|c| m.channels.iter().position(|x| x == c))
+            .collect();
+        let values = (0..n * n)
+            .map(|k| match (index[k / n], index[k % n]) {
+                (Some(i), Some(j)) => m.value(i, j),
+                _ if k / n == k % n => 1.0,
+                _ => 0.0,
+            })
+            .collect();
+        Spillover {
+            channels: channels.clone(),
+            values,
+        }
+    };
+    let (t, a) = (over(wanted), over(applied));
+    let a_inverse = a.inverse()?;
+    let values = (0..n * n)
+        .map(|k| {
+            let (i, j) = (k / n, k % n);
+            (0..n)
+                .map(|m| t.values[i * n + m] * a_inverse[m * n + j])
+                .sum()
+        })
+        .collect();
+    Ok((channels, values))
+}
+
+/// A matrix in Omiq's layout, separated by `separator`: names across the
+/// top, then the rows in percent.
+pub fn write_grid(channels: &[Arc<str>], values: &[f64], separator: char) -> String {
+    let n = channels.len();
+    let cell = |name: &str| {
+        if name.contains(separator) || name.contains('"') {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        } else {
+            name.to_string()
+        }
+    };
+    let mut out = channels
+        .iter()
+        .map(|c| cell(c))
+        .collect::<Vec<_>>()
+        .join(&separator.to_string());
+    out.push('\n');
+    for i in 0..n {
+        let row: Vec<String> = (0..n).map(|j| percent(values[i * n + j])).collect();
+        out.push_str(&row.join(&separator.to_string()));
+        out.push('\n');
+    }
+    out
+}
+
+/// A fraction as a percentage, as short as it can be without losing what a
+/// person could have typed: 0.1 is `10`, 0.0253 is `2.53`.
+fn percent(fraction: f64) -> String {
+    let p = fraction * 100.0;
+    let rounded = (p * 1e6).round() / 1e6;
+    let text = format!("{rounded:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 /// Which of `channels` is `name`, or why none is.
 fn find_channel(name: &str, channels: &[(&str, Option<&str>)]) -> Result<usize, String> {
     let with_area = format!("{name}-A");
@@ -531,19 +659,13 @@ pub fn compensate(
 }
 
 /// Each file's own matrix, read from the keywords already loaded with it.
-pub fn own_matrices(
-    stubs: &[crate::file_load::FcsSampleStub],
-) -> Vec<(
-    std::path::PathBuf,
-    std::result::Result<Option<Spillover>, String>,
-)> {
+pub fn own_matrices(stubs: &[crate::file_load::FcsSampleStub]) -> Vec<groups::FileMatrix> {
     stubs
         .iter()
-        .map(|stub| {
-            (
-                stub.get_filepath().to_path_buf(),
-                Spillover::from_keywords(&stub.metadata).map_err(|e| e.to_string()),
-            )
+        .map(|stub| groups::FileMatrix {
+            path: stub.get_filepath().to_path_buf(),
+            own: Spillover::from_keywords(&stub.metadata).map_err(|e| e.to_string()),
+            written_by_omiq: written_by_omiq(&stub.metadata),
         })
         .collect()
 }
@@ -562,6 +684,21 @@ pub fn channels_of(stub: &crate::file_load::FcsSampleStub) -> Vec<(String, Optio
         .collect()
 }
 
+/// A file's fluorescence channels, in order: every channel but scatter and
+/// time - the channels Omiq's compensation matrix lists. What a matrix made
+/// here from nothing is over.
+pub fn fluorescence_channels(stub: &crate::file_load::FcsSampleStub) -> Vec<Arc<str>> {
+    channels_of(stub)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            let upper = name.to_ascii_uppercase();
+            !(upper.starts_with("FSC") || upper.starts_with("SSC") || upper.starts_with("TIME"))
+        })
+        .map(|name| Arc::from(name.as_str()))
+        .collect()
+}
+
 /// Whether Omiq wrote the file: it signs its exports `WRITTEN_BY`
 /// `OMIQ (www.omiq.ai)`. Omiq applies its compensation to the events when it
 /// exports them and writes no `$SPILLOVER`, so an Omiq export is already
@@ -576,13 +713,12 @@ pub fn written_by_omiq(metadata: &Metadata) -> bool {
 pub fn facts_of(stub: &crate::file_load::FcsSampleStub) -> groups::FileFacts {
     groups::FileFacts {
         channels: channels_of(stub),
-        written_by_omiq: written_by_omiq(&stub.metadata),
     }
 }
 
-/// What a file is to be compensated with: nothing, a matrix, or why it
-/// cannot be - see [`groups::Compensation::matrix_for`].
-pub type Choice = std::result::Result<Option<Arc<Spillover>>, String>;
+/// What reading a file does to its events - see [`groups::Correction`] - or
+/// why it cannot be compensated: [`groups::Compensation::matrix_for`].
+pub type Choice = std::result::Result<groups::Correction, String>;
 
 /// Open a file and compensate its events as `choice` says: how every plot,
 /// gallery image and rules run reads a file, so they cannot disagree.
@@ -590,17 +726,66 @@ pub type Choice = std::result::Result<Option<Arc<Spillover>>, String>;
 /// A file that cannot be compensated as chosen is an error, not a file read
 /// uncompensated: drawn or measured that way it would look like a result.
 pub fn open_compensated(path: &std::path::Path, choice: &Choice) -> Result<flow_fcs::Fcs> {
-    let matrix = choice
+    let correction = choice
         .as_ref()
         .map_err(|why| anyhow!("it cannot be compensated: {why}"))?;
     let mut fcs = flow_fcs::Fcs::open(
         path.to_str()
             .ok_or_else(|| anyhow!("file path is not valid UTF-8"))?,
     )?;
-    if let Some(matrix) = matrix {
-        compensate_fcs(&mut fcs, matrix).map_err(|e| anyhow!("it cannot be compensated: {e}"))?;
-    }
+    correct_fcs(&mut fcs, correction).map_err(|e| anyhow!("it cannot be compensated: {e}"))?;
     Ok(fcs)
+}
+
+/// Take `correction.undo` back out of an opened file's events, then apply
+/// `correction.apply` - see [`groups::Correction`].
+pub fn correct_fcs(fcs: &mut flow_fcs::Fcs, correction: &groups::Correction) -> Result<()> {
+    if let Some(applied) = &correction.undo {
+        spill_fcs(fcs, applied)?;
+    }
+    if let Some(wanted) = &correction.apply {
+        compensate_fcs(fcs, wanted)?;
+    }
+    Ok(())
+}
+
+/// Put the spillover back into events compensated with `matrix`: each
+/// channel `k` becomes `Σⱼ eⱼ Sⱼₖ` - the events as the cytometer recorded
+/// them, from events compensated with `matrix`. The inverse of
+/// [`compensate_fcs`].
+pub fn spill_fcs(fcs: &mut flow_fcs::Fcs, matrix: &Spillover) -> Result<()> {
+    let Some(matrix) = matrix.involved() else {
+        return Ok(());
+    };
+    let (frame, columns) = locate(fcs, &matrix)?;
+    let spilt = mix_columns(&frame, &matrix.values, &columns)?;
+    fcs.data_frame = Arc::new(spilt);
+    Ok(())
+}
+
+/// The file's frame, and the column for each of the matrix's channels.
+fn locate(fcs: &flow_fcs::Fcs, matrix: &Spillover) -> Result<(DataFrame, Vec<String>)> {
+    let labels: rustc_hash::FxHashMap<&str, &str> = fcs
+        .parameters
+        .values()
+        .filter(|p| p.label_name != p.channel_name)
+        .map(|p| (p.channel_name.as_ref(), p.label_name.as_ref()))
+        .collect();
+    let names: Vec<String> = fcs
+        .data_frame
+        .get_column_names()
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
+    let lookup: Vec<(&str, Option<&str>)> = names
+        .iter()
+        .map(|n| (n.as_str(), labels.get(n.as_str()).copied()))
+        .collect();
+    let at = matrix.resolve(&lookup)?;
+    Ok((
+        (*fcs.data_frame).clone(),
+        at.iter().map(|&i| names[i].clone()).collect(),
+    ))
 }
 
 /// An opened file with its events compensated, in place; its keywords and
@@ -634,9 +819,25 @@ pub fn compensate_columns(
         return Err(anyhow!("{} columns for {n} channels", columns.len()));
     }
     let inverse = matrix.inverse()?;
+    let columns: Vec<String> = columns.iter().map(|c| c.to_string()).collect();
+    mix_columns(frame, &inverse, &columns)
+}
+
+/// `frame` with `columns` replaced by their mix under `coefficients`
+/// (row-major, one row and one column per entry of `columns`): each new
+/// column `k` is `Σⱼ columnⱼ · coefficients[j][k]`. Every other column, and
+/// the rows, as they were.
+fn mix_columns(frame: &DataFrame, coefficients: &[f64], columns: &[String]) -> Result<DataFrame> {
+    let n = columns.len();
+    if coefficients.len() != n * n {
+        return Err(anyhow!(
+            "{} coefficients for {n} columns",
+            coefficients.len()
+        ));
+    }
     let observed: Vec<Vec<f32>> = columns
         .iter()
-        .map(|&c| -> Result<Vec<f32>> {
+        .map(|c| -> Result<Vec<f32>> {
             let column = frame.column(c)?.cast(&DataType::Float32)?;
             Ok(column
                 .f32()?
@@ -647,12 +848,12 @@ pub fn compensate_columns(
         .collect::<Result<_>>()?;
     let events = frame.height();
 
-    let compensated: Vec<Vec<f32>> = (0..n)
+    let mixed: Vec<Vec<f32>> = (0..n)
         .into_par_iter()
         .map(|k| {
             let mut out = vec![0.0f32; events];
             for (j, column) in observed.iter().enumerate() {
-                let coefficient = inverse[j * n + k] as f32;
+                let coefficient = coefficients[j * n + k] as f32;
                 if coefficient == 0.0 {
                     continue;
                 }
@@ -665,8 +866,8 @@ pub fn compensate_columns(
         .collect();
 
     let mut frame = frame.clone();
-    for (values, &name) in compensated.into_iter().zip(columns) {
-        frame.replace(name, Column::new(name.into(), values))?;
+    for (values, name) in mixed.into_iter().zip(columns) {
+        frame.replace(name, Column::new(name.as_str().into(), values))?;
     }
     Ok(frame)
 }
