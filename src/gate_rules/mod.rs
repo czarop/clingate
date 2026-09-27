@@ -16,16 +16,20 @@
 //! the decisions be tested exhaustively.
 
 pub mod autogate;
+pub mod choices;
 pub mod confidence;
 pub mod phenotype;
 pub mod phenotype_gate;
 pub mod rule;
 pub mod rule_store;
+pub mod run;
 pub mod shape_fit;
 pub mod threshold;
 
 #[cfg(test)]
 mod autogate_tests;
+#[cfg(test)]
+mod choices_tests;
 #[cfg(test)]
 mod confidence_tests;
 mod harness_tests;

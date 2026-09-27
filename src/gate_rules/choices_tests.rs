@@ -1,12 +1,12 @@
-//! Tests for what the Gate Rules tab offers.
+//! Tests for what a rule can be written against.
 
 #![cfg(test)]
 
-use crate::gate_editor::gate_rules_window::choices;
 use crate::gate_editor::gates::GateState;
 use crate::gate_editor::gates::gate_store::{GateStateImplExt, ROOTGATE};
 use crate::gate_editor::gates::gate_types::PrimaryGateType;
 use crate::gate_editor::plots::axis_store::PlotMapper;
+use crate::gate_rules::choices::choices;
 use flow_fcs::TransformType;
 use std::sync::Arc;
 
@@ -137,7 +137,7 @@ fn a_gate_at_the_root_is_not_offered() {
 // The Edit button exists so one rule can be moved onto a second population
 // without retyping it, which only pays off if the gate survives the move.
 
-use crate::gate_editor::gate_rules_window::{GateChoices, carry_over};
+use crate::gate_rules::choices::{GateChoices, carry_over};
 
 fn two_populations() -> GateChoices {
     GateChoices {
@@ -204,7 +204,7 @@ fn param(marker: &str, fluoro: &str) -> Param {
 
 #[test]
 fn a_phenotype_rule_names_its_markers_as_they_were_ticked() {
-    use crate::gate_editor::gate_rules_window::describe_phenotype;
+    use crate::gate_rules::choices::describe_phenotype;
     use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
     // The rule stores the column it reads, because that is what a DataFrame is
     // indexed by. Nobody ticks a column called BV421-A.
@@ -229,7 +229,7 @@ fn a_phenotype_rule_names_its_markers_as_they_were_ticked() {
 
 #[test]
 fn a_marker_the_panel_does_not_carry_is_shown_as_the_rule_stores_it() {
-    use crate::gate_editor::gate_rules_window::marker_label;
+    use crate::gate_rules::choices::marker_label;
     // The honest answer: that is the column the rule will look for, and saying
     // so is how a person finds out the panel has changed under them.
     assert_eq!(marker_label("PE-A", &[param("CD279", "BV421-A")]), "PE-A");
@@ -237,7 +237,7 @@ fn a_marker_the_panel_does_not_carry_is_shown_as_the_rule_stores_it() {
 
 #[test]
 fn a_phenotype_rule_with_nothing_ticked_says_it_uses_every_marker() {
-    use crate::gate_editor::gate_rules_window::describe_phenotype;
+    use crate::gate_rules::choices::describe_phenotype;
     use crate::gate_rules::rule::PhenotypeRule;
     let described = describe_phenotype(&PhenotypeRule::default(), &[]);
     assert!(described.contains("every marker"), "got: {described}");

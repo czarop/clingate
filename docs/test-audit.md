@@ -227,9 +227,10 @@ event index `flow_gates` builds), the gate store (`GateState::gate_for_file`,
 `resolve_drawable`, the per-file overrides), the metadata
 (`MetaDataFileMap`, for specimens and sample types via `rule_store`'s
 pairing), and writes placements back with `apply_placements`
-(`GateState::set_gate_for_file`). The Gate Rules tab
-(`gate_editor::gate_rules_window`) drives it through `files_to_read`,
-`measure_all` and `run_solve`, and saves `RuleStore` as JSON.
+(`GateState::set_gate_for_file`). A whole run is
+`gate_rules::run::run_rules` (through `files_to_read` and `measure_all`),
+which the Gate Rules tab calls on a worker thread; the tab saves `RuleStore`
+as JSON.
 
 **Found.** B-RULE-1: the test that claimed to check a shallow valley is
 flagged against the bar (`a_shallow_valley_is_placed_and_flagged_rather_than_refused`)
@@ -369,8 +370,8 @@ files). Run with `cargo test --no-default-features --tests`.
   changes nothing; a channel the new file drops is reported and its gates
   left alone. A guard asserts the uncarried gates *would* differ, so the
   fixture can tell carrying from doing nothing.
-- `gate_rules_window::tests::a_run_from_files_on_disk` (in-crate, since
-  `run_solve` is private to the tab) - the Run button's pipeline from FCS
+- `gate_rules::run::tests::a_run_from_files_on_disk` - the Run button's
+  pipeline, `run_rules`, from FCS
   files on disk: an unreadable file is reported by name and the rest run, a
   cancelled run places nothing, the density finder follows a drifted
   negative; B-AUTO-1.

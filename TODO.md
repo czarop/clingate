@@ -123,7 +123,7 @@ commit (`b7a77c4`).
       confidently (69% admitted against 10% on the reference). The other
       finder, the density's leftmost peak, tracks any drift but is about five
       times noisier. Pinned as an ignored failing test in
-      `gate_rules_window.rs`. Wants testing against hand gating on real
+      `gate_rules/run.rs`. Wants testing against hand gating on real
       samples; a hybrid - refine from the gate, fall back to the peak when it
       sticks - is the likely end state.
 - [ ] **B-KDE-2 and B-KDE-3 - decisions about method** in
