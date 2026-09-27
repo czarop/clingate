@@ -148,7 +148,11 @@ impl Compensation {
                 .iter()
                 .map(|(n, l)| (n.as_str(), l.as_deref()))
                 .collect();
-            if let Err(why) = matrix.resolve(&lookup) {
+            // As compensating matches it: only the channels that take part.
+            let Some(involved) = matrix.involved() else {
+                continue;
+            };
+            if let Err(why) = involved.resolve(&lookup) {
                 notes.push(format!("{}: the matrix does not fit it: {why}", name(path)));
                 continue;
             }

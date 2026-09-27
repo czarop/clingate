@@ -261,6 +261,41 @@ impl Spillover {
         (0..n).all(|i| (0..n).all(|j| i == j || self.value(i, j) == 0.0))
     }
 
+    /// The matrix over only the channels that take part: those that spill
+    /// into another channel or have another spill into them. `None` if no
+    /// channel does - an identity, which changes nothing.
+    ///
+    /// Compensating with this is exactly compensating with the whole matrix.
+    /// A channel with nothing off its diagonal, in its row or its column, is
+    /// a block of its own, and the inverse of a block-diagonal matrix is the
+    /// inverses of its blocks: a 1, which leaves the channel as it is. So a
+    /// file need not carry such a channel at all - which matters for a
+    /// matrix exported from Omiq for a whole panel, most of it identity,
+    /// applied to files that carry some of that panel.
+    pub fn involved(&self) -> Option<Self> {
+        let n = self.channels.len();
+        let keep: Vec<usize> = (0..n)
+            .filter(|&i| {
+                (0..n).any(|j| j != i && (self.value(i, j) != 0.0 || self.value(j, i) != 0.0))
+            })
+            .collect();
+        if keep.is_empty() {
+            return None;
+        }
+        if keep.len() == n {
+            return Some(self.clone());
+        }
+        let values = keep
+            .iter()
+            .flat_map(|&i| keep.iter().map(move |&j| (i, j)))
+            .map(|(i, j)| self.value(i, j))
+            .collect();
+        Some(Self {
+            channels: keep.iter().map(|&i| self.channels[i].clone()).collect(),
+            values,
+        })
+    }
+
     /// Whether `other` is the same matrix: the same channels, each pair with
     /// the same value, in whatever order the channels are listed. How files
     /// are grouped by their own matrices.
@@ -466,9 +501,13 @@ pub fn compensate(
         .iter()
         .map(|(n, l)| (n.as_str(), l.as_deref()))
         .collect();
+    // Only the channels that take part: see [`Spillover::involved`].
+    let Some(matrix) = matrix.involved() else {
+        return Ok(frame.clone());
+    };
     let at = matrix.resolve(&lookup)?;
     let columns: Vec<&str> = at.iter().map(|&i| lookup[i].0).collect();
-    compensate_columns(frame, matrix, &columns)
+    compensate_columns(frame, &matrix, &columns)
 }
 
 /// Each file's own matrix, read from the keywords already loaded with it.

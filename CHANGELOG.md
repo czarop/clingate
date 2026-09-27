@@ -15,6 +15,9 @@
   out; a file that cannot be compensated as its group says is shown with the
   reason rather than drawn uncompensated. The groups are remembered with the
   workspace.
+  Only the channels a matrix actually mixes have to be in a file, so a panel-wide
+  Omiq export (mostly identity, for unmixed spectral data) can be applied to
+  files that carry part of the panel.
 
 - **A rule that finds a population by what it is, rather than where it sat.**
   The cells inside the gate on the reference sample are described by where they

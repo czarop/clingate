@@ -619,8 +619,11 @@ fn a_group_is_told_what_is_wrong_with_it() {
         "{notes:?}"
     );
 
-    c.set_source(g, loaded(matrix(&["FITC-A", "BV421-A"], &identity(2))))
-        .unwrap();
+    c.set_source(
+        g,
+        loaded(matrix(&["FITC-A", "BV421-A"], &[1.0, 0.1, 0.0, 1.0])),
+    )
+    .unwrap();
     let notes = c.check(g, channels);
     assert!(
         notes
@@ -663,4 +666,100 @@ fn a_files_channels_come_with_their_labels() {
     let owns = super::own_matrices(&[stub]);
     assert_eq!(owns.len(), 1);
     assert_eq!(owns[0].1, Ok(None));
+}
+
+// ─── A real Omiq export ──────────────────────────────────────────────────────
+
+/// The compensation matrix Omiq exported for a 38-colour spectral panel:
+/// channel names with spaces in them, percent, and - the data being unmixed
+/// already - an identity. Read as it is, it changes nothing.
+#[test]
+fn a_real_omiq_export_is_read() {
+    let text = include_str!("../../tests/fixtures/omiq_compensation_identity.csv");
+    let m = Spillover::from_omiq_csv(text).unwrap();
+    assert_eq!(m.channels().len(), 38);
+    let names: Vec<&str> = m.channels().iter().map(|c| c.as_ref()).collect();
+    assert_eq!(names[0], "BUV395-A");
+    assert!(names.contains(&"LIVE DEAD Blue-A"));
+    assert!(names.contains(&"PE-eFluor 610-A"));
+    assert_eq!(names[37], "AF P3-A");
+    assert!(m.is_identity());
+    assert_eq!(m.involved(), None);
+
+    // Applied to a file carrying only some of the panel, it is no change -
+    // not a refusal for the channels the file does not have.
+    let frame = df!("FSC-A" => [1.0f32, 2.0], "BUV395-A" => [5.0f32, -3.0]).unwrap();
+    assert_eq!(compensate(&frame, &m, |_| None).unwrap(), frame);
+}
+
+/// Only the channels a matrix actually mixes have to be in a file: one that
+/// spills into nothing and receives nothing is left as it is whether the
+/// file has it or not, and compensating over the rest gives the same answer
+/// as over the whole.
+#[test]
+fn a_channel_the_matrix_does_not_mix_need_not_be_in_the_file() {
+    // FITC and PE mix; APC and BV421 take no part.
+    let m = matrix(
+        &["FITC-A", "PE-A", "APC-A", "BV421-A"],
+        &[
+            1.0, 0.25, 0.0, 0.0, //
+            0.05, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ],
+    );
+    let involved = m.involved().unwrap();
+    assert_eq!(involved.channels().len(), 2);
+    assert!(involved.same_as(&matrix(&["FITC-A", "PE-A"], &[1.0, 0.25, 0.05, 1.0])));
+
+    let whole = df!(
+        "FITC-A" => [1000.0f32, 50.0],
+        "PE-A" => [250.0f32, 1000.0],
+        "APC-A" => [7.0f32, 8.0],
+        "BV421-A" => [9.0f32, 10.0],
+    )
+    .unwrap();
+    let partial = whole.drop("BV421-A").unwrap();
+    let a = compensate(&whole, &m, |_| None).unwrap();
+    let b = compensate(&partial, &m, |_| None).unwrap();
+    for c in ["FITC-A", "PE-A", "APC-A"] {
+        assert_eq!(a.column(c).unwrap(), b.column(c).unwrap(), "{c}");
+    }
+    let fitc: Vec<f32> = a
+        .column("FITC-A")
+        .unwrap()
+        .f32()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert!(close(fitc[0], 1000.0) && close(fitc[1], 0.0), "{fitc:?}");
+
+    // A channel that does take part is still required.
+    let refused = compensate(&whole.drop("PE-A").unwrap(), &m, |_| None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("the file has no channel PE-A"),
+        "{refused}"
+    );
+
+    // And a group is not told a file lacks a channel that takes no part.
+    let mut c = Compensation::default();
+    c.add_file(p("a"), Ok(None));
+    let g = c.group_of(&p("a")).unwrap();
+    c.set_source(
+        g,
+        Source::Loaded {
+            path: "/m.csv".into(),
+            matrix: Arc::new(m),
+        },
+    )
+    .unwrap();
+    let notes = c.check(g, |_| {
+        ["FITC-A", "PE-A", "APC-A"]
+            .iter()
+            .map(|n| (n.to_string(), None))
+            .collect()
+    });
+    assert!(notes.is_empty(), "{notes:?}");
 }
