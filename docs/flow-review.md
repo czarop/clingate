@@ -27,8 +27,18 @@ pinned to it:
 | 14 `count_in_gate` | b7a77c4 | |
 | 15 Duplicate parameter map | - | clingate calls flow's. |
 
-Not done, as they need a decision: 11 (biexponential / logicle), 16
-(compensation).
+Not done, as it needs a decision: 11 (biexponential / logicle).
+
+16 (compensation) is done in clingate rather than flow: `src/compensation.rs`
+and `src/compensation/groups.rs`, with groups as in Omiq. It does not use
+flow's `Fcs::apply_compensation`, which applies the inverse the wrong way
+round for a `$SPILLOVER` matrix: it computes each compensated channel `i` as
+`Σⱼ S⁻¹[i][j]·oⱼ`, where the standard's orientation (row = fluorochrome,
+column = detector) needs `Σⱼ oⱼ·S⁻¹[j][i]`. The two agree only for a
+symmetric matrix. `apply_file_compensation` passes the file's `$SPILLOVER`
+straight to it, so any caller of flow's own compensation gets wrong values.
+flow's `$COMP` parsing is also doubtful: it is read as if it had
+`$SPILLOVER`'s channel names.
 
 Also found on the way:
 

@@ -471,6 +471,38 @@ pub fn compensate(
     compensate_columns(frame, matrix, &columns)
 }
 
+/// Each file's own matrix, read from the keywords already loaded with it.
+pub fn own_matrices(
+    stubs: &[crate::file_load::FcsSampleStub],
+) -> Vec<(
+    std::path::PathBuf,
+    std::result::Result<Option<Spillover>, String>,
+)> {
+    stubs
+        .iter()
+        .map(|stub| {
+            (
+                stub.get_filepath().to_path_buf(),
+                Spillover::from_keywords(&stub.metadata).map_err(|e| e.to_string()),
+            )
+        })
+        .collect()
+}
+
+/// A file's channels as [`Spillover::resolve`] takes them: its `$PnN`s, with
+/// the `$PnS` label where it has one.
+pub fn channels_of(stub: &crate::file_load::FcsSampleStub) -> Vec<(String, Option<String>)> {
+    let mut parameters: Vec<&flow_fcs::Parameter> = stub.parameters.values().collect();
+    parameters.sort_by_key(|p| p.parameter_number);
+    parameters
+        .into_iter()
+        .map(|p| {
+            let label = (p.label_name != p.channel_name).then(|| p.label_name.to_string());
+            (p.channel_name.to_string(), label)
+        })
+        .collect()
+}
+
 /// What a file is to be compensated with: nothing, a matrix, or why it
 /// cannot be - see [`groups::Compensation::matrix_for`].
 pub type Choice = std::result::Result<Option<Arc<Spillover>>, String>;

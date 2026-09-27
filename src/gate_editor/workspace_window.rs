@@ -44,6 +44,8 @@ use std::path::{Path, PathBuf};
 
 use dioxus::prelude::*;
 
+use crate::compensation::groups::{Compensation, GroupId, Source};
+use crate::compensation::{Spillover, own_matrices};
 use crate::components::toast::{Toasts, note, say, use_toast, warn};
 use crate::file_load::FcsFiles;
 use crate::gate_editor::gates::GateState;
@@ -189,6 +191,7 @@ struct Handles {
     axes: AxesStore,
     rules: Signal<RuleStore>,
     files: Signal<Option<FcsFiles>>,
+    compensation: Signal<Compensation>,
     loaded: Signal<Loaded>,
     generation: Signal<Generation>,
     toasts: Toasts,
@@ -298,7 +301,7 @@ impl Handles {
             metadata: loaded.metadata.path().map(Path::to_path_buf),
             scaling: loaded.scaling.path().map(Path::to_path_buf),
             gating: loaded.gating.path().map(Path::to_path_buf),
-            compensation: None,
+            compensation: Some(self.compensation.peek().saved()),
         };
         if let Err(e) = remembered.save_to(&location) {
             warn(
@@ -315,6 +318,7 @@ impl Handles {
         self.axes.set(AxisStore::default());
         self.rules.set(RuleStore::default());
         self.files.set(None);
+        self.compensation.set(Compensation::default());
         let busy = self.loaded.peek().busy;
         self.loaded.set(Loaded {
             folder,
@@ -525,6 +529,9 @@ impl Handles {
         self.clear_all(remembered.folder.clone());
         self.open_fcs(remembered.folder.clone(), remembered.fcs.clone())
             .await;
+        if let Some(saved) = remembered.compensation.clone() {
+            self.restore_compensation(saved).await;
+        }
         if let Some(path) = remembered.metadata.clone() {
             self.load_metadata(path).await;
         }
@@ -554,6 +561,141 @@ impl Handles {
             .unwrap_or_default();
         self.files.set(Some(files));
         self.files_changed();
+        self.sync_compensation();
+    }
+
+    /// Group any file new to the workspace by its own matrix, and forget any
+    /// that has gone. Files already grouped stay where they were put.
+    fn sync_compensation(mut self) {
+        let owns = self
+            .files
+            .peek()
+            .as_ref()
+            .map(|f| own_matrices(f.file_list()))
+            .unwrap_or_default();
+        self.compensation.write().sync(owns);
+    }
+
+    /// Put the remembered groups back, reading each group's CSV again. A CSV
+    /// that can no longer be read leaves its group unable to compensate, and
+    /// says so, rather than quietly drawing its files uncompensated.
+    async fn restore_compensation(mut self, saved: crate::compensation::groups::Saved) {
+        let owns = self
+            .files
+            .peek()
+            .as_ref()
+            .map(|f| own_matrices(f.file_list()))
+            .unwrap_or_default();
+        let restored = tokio::task::spawn_blocking(move || {
+            Compensation::restore(&saved, owns, |path| {
+                Spillover::read_omiq_csv(path).map_err(|e| e.to_string())
+            })
+        })
+        .await;
+        match restored {
+            Ok(restored) => {
+                let unreadable: Vec<String> = restored
+                    .groups()
+                    .iter()
+                    .filter_map(|g| match &g.source {
+                        Source::Unreadable { path, why } => {
+                            Some(format!("{} ({}): {why}", g.name, file_name(path)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if !unreadable.is_empty() {
+                    warn(
+                        &self.toasts,
+                        format!(
+                            "A compensation matrix could not be read again, and its files will not be drawn until one is chosen: {}",
+                            unreadable.join("; ")
+                        ),
+                    );
+                }
+                self.compensation.set(restored);
+            }
+            Err(e) => warn(
+                &self.toasts,
+                format!("Could not restore the compensation groups: {e}"),
+            ),
+        }
+    }
+
+    /// Give a group a matrix from a CSV. One that cannot be read changes
+    /// nothing and says why.
+    async fn load_matrix(self, group: GroupId, path: PathBuf) {
+        let reading = path.clone();
+        let read =
+            flatten(tokio::task::spawn_blocking(move || Spillover::read_omiq_csv(&reading)).await);
+        match read {
+            Ok(matrix) => self.set_compensation(
+                group,
+                Source::Loaded {
+                    path,
+                    matrix: std::sync::Arc::new(matrix),
+                },
+            ),
+            Err(why) => warn(
+                &self.toasts,
+                format!("The matrix {} was not loaded: {why}", file_name(&path)),
+            ),
+        }
+    }
+
+    fn set_compensation(mut self, group: GroupId, source: Source) {
+        let set = self.compensation.write().set_source(group, source);
+        match set {
+            Ok(()) => self.remember(),
+            Err(why) => warn(&self.toasts, why),
+        }
+    }
+
+    fn move_to_group(mut self, path: &Path, group: GroupId) {
+        let moved = self.compensation.write().move_file(path, group);
+        match moved {
+            Ok(()) => self.remember(),
+            Err(why) => warn(&self.toasts, why),
+        }
+    }
+
+    fn new_compensation_group(mut self) -> GroupId {
+        let n = self.compensation.peek().groups().len() + 1;
+        let id = self.compensation.write().new_group(format!("Group {n}"));
+        self.remember();
+        id
+    }
+
+    fn rename_compensation_group(mut self, group: GroupId, name: String) {
+        self.compensation.write().rename(group, name);
+        self.remember();
+    }
+
+    fn compensation_action(self, action: CompensationAction) {
+        match action {
+            CompensationAction::Source(group, source) => self.set_compensation(group, source),
+            CompensationAction::LoadCsv(group, path) => {
+                spawn(self.load_matrix(group, path));
+            }
+            CompensationAction::Move(path, Some(group)) => self.move_to_group(&path, group),
+            CompensationAction::Move(path, None) => {
+                let group = self.new_compensation_group();
+                self.move_to_group(&path, group);
+            }
+            CompensationAction::NewGroup => {
+                self.new_compensation_group();
+            }
+            CompensationAction::Rename(group, name) => self.rename_compensation_group(group, name),
+            CompensationAction::Remove(group) => self.remove_compensation_group(group),
+        }
+    }
+
+    fn remove_compensation_group(mut self, group: GroupId) {
+        let removed = self.compensation.write().remove_group(group);
+        match removed {
+            Ok(()) => self.remember(),
+            Err(why) => warn(&self.toasts, format!("The group was not removed: {why}")),
+        }
     }
 
     async fn add_fcs(mut self, paths: Vec<PathBuf>) {
@@ -576,6 +718,7 @@ impl Handles {
                 let added = files.sample_count() - before;
                 self.files.set(Some(files));
                 self.files_changed();
+                self.sync_compensation();
                 say(
                     &self.toasts,
                     format!("Added {added} file{}", if added == 1 { "" } else { "s" }),
@@ -597,6 +740,7 @@ impl Handles {
             .is_some_and(|files| files.remove(path));
         if removed {
             self.files_changed();
+            self.sync_compensation();
             self.remember();
         }
     }
@@ -672,6 +816,19 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// Something done to the compensation groups from the tab.
+#[derive(Clone, PartialEq, Debug)]
+enum CompensationAction {
+    /// Compensate the group with nothing, or with its files' own matrices.
+    Source(GroupId, Source),
+    LoadCsv(GroupId, PathBuf),
+    /// Move a file to a group, or to a new one.
+    Move(PathBuf, Option<GroupId>),
+    NewGroup,
+    Rename(GroupId, String),
+    Remove(GroupId),
+}
+
 /// An action that discards the loaded gates, held until it is confirmed.
 #[derive(Clone, PartialEq, Debug)]
 enum Pending {
@@ -738,6 +895,7 @@ pub fn WorkspaceWindow() -> Element {
         axes: use_context::<AxesStore>(),
         rules: use_context::<Signal<RuleStore>>(),
         files: use_context::<Signal<Option<FcsFiles>>>(),
+        compensation: use_context::<Signal<Compensation>>(),
         loaded: use_context::<Signal<Loaded>>(),
         generation: use_context::<Signal<Generation>>(),
         toasts: use_toast(),
@@ -880,6 +1038,11 @@ pub fn WorkspaceWindow() -> Element {
                     spawn(handles.add_fcs(paths));
                 },
                 on_remove: move |path: PathBuf| handles.remove_fcs(&path),
+            }
+
+            CompensationSection {
+                busy: busy.is_some(),
+                on_action: move |action: CompensationAction| handles.compensation_action(action),
             }
 
             for which in [Which::Metadata, Which::Scaling, Which::Gating] {
@@ -1071,6 +1234,244 @@ fn FcsSection(
                                                 move |_| on_remove.call(path.clone())
                                             },
                                             "remove"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The compensation groups: which matrix each file's events are compensated
+/// with. See [`crate::compensation::groups`].
+#[component]
+fn CompensationSection(busy: bool, on_action: EventHandler<CompensationAction>) -> Element {
+    let files = use_context::<Signal<Option<FcsFiles>>>();
+    let compensation = use_context::<Signal<Compensation>>();
+    let comp = compensation.read();
+    // Each file's name in the program and its channels, by path.
+    let held = files.read();
+    let stubs: std::collections::BTreeMap<PathBuf, &crate::file_load::FcsSampleStub> = held
+        .as_ref()
+        .map(|f| {
+            f.file_list()
+                .iter()
+                .map(|s| (s.get_filepath().to_path_buf(), s))
+                .collect()
+        })
+        .unwrap_or_default();
+    let groups: Vec<(
+        crate::compensation::groups::Group,
+        Vec<(PathBuf, String)>,
+        Vec<String>,
+    )> = comp
+        .groups()
+        .iter()
+        .map(|g| {
+            let members: Vec<(PathBuf, String)> = comp
+                .files_in(g.id)
+                .map(|p| {
+                    let name = stubs
+                        .get(p)
+                        .map(|s| s.name().to_string())
+                        .unwrap_or_else(|| file_name(p));
+                    (p.to_path_buf(), name)
+                })
+                .collect();
+            let notes = comp.check(g.id, |p| {
+                stubs
+                    .get(p)
+                    .map(|s| crate::compensation::channels_of(s))
+                    .unwrap_or_default()
+            });
+            (g.clone(), members, notes)
+        })
+        .collect();
+    let choices: Vec<(GroupId, String)> = comp
+        .groups()
+        .iter()
+        .map(|g| (g.id, g.name.clone()))
+        .collect();
+    drop(comp);
+    drop(held);
+
+    if groups.is_empty() {
+        return rsx! {};
+    }
+
+    rsx! {
+        div { class: "workspace-row",
+            h3 {
+                "Compensation"
+                span { class: "workspace-status",
+                    if groups.len() == 1 { "1 group" } else { "{groups.len()} groups" }
+                }
+            }
+            p { class: "workspace-hint",
+                "As in Omiq, the files are grouped by the spillover matrix they carry. Each group is compensated with its files' own matrices, a matrix loaded from a CSV exported from Omiq (channel names across the top, values in percent), or not at all. Move a file to another group to compensate it differently. The editor, the gallery and a rules run all read files compensated this way; gates stay where they are, so a new matrix moves the events under them."
+            }
+            for (group, members, notes) in groups {
+                CompensationGroup {
+                    key: "{group.id}",
+                    group: group.clone(),
+                    members,
+                    notes,
+                    choices: choices.clone(),
+                    busy,
+                    on_action,
+                }
+            }
+            div { class: "workspace-buttons",
+                button {
+                    disabled: busy,
+                    onclick: move |_| on_action.call(CompensationAction::NewGroup),
+                    "New group"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompensationGroup(
+    group: crate::compensation::groups::Group,
+    members: Vec<(PathBuf, String)>,
+    notes: Vec<String>,
+    choices: Vec<(GroupId, String)>,
+    busy: bool,
+    on_action: EventHandler<CompensationAction>,
+) -> Element {
+    let toasts = use_toast();
+    let id = group.id;
+    let mut typed = use_signal(|| None::<String>);
+    let loaded_path = match &group.source {
+        Source::Loaded { path, .. } | Source::Unreadable { path, .. } => path.display().to_string(),
+        _ => String::new(),
+    };
+    let shown = typed().unwrap_or(loaded_path);
+    let selected = match &group.source {
+        Source::None => "none",
+        Source::FilesOwn => "own",
+        Source::Loaded { .. } | Source::Unreadable { .. } => "csv",
+    };
+    let count = members.len();
+
+    rsx! {
+        div { class: "workspace-comp-group",
+            div { class: "workspace-path",
+                input {
+                    class: "workspace-comp-name",
+                    value: "{group.name}",
+                    disabled: busy,
+                    onchange: move |e| on_action.call(CompensationAction::Rename(id, e.value())),
+                }
+                span { class: "workspace-status",
+                    if count == 1 { "1 file" } else { "{count} files" }
+                }
+                // Each option says whether it is the one chosen, rather than
+                // the select being given a value: the CSV option only exists
+                // once a matrix is loaded, and a value set before its option
+                // exists is not applied, which left the list showing the
+                // group's old source.
+                select {
+                    disabled: busy,
+                    onchange: move |e| match e.value().as_str() {
+                        "none" => on_action.call(CompensationAction::Source(id, Source::None)),
+                        "own" => on_action.call(CompensationAction::Source(id, Source::FilesOwn)),
+                        _ => {}
+                    },
+                    option { value: "own", selected: selected == "own", "each file's own matrix" }
+                    option { value: "none", selected: selected == "none", "no compensation" }
+                    if selected == "csv" {
+                        option { value: "csv", selected: true, "matrix from {group.source.describe()}" }
+                    }
+                }
+                if count == 0 {
+                    button {
+                        disabled: busy,
+                        onclick: move |_| on_action.call(CompensationAction::Remove(id)),
+                        "remove group"
+                    }
+                }
+            }
+            div { class: "workspace-path",
+                input {
+                    value: "{shown}",
+                    disabled: busy,
+                    placeholder: "a compensation matrix CSV exported from Omiq",
+                    oninput: move |e| typed.set(Some(e.value())),
+                }
+                button {
+                    disabled: busy,
+                    onclick: {
+                        let start = PathBuf::from(shown.trim());
+                        move |_| {
+                            let start = start.clone();
+                            spawn(async move {
+                                let filter = ["csv".to_string()];
+                                match choose(Pick::OpenFile, &start, "CSV", &filter, false).await {
+                                    Chosen::Picked(picked) => {
+                                        if let Some(path) = picked.into_iter().next() {
+                                            typed.set(None);
+                                            on_action.call(CompensationAction::LoadCsv(id, path));
+                                        }
+                                    }
+                                    Chosen::Cancelled => {}
+                                    Chosen::Unavailable => warn(&toasts, UNAVAILABLE),
+                                }
+                            });
+                        }
+                    },
+                    "Choose..."
+                }
+                button {
+                    class: "workspace-primary",
+                    disabled: busy || shown.trim().is_empty(),
+                    onclick: {
+                        let path = PathBuf::from(shown.trim());
+                        move |_| {
+                            typed.set(None);
+                            on_action.call(CompensationAction::LoadCsv(id, path.clone()));
+                        }
+                    },
+                    "Load matrix"
+                }
+            }
+            for note in notes {
+                p { class: "workspace-problem", "{note}" }
+            }
+            if count > 0 {
+                details {
+                    summary { class: "workspace-dim", "Files in this group" }
+                    div { class: "workspace-files",
+                        table { class: "workspace-table",
+                            tbody {
+                                for (path, name) in members {
+                                    tr { key: "{path.display()}",
+                                        td { title: "{path.display()}", "{name}" }
+                                        td {
+                                            select {
+                                                disabled: busy,
+                                                onchange: {
+                                                    let path = path.clone();
+                                                    move |e: FormEvent| {
+                                                        let to = e.value().parse::<GroupId>().ok();
+                                                        on_action.call(CompensationAction::Move(path.clone(), to));
+                                                    }
+                                                },
+                                                for (other, other_name) in choices.iter() {
+                                                    option {
+                                                        value: "{other}",
+                                                        selected: *other == id,
+                                                        "{other_name}"
+                                                    }
+                                                }
+                                                option { value: "new", "a new group" }
+                                            }
                                         }
                                     }
                                 }

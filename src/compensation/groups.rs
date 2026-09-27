@@ -22,6 +22,10 @@ use std::sync::Arc;
 
 pub type GroupId = u32;
 
+/// How far, in percentage points, a loaded matrix may be from a file's own
+/// before [`Compensation::check`] mentions it.
+pub const FAR_FROM_OWN: f64 = 10.0;
+
 /// What a group's files are compensated with.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
@@ -84,6 +88,95 @@ pub struct Compensation {
 }
 
 impl Compensation {
+    /// Bring the groups in step with the workspace's files: each file not
+    /// here yet is added as [`Compensation::add_file`] does, and each file no
+    /// longer in the workspace taken out. Files already here stay where they
+    /// are.
+    pub fn sync(&mut self, files: Vec<(PathBuf, Result<Option<Spillover>, String>)>) {
+        let present: std::collections::BTreeSet<PathBuf> =
+            files.iter().map(|(p, _)| p.clone()).collect();
+        let gone: Vec<PathBuf> = self
+            .files
+            .keys()
+            .filter(|p| !present.contains(*p))
+            .cloned()
+            .collect();
+        for path in gone {
+            self.remove_file(&path);
+        }
+        for (path, own) in files {
+            self.add_file(path, own);
+        }
+    }
+
+    /// What is wrong, or worth knowing, about how a group's files will be
+    /// compensated - for showing beside the group. `channels_of` gives a
+    /// file's channels, as (`$PnN`, `$PnS`).
+    ///
+    /// - A file that cannot be compensated as the group says, and why.
+    /// - A loaded matrix that does not fit a file's channels.
+    /// - A loaded matrix far from a file's own, or that fits it better read
+    ///   the other way round - usually the wrong matrix, or rows and columns
+    ///   swapped.
+    pub fn check(
+        &self,
+        group: GroupId,
+        channels_of: impl Fn(&Path) -> Vec<(String, Option<String>)>,
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        let Some(g) = self.group(group) else {
+            return notes;
+        };
+        let name = |p: &Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        };
+        let mut far = 0usize;
+        let mut swapped = 0usize;
+        for path in self.files_in(group) {
+            let matrix = match self.matrix_for(path) {
+                Ok(Some(m)) => m,
+                Ok(None) => continue,
+                Err(why) => {
+                    notes.push(format!("{}: {why}", name(path)));
+                    continue;
+                }
+            };
+            let channels = channels_of(path);
+            let lookup: Vec<(&str, Option<&str>)> = channels
+                .iter()
+                .map(|(n, l)| (n.as_str(), l.as_deref()))
+                .collect();
+            if let Err(why) = matrix.resolve(&lookup) {
+                notes.push(format!("{}: the matrix does not fit it: {why}", name(path)));
+                continue;
+            }
+            if let (Source::Loaded { .. }, Some(Ok(Some(own)))) = (&g.source, self.own_matrix(path))
+                && let Some(c) = own.compare(&matrix)
+            {
+                if c.transposed_fits_better {
+                    swapped += 1;
+                } else if c.largest_difference > FAR_FROM_OWN {
+                    far += 1;
+                }
+            }
+        }
+        if swapped > 0 {
+            notes.push(format!(
+                "The loaded matrix is closer to {swapped} of these files' own matrices read the other way round. \
+                 A spillover matrix has each fluorochrome in a row and each detector in a column; check how it was exported."
+            ));
+        }
+        if far > 0 {
+            notes.push(format!(
+                "The loaded matrix differs from {far} of these files' own matrices by more than {FAR_FROM_OWN} percentage points somewhere. \
+                 That is expected after recomputing compensation, but check it is the matrix meant for these files."
+            ));
+        }
+        notes
+    }
+
     /// Add a file, into the group formed around the same matrix as its own,
     /// or a new group if there is none. A file already here keeps its group.
     pub fn add_file(&mut self, path: PathBuf, own: Result<Option<Spillover>, String>) {

@@ -547,3 +547,120 @@ fn the_digest_follows_what_a_file_is_compensated_with() {
     assert_eq!(c.digest(&p("a")), before);
     assert_eq!(c.digest(&p("b")), untouched);
 }
+
+/// Kept in step with the workspace: new files are grouped, removed files
+/// leave, and a file that stays keeps the group it was moved to.
+#[test]
+fn groups_follow_the_workspaces_files() {
+    let mut c = Compensation::default();
+    c.sync(vec![
+        (p("a"), Ok(Some(three()))),
+        (p("b"), Ok(Some(three()))),
+    ]);
+    let own = c.new_group("By hand");
+    c.move_file(&p("b"), own).unwrap();
+    c.sync(vec![
+        (p("b"), Ok(Some(three()))),
+        (p("c"), Ok(Some(three()))),
+    ]);
+    assert_eq!(c.group_of(&p("a")), None);
+    assert_eq!(c.group_of(&p("b")), Some(own));
+    assert!(c.group_of(&p("c")).is_some());
+    assert_ne!(c.group_of(&p("c")), Some(own));
+}
+
+/// What a group is told about itself: files that cannot be compensated, a
+/// loaded matrix that does not fit a file, and one that looks transposed or
+/// far from the files' own.
+#[test]
+fn a_group_is_told_what_is_wrong_with_it() {
+    let channels = |_: &Path| {
+        vec![
+            ("FITC-A".to_string(), None),
+            ("PE-A".to_string(), None),
+            ("APC-A".to_string(), None),
+        ]
+    };
+    let mut c = Compensation::default();
+    c.add_file(p("a"), Ok(Some(three())));
+    let g = c.group_of(&p("a")).unwrap();
+    assert!(c.check(g, channels).is_empty(), "its own matrix fits");
+
+    let s = three();
+    let transposed = Spillover::new(
+        s.channels().to_vec(),
+        (0..9).map(|k| s.value(k % 3, k / 3)).collect(),
+    )
+    .unwrap();
+    let loaded = |m: Spillover| Source::Loaded {
+        path: "/m.csv".into(),
+        matrix: Arc::new(m),
+    };
+    c.set_source(g, loaded(transposed)).unwrap();
+    let notes = c.check(g, channels);
+    assert!(
+        notes.iter().any(|n| n.contains("the other way round")),
+        "{notes:?}"
+    );
+
+    let mut far = three();
+    far = Spillover::new(far.channels().to_vec(), {
+        let mut v: Vec<f64> = (0..9).map(|k| far.value(k / 3, k % 3)).collect();
+        v[1] = 0.60;
+        v
+    })
+    .unwrap();
+    c.set_source(g, loaded(far)).unwrap();
+    let notes = c.check(g, channels);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("more than 10 percentage points")),
+        "{notes:?}"
+    );
+
+    c.set_source(g, loaded(matrix(&["FITC-A", "BV421-A"], &identity(2))))
+        .unwrap();
+    let notes = c.check(g, channels);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n
+                .contains("a.fcs: the matrix does not fit it: the file has no channel BV421-A")),
+        "{notes:?}"
+    );
+
+    c.set_source(
+        g,
+        Source::Unreadable {
+            path: "/m.csv".into(),
+            why: "gone".into(),
+        },
+    )
+    .unwrap();
+    assert!(
+        c.check(g, channels)
+            .iter()
+            .any(|n| n.contains("could not be read: gone"))
+    );
+}
+
+/// A file's channels are its `$PnN`s in order, with a label only where the
+/// file gives one.
+#[test]
+fn a_files_channels_come_with_their_labels() {
+    let dir = scratch("channels-of");
+    let path = file_with(&dir, "labels.fcs", &[]);
+    let stub = FcsSampleStub::open(&path.to_string_lossy()).unwrap();
+    assert_eq!(
+        super::channels_of(&stub),
+        [
+            ("FITC-A".to_string(), Some("CD3".to_string())),
+            ("PE-A".to_string(), Some("CD4".to_string())),
+            ("APC-A".to_string(), None),
+        ]
+    );
+    let owns = super::own_matrices(&[stub]);
+    assert_eq!(owns.len(), 1);
+    assert_eq!(owns[0].1, Ok(None));
+}

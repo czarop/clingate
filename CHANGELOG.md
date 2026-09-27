@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Compensation, with groups as in Omiq.** The Workspace tab groups the FCS
+  files by the spillover matrix each carries (`$SPILLOVER`, or BD's `SPILL`);
+  files with none share a group. Each group is compensated with its files'
+  own matrices, a matrix exported from Omiq as CSV (channel names across the
+  top, percent), or not at all, and any file can be moved to another group or
+  a new one. The editor, the gallery and rules runs all read files
+  compensated this way. A loaded matrix that fits a file's own better read
+  the other way round, or differs from it by more than 10 points, is pointed
+  out; a file that cannot be compensated as its group says is shown with the
+  reason rather than drawn uncompensated. The groups are remembered with the
+  workspace.
+
 - **A rule that finds a population by what it is, rather than where it sat.**
   The cells inside the gate on the reference sample are described by where they
   sit across markers you choose, and that description is used to find the same

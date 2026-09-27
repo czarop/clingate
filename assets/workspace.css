@@ -82,3 +82,13 @@
 /* The action column takes only what its button needs, so a long path cannot
    squeeze "remove" into a column of single letters. */
 .workspace-table td:last-child { width: 1%; }
+
+/* A compensation group: its name, source and files, set off from the next. */
+.workspace-comp-group {
+    border-top: 1px solid #3a3a3a;
+    padding: 0.5rem 0;
+}
+.workspace-comp-group:first-of-type { border-top: none; }
+.workspace-comp-group .workspace-comp-name { flex: 0 1 18rem; min-width: 10rem; }
+.workspace-comp-group details { margin-top: 0.35rem; }
+.workspace-comp-group summary { cursor: pointer; font-size: 0.85rem; }
