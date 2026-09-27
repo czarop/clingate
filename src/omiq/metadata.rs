@@ -37,6 +37,16 @@ pub const OMIQ_ID_COLUMN: &str = "OmiqID";
 pub const OMIQ_FILE_NAME_COLUMN: &str = "Filename";
 
 impl MetaDataStore {
+    /// Each file's metadata, by gating id.
+    pub fn metadata(&self) -> &MetaDataFileMap {
+        &self.metadata
+    }
+
+    /// Each file's gating id, by its name in the program.
+    pub fn file_name_to_gating_id(&self) -> &HashMap<Arc<str>, FileId, FxBuildHasher> {
+        &self.file_name_to_gating_id
+    }
+
     /// Read an Omiq metadata export, and what a person should be told about
     /// it - rows that could not be read, names on more than one row.
     pub fn read_omiq(path: PathBuf) -> anyhow::Result<(Self, Vec<String>)> {
