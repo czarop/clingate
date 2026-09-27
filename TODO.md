@@ -142,6 +142,45 @@ these behind and we keep them verbatim so the boolean stays evaluable.
       looking at. `as_parent_node` still resolves a bare gate id to its first
       position, for callers that have not been converted.
 
+## Compensation
+
+Built and unit-tested - groups as in Omiq, the matrix applied in Omiq taken
+back out and the wanted one put in, export for Omiq and for the exported files,
+and the tabbed panel on the Workspace tab (`src/compensation.rs`,
+`src/compensation/groups.rs`, `src/gate_editor/compensation_panel.rs`). The
+fixture tests pin the arithmetic against Omiq's own exports. What they cannot
+show is that it holds up on real work, and that is the user's to do.
+
+- [ ] **Test the whole workflow by hand, extensively.** On a real plate, with
+      files exported from Omiq both with and without compensation applied:
+      - The grouping: files land in the groups expected; Assign files (search,
+        multi-select, shift-click, new group) moves them; groups and answers
+        survive closing and reopening the workspace.
+      - The Omiq question: "No compensation applied in Omiq" draws the files as
+        they are; "Compensation applied in Omiq" with Omiq's matrix pasted
+        draws them identically to before (nothing changes until an edit).
+        Bad pastes are refused with a reason that makes sense.
+      - An edit here moves only what it should, in the editor, the gallery and
+        a rules run alike.
+      - **The round trip:** edit here, Copy matrix for Omiq, paste into Omiq,
+        export again from Omiq, load the new export, answer "applied" with the
+        new matrix - the plots should look the same as they did here before
+        the round trip.
+      - "Save matrix for the exported files" gives the right correction in
+        whatever other software would use it.
+      - The 38-channel grid stays responsive to edit.
+- [ ] **Omiq exports that carry a `$SPILLOVER`.** The Plate_10 exports carry a
+      32-channel matrix in their header, though the earlier test exports carried
+      none - probably the cytometer's matrix passed through by Omiq. They are
+      grouped by that matrix (source "each file's own") and still asked the Omiq
+      question. Confirm what that matrix is, and whether Omiq's own
+      compensation of such a file is baked in on top of it, before trusting a
+      group of them.
+- [ ] **An on-plot nudge.** Discussed, not built: drag one spillover value
+      while watching the two-channel plot it affects, as in FlowJo's
+      compensation editor. Only worth doing once the grid has been used enough
+      to know it is too slow for this.
+
 ## Gate rules
 
 The rules approach to autogating: a written rule says where a gate belongs, it
