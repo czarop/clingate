@@ -26,6 +26,7 @@ pub mod omiq;
 pub mod sample_pairs;
 #[cfg(test)]
 mod sample_pairs_tests;
+pub mod session;
 pub mod workspace;
 
 /// An insertion-ordered map with the fast hasher.
