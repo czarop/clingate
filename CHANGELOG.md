@@ -23,6 +23,17 @@
   here; loading a matrix over Omiq exports is warned against as compensating
   twice. Compensating an uncompensated Omiq export with Omiq's matrix here
   reproduces Omiq's compensated export.
+- **Editing compensation, and taking it back to Omiq.** Each compensation
+  group holds what is wanted and, for files exported from Omiq, what Omiq
+  already applied - which the file does not record, so a group of Omiq
+  exports asks: exported without compensation, or compensated with this
+  matrix? A file is then read with what was applied taken back out and what
+  is wanted put in, so an edit applies only the change. The matrix is shown
+  and edited as Omiq shows it (rows spill, columns receive, percent), with
+  entries that differ from what Omiq applied marked. It can be saved as CSV
+  or copied to the clipboard for pasting into Omiq, and - for software that
+  compensates the exported files themselves - saved as the correction on top
+  of what Omiq applied. Omiq exports get a group of their own.
 
 - **A rule that finds a population by what it is, rather than where it sat.**
   The cells inside the gate on the reference sample are described by where they

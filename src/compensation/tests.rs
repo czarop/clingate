@@ -1084,7 +1084,8 @@ fn what_omiq_applied_touches_only_omiq_exports() {
     c.add_file(p("cytometer"), Ok(None));
     c.add(FileMatrix::from_omiq(p("omiq")));
     let g = c.group_of(&p("cytometer")).unwrap();
-    assert_eq!(c.group_of(&p("omiq")), Some(g));
+    // Moved in with the cytometer's file: a group can hold both.
+    c.move_file(&p("omiq"), g).unwrap();
     c.set_applied(
         g,
         Applied::Matrix {
@@ -1256,4 +1257,37 @@ fn a_new_matrix_is_over_the_channels_omiq_lists() {
         super::fluorescence_channels(&stub).as_slice(),
         omiqs.channels()
     );
+}
+
+/// Omiq exports have a group of their own, apart from files the cytometer
+/// wrote without a matrix: those have nothing applied and are never asked,
+/// while Omiq exports have to say what Omiq applied.
+#[test]
+fn omiq_exports_are_grouped_apart_from_raw_files_without_a_matrix() {
+    let mut c = Compensation::default();
+    c.add_file(p("raw"), Ok(None));
+    c.add(FileMatrix::from_omiq(p("omiq1")));
+    c.add(FileMatrix::from_omiq(p("omiq2")));
+    let (raw, omiq) = (
+        c.group_of(&p("raw")).unwrap(),
+        c.group_of(&p("omiq1")).unwrap(),
+    );
+    assert_ne!(raw, omiq);
+    assert_eq!(c.group_of(&p("omiq2")), Some(omiq));
+    assert!(c.group(omiq).unwrap().name.ends_with("Exported from Omiq"));
+    assert!(c.unanswered(omiq) && !c.unanswered(raw));
+
+    // Remembered, a new Omiq export still joins them.
+    let saved = c.saved();
+    let back = Compensation::restore(
+        &saved,
+        vec![
+            FileMatrix::new(p("raw"), Ok(None)),
+            FileMatrix::from_omiq(p("omiq1")),
+            FileMatrix::from_omiq(p("omiq3")),
+        ],
+        |_| unreachable!(),
+    );
+    assert_eq!(back.group_of(&p("omiq3")), back.group_of(&p("omiq1")));
+    assert_ne!(back.group_of(&p("omiq3")), back.group_of(&p("raw")));
 }

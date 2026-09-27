@@ -192,6 +192,10 @@ pub struct Group {
     formed_around: Option<Arc<Spillover>>,
     /// Whether this is the group files without a matrix of their own join.
     for_files_without: bool,
+    /// Whether this is the group Omiq exports join. Kept apart from files
+    /// the cytometer wrote without a matrix: those have nothing applied,
+    /// and Omiq exports have to say what they have.
+    for_omiq_exports: bool,
 }
 
 /// What one file carries.
@@ -336,6 +340,17 @@ impl Compensation {
                     let name = format!("{} channels, from the files", matrix.channels().len());
                     self.push_group(name, Source::FilesOwn, Some(matrix.clone()), false)
                 }),
+            Ok(None) if written_by_omiq => self
+                .groups
+                .iter()
+                .find(|g| g.for_omiq_exports)
+                .map(|g| g.id)
+                .unwrap_or_else(|| {
+                    let id =
+                        self.push_group("Exported from Omiq".into(), Source::None, None, false);
+                    self.group_mut(id).expect("just made").for_omiq_exports = true;
+                    id
+                }),
             Ok(None) => self
                 .groups
                 .iter()
@@ -375,6 +390,7 @@ impl Compensation {
             applied: Applied::Unknown,
             formed_around,
             for_files_without,
+            for_omiq_exports: false,
         });
         id
     }
@@ -390,7 +406,7 @@ impl Compensation {
             self.groups.retain(|g| {
                 g.id != member.group
                     || !(matches!(g.source, Source::FilesOwn | Source::None)
-                        && (g.formed_around.is_some() || g.for_files_without))
+                        && (g.formed_around.is_some() || g.for_files_without || g.for_omiq_exports))
             });
         }
     }
@@ -406,6 +422,7 @@ impl Compensation {
             applied: Applied::Unknown,
             formed_around: None,
             for_files_without: false,
+            for_omiq_exports: false,
         });
         id
     }
@@ -813,12 +830,13 @@ impl Compensation {
         // Groups keep joining files with their matrix: each is formed around
         // the matrix its files carry, if they all carry the same one.
         for g in &mut this.groups {
-            let owns: Vec<&Result<Option<Arc<Spillover>>, String>> = this
-                .files
-                .values()
-                .filter(|m| m.group == g.id)
-                .map(|m| &m.own)
-                .collect();
+            let members: Vec<&Member> = this.files.values().filter(|m| m.group == g.id).collect();
+            if !members.is_empty() && members.iter().all(|m| m.omiq && matches!(m.own, Ok(None))) {
+                g.for_omiq_exports = true;
+                continue;
+            }
+            let owns: Vec<&Result<Option<Arc<Spillover>>, String>> =
+                members.iter().map(|m| &m.own).collect();
             match owns.first() {
                 Some(Ok(Some(first)))
                     if owns
