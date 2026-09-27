@@ -4,6 +4,39 @@ Open work. Items carry enough context to be picked up cold. The detail behind
 each is in `docs/test-audit.md` (bugs found in clingate, by id) and
 `docs/flow-review.md` (the review of the flow crates, by number).
 
+## Tools for Claude over MCP
+
+The aim: Claude Desktop drives clingate headless through MCP tools that
+compute and act - understand what is happening in the data and, in time,
+take action - built on the same code the app uses. First the restructuring
+that makes the code usable as tools. Decided:
+
+- Three crates in one Cargo workspace: `clingate-core` (everything that
+  computes), `clingate` (the desktop app), later `clingate-mcp`.
+- The core keeps `derive(Store)` and its store methods, so the app keeps its
+  fine-grained reactivity, and depends on `dioxus-stores` only - the reactive
+  core, no renderer, webview or GTK. Nothing in the core may use components,
+  `rsx!`, `use_context` or other UI.
+
+Each stage leaves behaviour unchanged and is checked with the full suite and in
+the running app.
+
+- [ ] **Stage 1 - operations out of the UI files.** The rules run
+      (`run_solve`, `measure_all`) out of `gate_rules_window.rs`; one events
+      pipeline (open, compensate, scale, filter by the gate chain, index)
+      shared by the editor, the gallery and the rules run, in place of three;
+      workspace loading (metadata, scaling with gates carried across, gating)
+      as plain functions the Workspace tab calls.
+- [ ] **Stage 2 - the core modules use only `dioxus-stores`.**
+- [ ] **Stage 3 - split the crates.** `git mv`, so history is kept.
+- [ ] **Stage 4 - a headless `Session`** holding workspace, gates, metadata,
+      scaling, compensation and rules, with load and save, and serialisable
+      operations with stable ids (samples by program name, populations by
+      gate path, parameters by channel). The first data-understanding
+      operations go here.
+- [ ] **Stage 5 - `clingate-mcp`**, an `rmcp` stdio server over the session,
+      built for Windows and macOS.
+
 ## Compensation
 
 Built and unit-tested - groups as in Omiq, the matrix applied in Omiq taken
