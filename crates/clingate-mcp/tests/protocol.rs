@@ -1,0 +1,223 @@
+//! The server as Claude Desktop runs it: the real binary, spoken to over
+//! stdin and stdout, one JSON-RPC message per line.
+
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+use clingate_core::file_load_tests::{scratch, write_fcs_rows};
+use rand::SeedableRng;
+use rand_distr::{Distribution, Normal, Uniform};
+use serde_json::{Value, json};
+
+const FLUORESCENCE: [&str; 8] = [
+    "BUV661-A",
+    "BV785-A",
+    "Alexa Fluor 700-A",
+    "BUV737-A",
+    "BUV805-A",
+    "BUV563-A",
+    "Alexa Fluor 647-A",
+    "Vio Bright 423-A",
+];
+
+fn events(seed: u64) -> Vec<Vec<f32>> {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let scatter = Uniform::new(1_000.0f32, 4_000_000.0).unwrap();
+    let negative = Normal::new(0.0f32, 300.0).unwrap();
+    let positive = Normal::new(40_000.0f32, 8_000.0).unwrap();
+    (0..2_000)
+        .map(|i| {
+            let mut row = vec![scatter.sample(&mut rng), scatter.sample(&mut rng)];
+            for c in 0..FLUORESCENCE.len() {
+                row.push(if (i + c) % 3 == 0 {
+                    positive.sample(&mut rng)
+                } else {
+                    negative.sample(&mut rng)
+                });
+            }
+            row
+        })
+        .collect()
+}
+
+/// Two samples, metadata, scaling, and the core's gating fixture.
+fn workspace() -> PathBuf {
+    let dir = scratch("mcp-protocol");
+    let mut channels: Vec<(&str, Option<&str>)> = vec![("FSC-A", None), ("SSC-A", None)];
+    channels.extend(FLUORESCENCE.iter().map(|c| (*c, None)));
+    write_fcs_rows(&dir.join("sample1_FMX.fcs"), &channels, &events(1), &[]);
+    write_fcs_rows(&dir.join("sample2_FS.fcs"), &channels, &events(2), &[]);
+    std::fs::write(
+        dir.join("metadata.csv"),
+        "OmiqID,Filename,test,Type,SampleType\n\
+         sample1,sample1_FMX.fcs,one,one,FMX\n\
+         sample2,sample2_FS.fcs,two,two,FS\n",
+    )
+    .unwrap();
+    let mut scaling = String::from(
+        "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
+         FSC-A,,None (linear),0,0,4194304,0,0\n\
+         SSC-A,,None (linear),0,0,4194304,0,0\n",
+    );
+    for c in FLUORESCENCE {
+        scaling.push_str(&format!("{c},{c},Arcsinh,6000,-2000,200000,0,0\n"));
+    }
+    std::fs::write(dir.join("scaling.csv"), scaling).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../clingate-core/tests/fixtures/quadrant_with_boolean_child.omiqgt"),
+        dir.join("gating.omiqgt"),
+    )
+    .unwrap();
+    dir
+}
+
+struct Server {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next: u64,
+}
+
+impl Server {
+    fn start() -> Self {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_clingate-mcp"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the server starts");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut server = Self {
+            child,
+            stdin,
+            stdout,
+            next: 0,
+        };
+        let init = server.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"}
+            }),
+        );
+        assert_eq!(init["result"]["serverInfo"]["name"], "clingate");
+        assert!(
+            init["result"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("ask the user")
+        );
+        server.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        server
+    }
+
+    fn send(&mut self, message: Value) {
+        writeln!(self.stdin, "{message}").unwrap();
+        self.stdin.flush().unwrap();
+    }
+
+    /// Send a request and read up to its response. Every line on stdout has
+    /// to be a JSON-RPC message: anything else there would break a client.
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        self.next += 1;
+        let id = self.next;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        loop {
+            let mut line = String::new();
+            assert!(
+                self.stdout.read_line(&mut line).unwrap() > 0,
+                "the server closed"
+            );
+            let message: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
+                panic!("stdout carried something that is not JSON ({e}): {line}")
+            });
+            assert_eq!(message["jsonrpc"], "2.0", "{line}");
+            if message["id"] == json!(id) {
+                return message;
+            }
+        }
+    }
+
+    /// Call a tool; its answer, parsed.
+    fn call(&mut self, tool: &str, arguments: Value) -> Value {
+        let response = self.request("tools/call", json!({"name": tool, "arguments": arguments}));
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no answer from {tool}: {response}"));
+        serde_json::from_str(text).unwrap()
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+#[test]
+fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
+    let folder = workspace();
+    let mut server = Server::start();
+
+    let tools = server.request("tools/list", json!({}));
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for wanted in [
+        "open_workspace",
+        "workspace_overview",
+        "find_samples",
+        "list_populations",
+        "population_stats",
+        "distribution",
+        "answer_omiq_compensation",
+    ] {
+        assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
+    }
+
+    // Nothing open yet: the answer says to ask for a folder.
+    let early = server.call(
+        "population_stats",
+        json!({"population": "Tmem", "samples": "all"}),
+    );
+    assert_eq!(early["outcome"], "failed");
+    assert!(early["reason"].as_str().unwrap().contains("ask the user"));
+
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    assert_eq!(opened["result"]["samples"], 2);
+    assert_eq!(opened["result"]["parts"]["gating"]["state"], "loaded");
+
+    let stats = server.call(
+        "population_stats",
+        json!({"population": "Tmem", "samples": "fmx"}),
+    );
+    assert_eq!(stats["outcome"], "ok", "{stats}");
+    let rows = stats["result"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sample"], "sample1_FMX.fcs");
+    assert_eq!(rows[0]["total_events"], 2_000);
+
+    // A name that is nearly right is a question, with suggestions.
+    let asked = server.call("find_samples", json!({"query": "fm"}));
+    assert_eq!(asked["outcome"], "needs_clarification", "{asked}");
+    assert!(!asked["suggestions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_folder_that_is_not_there_is_said_so() {
+    let mut server = Server::start();
+    let answer = server.call("open_workspace", json!({"folder": "/no/such/folder"}));
+    assert_eq!(answer["outcome"], "failed");
+    assert!(answer["reason"].as_str().unwrap().contains("not a folder"));
+}

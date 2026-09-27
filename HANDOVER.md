@@ -23,7 +23,7 @@ is the import/export/editing substrate it needs.
 
 ## Layout
 
-Two crates in one Cargo workspace:
+Three crates in one Cargo workspace:
 
 - `crates/clingate-core` - everything that computes: FCS reading and
   compensation, the gates and the gating tree, axis settings, metadata, Omiq
@@ -33,6 +33,8 @@ Two crates in one Cargo workspace:
   anything driving clingate without a window uses it as the app does.
 - the root package, `clingate` - the desktop app: tabs, plots, editing, the
   gallery.
+- `crates/clingate-mcp` - clingate's tools for Claude over the Model Context
+  Protocol, a thin layer over `clingate_core::session`. See its README.
 
 ## Building and testing
 

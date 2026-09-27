@@ -31,13 +31,24 @@ the running app.
       nothing: a stdio tool server's protocol runs on stdout.
 - [x] **Stage 3 - split the crates.** `crates/clingate-core` and the app at
       the root; `git mv`, so history is kept.
-- [ ] **Stage 4 - a headless `Session`** holding workspace, gates, metadata,
-      scaling, compensation and rules, with load and save, and serialisable
-      operations with stable ids (samples by program name, populations by
-      gate path, parameters by channel). The first data-understanding
-      operations go here.
-- [ ] **Stage 5 - `clingate-mcp`**, an `rmcp` stdio server over the session,
-      built for Windows and macOS.
+- [x] **Stage 4 - a headless `Session`** (`clingate_core::session`): opens a
+      folder as the Workspace tab does, and answers by name - samples by any
+      word of file name or metadata, populations by gate-path markers,
+      parameters by marker or channel - strictly, with anything else a
+      question carrying suggestions. First queries: overview, samples,
+      populations, population stats, distribution; the Omiq compensation
+      answer.
+- [x] **Stage 5 - `clingate-mcp`** (`crates/clingate-mcp`): an `rmcp` stdio
+      server over the session, seven tools; how to add it to Claude Desktop is
+      in its README. Tested by running the binary over the protocol.
+- [ ] **Try it in Claude Desktop** on macOS and Windows, and see what the
+      questions actually asked need next.
+- [ ] **More tools** - rules (a practice run, then applying), comparing a
+      sample with its QC, writing the gating file. To be shaped by use.
+- [ ] **A cache of scaled events**, if questions over a plate get slow: each
+      question reads its files afresh, as the editor does per plot. Keyed by
+      path, file modification time, cofactors and compensation, so a change
+      to any of them misses rather than serving stale events.
 
 ## Compensation
 

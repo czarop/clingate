@@ -457,13 +457,14 @@ impl Session {
                 parent_inside_fraction: if values.is_empty() {
                     None
                 } else {
-                    Some(
+                    Some(round(
                         values
                             .iter()
                             .filter(|v| **v >= lower as f64 && **v <= upper as f64)
                             .count() as f64
                             / values.len() as f64,
-                    )
+                        4,
+                    ))
                 },
             });
 

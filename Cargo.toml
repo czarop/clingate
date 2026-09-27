@@ -5,7 +5,7 @@ edition = "2024"
 resolver = "2"
 
 [workspace]
-members = ["crates/clingate-core"]
+members = ["crates/clingate-core", "crates/clingate-mcp"]
 
 [dependencies]
 clingate-core = { path = "crates/clingate-core" }

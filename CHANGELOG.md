@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Tools for Claude.** `clingate-mcp` serves a workspace to Claude Desktop
+  over the Model Context Protocol: open a folder, see what it holds, find
+  samples, list populations, count a population across samples, and see how a
+  population's parent is spread on a parameter and where its gate sits. Names
+  are the ones a person uses - samples by any word of their file name or
+  metadata, populations by the markers of their gate path, parameters by
+  marker or channel - and matching is strict: anything short of an exact
+  match is a question with suggestions, never a guess. Underneath, the
+  computing half of clingate is now its own crate, `clingate-core`, which
+  needs no window, and the editor, gallery and rules run read events one way.
+
 - **Compensation, with groups as in Omiq.** The Workspace tab groups the FCS
   files by the spillover matrix each carries (`$SPILLOVER`, or BD's `SPILL`);
   files with none share a group. Each group is compensated with its files'
