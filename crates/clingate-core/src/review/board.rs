@@ -482,6 +482,75 @@ mod tests {
     }
 
     #[test]
+    fn gates_left_alone_are_on_the_board_and_passed_are_in_gate_then_sample_order() {
+        let run = run();
+        let assessment = assess(&run, None);
+        let board = board(
+            &run,
+            &assessment,
+            &[],
+            &LooksRight::default(),
+            &GateState::default(),
+            &MetaDataFileMap::default(),
+        );
+        // a, b and c, left alone as meeting their rule; ref, the reference, not.
+        let passed: Vec<&str> = board
+            .pile(Pile::Passed)
+            .map(|e| e.sample.id.as_str())
+            .collect();
+        assert_eq!(passed, vec!["a", "b", "c"]);
+        assert!(
+            board
+                .pile(Pile::Passed)
+                .all(|e| !e.moved && e.status.is_none())
+        );
+        assert_eq!(board.run_applied_at, "t1");
+    }
+
+    #[test]
+    fn a_placement_whose_gate_is_gone_has_changed() {
+        let mut run = run();
+        run.placed.push(placed("x", "Gone+"));
+        let assessment = assess(&run, None);
+        let board = board(
+            &run,
+            &assessment,
+            &[],
+            &LooksRight::default(),
+            &GateState::default(),
+            &MetaDataFileMap::default(),
+        );
+        let x = board.entries.iter().find(|e| e.sample.id == "x").unwrap();
+        assert_eq!(x.pile, Pile::Changed);
+        assert_eq!(x.status, Some(PlacementStatus::Gone));
+    }
+
+    #[test]
+    fn a_damaged_looks_right_file_clears_nothing() {
+        let folder = crate::file_load_tests::scratch("board-looks-right-damaged");
+        let path = LooksRight::file_in(&folder);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ broken").unwrap();
+        let held = LooksRight::load(&folder, &run());
+        assert!(held.placements.is_empty());
+        assert_eq!(held.run_applied_at, "t1");
+        // And marking replaces it with a good one.
+        LooksRight::set(&folder, &run(), "g", "s", true).unwrap();
+        assert!(LooksRight::load(&folder, &run()).contains("g", "s"));
+    }
+
+    #[test]
+    fn every_pile_has_a_title() {
+        let titles: std::collections::HashSet<&str> = Pile::ALL.iter().map(|p| p.title()).collect();
+        assert_eq!(titles.len(), 4);
+        assert_eq!(Pile::NeedsALook.title(), "Needs a look");
+        assert_eq!(
+            serde_json::to_value(Pile::NeedsALook).unwrap(),
+            "needs_a_look"
+        );
+    }
+
+    #[test]
     fn looks_right_clears_a_flag_for_its_own_run_only() {
         let folder = crate::file_load_tests::scratch("board-looks-right");
         let run = run();

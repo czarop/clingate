@@ -286,12 +286,72 @@ fn pile_hint(pile: Pile) -> &'static str {
 
 /// Where one entry is drawn: the population above its gate, its axes, and
 /// the file.
-#[derive(Clone, PartialEq)]
-struct Drawn {
-    gate_node: NodeId,
-    parent: Arc<str>,
-    x: Param,
-    y: Param,
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Drawn {
+    pub gate_node: NodeId,
+    pub parent: Arc<str>,
+    pub x: Param,
+    pub y: Param,
+}
+
+/// Where a tile draws a placement: the population above its gate - the one
+/// the gate is drawn on - on the gate's own two parameters. `None` for a gate
+/// the document no longer has.
+pub(crate) fn where_drawn(
+    state: &GateState,
+    params: &[Param],
+    gate_id: &str,
+    parent_gate: Option<&str>,
+) -> Option<Drawn> {
+    let gate_node = clingate_core::review::report::node_named(state, gate_id, parent_gate)?;
+    let parent = state.parent_node(&gate_node)?;
+    let id: GateId = Arc::from(gate_id);
+    let (x, y) = state.registered_gate(&id)?.get_params();
+    let find = |channel: &Arc<str>| {
+        params
+            .iter()
+            .find(|p| p.fluoro == *channel)
+            .cloned()
+            .unwrap_or(Param {
+                marker: channel.clone(),
+                fluoro: channel.clone(),
+            })
+    };
+    Some(Drawn {
+        gate_node,
+        parent: Arc::from(parent.as_str()),
+        x: find(&x),
+        y: find(&y),
+    })
+}
+
+/// A sample's file in the workspace, by the name the run recorded.
+pub(crate) fn file_of(
+    files: &[(Arc<str>, PathBuf)],
+    sample: &SampleRef,
+) -> Option<(Arc<str>, PathBuf)> {
+    let name = sample.name.as_deref()?;
+    files.iter().find(|(n, _)| &**n == name).cloned()
+}
+
+/// What "Open in editor" sets the editor to: the population, each axis if
+/// the scaling has its channel, and the sample's place in the file list.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Focused {
+    pub parent: Arc<str>,
+    pub x: Option<Param>,
+    pub y: Option<Param>,
+    pub file: Option<usize>,
+}
+
+pub(crate) fn focus_on(focus: &EditorFocus, params: &[Param], files: &[Arc<str>]) -> Focused {
+    let param = |channel: &Arc<str>| params.iter().find(|p| p.fluoro == *channel).cloned();
+    Focused {
+        parent: focus.parent.clone(),
+        x: param(&focus.x),
+        y: param(&focus.y),
+        file: files.iter().position(|n| *n == focus.sample_name),
+    }
 }
 
 #[component]
@@ -311,45 +371,30 @@ fn ReviewTile(
     let toasts = use_toast();
 
     let drawn = {
-        let state = gates.read();
-        let gate_id: GateId = Arc::from(entry.gate_id.as_str());
-        clingate_core::review::report::node_named(
-            &state,
+        let params: Vec<Param> = axis_store
+            .sorted_settings()
+            .read()
+            .iter()
+            .cloned()
+            .collect();
+        where_drawn(
+            &gates.read(),
+            &params,
             &entry.gate_id,
             entry.parent_gate.as_deref(),
         )
-        .and_then(|gate_node| {
-            let parent = state.parent_node(&gate_node)?;
-            let (x, y) = state.registered_gate(&gate_id)?.get_params();
-            let axis = axis_store.sorted_settings();
-            let axis = axis.read();
-            let find = |channel: &Arc<str>| {
-                axis.iter()
-                    .find(|p| p.fluoro == *channel)
-                    .cloned()
-                    .unwrap_or(Param {
-                        marker: channel.clone(),
-                        fluoro: channel.clone(),
-                    })
-            };
-            Some(Drawn {
-                gate_node,
-                parent: Arc::from(parent.as_str()),
-                x: find(&x),
-                y: find(&y),
-            })
+    };
+    let files: Vec<(Arc<str>, PathBuf)> = filehandler
+        .read()
+        .as_ref()
+        .map(|f| {
+            f.file_list()
+                .iter()
+                .map(|s| (s.name.clone(), s.get_filepath().to_owned()))
+                .collect()
         })
-    };
-    let path_of = |sample: &SampleRef| -> Option<(Arc<str>, PathBuf)> {
-        let name = sample.name.as_deref()?;
-        filehandler
-            .read()
-            .as_ref()?
-            .file_list()
-            .iter()
-            .find(|s| &*s.name == name)
-            .map(|s| (s.name.clone(), s.get_filepath().to_owned()))
-    };
+        .unwrap_or_default();
+    let path_of = |sample: &SampleRef| file_of(&files, sample);
     let mine = path_of(&entry.sample);
     let peer = entry
         .flag

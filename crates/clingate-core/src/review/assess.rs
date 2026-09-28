@@ -187,16 +187,23 @@ impl Item<'_> {
         }
     }
 
-    /// The fraction of the population beyond the line, on the gate's side.
+    /// The fraction of this sample's population beyond the line, on the
+    /// gate's side.
+    ///
+    /// Read off the sample's own distribution. The run's `above_the_line` is
+    /// counted on whichever population the rule is judged on - for a rule
+    /// that reads the FMO, the FMO's - so comparing samples by it compared
+    /// references, and a flag quoted the FMO's fraction as the sample's. It
+    /// is the fallback only where no distribution was kept.
     fn fraction_beyond(&self) -> Option<f64> {
-        if let Some(b) = self.beyond {
-            return Some(b);
-        }
-        let below = self.shape?.fraction_below(self.line?);
-        Some(match self.bound? {
-            Bound::Above => 1.0 - below,
-            Bound::Below => below,
-        })
+        let from_shape = || {
+            let below = self.shape?.fraction_below(self.line?);
+            Some(match self.bound? {
+                Bound::Above => 1.0 - below,
+                Bound::Below => below,
+            })
+        };
+        from_shape().or(self.beyond)
     }
 }
 
@@ -816,7 +823,7 @@ pub fn compare_to_peers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::run_record::{ComponentRecord, PlacedRecord, SampleRef};
+    use crate::review::run_record::{ComponentRecord, KeptRecord, PlacedRecord, SampleRef};
     use crate::review::shape::summarise;
     use rand::SeedableRng;
     use rand_distr::{Distribution, Normal};
@@ -898,6 +905,274 @@ mod tests {
             kept: Vec::new(),
             skipped: Vec::new(),
         }
+    }
+
+    fn one_peak(centre: f64, sd: f64, seed: u64) -> Shape {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let d = Normal::new(centre, sd).unwrap();
+        summarise(&(0..5_000).map(|_| d.sample(&mut rng)).collect::<Vec<_>>()).unwrap()
+    }
+
+    fn with_type(mut p: PlacedRecord, sample_type: &str) -> PlacedRecord {
+        p.sample.sample_type = Some(sample_type.into());
+        p
+    }
+
+    fn run_of(placed: Vec<PlacedRecord>, kept: Vec<KeptRecord>) -> RunRecord {
+        RunRecord {
+            format: 1,
+            applied_at: "t".into(),
+            rules: Default::default(),
+            placed,
+            kept,
+            skipped: Vec::new(),
+        }
+    }
+
+    fn kept_at(n: usize, line: f64, shape: Shape, met_rule: bool) -> KeptRecord {
+        KeptRecord {
+            gate_id: "g".into(),
+            gate: "CD279+".into(),
+            parent_gate: Some("CD4+".into()),
+            specimen: format!("k{n}"),
+            sample: SampleRef {
+                id: format!("k{n}"),
+                name: Some(format!("k{n}_FS.fcs")),
+                sample_type: Some("FS".into()),
+            },
+            met_rule,
+            achieved: None,
+            above_the_line: None,
+            line: Some(line),
+            shape: Some(shape),
+            bound: Some(Bound::Above),
+        }
+    }
+
+    fn ten_alike() -> Vec<PlacedRecord> {
+        (0..10)
+            .map(|n| {
+                placed(
+                    n,
+                    1.5 + (n as f64 - 5.0) * 0.02,
+                    population(3.0, n as u64),
+                    0.8,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn what_a_gate_lets_through_is_read_off_the_sample_s_own_population() {
+        let mut p = placed(0, 1.5, population(3.0, 1), 0.8);
+        // The run's figure, counted on the FMO the rule read.
+        p.above_the_line = Some(0.9);
+        let item = from_placed(&p);
+        let own = item.fraction_beyond().unwrap();
+        assert!(
+            (own - 0.2).abs() < 0.03,
+            "a fifth of this sample is positive: {own}"
+        );
+        // The other side of the line keeps the rest.
+        p.bound = Some(Bound::Below);
+        let below = from_placed(&p).fraction_beyond().unwrap();
+        assert!((own + below - 1.0).abs() < 1e-9);
+        // With no distribution kept, the run's figure is all there is.
+        p.shape = None;
+        assert_eq!(from_placed(&p).fraction_beyond(), Some(0.9));
+    }
+
+    #[test]
+    fn samples_are_compared_only_with_samples_of_their_own_kind() {
+        // The FS gated in the valley, the FMX in the positive: each
+        // consistent with its own kind.
+        let mut placed_all = ten_alike();
+        placed_all.extend(
+            (10..20).map(|n| with_type(placed(n, 2.9, population(3.0, n as u64), 0.8), "FMX")),
+        );
+        let a = assess(&run_of(placed_all, Vec::new()), None);
+        assert!(a.flags.is_empty(), "{:#?}", a.flags);
+        assert_eq!(a.gates[0].by_type.len(), 2);
+    }
+
+    #[test]
+    fn a_reference_is_neither_judged_nor_a_peer() {
+        // A reference with its gate in the positive, and nine alike.
+        let mut placed_all = ten_alike();
+        placed_all.truncate(9);
+        let reference = kept_at(0, 2.9, population(3.0, 50), false);
+        let a = assess(&run_of(placed_all, vec![reference]), None);
+        assert!(a.flags.is_empty(), "{:#?}", a.flags);
+        assert_eq!(a.placements, 9, "references are not placements");
+        assert_eq!(a.gates[0].by_type[0].samples, 9);
+    }
+
+    #[test]
+    fn a_gate_the_run_left_alone_is_judged_like_any_other() {
+        let odd = kept_at(1, 2.9, population(3.0, 51), true);
+        let a = assess(&run_of(ten_alike(), vec![odd]), None);
+        assert_eq!(a.flags.len(), 1, "{:#?}", a.flags);
+        let flag = &a.flags[0];
+        assert_eq!(flag.sample.id, "k1");
+        assert!(!flag.moved);
+        assert_eq!(flag.confidence, None);
+        assert_eq!(flag.reasons[0].measure, "gate_between_peaks");
+    }
+
+    #[test]
+    fn with_too_few_confident_peers_every_peer_of_its_kind_is_used() {
+        // Unsure of all of them, but not so unsure as to flag that alone.
+        let mut placed_all: Vec<PlacedRecord> = ten_alike()
+            .into_iter()
+            .map(|mut p| {
+                p.confidence = 0.4;
+                p
+            })
+            .collect();
+        placed_all.push(placed(99, 2.9, population(3.0, 99), 0.4));
+        let a = assess(&run_of(placed_all, Vec::new()), None);
+        assert_eq!(a.flags.len(), 1, "{:#?}", a.flags);
+        assert!(!a.flags[0].confident_peers);
+        assert_eq!(a.flags[0].peers, 10);
+        assert_eq!(a.gates[0].by_type[0].confident, 0);
+    }
+
+    #[test]
+    fn a_placement_outside_its_band_is_flagged_as_such() {
+        let mut odd = placed(99, 1.5, population(3.0, 99), 0.9);
+        odd.in_band = false;
+        let a = assess(&run_with(Some(odd)), None);
+        assert_eq!(a.flags.len(), 1);
+        assert_eq!(a.flags[0].reasons[0].measure, "outside_band");
+        // And it does not count among the confident.
+        assert_eq!(a.gates[0].by_type[0].confident, 10);
+    }
+
+    #[test]
+    fn the_typical_peer_is_the_one_nearest_the_peers_middle() {
+        // Lines from 1.30 to 1.70 in steps: the middle one is f5.
+        let mut placed_all: Vec<PlacedRecord> = (0..11)
+            .map(|n| placed(n, 1.3 + n as f64 * 0.04, population(3.0, 7), 0.8))
+            .collect();
+        placed_all.push(placed(99, 2.9, population(3.0, 7), 0.8));
+        let a = assess(&run_of(placed_all, Vec::new()), None);
+        let flag = a.flags.iter().find(|f| f.sample.id == "f99").unwrap();
+        assert_eq!(flag.typical_peer.as_ref().unwrap().id, "f5");
+    }
+
+    #[test]
+    fn with_one_peak_the_gate_is_judged_against_the_spread() {
+        let mut placed_all: Vec<PlacedRecord> = (0..10)
+            .map(|n| placed(n, 1.0 + n as f64 * 0.01, one_peak(0.0, 1.0, n as u64), 0.8))
+            .collect();
+        placed_all.push(placed(99, 4.0, one_peak(0.0, 1.0, 99), 0.8));
+        let a = assess(&run_of(placed_all, Vec::new()), None);
+        let flag = a
+            .flags
+            .iter()
+            .find(|f| f.sample.id == "f99")
+            .expect("flagged");
+        assert_eq!(flag.reasons[0].measure, "gate_against_spread", "{flag:#?}");
+        assert!(flag.reasons[0].says.contains("IQRs from the median"));
+        assert!(a.flags.iter().all(|f| f.sample.id == "f99"));
+    }
+
+    #[test]
+    fn an_unusual_distribution_is_said_alongside_what_flagged_it() {
+        // The rule was unsure (the flag); the reasons say why the sample
+        // might be different: wider, shifted, one peak where its peers have two.
+        let mut wide = placed(97, 1.5, one_peak(1.0, 3.0, 97), 0.1);
+        wide.to = Some(1.5);
+        let a = assess(&run_with(Some(wide)), None);
+        let flag = &a.flags[0];
+        let measures: Vec<&str> = flag.reasons.iter().map(|r| r.measure).collect();
+        assert!(measures.contains(&"low_confidence"), "{measures:?}");
+        assert!(measures.contains(&"distribution_spread"), "{measures:?}");
+        assert!(measures.contains(&"peaks"), "{measures:?}");
+        let spread = flag
+            .reasons
+            .iter()
+            .find(|r| r.measure == "distribution_spread")
+            .unwrap();
+        assert!(spread.says.contains("as spread as its peers"));
+        let peaks = flag.reasons.iter().find(|r| r.measure == "peaks").unwrap();
+        assert!(
+            peaks
+                .says
+                .contains("one peak where 10 of its 10 peers have two"),
+            "{}",
+            peaks.says
+        );
+
+        let shifted = placed(98, 1.5, population(3.0, 98), 0.1);
+        let mut shifted = shifted;
+        shifted.shape = Some({
+            let mut s = population(3.0, 98);
+            for v in &mut s.percentiles {
+                *v += 5.0;
+            }
+            for p in &mut s.peaks {
+                p.at += 5.0;
+            }
+            s
+        });
+        let a = assess(&run_with(Some(shifted)), None);
+        let shift = a.flags[0]
+            .reasons
+            .iter()
+            .find(|r| r.measure == "distribution_shift");
+        assert!(shift.is_some(), "{:#?}", a.flags[0].reasons);
+        // Reasons are worst first.
+        for w in a.flags[0].reasons.windows(2) {
+            assert!(w[0].severity >= w[1].severity);
+        }
+    }
+
+    #[test]
+    fn each_gate_is_summed_up_across_the_run() {
+        let odd = placed(99, 2.9, population(3.0, 99), 0.2);
+        let a = assess(&run_with(Some(odd)), None);
+        assert_eq!(a.gates.len(), 1);
+        let gate = &a.gates[0];
+        assert_eq!(
+            (gate.gate.as_str(), gate.parent_gate.as_deref()),
+            ("CD279+", Some("CD4+"))
+        );
+        assert_eq!(gate.median_confidence, Some(0.8));
+        let fs = &gate.by_type[0];
+        assert_eq!(fs.sample_type.as_deref(), Some("FS"));
+        assert_eq!((fs.samples, fs.confident, fs.flagged), (11, 10, 1));
+        assert!((fs.typical_position_between_peaks.unwrap() - 0.5).abs() < 0.1);
+        let beyond = fs.typical_fraction_beyond.unwrap();
+        assert!((beyond - 0.2).abs() < 0.03, "{beyond}");
+    }
+
+    #[test]
+    fn a_kept_sample_is_compared_too_and_an_unflagged_one_has_no_reasons() {
+        let run = run_of(
+            ten_alike(),
+            vec![kept_at(1, 1.5, population(3.0, 60), true)],
+        );
+        let c = compare_to_peers(&run, "g", "k1").unwrap();
+        assert_eq!(c.confidence, None);
+        assert_eq!(c.keeps, Some("above the line"));
+        assert!(c.reasons.is_empty());
+        assert_eq!(c.events, Some(5_000));
+        let events = c.peer_events.unwrap();
+        assert_eq!(
+            (events.p10, events.median, events.p90),
+            (5_000.0, 5_000.0, 5_000.0)
+        );
+        for (_, here, peers) in &c.percentiles {
+            let peers = peers.as_ref().unwrap();
+            assert!(here.is_some());
+            assert!(peers.p10 <= peers.median && peers.median <= peers.p90);
+        }
+        let neg = c.peer_negative_peak.unwrap();
+        let pos = c.peer_positive_peak.unwrap();
+        assert!(neg.median.abs() < 0.2 && (pos.median - 3.0).abs() < 0.3);
+        assert_eq!(c.peaks.len(), 2);
+        assert!((c.position_between_peaks.unwrap() - 0.5).abs() < 0.1);
     }
 
     #[test]

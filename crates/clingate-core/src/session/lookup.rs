@@ -786,6 +786,8 @@ mod tests {
                 Ok(found) => assert!(!twinned && found == i, "{}", p.full_path()),
                 Err(asked) => assert!(twinned, "{asked:?}"),
             }
+            let padded = format!("  {}\t", p.label);
+            assert_eq!(one_population(&padded, &tree).unwrap(), i, "{padded:?}");
             let shouted = p.label.to_uppercase();
             assert_eq!(one_population(&shouted, &tree).unwrap(), i, "{shouted}");
         }

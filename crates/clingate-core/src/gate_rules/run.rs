@@ -1094,6 +1094,121 @@ mod tests {
             assert_eq!(back, again);
         }
 
+        #[test]
+        fn a_flag_on_a_gate_moved_since_says_so_and_goes_to_the_back() {
+            use crate::review::assess::assess;
+            use crate::review::run_record::PlacementStatus;
+            let inputs = three_donor_inputs("assess-status");
+            let (mut state, id, mut record) = applied(&inputs);
+            // Both unsure; fs_b the more so - the worse flag.
+            for p in &mut record.placed {
+                p.confidence = match p.sample.id.as_str() {
+                    "fs_a" => 0.2,
+                    "fs_b" => 0.05,
+                    _ => 0.9,
+                };
+            }
+            let now = (&state, &inputs.metadata);
+            let order: Vec<String> = assess(&record, Some(now))
+                .flags
+                .iter()
+                .map(|f| f.sample.id.clone())
+                .collect();
+            assert_eq!(order, vec!["fs_b", "fs_a"], "worst first");
+            assert!(
+                assess(&record, Some(now))
+                    .flags
+                    .iter()
+                    .all(|f| f.status == Some(PlacementStatus::AsPlaced))
+            );
+
+            // The reviewer moves fs_b: most likely dealt with, so it goes last.
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, 900.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+            let flags = assess(&record, Some((&state, &inputs.metadata))).flags;
+            let order: Vec<&str> = flags.iter().map(|f| f.sample.id.as_str()).collect();
+            assert_eq!(order, vec!["fs_a", "fs_b"]);
+            assert_eq!(flags[1].status, Some(PlacementStatus::Moved));
+            // Without the gates, no status is claimed.
+            assert!(
+                assess(&record, None)
+                    .flags
+                    .iter()
+                    .all(|f| f.status.is_none())
+            );
+        }
+
+        #[test]
+        fn the_board_of_a_workspace_reads_its_run_reports_and_cleared_flags() {
+            use crate::review::board::{LooksRight, Pile, board_in};
+            use crate::review::report::gather;
+            let inputs = three_donor_inputs("board-in");
+            let folder = folder_of(&inputs);
+            assert!(
+                board_in(&folder, &GateState::default(), &inputs.metadata)
+                    .unwrap()
+                    .is_none(),
+                "no run, no board"
+            );
+            let (mut state, id, mut record) = applied(&inputs);
+            for p in &mut record.placed {
+                p.confidence = if p.sample.id == "fs_c" { 0.9 } else { 0.1 };
+            }
+            record.save(&folder).unwrap();
+            let pile_of = |state: &GateState, sample: &str| {
+                board_in(&folder, state, &inputs.metadata)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+                    .into_iter()
+                    .find(|e| e.sample.id == sample)
+                    .unwrap()
+                    .pile
+            };
+            assert_eq!(pile_of(&state, "fs_a"), Pile::NeedsALook);
+            assert_eq!(pile_of(&state, "fs_b"), Pile::NeedsALook);
+            assert_eq!(pile_of(&state, "fs_c"), Pile::Passed);
+
+            // Reported, cleared, moved: each lands in its pile.
+            gather(
+                &folder,
+                &request(&state, &id, "fs_a"),
+                &state,
+                &inputs,
+                &Default::default(),
+            )
+            .unwrap()
+            .save(&folder)
+            .unwrap();
+            LooksRight::set(&folder, &record, "CD134+", "fs_b", true).unwrap();
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, 900.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_c"))),
+            );
+            assert_eq!(pile_of(&state, "fs_a"), Pile::Reported);
+            assert_eq!(pile_of(&state, "fs_b"), Pile::Passed);
+            assert_eq!(pile_of(&state, "fs_c"), Pile::Changed);
+            let board = board_in(&folder, &state, &inputs.metadata)
+                .unwrap()
+                .unwrap();
+            let b = board
+                .entries
+                .iter()
+                .find(|e| e.sample.id == "fs_b")
+                .unwrap();
+            assert!(b.looks_right && b.flag.is_some());
+            let a = board
+                .entries
+                .iter()
+                .find(|e| e.sample.id == "fs_a")
+                .unwrap();
+            assert_eq!(a.reports, 1);
+        }
+
         fn outcome_of_in(
             review: &crate::review::RunReview,
             sample: &str,

@@ -390,17 +390,7 @@ fn ReportTile(sample_name: Arc<str>, node: Arc<str>, x: Arc<str>, y: Arc<str>) -
             .read()
             .get(&sample_name)
             .cloned();
-        sample.and_then(|sample| {
-            let choices = crate::gate_editor::review::gates_on_plot(&state, &node, &x, &y);
-            let (first, gate) = choices.first().cloned()?;
-            Some(crate::gate_editor::review::ReportTarget {
-                node: first,
-                sample,
-                gate,
-                sample_name: sample_name.trim_end_matches(".fcs").to_string(),
-                choices,
-            })
-        })
+        crate::gate_editor::review::drawn_target(&state, &node, &x, &y, sample, &sample_name)
     };
     rsx! {
         button {

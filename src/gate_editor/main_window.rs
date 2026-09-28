@@ -318,27 +318,26 @@ pub fn MainWindow() -> Element {
         let Some(want) = focus.read().clone() else {
             return;
         };
-        parental_gate.set(Some(want.parent.clone()));
-        let param = |channel: &Arc<str>| {
-            axis_store
-                .sorted_settings()
-                .peek()
-                .iter()
-                .find(|p| p.fluoro == *channel)
-                .cloned()
-        };
-        if let Some(x) = param(&want.x) {
+        let params: Vec<Param> = axis_store
+            .sorted_settings()
+            .peek()
+            .iter()
+            .cloned()
+            .collect();
+        let files: Vec<Arc<str>> = filehandler
+            .peek()
+            .as_ref()
+            .map(|f| f.file_list().iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default();
+        let to = crate::gate_editor::review_window::focus_on(&want, &params, &files);
+        parental_gate.set(Some(to.parent));
+        if let Some(x) = to.x {
             x_axis_marker.set(x);
         }
-        if let Some(y) = param(&want.y) {
+        if let Some(y) = to.y {
             y_axis_marker.set(y);
         }
-        let at = filehandler.peek().as_ref().and_then(|f| {
-            f.file_list()
-                .iter()
-                .position(|s| s.name == want.sample_name)
-        });
-        if let Some(at) = at {
+        if let Some(at) = to.file {
             select_file(at);
         }
         focus.set(None);

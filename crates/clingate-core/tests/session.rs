@@ -613,3 +613,185 @@ fn a_kept_run_is_assessed_and_a_sample_compared_with_its_peers() {
             .all(|(_, here, _)| here.is_some())
     );
 }
+
+#[test]
+fn a_report_before_any_run_says_so_and_bad_requests_are_refused() {
+    let folder = with_rules("session-report-before");
+    let session = Session::open(&folder).unwrap();
+    let reported = session
+        .report_placement("Tmem", "fmx", "too_loose", "")
+        .unwrap();
+    assert!(reported.rule_did.contains("no rules run"), "{reported:?}");
+    assert_eq!(reported.problem, "too loose");
+    assert_eq!(reported.reference_events_kept, None);
+    assert!(reported.events_kept > 0 && reported.events_kept <= 3_000);
+    assert!(
+        reported
+            .file
+            .starts_with(folder.join("reviews").join("reports"))
+    );
+    assert!(reported.file.is_file());
+    // The histogram runs along the axis the scaling gives the parameter.
+    let report = &clingate_core::review::report::reports_in(&folder)[0].1;
+    let h = &report.data.histograms.0;
+    let parameter = session.gate("Tmem", None).unwrap().parameters[0].clone();
+    assert_eq!(h.parameter, parameter);
+    // In the axis's display units: arcsinh with cofactor 6000.
+    let shown = |v: f64| (v / 6000.0).asinh();
+    assert!(
+        (h.lower - shown(-2000.0)).abs() < 1e-5,
+        "{} {parameter}",
+        h.lower
+    );
+    assert!(
+        (h.upper - shown(200_000.0)).abs() < 1e-5,
+        "{} {parameter}",
+        h.upper
+    );
+
+    // No such population, no such sample, no such problem.
+    assert!(
+        session
+            .report_placement("CD999+", "fmx", "too_high", "")
+            .is_err()
+    );
+    assert!(
+        session
+            .report_placement("Tmem", "sample9", "too_high", "")
+            .is_err()
+    );
+    assert!(session.report_placement("Tmem", "fmx", "", "").is_err());
+    assert_eq!(
+        clingate_core::review::report::reports_in(&folder).len(),
+        1,
+        "nothing more kept"
+    );
+}
+
+/// Apply the rules, then rewrite the kept run's confidences - which placements
+/// the rule was unsure of is the test's to choose.
+fn applied_with_confidence(
+    name: &str,
+    confidence: impl Fn(&str) -> f64,
+) -> (std::path::PathBuf, Session) {
+    use clingate_core::review::RunRecord;
+    let folder = with_rules(name);
+    let mut session = Session::open(&folder).unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let mut record = RunRecord::load(&folder).unwrap().unwrap();
+    for p in &mut record.placed {
+        p.confidence = confidence(p.sample.name.as_deref().unwrap_or(""));
+    }
+    record.save(&folder).unwrap();
+    (folder, session)
+}
+
+fn pile(
+    assessed: &clingate_core::session::RunAssessment,
+    pile: clingate_core::review::board::Pile,
+) -> usize {
+    assessed.piles.iter().find(|(p, _)| *p == pile).unwrap().1
+}
+
+#[test]
+fn looks_right_moves_a_flagged_placement_to_passed_and_back() {
+    use clingate_core::review::board::Pile;
+    let (_, session) = applied_with_confidence("session-looks-right", |name| {
+        if name.contains("FMX") { 0.05 } else { 0.9 }
+    });
+    let before = session.assess_run().unwrap();
+    let is_fmx = |f: &clingate_core::review::assess::Flag| {
+        f.sample.name.as_deref().is_some_and(|n| n.contains("FMX"))
+    };
+    let fmx = before
+        .flags
+        .iter()
+        .find(|f| is_fmx(f))
+        .expect("the unsure FMX is flagged");
+    assert_eq!(fmx.reasons[0].measure, "low_confidence", "{fmx:?}");
+    let needing = pile(&before, Pile::NeedsALook);
+
+    session.mark_looks_right("Tmem", "fmx", true).unwrap();
+    let after = session.assess_run().unwrap();
+    assert_eq!(pile(&after, Pile::NeedsALook), needing - 1);
+    assert_eq!(pile(&after, Pile::Passed), pile(&before, Pile::Passed) + 1);
+    assert!(!after.flags.iter().any(|f| is_fmx(f)), "{after:?}");
+
+    session.mark_looks_right("Tmem", "fmx", false).unwrap();
+    let back = session.assess_run().unwrap();
+    assert_eq!(pile(&back, Pile::NeedsALook), needing);
+    assert!(back.flags.iter().any(|f| is_fmx(f)));
+}
+
+#[test]
+fn looks_right_and_peer_comparison_need_a_placement_the_run_made() {
+    use clingate_core::review::RunRecord;
+    let (folder, session) = applied_with_confidence("session-not-in-run", |_| 0.9);
+    let mut record = RunRecord::load(&folder).unwrap().unwrap();
+    record
+        .placed
+        .retain(|p| !p.sample.name.as_deref().unwrap().contains("FMX"));
+    record.save(&folder).unwrap();
+    let e = format!(
+        "{:?}",
+        session.mark_looks_right("Tmem", "fmx", true).unwrap_err()
+    );
+    assert!(e.contains("did not place or keep"), "{e}");
+    assert!(!folder.join("reviews").join("looks_right.json").exists());
+    let e = format!("{:?}", session.compare_to_peers("Tmem", "fmx").unwrap_err());
+    assert!(e.contains("did not place or keep"), "{e}");
+    assert!(session.compare_to_peers("CD999+", "fs").is_err());
+    // The one it did make is still compared.
+    assert!(session.compare_to_peers("Tmem", "fs").is_ok());
+}
+
+#[test]
+fn the_tools_are_handed_at_most_forty_flags_and_the_piles_count_them_all() {
+    use clingate_core::review::RunRecord;
+    use clingate_core::review::board::Pile;
+    use clingate_core::review::run_record::extent_of;
+    let (folder, session) = applied_with_confidence("session-forty", |_| 0.9);
+    // The fixture's own placements miss their band, so are flagged already.
+    let already = pile(&session.assess_run().unwrap(), Pile::NeedsALook);
+    let mut record = RunRecord::load(&folder).unwrap().unwrap();
+    // 45 placements on samples no metadata row names, each where the gate's
+    // own position is, each unsure.
+    let template = record.placed[0].clone();
+    let gate_id: std::sync::Arc<str> = std::sync::Arc::from(template.gate_id.as_str());
+    let at = extent_of(session.gates().registered_gate(&gate_id).unwrap().as_ref());
+    for i in 0..45 {
+        let mut p = template.clone();
+        p.sample.id = format!("unnamed-{i}");
+        p.placed_at = at.clone();
+        p.confidence = 0.01;
+        record.placed.push(p);
+    }
+    record.save(&folder).unwrap();
+    let assessed = session.assess_run().unwrap();
+    assert_eq!(
+        pile(&assessed, Pile::NeedsALook),
+        already + 45,
+        "{:?}",
+        assessed.piles
+    );
+    assert_eq!(assessed.flags.len(), clingate_core::session::FLAGS_SHOWN);
+    assert_eq!(assessed.placements, 47);
+}
+
+#[test]
+fn a_run_reviewed_with_no_library_is_kept_in_the_workspace_only() {
+    let (folder, mut session) = applied_with_confidence("session-no-library", |_| 0.9);
+    session.set_review_library(None);
+    let reviewed = session.mark_run_reviewed().unwrap();
+    assert!(reviewed.library_copy.is_none());
+    assert_eq!(
+        reviewed.review_file,
+        folder.join("reviews").join("review.json")
+    );
+    assert!(reviewed.review_file.is_file());
+    assert_eq!(
+        (reviewed.accepted, reviewed.reported, reviewed.left_alone),
+        (2, 0, 0)
+    );
+}

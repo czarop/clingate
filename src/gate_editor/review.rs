@@ -62,6 +62,49 @@ pub fn gates_on_plot(
         .collect()
 }
 
+/// What a plot's Report button reports: the gate selected on it, at its
+/// place under the plot's population, on the plot's sample.
+pub fn selected_target(
+    state: &clingate_core::gates::GateState,
+    selected: Option<&clingate_core::gates::gate_store::GateId>,
+    parent: Option<&NodeId>,
+    sample: Option<FileId>,
+    sample_name: &str,
+) -> Option<ReportTarget> {
+    let gate_id = selected?;
+    let node = clingate_core::review::report::node_under(state, gate_id, parent)?;
+    let gate = state.registered_gate(gate_id)?.get_name().to_string();
+    Some(ReportTarget {
+        node,
+        sample: sample?,
+        gate,
+        sample_name: sample_name.trim_end_matches(".fcs").to_string(),
+        choices: Vec::new(),
+    })
+}
+
+/// What a gallery tile's Report button reports: a gate drawn on the tile -
+/// the page's population's child gates on the page's axes - on the tile's
+/// sample; with several drawn, the first, and the rest to choose from.
+pub fn drawn_target(
+    state: &clingate_core::gates::GateState,
+    population: &NodeId,
+    x: &str,
+    y: &str,
+    sample: Option<FileId>,
+    sample_name: &str,
+) -> Option<ReportTarget> {
+    let choices = gates_on_plot(state, population, x, y);
+    let (first, gate) = choices.first().cloned()?;
+    Some(ReportTarget {
+        node: first,
+        sample: sample?,
+        gate,
+        sample_name: sample_name.trim_end_matches(".fcs").to_string(),
+        choices,
+    })
+}
+
 /// Report the gate selected on a plot, on that plot's sample. Disabled with
 /// no gate selected, or none that can be found under the plot's population.
 #[component]
@@ -71,25 +114,19 @@ pub fn ReportButton(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
     let mut open = use_context::<Signal<Option<ReportTarget>>>();
     let target = {
         let selected = gates.selected_gate().read().clone();
-        let state = gates.read();
         let sample = metadata
             .file_name_to_gating_id()
             .read()
             .get(&sample_name)
             .cloned();
-        selected.zip(sample).and_then(|(gate_id, sample)| {
-            let parent = parental_gate().map(NodeId::from);
-            let node =
-                clingate_core::review::report::node_under(&state, &gate_id, parent.as_ref())?;
-            let gate = state.registered_gate(&gate_id)?.get_name().to_string();
-            Some(ReportTarget {
-                node,
-                sample,
-                gate,
-                sample_name: sample_name.trim_end_matches(".fcs").to_string(),
-                choices: Vec::new(),
-            })
-        })
+        let parent = parental_gate().map(NodeId::from);
+        selected_target(
+            &gates.read(),
+            selected.as_ref(),
+            parent.as_ref(),
+            sample,
+            &sample_name,
+        )
     };
     let enabled = target.is_some();
     rsx! {

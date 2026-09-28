@@ -42,8 +42,10 @@ fn events(seed: u64) -> Vec<Vec<f32>> {
 }
 
 /// Two samples, metadata, scaling, and the core's gating fixture.
-fn workspace() -> PathBuf {
-    let dir = scratch("mcp-protocol");
+fn workspace(name: &str) -> PathBuf {
+    // A folder of its own: tests run side by side, and one that writes into
+    // a shared folder changes what the others open.
+    let dir = scratch(&format!("mcp-protocol-{name}"));
     let mut channels: Vec<(&str, Option<&str>)> = vec![("FSC-A", None), ("SSC-A", None)];
     channels.extend(FLUORESCENCE.iter().map(|c| (*c, None)));
     write_fcs_rows(&dir.join("sample1_FMX.fcs"), &channels, &events(1), &[]);
@@ -160,7 +162,7 @@ impl Drop for Server {
 
 #[test]
 fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
-    let folder = workspace();
+    let folder = workspace("t1");
     let mut server = Server::start();
 
     let tools = server.request("tools/list", json!({}));
@@ -234,7 +236,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
 
 #[test]
 fn gates_are_described_compared_and_saved_only_as_asked() {
-    let folder = workspace();
+    let folder = workspace("t2");
     let mut server = Server::start();
     let opened = server.call(
         "open_workspace",
@@ -296,4 +298,132 @@ fn a_folder_that_is_not_there_is_said_so() {
     let answer = server.call("open_workspace", json!({"folder": "/no/such/folder"}));
     assert_eq!(answer["outcome"], "failed");
     assert!(answer["reason"].as_str().unwrap().contains("not a folder"));
+}
+
+/// The protocol workspace with a rule for Tmem, as a person would have
+/// saved one on the Gate Rules tab.
+fn workspace_with_rules(name: &str) -> PathBuf {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let dir = workspace(name);
+    let parameter = clingate_core::session::Session::open(&dir)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: parameter.into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+        },
+    );
+    store
+        .save(&clingate_core::workspace::rules_file(&dir))
+        .unwrap();
+    dir
+}
+
+#[test]
+fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
+    let folder = workspace_with_rules("review");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    // Nothing to review until a run is applied.
+    assert_eq!(server.call("assess_run", json!({}))["outcome"], "failed");
+    assert_eq!(
+        server.call("mark_run_reviewed", json!({}))["outcome"],
+        "failed"
+    );
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    let applied = server.call("apply_rule_placements", json!({}));
+    assert_eq!(applied["outcome"], "ok", "{applied}");
+    assert!(folder.join("reviews").join("rules_run.json").is_file());
+
+    // The piles, and every placement in one of them.
+    let assessed = server.call("assess_run", json!({}));
+    assert_eq!(assessed["outcome"], "ok", "{assessed}");
+    let result = &assessed["result"];
+    assert_eq!(result["placements"], 2);
+    let piles: u64 = result["piles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p[1].as_u64().unwrap())
+        .sum();
+    assert_eq!(piles, 2);
+    assert_eq!(result["gates"][0]["gate"], "Tmem");
+
+    let compared = server.call(
+        "compare_to_peers",
+        json!({"population": "Tmem", "sample": "fmx"}),
+    );
+    assert_eq!(compared["outcome"], "ok", "{compared}");
+    assert_eq!(
+        compared["result"]["percentiles"].as_array().unwrap().len(),
+        9
+    );
+
+    let looks = server.call(
+        "mark_looks_right",
+        json!({"population": "Tmem", "sample": "fmx", "looks_right": true}),
+    );
+    assert_eq!(looks["outcome"], "ok", "{looks}");
+    assert!(folder.join("reviews").join("looks_right.json").is_file());
+    let refused = server.call(
+        "mark_looks_right",
+        json!({"population": "Tmem", "sample": "sample9", "looks_right": true}),
+    );
+    // A sample it cannot find is a question, with what it could mean.
+    assert_eq!(refused["outcome"], "needs_clarification", "{refused}");
+    assert!(refused["suggestions"].as_array().unwrap().len() >= 2);
+
+    // A report, in the user's words; a problem not on the list is refused.
+    let wrong = server.call(
+        "report_placement",
+        json!({"population": "Tmem", "sample": "fs", "problem": "wonky"}),
+    );
+    assert_eq!(wrong["outcome"], "failed", "{wrong}");
+    let reported = server.call(
+        "report_placement",
+        json!({"population": "Tmem", "sample": "fs", "problem": "too_high", "note": "misses the dim ones"}),
+    );
+    assert_eq!(reported["outcome"], "ok", "{reported}");
+    assert_eq!(
+        reported["result"]["problem"],
+        "too high - positives left out"
+    );
+    let reports = clingate_core::review::report::reports_in(&folder);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].1.note, "misses the dim ones");
+
+    let reviewed = server.call("mark_run_reviewed", json!({}));
+    assert_eq!(reviewed["outcome"], "ok", "{reviewed}");
+    assert_eq!(reviewed["result"]["reported"], 1);
+    assert_eq!(reviewed["result"]["accepted"], 1);
+    let review: clingate_core::review::RunReview = serde_json::from_str(
+        &std::fs::read_to_string(folder.join("reviews").join("review.json")).unwrap(),
+    )
+    .unwrap();
+    // The flag cleared over the protocol is in the review.
+    assert!(
+        review
+            .placements
+            .iter()
+            .any(|p| p.placed.sample.id == "sample1" && p.flag.looked_right)
+    );
 }
