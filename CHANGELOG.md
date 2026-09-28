@@ -29,7 +29,10 @@
   words. From a tile: **Open in editor** shows that sample, population and
   axes in the gate editor to reposition the gate (its tile then moves to
   Changed since), **Report...**, or **Looks right** to clear a flag the
-  assessment should not have raised. Filter by gate; the Gate Rules tab's
+  assessment should not have raised. **Beside** chooses what each tile is
+  drawn next to: the file the rule read (the specimen's FMX, or the
+  reference sample), a typical peer, both, or nothing. The typical peer is
+  chosen from the peers that are not flagged themselves. Filter by gate; the Gate Rules tab's
   Review section gives the counts and a way in.
 - **Which placements need a look.** Each sample is compared with its
   peers - the other samples of the same kind that the rule placed

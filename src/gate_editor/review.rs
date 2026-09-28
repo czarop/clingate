@@ -412,7 +412,7 @@ pub fn ReviewPanel() -> Element {
                         {
                             use clingate_core::review::board::Pile;
                             format!(
-                                "{} need a look, {} passed, {} reported, {} changed since. Work through them on the Review tab, where each is drawn beside a typical peer and can be opened in the editor.",
+                                "{} need a look, {} passed, {} reported, {} changed since. Work through them on the Review tab, where each is drawn beside the file its rule read and, when flagged, a typical peer, and can be opened in the editor.",
                                 board.count(Pile::NeedsALook),
                                 board.count(Pile::Passed),
                                 board.count(Pile::Reported),
