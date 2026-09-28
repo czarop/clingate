@@ -141,11 +141,11 @@ PY
 
 # ── restart ──────────────────────────────────────────────────────────────
 step "Done"
-if pgrep -xq Claude; then
+if pgrep -x Claude >/dev/null; then
     read -r -p "Claude Desktop is running and needs a restart to pick this up. Restart it now? [y/N] " answer
     if [[ "$answer" =~ ^[Yy] ]]; then
         osascript -e 'quit app "Claude"'
-        while pgrep -xq Claude; do sleep 1; done
+        while pgrep -x Claude >/dev/null; do sleep 1; done
         open -a Claude
         echo "Restarted."
     else
