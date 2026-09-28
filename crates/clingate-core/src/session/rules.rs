@@ -28,6 +28,8 @@ pub(crate) struct Pending {
     /// The gates as the preview measured them.
     snapshot: GateState,
     placements: Vec<Placement>,
+    /// What the run decided, kept in the workspace once applied.
+    record: crate::review::RunRecord,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -162,6 +164,12 @@ impl Session {
             &rules,
         );
         let outcome = run_rules(&self.gates, &inputs, |_| {}, &AtomicBool::new(false));
+        let record = crate::review::RunRecord::of_run(
+            &outcome.report,
+            &outcome.placements,
+            &inputs.rules,
+            &self.metadata,
+        );
         let report = outcome.report;
 
         let would_move: Vec<Move> = report
@@ -221,6 +229,7 @@ impl Session {
         self.pending = Some(Pending {
             snapshot: self.gates.clone(),
             placements: outcome.placements,
+            record,
         });
         Ok(preview)
     }
@@ -243,9 +252,14 @@ impl Session {
         let before = self.working_state();
         crate::gate_rules::autogate::apply_placements(&mut self.gates, &pending.placements);
         self.edited(before);
+        // Kept for reviewing the run, as the app keeps it.
+        let kept = match pending.record.applied(&self.folder) {
+            Ok(_) => String::new(),
+            Err(e) => format!(" (the run's record could not be kept for review: {e})"),
+        };
         Ok(format!(
             "{} placement(s) applied to the working copy; nothing is saved until save_gating \
-             (undo takes them back)",
+             (undo takes them back){kept}",
             pending.placements.len()
         ))
     }

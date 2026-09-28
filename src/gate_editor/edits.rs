@@ -211,7 +211,7 @@ impl Edits {
 
     /// The folder the working copy is saved in: the workspace's, or the one
     /// the gating file came from when files were chosen one by one.
-    fn folder(&self) -> Option<PathBuf> {
+    pub(crate) fn folder(&self) -> Option<PathBuf> {
         let loaded = self.loaded.peek();
         working_copy::folder_of(loaded.folder.as_deref(), loaded.gating.path())
     }

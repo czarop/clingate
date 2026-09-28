@@ -949,6 +949,10 @@ pub struct Positioned {
     /// The measure holding the confidence down, for a person deciding what to
     /// review first.
     pub weakest: Option<&'static str>,
+    /// Every measure the confidence was taken from, each with its score and
+    /// what it measured - the ones that passed as well as the weakest, which
+    /// is what a review of a missed placement needs to see.
+    pub components: Vec<crate::gate_rules::confidence::Component>,
     /// What the moved gate actually admits from the reference population -
     /// measured by asking the gate, not by counting past a line.
     pub achieved: f64,
@@ -1035,6 +1039,7 @@ pub struct Unmeasured {
 
 /// A gate that already satisfied its rule and was left alone.
 pub struct Unchanged {
+    pub gate_id: GateId,
     pub file: FileId,
     pub gate: Arc<str>,
     /// The population it is drawn on. Without it a report naming "a4b7+" five
@@ -1275,6 +1280,7 @@ pub fn solve_all_reporting(
                 .and_then(|gate| admitted_by(&gate, &measured.index))
                 .unwrap_or(f64::NAN);
             report.reference.push(Unchanged {
+                gate_id: measured.gate_id.clone(),
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
@@ -1426,6 +1432,7 @@ fn position_one(
         && (lo..=hi).contains(&already)
     {
         return Ok(Outcome::Kept(Unchanged {
+            gate_id: measured.gate_id.clone(),
             file: measured.file.clone(),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),
@@ -1617,6 +1624,7 @@ fn position_one(
             to,
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
+            components: confidence.components.clone(),
             achieved,
             captured_on: judged_on.file.clone(),
             above_the_line: beyond_the_line(&judged_line.values, line.bound, to),
@@ -1852,6 +1860,7 @@ fn position_by_phenotype(
             to: achieved,
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
+            components: confidence.components.clone(),
             achieved,
             captured_on: measured.file.clone(),
             above_the_line: f64::NAN,

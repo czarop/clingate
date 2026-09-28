@@ -457,3 +457,45 @@ fn a_workspace_the_app_saved_in_the_folder_opens_as_it_was_left() {
     // The grouping as the app left it, over the rules file's own.
     assert_eq!(session.rules_view().unwrap().specimen_column, "Type");
 }
+
+#[test]
+fn an_applied_run_is_kept_for_review_and_knows_when_a_gate_has_moved_since() {
+    use clingate_core::review::run_record::PlacementStatus;
+    use clingate_core::review::{RunRecord, placement_status};
+    let folder = with_rules("session-run-record");
+    let mut session = Session::open(&folder).unwrap();
+    assert!(RunRecord::load(&folder).unwrap().is_none());
+
+    // A preview keeps nothing: only an applied run is a run.
+    session.preview_rules().unwrap();
+    assert!(RunRecord::load(&folder).unwrap().is_none());
+    session.apply_previewed_rules().unwrap();
+
+    let record = RunRecord::load(&folder).unwrap().expect("kept on apply");
+    assert!(folder.join("reviews").join("rules_run.json").is_file());
+    assert_eq!(record.placed.len(), 2, "{record:#?}");
+    assert_eq!(record.rules, *session.rules().unwrap());
+    for placed in &record.placed {
+        assert_eq!(placed.gate, "Tmem");
+        // Every measure the confidence came from, not only the weakest.
+        assert!(placed.components.len() > 1, "{placed:#?}");
+        assert!(placed.weakest.is_some());
+        // Named and typed from the metadata.
+        assert!(placed.sample.name.is_some());
+        assert!(placed.sample.sample_type.is_some());
+        assert_eq!(placed.specimen_column, "test");
+        assert_eq!(
+            placement_status(placed, session.gates(), session.metadata().metadata()),
+            PlacementStatus::AsPlaced
+        );
+    }
+
+    // Undone, the gates are no longer where the run put them.
+    session.undo().unwrap();
+    for placed in &record.placed {
+        assert_eq!(
+            placement_status(placed, session.gates(), session.metadata().metadata()),
+            PlacementStatus::Moved
+        );
+    }
+}

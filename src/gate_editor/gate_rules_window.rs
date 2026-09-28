@@ -165,11 +165,35 @@ impl RulesRun {
     }
 
     /// A finished run's placements, written into the working copy as one
-    /// step.
-    pub(crate) fn apply(mut self, placements: &[clingate_core::gate_rules::autogate::Placement]) {
+    /// step, and the run kept in the workspace's `reviews` folder for
+    /// reviewing it - as the tools for Claude keep it. `rules` are the rules
+    /// the run read.
+    ///
+    /// Only the keeping can fail; the placements are applied either way.
+    pub(crate) fn apply(
+        mut self,
+        outcome: &clingate_core::gate_rules::run::RunOutcome,
+        rules: &RuleStore,
+    ) -> Result<(), String> {
+        let record = clingate_core::review::RunRecord::of_run(
+            &outcome.report,
+            &outcome.placements,
+            rules,
+            &self.metadata.peek(),
+        );
         let before = self.edits.before();
-        clingate_core::gate_rules::autogate::apply_placements(&mut self.gates.write(), placements);
+        clingate_core::gate_rules::autogate::apply_placements(
+            &mut self.gates.write(),
+            &outcome.placements,
+        );
         self.edits.after(before);
+        match self.edits.folder() {
+            Some(folder) => record
+                .applied(&folder)
+                .map(|_| ())
+                .map_err(|e| format!("the run could not be kept for review: {e}")),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1135,7 +1159,9 @@ pub fn GateRulesWindow() -> Element {
                         // store, and only once the document is known to be the
                         // one the run measured.
                         // The whole run is one step of the working copy.
-                        run_with.apply(&outcome.placements);
+                        if let Err(e) = run_with.apply(&outcome, &started.0.rules) {
+                            warn(&toasts, e);
+                        }
 
                         let run = outcome.report;
                         say(

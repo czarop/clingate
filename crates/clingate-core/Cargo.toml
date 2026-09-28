@@ -35,6 +35,8 @@ itertools = "0.15.0"
 rustfft = "^6.4"
 rand = "0.10"
 rand_distr = "0.6"
+# When a rules run was applied, in its kept record. Already built for polars.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

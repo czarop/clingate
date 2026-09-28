@@ -217,7 +217,7 @@ impl App {
             assert!(!inputs.files.is_empty(), "the app has its files");
             let snapshot = held.gates.peek().clone();
             let outcome = run_rules(&snapshot, &inputs, |_| {}, &AtomicBool::new(false));
-            held.rules_run.apply(&outcome.placements);
+            held.rules_run.apply(&outcome, &inputs.rules).unwrap();
         });
     }
 }
@@ -311,6 +311,17 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
     );
     same("a rules run", &session, &app, &tools, &ours);
     assert!(tools.join(RECOVERY_GATING).is_file());
+    // Both keep the run for review, and keep the same thing - all but the
+    // moment it was applied.
+    let kept = |folder: &Path| {
+        let mut record = clingate_core::review::RunRecord::load(folder)
+            .unwrap()
+            .expect("the run is kept");
+        record.applied_at.clear();
+        record
+    };
+    assert!(!kept(&tools).placed.is_empty());
+    assert_eq!(kept(&tools), kept(&ours), "the kept runs differ");
 
     session.undo().unwrap();
     assert!(app.with(|h| h.edits.undo()));

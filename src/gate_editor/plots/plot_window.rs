@@ -51,7 +51,7 @@ pub fn PlotWindow(
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
 
-    let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
 
     // Whether the metadata has a row for this file under its name in the
     // program. Without one nothing below can load - the file is never read -

@@ -1,6 +1,8 @@
 //! Tests for reading FCS headers without taking the application down.
 
+#[cfg(test)]
 use crate::file_load::FcsSampleStub;
+#[cfg(test)]
 use flow_fcs::TransformType;
 use std::path::{Path, PathBuf};
 
@@ -247,6 +249,7 @@ fn files_are_compared_by_guid_not_by_where_they_are() {
     assert!(a != b, "different GUIDs");
 }
 
+#[cfg(test)]
 fn open(path: &Path) -> FcsSampleStub {
     FcsSampleStub::open(path.to_str().unwrap()).expect("the fixture opens")
 }
