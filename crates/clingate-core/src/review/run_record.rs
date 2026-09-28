@@ -262,11 +262,24 @@ impl RunRecord {
         rules: &RuleStore,
         samples: &Samples,
     ) -> Self {
-        debug_assert_eq!(report.positioned.len(), placements.len());
+        // Each line with the placement of the same gate for the same
+        // specimen - by identity, not by position in the two lists, so a
+        // reordering of one can never pair a line with another's gate.
         let placed = report
             .positioned
             .iter()
-            .zip(placements)
+            .filter_map(|p| {
+                let placement = placements.iter().find(|placement| {
+                    placement.gate_id == p.gate_id && placement.specimen.group == p.specimen
+                });
+                debug_assert!(
+                    placement.is_some(),
+                    "no placement for {} on {}",
+                    p.gate,
+                    p.file
+                );
+                placement.map(|placement| (p, placement))
+            })
             .map(|(p, placement)| PlacedRecord {
                 gate_id: placement.gate_id.to_string(),
                 gate: p.gate.to_string(),

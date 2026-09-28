@@ -510,6 +510,115 @@ mod tests {
                 .0
         }
 
+        /// A run with a sort column: the report is put in the sort's order,
+        /// and each placement the run applied has to stay with its own line
+        /// of the report. They were sorted apart - the report sorted, the
+        /// placements not - and the run record, which pairs them, gave each
+        /// placement another specimen's position: every gate the sort had
+        /// reordered read as moved the moment the run finished.
+        #[test]
+        fn a_sorted_run_keeps_each_placement_with_its_own_report_line() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::run_record::{
+                PlacementStatus, RunRecord, Samples, placement_status,
+            };
+            let (mut state, id) = positive_gate();
+            let dir = scratch("run-sorted-record");
+            let channels = [(X, None), (Y, None)];
+            // Files in one order, the sort column in the other.
+            let donors = [
+                ("fs_a", "DONOR-A", "3", 250.0),
+                ("fs_b", "DONOR-B", "2", 300.0),
+                ("fs_c", "DONOR-C", "1", 380.0),
+            ];
+            let mut files = Vec::new();
+            let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+            for (at, (file, donor, visit, centre)) in donors.iter().enumerate() {
+                let path = dir.join(format!("{file}.fcs"));
+                write_fcs_rows(&path, &channels, &population(*centre, at as u64 + 10), &[]);
+                files.push((Arc::from(format!("{file}.fcs").as_str()), path));
+                let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
+                columns.insert(Arc::from("SampleID"), Arc::from(*donor));
+                columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+                columns.insert(Arc::from("Visit"), Arc::from(*visit));
+                metadata.insert(Arc::from(*file) as Arc<str>, columns);
+            }
+            let mut rules = RuleStore::default();
+            rules.pairing.sort_column = Some(Arc::from("Visit"));
+            rules.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::Itself,
+                    rule: Rule::TailFraction(TailFractionRule::new((0.05, 0.08))),
+                },
+            );
+            let names = named(&[
+                ("fs_a.fcs", "fs_a"),
+                ("fs_b.fcs", "fs_b"),
+                ("fs_c.fcs", "fs_c"),
+            ]);
+            let outcome = run_rules(
+                &state.clone(),
+                &RunInputs {
+                    files,
+                    compensation: crate::compensation::groups::Compensation::default(),
+                    names: names.clone(),
+                    cofactors: Vec::new(),
+                    metadata: metadata.clone(),
+                    rules: rules.clone(),
+                },
+                |_| {},
+                &Arc::new(AtomicBool::new(false)),
+            );
+            let placed: Vec<&str> = outcome.report.positioned.iter().map(|p| &*p.file).collect();
+            assert_eq!(
+                placed,
+                vec!["fs_c", "fs_b", "fs_a"],
+                "the premise: sorted by visit"
+            );
+
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            let samples = Samples::new(&names, &metadata, &rules.pairing);
+            let record =
+                RunRecord::from_run(&outcome.report, &outcome.placements, &rules, &samples);
+            assert_eq!(record.placed.len(), 3);
+            for p in &record.placed {
+                assert_eq!(
+                    placement_status(p, &state, &metadata),
+                    PlacementStatus::AsPlaced,
+                    "{} reads as moved straight after the run",
+                    p.sample.id
+                );
+                let drawn = left_edge_in(&state, &id, &p.sample.id, &metadata) as f64;
+                assert!(
+                    (drawn - p.to.unwrap()).abs() < 1e-3,
+                    "{}: drawn {drawn}, recorded {:?}",
+                    p.sample.id,
+                    p.to
+                );
+                assert_eq!(
+                    p.specimen,
+                    metadata[p.sample.id.as_str()]["SampleID"].to_string()
+                );
+            }
+        }
+
+        fn left_edge_in(
+            state: &GateState,
+            gate: &Arc<str>,
+            file: &str,
+            metadata: &crate::omiq::metadata::MetaDataFileMap,
+        ) -> f32 {
+            let g = state
+                .gate_for_file(gate, &Arc::from(file), metadata)
+                .unwrap();
+            crate::gate_rules::autogate::extent_on(&g.get_gate_ref(None).unwrap().geometry, X)
+                .unwrap()
+                .0
+        }
+
         /// BUG (docs/test-audit.md, B-AUTO-1): the default finder,
         /// `BelowTheGate`, refines from where the gate already sits on the
         /// sample - the reference's position. The donor's negative has

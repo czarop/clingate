@@ -934,6 +934,9 @@ fn translate_by(
 
 /// One gate that was positioned, and what it took to do it.
 pub struct Positioned {
+    /// The gate it moved - what ties this line to the [`Placement`] that
+    /// carries the moved gate.
+    pub gate_id: GateId,
     pub file: FileId,
     pub gate: Arc<str>,
     /// The population it is drawn on. Without it a report naming "a4b7+" five
@@ -1341,12 +1344,22 @@ pub fn solve_all_reporting(
     // Every list in the report follows the same specimen order the plots do -
     // two tabs disagreeing about the order of the same samples is worse than
     // either order.
-    sort_report(&mut report, &store.pairing, metadata);
+    sort_report(&mut report, &mut placements, &store.pairing, metadata);
     (report, placements)
 }
 
 /// Put every list in the report into the pairing's sample order.
-fn sort_report(report: &mut Report, pairing: &SamplePairing, metadata: &MetaDataFileMap) {
+/// Put the report in the sort column's order. `placements` are the report's
+/// `positioned` lines one for one, and are sorted with them: sorting the
+/// report alone left each placement beside another specimen's line, and the
+/// run record, which pairs them, gave every reordered gate the wrong position.
+fn sort_report(
+    report: &mut Report,
+    placements: &mut Vec<Placement>,
+    pairing: &SamplePairing,
+    metadata: &MetaDataFileMap,
+) {
+    debug_assert_eq!(report.positioned.len(), placements.len());
     if pairing.sort_column.is_none() {
         return;
     }
@@ -1357,9 +1370,12 @@ fn sort_report(report: &mut Report, pairing: &SamplePairing, metadata: &MetaData
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     };
-    report
-        .positioned
-        .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
+    let mut paired: Vec<(Positioned, Placement)> = std::mem::take(&mut report.positioned)
+        .into_iter()
+        .zip(std::mem::take(placements))
+        .collect();
+    paired.sort_by(|a, b| compare(key(&a.0.file), key(&b.0.file)));
+    (report.positioned, *placements) = paired.into_iter().unzip();
     report
         .unchanged
         .sort_by(|a, b| compare(key(&a.file), key(&b.file)));
@@ -1634,6 +1650,7 @@ fn position_one(
 
     Ok(Outcome::Moved(
         Positioned {
+            gate_id: measured.gate_id.clone(),
             file: measured.file.clone(),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),
@@ -1868,6 +1885,7 @@ fn position_by_phenotype(
 
     Ok(Outcome::Moved(
         Positioned {
+            gate_id: measured.gate_id.clone(),
             file: measured.file.clone(),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),

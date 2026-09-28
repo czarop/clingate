@@ -94,6 +94,22 @@ impl Board {
     pub fn pile(&self, pile: Pile) -> impl Iterator<Item = &Entry> {
         self.entries.iter().filter(move |e| e.pile == pile)
     }
+
+    /// A pile's entries for one gate, by its id - or every gate's with
+    /// `None`, as the Review tab's gate filter shows them.
+    pub fn pile_for<'a>(
+        &'a self,
+        pile: Pile,
+        gate_id: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a Entry> {
+        self.pile(pile)
+            .filter(move |e| gate_id.is_none_or(|g| e.gate_id == g))
+    }
+
+    /// How many are in a pile for one gate, or for every gate.
+    pub fn count_for(&self, pile: Pile, gate_id: Option<&str>) -> usize {
+        self.pile_for(pile, gate_id).count()
+    }
 }
 
 // ── looks right ─────────────────────────────────────────────────────────
@@ -447,6 +463,22 @@ mod tests {
         );
         assert_eq!(board.count(Pile::Passed), 0);
         assert!(board.entries.iter().all(|e| e.sample.id != "ref"));
+
+        // With one gate chosen, each pile counts that gate's placements only.
+        assert_eq!(board.count_for(Pile::NeedsALook, Some("g-CD279+")), 2);
+        assert_eq!(board.count_for(Pile::Reported, Some("g-CD279+")), 1);
+        assert_eq!(board.count_for(Pile::Changed, Some("g-CD279+")), 0);
+        assert_eq!(board.count_for(Pile::Changed, Some("g-Ki67+")), 1);
+        assert_eq!(board.count_for(Pile::NeedsALook, Some("g-Ki67+")), 0);
+        assert_eq!(board.count_for(Pile::NeedsALook, Some("no such gate")), 0);
+        for pile in Pile::ALL {
+            assert_eq!(board.count_for(pile, None), board.count(pile));
+        }
+        let ki67: Vec<&str> = board
+            .pile_for(Pile::Changed, Some("g-Ki67+"))
+            .map(|e| e.sample.id.as_str())
+            .collect();
+        assert_eq!(ki67, vec!["moved"]);
     }
 
     #[test]

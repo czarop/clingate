@@ -153,11 +153,11 @@ pub fn ReviewWindow() -> Element {
     }
     gates.sort_by(|a, b| clingate_core::gate_rules::rule_store::human_order(&a.1, &b.1));
 
-    let shown: Vec<Entry> = board
-        .pile(pile())
-        .filter(|e| gate_filter.read().is_empty() || *e.gate_id == *gate_filter.read())
-        .cloned()
-        .collect();
+    // The gate chosen in the filter, or every gate: the piles' counts and
+    // their tiles both follow it.
+    let only = gate_filter.read().clone();
+    let only = (!only.is_empty()).then_some(only);
+    let shown: Vec<Entry> = board.pile_for(pile(), only.as_deref()).cloned().collect();
     let pages = shown.len().div_ceil(PER_PAGE).max(1);
     let at_page = page().min(pages - 1);
     let on_page: Vec<Entry> = shown
@@ -189,7 +189,7 @@ pub fn ReviewWindow() -> Element {
                                 pile.set(p);
                                 page.set(0);
                             },
-                            "{p.title()} ({board.count(p)})"
+                            "{p.title()} ({board.count_for(p, only.as_deref())})"
                         }
                     }
                 }
