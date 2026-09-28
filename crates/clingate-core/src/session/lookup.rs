@@ -389,12 +389,28 @@ pub fn label_populations(populations: &mut [PopulationFacts], extra: impl Fn(usi
 /// kept. With `>`, each part names a gate on the way down, in order, the last
 /// the population itself: `CD4+ > CD279+`.
 ///
+/// A name given out by [`label_populations`], or a population's full path,
+/// always finds that one population, first: the shortest unique name says
+/// `CD4+ > CD279+` for the `CD279+` directly under `CD4+`, where the looser
+/// reading below would also find a `CD279+` further down, and a twin's name
+/// carries an id no gate name has.
+///
 /// Several populations can answer; it is for the caller to say whether that is
 /// a list or a question.
 pub fn match_populations(
     query: &str,
     populations: &[PopulationFacts],
 ) -> Result<Vec<usize>, Clarification> {
+    let given = query.trim();
+    let named: Vec<usize> = (0..populations.len())
+        .filter(|&i| {
+            populations[i].label.eq_ignore_ascii_case(given)
+                || populations[i].full_path().eq_ignore_ascii_case(given)
+        })
+        .collect();
+    if !named.is_empty() {
+        return Ok(named);
+    }
     let segments: Vec<Vec<String>> = query
         .split('>')
         .map(marker_words)
@@ -743,6 +759,36 @@ mod tests {
             asked.suggestions,
             ["Q1 IL-22- / IL-17A+ (id 8)", "Q1 IL-22- / IL-17A+ (id 9)"]
         );
+    }
+
+    #[test]
+    fn every_name_given_out_finds_its_population_and_only_it() {
+        // `CD279+` directly under `CD4+`, and more `CD279+`s further down
+        // under `CD4+` - so `CD4+ > CD279+` is unique as a name's end but not
+        // as a path read loosely - and twins, told apart by id.
+        let at = |path: &[&str]| PopulationFacts::new(path.iter().map(|s| s.to_string()).collect());
+        let mut tree = vec![
+            at(&["Live", "CD4+"]),
+            at(&["Live", "CD4+", "CD279+"]),
+            at(&["Live", "CD4+", "NeTy"]),
+            at(&["Live", "CD4+", "NeTy", "CD279+"]),
+            at(&["Live", "CD4+", "NeTy"]),
+            at(&["Live", "CD4+", "NeTy", "CD279+"]),
+        ];
+        label_populations(&mut tree, |i| format!("id:{i}"));
+        assert_eq!(tree[1].label, "CD4+ > CD279+");
+        for (i, p) in tree.iter().enumerate() {
+            assert_eq!(one_population(&p.label, &tree).unwrap(), i, "{}", p.label);
+            // A twin's full path is its twin's too: only the id tells them
+            // apart, so the path alone is a question.
+            let twinned = tree.iter().filter(|o| o.path == p.path).count() > 1;
+            match one_population(&p.full_path(), &tree) {
+                Ok(found) => assert!(!twinned && found == i, "{}", p.full_path()),
+                Err(asked) => assert!(twinned, "{asked:?}"),
+            }
+            let shouted = p.label.to_uppercase();
+            assert_eq!(one_population(&shouted, &tree).unwrap(), i, "{shouted}");
+        }
     }
 
     #[test]
