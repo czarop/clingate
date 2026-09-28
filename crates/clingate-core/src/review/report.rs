@@ -265,6 +265,23 @@ pub fn node_under(
         .cloned()
 }
 
+/// Where the gate `gate_id` sits in the tree under the gate named
+/// `parent_gate` - how a run names a gate - or its first place when that does
+/// not settle it.
+pub fn node_named(state: &GateState, gate_id: &str, parent_gate: Option<&str>) -> Option<NodeId> {
+    let id: crate::gates::gate_store::GateId = Arc::from(gate_id);
+    let nodes = state.nodes_for_gate(&id);
+    nodes
+        .iter()
+        .find(|node| {
+            let path = gate_path(state, node);
+            let parent = (path.len() > 1).then(|| path[path.len() - 2].as_str());
+            parent == parent_gate
+        })
+        .or_else(|| nodes.first())
+        .cloned()
+}
+
 fn histogram(parameter: &str, values: impl Iterator<Item = f32>, range: (f64, f64)) -> Histogram {
     let (lower, upper) = range;
     let width = (upper - lower) / BINS as f64;

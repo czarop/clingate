@@ -36,7 +36,76 @@ pub struct Reviewed {
     pub library_copy: Option<PathBuf>,
 }
 
+/// A run's assessment, for the tools: the worst flags, and every gate.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunAssessment {
+    pub run_applied_at: String,
+    pub placements: usize,
+    pub flagged: usize,
+    /// The worst [`FLAGS_SHOWN`] of them, worst first.
+    pub flags: Vec<crate::review::assess::Flag>,
+    pub gates: Vec<crate::review::assess::GateSummary>,
+    pub next: &'static str,
+}
+
+/// How many flags an assessment hands the tools at once.
+pub const FLAGS_SHOWN: usize = 40;
+
 impl Session {
+    fn kept_run(&self) -> Result<crate::review::RunRecord, Refusal> {
+        crate::review::RunRecord::load(&self.folder)
+            .map_err(failed)?
+            .ok_or_else(|| {
+                failed(
+                    "no rules run has been applied in this workspace: preview_rules and \
+                     apply_rule_placements first, or run the rules in the app",
+                )
+            })
+    }
+
+    /// Which placements of the last applied run need a look, and why - as
+    /// the Gate Rules tab's review list shows them.
+    pub fn assess_run(&self) -> Result<RunAssessment, Refusal> {
+        let run = self.kept_run()?;
+        let mut assessment =
+            crate::review::assess::assess(&run, Some((&self.gates, self.metadata.metadata())));
+        let flagged = assessment.flags.len();
+        assessment.flags.truncate(FLAGS_SHOWN);
+        Ok(RunAssessment {
+            run_applied_at: assessment.run_applied_at,
+            placements: assessment.placements,
+            flagged,
+            flags: assessment.flags,
+            gates: assessment.gates,
+            next: "compare_to_peers shows one flagged sample's distribution beside its peers'; \
+                   show the user the flags and let them decide what is wrong",
+        })
+    }
+
+    /// One sample's placement of a population's gate beside its peers', in
+    /// numbers - from the last applied run.
+    pub fn compare_to_peers(
+        &self,
+        population: &str,
+        sample: &str,
+    ) -> Result<crate::review::assess::PeerComparison, Refusal> {
+        let run = self.kept_run()?;
+        let (node, _) = self.one_population(population)?;
+        let gate_id = self
+            .gates
+            .gate_for_node(&node)
+            .cloned()
+            .ok_or_else(|| failed("that population has no gate"))?;
+        let stub = self.one_sample(sample)?;
+        let id = self
+            .metadata
+            .file_name_to_gating_id()
+            .get(&stub.name)
+            .cloned()
+            .ok_or_else(|| failed(format!("{}: no metadata row names this sample", stub.name)))?;
+        crate::review::assess::compare_to_peers(&run, &gate_id, &id).map_err(failed)
+    }
+
     /// The review library reviews are copied into - clingate's setting on
     /// this computer, read when the workspace opened.
     pub fn review_library(&self) -> Option<&std::path::Path> {

@@ -21,6 +21,18 @@
   every run add up. The tools for Claude can report a placement and mark a
   run reviewed on the user's word; both go through the same code as the
   app, checked by the parity tests.
+- **Which placements need a look.** The Review section lists the
+  placements of the last run that look unlike their peers - the other
+  samples of the same kind that the rule placed confidently - or that the
+  rule was unsure of, worst first, each with its reasons in words and a
+  Report... button. A sample is compared on where its gate sits between
+  its own negative and positive peaks (or against its spread, with one
+  peak), what it lets through, and its distribution's position, spread
+  and number of peaks. Each run keeps a small summary of every sample's
+  distribution for this (101 percentiles and its peaks), so assessing a
+  run reads no files. The tools for Claude get the same assessment
+  (`assess_run`) and one sample beside its peers in numbers
+  (`compare_to_peers`).
 - **Rules and figures have their own folders in the workspace.** The Gate
   Rules tab saves to and loads from `rules/gate_rules.json` in the workspace
   folder - made the first time rules are saved - and a workspace opens with

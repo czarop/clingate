@@ -322,6 +322,20 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
     };
     assert!(!kept(&tools).placed.is_empty());
     assert_eq!(kept(&tools), kept(&ours), "the kept runs differ");
+    // And assess the same: the app's review list is `assess` over the gates
+    // it holds, the tools' assess_run over the session's.
+    let from_tools = session.assess_run().unwrap();
+    let from_app = app.with(|h| {
+        let run = clingate_core::review::RunRecord::load(&ours)
+            .unwrap()
+            .unwrap();
+        let state = h.gates.peek();
+        let files = h.metadata.metadata().peek().clone();
+        clingate_core::review::assess::assess(&run, Some((&state, &files)))
+    });
+    assert_eq!(from_tools.placements, from_app.placements);
+    assert_eq!(from_tools.flags, from_app.flags, "the assessments differ");
+    assert_eq!(from_tools.gates, from_app.gates);
 
     session.undo().unwrap();
     assert!(app.with(|h| h.edits.undo()));

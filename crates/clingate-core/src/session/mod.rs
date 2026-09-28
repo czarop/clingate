@@ -24,7 +24,7 @@ mod rules;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
-pub use review::{Reported, Reviewed};
+pub use review::{Reported, Reviewed, RunAssessment};
 pub use rules::{RulesPreview, RulesView};
 
 use std::collections::BTreeMap;

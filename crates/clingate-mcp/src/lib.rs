@@ -67,6 +67,11 @@ to, and never replace a file unless the user has said to replace that file.
 If the overview says an earlier session left unsaved changes, ask the user \
 whether to restore or discard them.
 
+To review a rules run, start with assess_run: it lists the placements that look \
+unlike their peers or that the rule was unsure of, with reasons, and costs \
+little. compare_to_peers then shows one sample beside its peers in numbers. \
+Present what you find to the user; the flags are for a person to judge.
+
 When the user says a gate was placed badly, report_placement records it - with \
 their reason - so the rules' confidence scores can be improved; do not report \
 a gate on your own judgement. mark_run_reviewed records that the user has \
@@ -158,6 +163,14 @@ pub struct CompareSamples {
     pub parameter: String,
     /// The samples, by words of their file names or metadata, or 'all'.
     pub samples: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompareToPeers {
+    /// The population whose gate to compare, by its gate names.
+    pub population: String,
+    /// Exactly one sample, by words of its file name or metadata.
+    pub sample: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -455,6 +468,25 @@ impl Clingate {
     #[tool(annotations(read_only_hint = false, destructive_hint = true))]
     async fn discard_unsaved_changes(&self) -> String {
         self.run(|s| s.discard_unsaved_changes()).await
+    }
+
+    /// Assess the last applied rules run: which placements look unlike their peers - the
+    /// other samples of the same kind that the rule placed confidently - or that the rule was
+    /// unsure of, each with its reasons in words, worst first; and each gate across the run in
+    /// a line. Reads no files: it works from the run the workspace keeps.
+    #[tool(annotations(read_only_hint = true))]
+    async fn assess_run(&self) -> String {
+        self.run(|s| s.assess_run()).await
+    }
+
+    /// One sample's placement of a population's gate beside its peers', in numbers: its
+    /// percentiles, peaks, line, where the line sits between the negative and positive peaks and
+    /// what it lets through - each with the peers' 10th, 50th and 90th percentile. For finding
+    /// out why assess_run flagged it.
+    #[tool(annotations(read_only_hint = true))]
+    async fn compare_to_peers(&self, Parameters(args): Parameters<CompareToPeers>) -> String {
+        self.run(move |s| s.compare_to_peers(&args.population, &args.sample))
+            .await
     }
 
     /// Report a gate the rules placed badly on one sample, as the app's Report dialog does:

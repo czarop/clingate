@@ -10,9 +10,11 @@
 //! review into the review library ([`library`]) where reviews add up across
 //! runs.
 
+pub mod assess;
 pub mod library;
 pub mod report;
 pub mod run_record;
+pub mod shape;
 
 pub use report::{PlacementReport, Problem, ReportRequest, RunReview};
 pub use run_record::{RunRecord, placement_status};

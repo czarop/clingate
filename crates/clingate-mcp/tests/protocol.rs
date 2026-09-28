@@ -193,6 +193,8 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "discard_unsaved_changes",
         "report_placement",
         "mark_run_reviewed",
+        "assess_run",
+        "compare_to_peers",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }

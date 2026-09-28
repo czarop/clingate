@@ -154,6 +154,13 @@ pub struct PlacedRecord {
     /// Where the placed gate sits on each of its parameters - what tells
     /// whether it is still where the rule put it.
     pub placed_at: Vec<ExtentRecord>,
+    /// The parent population the rule read on this sample, on the rule's
+    /// parameter - what the run is assessed on. `None` for a phenotype rule.
+    #[serde(default)]
+    pub shape: Option<crate::review::shape::Shape>,
+    /// Which side of the line the gate keeps.
+    #[serde(default)]
+    pub bound: Option<crate::gate_rules::rule_store::Bound>,
 }
 
 /// A gate left where it was.
@@ -169,6 +176,14 @@ pub struct KeptRecord {
     pub met_rule: bool,
     pub achieved: Option<f64>,
     pub above_the_line: Option<f64>,
+    /// Where its line sits, the parent population on the rule's parameter,
+    /// and which side the gate keeps.
+    #[serde(default)]
+    pub line: Option<f64>,
+    #[serde(default)]
+    pub shape: Option<crate::review::shape::Shape>,
+    #[serde(default)]
+    pub bound: Option<crate::gate_rules::rule_store::Bound>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -306,6 +321,8 @@ impl RunRecord {
                     pieces: r.pieces,
                 }),
                 placed_at: extent_of(placement.gate.as_ref()),
+                shape: p.shape.clone(),
+                bound: p.bound,
             })
             .collect();
 
@@ -318,6 +335,9 @@ impl RunRecord {
             met_rule,
             achieved: finite(u.achieved),
             above_the_line: finite(u.above_the_line),
+            line: u.line.and_then(finite),
+            shape: u.shape.clone(),
+            bound: u.bound,
         };
         let kept = report
             .unchanged
@@ -511,6 +531,8 @@ mod tests {
                     lower: Some(1.5),
                     upper: None,
                 }],
+                shape: None,
+                bound: None,
             }],
             kept: Vec::new(),
             skipped: Vec::new(),

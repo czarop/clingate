@@ -569,3 +569,39 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
         (1, 0, 1)
     );
 }
+
+#[test]
+fn a_kept_run_is_assessed_and_a_sample_compared_with_its_peers() {
+    let folder = with_rules("session-assess");
+    let mut session = Session::open(&folder).unwrap();
+    // Nothing to assess before a run is applied.
+    assert!(session.assess_run().is_err());
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+
+    let assessed = session.assess_run().unwrap();
+    assert_eq!(assessed.placements, 2);
+    assert_eq!(assessed.gates.len(), 1);
+    assert_eq!(assessed.gates[0].gate, "Tmem");
+    // Two samples, one of each kind: nothing to compare with, so only what
+    // the rule itself said can raise a flag.
+    for flag in &assessed.flags {
+        assert!(
+            flag.reasons
+                .iter()
+                .all(|r| r.measure == "low_confidence" || r.measure == "outside_band"),
+            "{flag:?}"
+        );
+    }
+
+    let compared = session.compare_to_peers("Tmem", "fmx").unwrap();
+    assert!(compared.peers.is_empty(), "no other FMX: {compared:?}");
+    assert!(compared.line.is_some());
+    assert_eq!(compared.percentiles.len(), 9);
+    assert!(
+        compared
+            .percentiles
+            .iter()
+            .all(|(_, here, _)| here.is_some())
+    );
+}

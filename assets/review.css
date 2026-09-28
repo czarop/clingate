@@ -48,3 +48,13 @@
   justify-content: flex-end;
   margin-top: 12px;
 }
+
+/* The review list on the Gate Rules tab. */
+.review-flags { display: flex; flex-direction: column; gap: 6px; }
+.review-flags_table { border-collapse: collapse; font-size: 0.85rem; width: 100%; }
+.review-flags_table th { text-align: left; font-weight: 600; padding: 2px 8px; border-bottom: 1px solid #ccc; }
+.review-flags_table td { padding: 4px 8px; vertical-align: top; border-bottom: 1px solid #eee; }
+.review-flags_severe { color: #c0392b; }
+.review-flags_notable { color: #d68910; }
+.review-flags_dealt { opacity: 0.55; }
+.review-flags_note { font-style: italic; opacity: 0.8; }

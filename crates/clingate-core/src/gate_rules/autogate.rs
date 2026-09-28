@@ -953,6 +953,11 @@ pub struct Positioned {
     /// what it measured - the ones that passed as well as the weakest, which
     /// is what a review of a missed placement needs to see.
     pub components: Vec<crate::gate_rules::confidence::Component>,
+    /// The parent population the rule read on this sample, summarised, and
+    /// which side of the line the gate keeps - what a run is reviewed on
+    /// afterwards. `None` for a phenotype rule, which reads no line.
+    pub shape: Option<crate::review::shape::Shape>,
+    pub bound: Option<Bound>,
     /// What the moved gate actually admits from the reference population -
     /// measured by asking the gate, not by counting past a line.
     pub achieved: f64,
@@ -1041,6 +1046,11 @@ pub struct Unmeasured {
 pub struct Unchanged {
     pub gate_id: GateId,
     pub file: FileId,
+    /// Where its line sits, the parent population it was read on, and which
+    /// side the gate keeps - see [`Positioned::shape`].
+    pub line: Option<f64>,
+    pub shape: Option<crate::review::shape::Shape>,
+    pub bound: Option<Bound>,
     pub gate: Arc<str>,
     /// The population it is drawn on. Without it a report naming "a4b7+" five
     /// times says nothing: the same marker gated on five parents is five
@@ -1282,6 +1292,12 @@ pub fn solve_all_reporting(
             report.reference.push(Unchanged {
                 gate_id: measured.gate_id.clone(),
                 file: measured.file.clone(),
+                line: measured.line.as_ref().map(|l| l.current),
+                shape: measured
+                    .line
+                    .as_ref()
+                    .and_then(|l| crate::review::shape::summarise(&l.values)),
+                bound: measured.line.as_ref().map(|l| l.bound),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
                 specimen: specimen.group.clone(),
@@ -1434,6 +1450,9 @@ fn position_one(
         return Ok(Outcome::Kept(Unchanged {
             gate_id: measured.gate_id.clone(),
             file: measured.file.clone(),
+            line: Some(line.current),
+            shape: crate::review::shape::summarise(&line.values),
+            bound: Some(line.bound),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),
             specimen: specimen.group.clone(),
@@ -1625,6 +1644,8 @@ fn position_one(
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
             components: confidence.components.clone(),
+            shape: crate::review::shape::summarise(&line.values),
+            bound: Some(line.bound),
             achieved,
             captured_on: judged_on.file.clone(),
             above_the_line: beyond_the_line(&judged_line.values, line.bound, to),
@@ -1861,6 +1882,8 @@ fn position_by_phenotype(
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
             components: confidence.components.clone(),
+            shape: None,
+            bound: None,
             achieved,
             captured_on: measured.file.clone(),
             above_the_line: f64::NAN,
