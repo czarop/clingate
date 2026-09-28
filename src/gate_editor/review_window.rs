@@ -125,7 +125,7 @@ pub fn ReviewWindow() -> Element {
     let mut gate_filter = use_signal(String::new);
     let mut page = use_signal(|| 0usize);
     let mut plot_size = use_signal(|| 220u32);
-    let mut beside_peer = use_signal(|| true);
+    let mut compare = use_signal(|| Compare::Both);
 
     let cache = use_signal_sync(PlotCache::default);
     use_context_provider(|| cache);
@@ -209,12 +209,18 @@ pub fn ReviewWindow() -> Element {
                     }
                 }
                 label { class: "gallery-size",
-                    input {
-                        r#type: "checkbox",
-                        checked: beside_peer(),
-                        onchange: move |e| beside_peer.set(e.checked()),
+                    "Beside"
+                    select {
+                        value: "{compare().key()}",
+                        onchange: move |e| {
+                            if let Some(c) = Compare::from_key(&e.value()) {
+                                compare.set(c);
+                            }
+                        },
+                        for c in Compare::ALL {
+                            option { key: "{c.key()}", value: "{c.key()}", "{c.title()}" }
+                        }
                     }
-                    "beside a typical peer"
                 }
                 label { class: "gallery-size",
                     "Size"
@@ -257,7 +263,7 @@ pub fn ReviewWindow() -> Element {
                             entry: entry.clone(),
                             held: held().expect("the board is read from it"),
                             size: plot_size(),
-                            beside_peer: beside_peer(),
+                            compare: compare(),
                             showing,
                         }
                     }
@@ -334,6 +340,106 @@ pub(crate) fn file_of(
     files.iter().find(|(n, _)| &**n == name).cloned()
 }
 
+/// What each tile is shown beside.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Compare {
+    /// The peer that placed the gate most typically - flagged tiles only.
+    Peer,
+    /// The file the rule read: the specimen's FMO, or the reference sample.
+    RuleRead,
+    Both,
+    Nothing,
+}
+
+impl Compare {
+    pub const ALL: [Compare; 4] = [
+        Compare::Both,
+        Compare::RuleRead,
+        Compare::Peer,
+        Compare::Nothing,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Compare::Peer => "peer",
+            Compare::RuleRead => "read",
+            Compare::Both => "both",
+            Compare::Nothing => "nothing",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.key() == key)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Compare::Peer => "a typical peer",
+            Compare::RuleRead => "the file the rule read",
+            Compare::Both => "the file the rule read and a typical peer",
+            Compare::Nothing => "nothing",
+        }
+    }
+}
+
+/// One plot shown beside a tile's own.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Beside {
+    pub label: String,
+    pub name: Arc<str>,
+    pub path: PathBuf,
+}
+
+/// What a tile is shown beside: the file the rule read, named as what it is
+/// - the FMO, or the reference every sample is placed against - and the
+/// typical peer a flag names; each only where the workspace still has its
+/// file, and never the tile's own sample twice.
+pub(crate) fn comparisons(
+    entry: &Entry,
+    compare: Compare,
+    files: &[(Arc<str>, PathBuf)],
+) -> Vec<Beside> {
+    let name = |s: &SampleRef| {
+        s.name
+            .clone()
+            .unwrap_or_else(|| s.id.clone())
+            .trim_end_matches(".fcs")
+            .to_string()
+    };
+    let mut out: Vec<Beside> = Vec::new();
+    let mut add = |label: String, sample: &SampleRef| {
+        if sample.id == entry.sample.id {
+            return;
+        }
+        if let Some((n, path)) = file_of(files, sample)
+            && !out.iter().any(|b| b.name == n)
+        {
+            out.push(Beside {
+                label,
+                name: n,
+                path,
+            });
+        }
+    };
+    if matches!(compare, Compare::RuleRead | Compare::Both)
+        && let Some(read) = &entry.rule_read
+    {
+        let what = match read.sample_type.as_deref() {
+            Some(t) if Some(t) != entry.sample.sample_type.as_deref() => {
+                format!("the {t} the rule read")
+            }
+            _ => "the reference the rule read".to_string(),
+        };
+        add(format!("{what}: {}", name(read)), read);
+    }
+    if matches!(compare, Compare::Peer | Compare::Both)
+        && let Some(peer) = entry.flag.as_ref().and_then(|f| f.typical_peer.as_ref())
+    {
+        add(format!("a typical peer: {}", name(peer)), peer);
+    }
+    out
+}
+
 /// What "Open in editor" sets the editor to: the population, each axis if
 /// the scaling has its channel, and the sample's place in the file list.
 #[derive(Clone, PartialEq, Debug)]
@@ -359,7 +465,7 @@ fn ReviewTile(
     entry: Entry,
     held: Arc<HeldRun>,
     size: u32,
-    beside_peer: bool,
+    compare: Compare,
     showing: bool,
 ) -> Element {
     let gates = use_context::<SyncStore<GateState>>();
@@ -396,12 +502,7 @@ fn ReviewTile(
         .unwrap_or_default();
     let path_of = |sample: &SampleRef| file_of(&files, sample);
     let mine = path_of(&entry.sample);
-    let peer = entry
-        .flag
-        .as_ref()
-        .and_then(|f| f.typical_peer.clone())
-        .filter(|_| beside_peer);
-    let peer_file = peer.as_ref().and_then(|p| path_of(p));
+    let beside = comparisons(&entry, compare, &files);
 
     let label = |s: &SampleRef| {
         s.name
@@ -517,15 +618,15 @@ fn ReviewTile(
                                 }
                             }
                         }
-                        if let (Some(peer), Some((peer_name, peer_path))) = (peer.as_ref(), peer_file.clone()) {
-                            div { class: "gallery-plot",
-                                div { class: "gallery-plot_name", title: "{label(peer)}",
-                                    "a typical peer: {label(peer)}"
+                        for other in beside.iter() {
+                            div { class: "gallery-plot", key: "{other.name}",
+                                div { class: "gallery-plot_name", title: "{other.name}",
+                                    "{other.label}"
                                 }
                                 if showing {
                                     GalleryPlot {
-                                        name: peer_name,
-                                        path: peer_path,
+                                        name: other.name.clone(),
+                                        path: other.path.clone(),
                                         node: drawn.parent.clone(),
                                         x: drawn.x.clone(),
                                         y: drawn.y.clone(),

@@ -208,3 +208,117 @@ fn open_in_editor_sets_the_population_the_axes_and_the_sample() {
     assert!(to.y.is_some());
     assert_eq!(to.file, None);
 }
+
+mod beside {
+    use super::*;
+    use crate::gate_editor::review_window::{Compare, comparisons};
+    use clingate_core::review::assess::Flag;
+    use clingate_core::review::board::{Entry, Pile};
+
+    fn sample(id: &str, kind: &str) -> SampleRef {
+        SampleRef {
+            id: id.into(),
+            name: Some(format!("{id}.fcs")),
+            sample_type: Some(kind.into()),
+        }
+    }
+
+    fn files() -> Vec<(Arc<str>, PathBuf)> {
+        ["fs1", "fmx1", "qc", "fs7"]
+            .iter()
+            .map(|n| {
+                (
+                    Arc::from(format!("{n}.fcs").as_str()),
+                    PathBuf::from(format!("/w/{n}.fcs")),
+                )
+            })
+            .collect()
+    }
+
+    fn entry(rule_read: Option<SampleRef>, peer: Option<SampleRef>) -> Entry {
+        Entry {
+            gate_id: "g".into(),
+            gate: "CD69+".into(),
+            parent_gate: None,
+            sample: sample("fs1", "FS"),
+            moved: true,
+            confidence: Some(0.7),
+            weakest: None,
+            pile: Pile::NeedsALook,
+            flag: peer.map(|p| Flag {
+                gate_id: "g".into(),
+                gate: "CD69+".into(),
+                parent_gate: None,
+                sample: sample("fs1", "FS"),
+                moved: true,
+                confidence: Some(0.7),
+                weakest: None,
+                severity: 4.0,
+                reasons: Vec::new(),
+                status: None,
+                peers: 30,
+                confident_peers: true,
+                typical_peer: Some(p),
+            }),
+            looks_right: false,
+            reports: 0,
+            status: None,
+            rule_read,
+        }
+    }
+
+    fn labels(b: &[crate::gate_editor::review_window::Beside]) -> Vec<String> {
+        b.iter().map(|b| b.label.clone()).collect()
+    }
+
+    #[test]
+    fn an_fs_is_shown_beside_the_fmx_its_rule_read_and_its_typical_peer() {
+        let e = entry(Some(sample("fmx1", "FMX")), Some(sample("fs7", "FS")));
+        let both = comparisons(&e, Compare::Both, &files());
+        assert_eq!(
+            labels(&both),
+            vec!["the FMX the rule read: fmx1", "a typical peer: fs7"]
+        );
+        assert_eq!(both[0].path, PathBuf::from("/w/fmx1.fcs"));
+        assert_eq!(
+            labels(&comparisons(&e, Compare::RuleRead, &files())),
+            vec!["the FMX the rule read: fmx1"]
+        );
+        assert_eq!(
+            labels(&comparisons(&e, Compare::Peer, &files())),
+            vec!["a typical peer: fs7"]
+        );
+        assert!(comparisons(&e, Compare::Nothing, &files()).is_empty());
+    }
+
+    #[test]
+    fn a_reference_of_the_same_kind_is_named_as_the_reference() {
+        let e = entry(Some(sample("qc", "FS")), None);
+        assert_eq!(
+            labels(&comparisons(&e, Compare::Both, &files())),
+            vec!["the reference the rule read: qc"]
+        );
+    }
+
+    #[test]
+    fn nothing_is_shown_twice_nor_what_the_workspace_no_longer_has() {
+        // The typical peer is the reference too: once.
+        let e = entry(Some(sample("fs7", "FS")), Some(sample("fs7", "FS")));
+        assert_eq!(comparisons(&e, Compare::Both, &files()).len(), 1);
+        // A rule that read the sample itself, or a file that has gone.
+        let e = entry(Some(sample("fs1", "FS")), Some(sample("gone", "FS")));
+        assert!(comparisons(&e, Compare::Both, &files()).is_empty());
+        // Unflagged, a tile has no typical peer: only what the rule read.
+        let e = entry(Some(sample("fmx1", "FMX")), None);
+        assert_eq!(comparisons(&e, Compare::Peer, &files()).len(), 0);
+        assert_eq!(comparisons(&e, Compare::Both, &files()).len(), 1);
+    }
+
+    #[test]
+    fn every_choice_reads_back_from_its_key() {
+        for c in Compare::ALL {
+            assert_eq!(Compare::from_key(c.key()), Some(c));
+        }
+        assert_eq!(Compare::from_key("x"), None);
+    }
+}

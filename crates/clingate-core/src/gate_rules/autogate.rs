@@ -1049,6 +1049,9 @@ pub struct Unmeasured {
 pub struct Unchanged {
     pub gate_id: GateId,
     pub file: FileId,
+    /// The file the rule read to decide the gate already met it; `None` for
+    /// a reference, which the rule calibrates from rather than judges.
+    pub measured_on: Option<FileId>,
     /// Where its line sits, the parent population it was read on, and which
     /// side the gate keeps - see [`Positioned::shape`].
     pub line: Option<f64>,
@@ -1295,6 +1298,7 @@ pub fn solve_all_reporting(
             report.reference.push(Unchanged {
                 gate_id: measured.gate_id.clone(),
                 file: measured.file.clone(),
+                measured_on: None,
                 line: measured.line.as_ref().map(|l| l.current),
                 shape: measured
                     .line
@@ -1466,6 +1470,7 @@ fn position_one(
         return Ok(Outcome::Kept(Unchanged {
             gate_id: measured.gate_id.clone(),
             file: measured.file.clone(),
+            measured_on: Some(reference.id.clone()),
             line: Some(line.current),
             shape: crate::review::shape::summarise(&line.values),
             bound: Some(line.bound),

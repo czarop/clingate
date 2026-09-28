@@ -245,6 +245,58 @@ fn from_kept(k: &super::run_record::KeptRecord) -> Item<'_> {
     }
 }
 
+/// How to judge where a sample's gate sits against its peers': as a
+/// fraction of the way between its negative and positive peaks where the
+/// sample and most of its peers have both, and otherwise against the spread,
+/// which every population has.
+///
+/// Chosen by the sample alone, a sample with a second peak among peers with
+/// one was compared only with the few peers that also had two - the other
+/// outliers - and so looked ordinary.
+fn position_measure(item: &Item, peers: &[&Item]) -> Measure {
+    let with_two = peers.iter().filter(|p| p.between_peaks().is_some()).count();
+    if item.between_peaks().is_some() && with_two >= MIN_PEERS && with_two * 2 >= peers.len() {
+        Measure::BetweenPeaks
+    } else {
+        Measure::AgainstSpread
+    }
+}
+
+/// The peer to show beside a flagged placement: of its peers that are not
+/// flagged themselves, the one whose gate sits nearest the middle of theirs.
+///
+/// Never another flagged placement - an outlier beside an outlier shows
+/// nothing - and so, for placements compared on the same measure with the
+/// same peers, the same sample each time.
+fn typical_of(
+    gate_id: &str,
+    peers: &[(SampleRef, Option<f64>)],
+    flagged: &std::collections::HashSet<(String, String)>,
+) -> Option<SampleRef> {
+    let unflagged: Vec<&(SampleRef, Option<f64>)> = peers
+        .iter()
+        .filter(|(s, _)| !flagged.contains(&(gate_id.to_string(), s.id.clone())))
+        .collect();
+    let valued: Vec<(f64, &SampleRef)> = unflagged
+        .iter()
+        .filter_map(|(s, v)| v.map(|v| (v, s)))
+        .collect();
+    let mut values: Vec<f64> = valued.iter().map(|(v, _)| *v).collect();
+    median(&mut values)
+        .and_then(|m| {
+            valued
+                .iter()
+                .min_by(|a, b| {
+                    (a.0 - m)
+                        .abs()
+                        .total_cmp(&(b.0 - m).abs())
+                        .then_with(|| a.1.id.cmp(&b.1.id))
+                })
+                .map(|(_, s)| (*s).clone())
+        })
+        .or_else(|| unflagged.first().map(|(s, _)| s.clone()))
+}
+
 /// The comparisons, each with the least spread among peers it is judged
 /// against - so a run of near-identical peers does not make a hair's
 /// difference look enormous.
@@ -350,6 +402,9 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
     }
 
     let mut flags = Vec::new();
+    // Each flag's peers, with where each put the gate - to choose the one to
+    // show beside it once it is known which peers are flagged themselves.
+    let mut candidates: Vec<Vec<(SampleRef, Option<f64>)>> = Vec::new();
     for members in groups.values() {
         for &i in members {
             let item = &items[i];
@@ -371,6 +426,7 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
                 (others, false)
             };
 
+            let position = position_measure(item, &peers);
             let mut reasons = Vec::new();
             if let Some(c) = item.confidence
                 && c < REVIEW_FLOOR
@@ -393,18 +449,8 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
             }
 
             if peers.len() >= MIN_PEERS {
-                let two_peaks = item.between_peaks();
-                let measures: [(Measure, Option<f64>); 3] = [
-                    (Measure::BetweenPeaks, two_peaks),
-                    (
-                        Measure::AgainstSpread,
-                        // With two peaks the position between them says it.
-                        if two_peaks.is_none() {
-                            item.against_spread()
-                        } else {
-                            None
-                        },
-                    ),
+                let measures: [(Measure, Option<f64>); 2] = [
+                    (position, item.measure(position)),
                     (
                         Measure::FractionBeyond,
                         item.measure(Measure::FractionBeyond),
@@ -527,28 +573,15 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
                 continue;
             }
             reasons.sort_by(|a, b| b.severity.total_cmp(&a.severity));
-            let typical_peer = {
-                let measure = if item.between_peaks().is_some() {
-                    Measure::BetweenPeaks
-                } else {
-                    Measure::FractionBeyond
-                };
-                let valued: Vec<(f64, &Item)> = peers
+            candidates.push(
+                peers
                     .iter()
-                    .filter_map(|p| p.measure(measure).map(|v| (v, *p)))
-                    .collect();
-                let mut values: Vec<f64> = valued.iter().map(|(v, _)| *v).collect();
-                median(&mut values)
-                    .and_then(|m| {
-                        valued
-                            .iter()
-                            .min_by(|a, b| (a.0 - m).abs().total_cmp(&(b.0 - m).abs()))
-                            .map(|(_, p)| p.sample.clone())
-                    })
-                    .or_else(|| peers.first().map(|p| p.sample.clone()))
-            };
+                    .map(|p| (p.sample.clone(), p.measure(position)))
+                    .collect::<Vec<_>>(),
+            );
             flags.push(Flag {
-                typical_peer,
+                // Chosen once every flag is known: see `typical_of`.
+                typical_peer: None,
                 gate_id: item.gate_id.to_string(),
                 gate: item.gate.to_string(),
                 parent_gate: item.parent_gate.map(str::to_string),
@@ -569,6 +602,14 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
             });
         }
     }
+    let flagged: std::collections::HashSet<(String, String)> = flags
+        .iter()
+        .map(|f| (f.gate_id.clone(), f.sample.id.clone()))
+        .collect();
+    for (flag, peers) in flags.iter_mut().zip(&candidates) {
+        flag.typical_peer = typical_of(&flag.gate_id, peers, &flagged);
+    }
+
     // Worst first; a gate already moved by a person after those still as
     // placed.
     flags.sort_by(|a, b| {
@@ -946,6 +987,7 @@ mod tests {
             line: Some(line),
             shape: Some(shape),
             bound: Some(Bound::Above),
+            measured_on: None,
         }
     }
 
@@ -1173,6 +1215,89 @@ mod tests {
         assert!(neg.median.abs() < 0.2 && (pos.median - 3.0).abs() < 0.3);
         assert_eq!(c.peaks.len(), 2);
         assert!((c.position_between_peaks.unwrap() - 0.5).abs() < 0.1);
+    }
+
+    /// A negative at 0 and a fraction `share` positive at `at`.
+    fn mixed(share: f64, at: f64, seed: u64) -> Shape {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let neg = Normal::new(0.0, 0.5).unwrap();
+        let pos = Normal::new(at, 0.5).unwrap();
+        let every = (1.0 / share).round() as usize;
+        summarise(
+            &(0..5_000)
+                .map(|i| {
+                    if i % every == 0 {
+                        pos.sample(&mut rng)
+                    } else {
+                        neg.sample(&mut rng)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// The CD69 plate: 31 samples with one population and the gate well
+    /// out past it, and four with a second population and the gate through
+    /// the middle of them.
+    fn cd69_plate() -> RunRecord {
+        let mut placed_all: Vec<PlacedRecord> = (0..31)
+            .map(|n| {
+                placed(
+                    n,
+                    1.6 + (n % 5) as f64 * 0.02,
+                    one_peak(0.0, 0.5, n as u64),
+                    0.8,
+                )
+            })
+            .collect();
+        for (k, share) in [0.33, 0.5, 0.4, 0.33].into_iter().enumerate() {
+            placed_all.push(placed(90 + k, 0.8, mixed(share, 2.5, 90 + k as u64), 0.75));
+        }
+        run_of(placed_all, Vec::new())
+    }
+
+    #[test]
+    fn outliers_are_shown_beside_the_same_typical_sample_one_of_the_majority() {
+        let a = assess(&cd69_plate(), None);
+        let outliers: Vec<&Flag> = a
+            .flags
+            .iter()
+            .filter(|f| f.sample.id.starts_with("f9"))
+            .collect();
+        assert_eq!(outliers.len(), 4, "{:#?}", a.flags);
+        let shown: Vec<&str> = outliers
+            .iter()
+            .map(|f| f.typical_peer.as_ref().expect("a typical peer").id.as_str())
+            .collect();
+        for id in &shown {
+            assert!(
+                !id.starts_with("f9"),
+                "another outlier shown as typical: {shown:?}"
+            );
+        }
+        assert!(shown.windows(2).all(|w| w[0] == w[1]), "{shown:?}");
+    }
+
+    #[test]
+    fn a_two_peaked_outlier_s_gate_is_judged_against_one_peaked_peers() {
+        let a = assess(&cd69_plate(), None);
+        for f in a.flags.iter().filter(|f| f.sample.id.starts_with("f9")) {
+            let measures: Vec<&str> = f.reasons.iter().map(|r| r.measure).collect();
+            assert!(
+                measures.contains(&"gate_against_spread"),
+                "{}: where its gate sits was not compared: {measures:?}",
+                f.sample.id
+            );
+            // Not against the other outliers: what it lets through is set
+            // against the majority's fraction.
+            let beyond = f
+                .reasons
+                .iter()
+                .find(|r| r.measure == "fraction_beyond_line")
+                .unwrap();
+            assert!(beyond.says.contains("against 0."), "{}", beyond.says);
+        }
     }
 
     #[test]

@@ -77,6 +77,10 @@ pub struct Entry {
     /// Whether it is still where the rule put it. `None` for a gate the run
     /// left alone.
     pub status: Option<PlacementStatus>,
+    /// The file the rule read for it - the specimen's FMO, or a reference
+    /// sample every specimen is placed against - where that is not the
+    /// sample itself. What the Review tab can show it beside.
+    pub rule_read: Option<SampleRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -230,6 +234,7 @@ pub fn board(
             looks_right: looks,
             reports,
             status,
+            rule_read: (p.measured_on.id != p.sample.id).then(|| p.measured_on.clone()),
         });
     }
     // A gate kept as the reference the rule calibrated from is not a
@@ -251,6 +256,7 @@ pub fn board(
             looks_right: looks,
             reports,
             status: None,
+            rule_read: k.measured_on.clone().filter(|read| read.id != k.sample.id),
         });
     }
 
@@ -384,6 +390,7 @@ mod tests {
                     line: None,
                     shape: None,
                     bound: None,
+                    measured_on: None,
                 },
                 KeptRecord {
                     gate_id: "g-CD279+".into(),
@@ -398,6 +405,7 @@ mod tests {
                     line: None,
                     shape: None,
                     bound: None,
+                    measured_on: None,
                 },
                 KeptRecord {
                     gate_id: "g-CD279+".into(),
@@ -411,6 +419,7 @@ mod tests {
                     line: None,
                     shape: None,
                     bound: None,
+                    measured_on: None,
                 },
                 KeptRecord {
                     gate_id: "g-CD279+".into(),
@@ -424,6 +433,7 @@ mod tests {
                     line: None,
                     shape: None,
                     bound: None,
+                    measured_on: None,
                 },
             ],
             skipped: Vec::new(),
@@ -505,6 +515,43 @@ mod tests {
                 .all(|e| !e.moved && e.status.is_none())
         );
         assert_eq!(board.run_applied_at, "t1");
+    }
+
+    #[test]
+    fn each_entry_says_which_file_the_rule_read_unless_it_read_the_sample_itself() {
+        let mut run = run();
+        let mut on_fmo = placed("fs1", "CD69+");
+        on_fmo.measured_on = SampleRef {
+            id: "fmx1".into(),
+            name: Some("fmx1.fcs".into()),
+            sample_type: Some("FMX".into()),
+        };
+        run.placed.push(on_fmo);
+        // `placed` reads the sample itself.
+        run.placed.push(placed("fs2", "CD69+"));
+        run.kept[0].measured_on = Some(sample("qc"));
+        let board = board(
+            &run,
+            &assess(&run, None),
+            &[],
+            &LooksRight::default(),
+            &GateState::default(),
+            &MetaDataFileMap::default(),
+        );
+        let read = |id: &str| {
+            board
+                .entries
+                .iter()
+                .find(|e| e.sample.id == id)
+                .unwrap()
+                .rule_read
+                .as_ref()
+                .map(|s| s.id.clone())
+        };
+        assert_eq!(read("fs1").as_deref(), Some("fmx1"));
+        assert_eq!(read("fs2"), None);
+        assert_eq!(read("a").as_deref(), Some("qc"));
+        assert_eq!(read("b"), None);
     }
 
     #[test]

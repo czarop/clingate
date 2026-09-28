@@ -949,6 +949,7 @@ mod tests {
                 line: None,
                 shape: None,
                 bound: None,
+                measured_on: None,
             };
             record.kept = vec![kept("fs_a"), kept("fs_b")];
             record.save(&folder).unwrap();
@@ -1466,6 +1467,50 @@ mod tests {
             assert!((0.05..=0.15).contains(&achieved), "{achieved}");
             assert_eq!(kept.bound, Some(Bound::Above));
             assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn a_gate_left_alone_records_the_reference_the_rule_read() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::run_record::{RunRecord, Samples};
+            let (state, _id) = positive_gate();
+            let mut store = RuleStore::default();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    // What the QC admits is already in the band, so every
+                    // specimen's gate is left where it is.
+                    measured_on: MeasuredOn::File(Arc::from("fs_qc")),
+                    rule: Rule::TailFraction(TailFractionRule::new((0.05, 0.15))),
+                },
+            );
+            let inputs = RunInputs {
+                rules: store,
+                ..three_way_inputs("record-kept-read")
+            };
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            let samples = Samples::new(&inputs.names, &inputs.metadata, &inputs.rules.pairing);
+            let record = RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            );
+            let donor = record
+                .kept
+                .iter()
+                .find(|k| k.sample.id == "fs_b")
+                .expect("kept");
+            assert!(donor.met_rule);
+            let read = donor.measured_on.as_ref().expect("the file it read");
+            assert_eq!(read.id, "fs_qc");
+            assert_eq!(read.name.as_deref(), Some("fs_qc.fcs"));
+            // The QC itself is the reference: it read nothing else.
+            let qc = record.kept.iter().find(|k| k.sample.id == "fs_qc").unwrap();
+            assert!(!qc.met_rule);
+            assert_eq!(qc.measured_on, None);
         }
 
         #[test]

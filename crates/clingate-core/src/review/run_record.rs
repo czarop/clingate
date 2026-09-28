@@ -184,6 +184,10 @@ pub struct KeptRecord {
     pub shape: Option<crate::review::shape::Shape>,
     #[serde(default)]
     pub bound: Option<crate::gate_rules::rule_store::Bound>,
+    /// The file the rule read to decide the gate already met it - the FMO,
+    /// or the reference sample - where that is not the sample itself.
+    #[serde(default)]
+    pub measured_on: Option<SampleRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -353,6 +357,11 @@ impl RunRecord {
             line: u.line.and_then(finite),
             shape: u.shape.clone(),
             bound: u.bound,
+            measured_on: u
+                .measured_on
+                .as_ref()
+                .filter(|read| **read != u.file)
+                .map(|read| samples.sample(read)),
         };
         let kept = report
             .unchanged
