@@ -17,7 +17,9 @@ again to update.
 
 Either works on its own, before the repository is cloned: download it from
 GitHub and run it from wherever it was saved. The rest of this section is
-what they do, step by step.
+what they do, step by step. Both keep everything in one folder -
+`~/programs/clingate` (`%USERPROFILE%\programs\clingate` on Windows) - with
+the code in `source` and the program Claude Desktop runs in `bin`.
 
 The server is built from source on the machine that will run it - a Mac, or a
 Windows PC. Only `clingate-core` and the server are built, not the desktop
@@ -42,15 +44,17 @@ the branches rather than ask for a password or say "not found":
    HTTPS address.) Then run the `git ls-remote` check above.
 4. Get the code and build:
 
-       git clone https://github.com/czarop/clingate
-       cd clingate
+       mkdir -p ~/programs/clingate && cd ~/programs/clingate
+       git clone https://github.com/czarop/clingate source
+       cd source
        cargo build --release -p clingate-mcp
 
    The first build takes several minutes; later ones are quicker.
 5. Put the program somewhere it will stay, so a rebuild or a
    `cargo clean` never pulls it out from under Claude Desktop:
 
-       mkdir -p ~/bin && cp target/release/clingate-mcp ~/bin/
+       mkdir -p ~/programs/clingate/bin
+       cp target/release/clingate-mcp ~/programs/clingate/bin/
 
 ### Windows
 
@@ -66,14 +70,15 @@ the branches rather than ask for a password or say "not found":
    in a new terminal to get that done before building.
 4. Get the code and build, in PowerShell:
 
-       git clone https://github.com/czarop/clingate
-       cd clingate
+       mkdir $env:USERPROFILE\programs\clingate -Force; cd $env:USERPROFILE\programs\clingate
+       git clone https://github.com/czarop/clingate source
+       cd source
        cargo build --release -p clingate-mcp
 
 5. Put the program somewhere it will stay:
 
-       mkdir $env:USERPROFILE\bin -Force
-       copy target\release\clingate-mcp.exe $env:USERPROFILE\bin\
+       mkdir $env:USERPROFILE\programs\clingate\bin -Force
+       copy target\release\clingate-mcp.exe $env:USERPROFILE\programs\clingate\bin\
 
    This matters more on Windows: while Claude Desktop is running the server,
    Windows locks its file, and a build that tries to replace it fails with
@@ -103,7 +108,7 @@ Mac:
 {
   "mcpServers": {
     "clingate": {
-      "command": "/Users/you/bin/clingate-mcp"
+      "command": "/Users/you/programs/clingate/bin/clingate-mcp"
     }
   }
 }
@@ -115,7 +120,7 @@ and on Windows, with every backslash doubled:
 {
   "mcpServers": {
     "clingate": {
-      "command": "C:\\Users\\you\\bin\\clingate-mcp.exe"
+      "command": "C:\\Users\\you\\programs\\clingate\\bin\\clingate-mcp.exe"
     }
   }
 }
