@@ -8,44 +8,124 @@ percentages, summaries - go to Claude.
 
 ## Build
 
-From the repository root, on the machine that will run it (macOS or Windows):
+The server is built from source on the machine that will run it - a Mac, or a
+Windows PC. Only `clingate-core` and the server are built, not the desktop
+app, so no system libraries are needed beyond a compiler.
 
-    cargo build --release -p clingate-mcp
+Both this repository and `czarop/flow`, which it depends on, are private.
+The repository's `.cargo/config.toml` has cargo fetch `flow` through the
+`git` command line, so the build can reach it whenever `git` itself can
+reach GitHub over HTTPS with your account. Check that first; this should list
+the branches rather than ask for a password or say "not found":
 
-No system packages are needed: this builds `clingate-core` and the server,
-not the desktop app. The program is `target/release/clingate-mcp`
-(`clingate-mcp.exe` on Windows).
+    git ls-remote https://github.com/czarop/flow
+
+### macOS
+
+1. The compiler and git: `xcode-select --install`.
+2. Rust: from <https://rustup.rs>, `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`,
+   then open a new terminal.
+3. GitHub over HTTPS: install GitHub's `gh` (`brew install gh`) and run
+   `gh auth login`, choosing HTTPS and letting it set git up with your
+   credentials. (An SSH key alone is not enough: `flow` is fetched by its
+   HTTPS address.) Then run the `git ls-remote` check above.
+4. Get the code and build:
+
+       git clone https://github.com/czarop/clingate
+       cd clingate
+       cargo build --release -p clingate-mcp
+
+   The first build takes several minutes; later ones are quicker.
+5. Put the program somewhere it will stay, so a rebuild or a
+   `cargo clean` never pulls it out from under Claude Desktop:
+
+       mkdir -p ~/bin && cp target/release/clingate-mcp ~/bin/
+
+### Windows
+
+1. The compiler: Visual Studio Build Tools
+   (<https://visualstudio.microsoft.com/visual-cpp-build-tools/>), with the
+   **Desktop development with C++** workload - the MSVC compiler and the
+   Windows SDK.
+2. Rust: `rustup-init.exe` from <https://rustup.rs>, with its defaults
+   (the `msvc` toolchain).
+3. Git: Git for Windows (<https://git-scm.com/download/win>). It includes
+   Git Credential Manager, which signs in to GitHub in the browser the first
+   time a private repository is fetched. Run the `git ls-remote` check above
+   in a new terminal to get that done before building.
+4. Get the code and build, in PowerShell:
+
+       git clone https://github.com/czarop/clingate
+       cd clingate
+       cargo build --release -p clingate-mcp
+
+5. Put the program somewhere it will stay:
+
+       mkdir $env:USERPROFILE\bin -Force
+       copy target\release\clingate-mcp.exe $env:USERPROFILE\bin\
+
+   This matters more on Windows: while Claude Desktop is running the server,
+   Windows locks its file, and a build that tries to replace it fails with
+   "Access is denied".
+
+On a work laptop, things outside the code can stop this: a company proxy or
+firewall that blocks `crates.io` or GitHub (the build fails fetching
+crates), a policy that blocks programs you built yourself, or organisation
+settings in Claude that do not allow local servers (the tools never appear).
+Those are for your IT department.
+
+### Updating
+
+Quit Claude Desktop completely (from the menu bar on a Mac, the system tray
+on Windows - closing the window leaves it running), then `git pull`, build
+again, copy the program over the old one, and start Claude Desktop.
 
 ## Add it to Claude Desktop
 
-Open Claude Desktop's configuration file - Settings, Developer, Edit Config -
-which is at:
-
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-and add the server under `mcpServers`, with the full path to the program:
+In Claude Desktop, open Settings, Developer, Edit Config. That opens
+`claude_desktop_config.json` - on a Mac in
+`~/Library/Application Support/Claude/`, on Windows in `%APPDATA%\Claude\`.
+Add the server under `mcpServers`, with the full path to the program - on a
+Mac:
 
 ```json
 {
   "mcpServers": {
     "clingate": {
-      "command": "/Users/you/clingate/target/release/clingate-mcp"
+      "command": "/Users/you/bin/clingate-mcp"
     }
   }
 }
 ```
 
-On Windows the path is written with doubled backslashes:
-`"C:\\Users\\you\\clingate\\target\\release\\clingate-mcp.exe"`.
+and on Windows, with every backslash doubled:
 
-Restart Claude Desktop. The tools appear under the tools menu in a chat. An
-organisation's Claude settings can restrict which local servers may run; if
-they do not appear, that is the first thing to check.
+```json
+{
+  "mcpServers": {
+    "clingate": {
+      "command": "C:\\Users\\you\\bin\\clingate-mcp.exe"
+    }
+  }
+}
+```
 
-To see what the server is doing, set `CLINGATE_LOG=debug` in an `env` block
-beside `command`; it writes to Claude Desktop's MCP log, never to the
-protocol.
+If the file already has other servers, add `"clingate": {...}` beside them
+inside the same `mcpServers`.
+
+Quit and restart Claude Desktop. The tools appear under the tools menu in a
+chat.
+
+If they do not, or a tool fails, Claude Desktop's log for the server says
+why: `~/Library/Logs/Claude/mcp-server-clingate.log` on a Mac,
+`%APPDATA%\Claude\logs\mcp-server-clingate.log` on Windows. For more
+detail, add `"env": { "CLINGATE_LOG": "debug" }` beside `command`; the server
+writes its diagnostics to that log, never into the protocol.
+
+On a Mac, if opening a workspace fails with a permission error for data in
+Documents, Desktop, Downloads, iCloud Drive or an external disk, macOS is
+keeping Claude Desktop out of that folder: allow it in System Settings,
+Privacy & Security, Files and Folders (or Full Disk Access).
 
 ## The tools
 
