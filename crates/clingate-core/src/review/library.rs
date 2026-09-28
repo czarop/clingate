@@ -17,6 +17,10 @@ pub struct Settings {
     /// The review library, if one has been chosen.
     #[serde(default)]
     pub review_library: Option<PathBuf>,
+    /// Whatever else the file holds - settings a newer clingate keeps there -
+    /// written back as it was rather than dropped when this one saves.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Where the settings are kept: clingate's folder in the user's config
@@ -58,4 +62,53 @@ pub fn set(library: Option<PathBuf>) -> anyhow::Result<()> {
     let mut settings = Settings::load_from(&file).unwrap_or_default();
     settings.review_library = library;
     settings.save_to(&file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_settings_file_is_no_library() {
+        let folder = crate::file_load_tests::scratch("settings-missing");
+        let settings = Settings::load_from(&folder.join("settings.json")).unwrap();
+        assert_eq!(settings.review_library, None);
+    }
+
+    #[test]
+    fn the_library_is_kept_and_read_back() {
+        let folder = crate::file_load_tests::scratch("settings-round-trip");
+        let file = folder.join("clingate").join("settings.json");
+        let settings = Settings {
+            review_library: Some(PathBuf::from("/shared/reviews")),
+            ..Settings::default()
+        };
+        settings.save_to(&file).unwrap();
+        assert_eq!(Settings::load_from(&file).unwrap(), settings);
+        // And forgotten.
+        Settings::default().save_to(&file).unwrap();
+        assert_eq!(Settings::load_from(&file).unwrap().review_library, None);
+    }
+
+    #[test]
+    fn settings_this_version_does_not_know_survive_a_save() {
+        let folder = crate::file_load_tests::scratch("settings-unknown");
+        let file = folder.join("settings.json");
+        std::fs::write(&file, r#"{"review_library": "/old", "theme": "dark"}"#).unwrap();
+        let mut settings = Settings::load_from(&file).unwrap();
+        settings.review_library = Some(PathBuf::from("/new"));
+        settings.save_to(&file).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back["theme"], "dark", "{text}");
+        assert_eq!(back["review_library"], "/new");
+    }
+
+    #[test]
+    fn a_damaged_settings_file_is_an_error_not_a_silent_default() {
+        let folder = crate::file_load_tests::scratch("settings-damaged");
+        let file = folder.join("settings.json");
+        std::fs::write(&file, "{ not json").unwrap();
+        assert!(Settings::load_from(&file).is_err());
+    }
 }

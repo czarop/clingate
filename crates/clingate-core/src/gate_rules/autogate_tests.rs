@@ -2971,3 +2971,153 @@ fn the_band_search_lands_in_any_band_a_population_can_satisfy() {
         }
     }
 }
+
+// ── what a run keeps for review ─────────────────────────────────────────
+
+/// Solve without applying, as the app and the tools do, and keep the record.
+fn record_of(
+    state: &crate::gates::GateState,
+    store: &crate::gate_rules::rule_store::RuleStore,
+    map: &crate::omiq::metadata::MetaDataFileMap,
+    frames: &[(&str, &polars::prelude::DataFrame)],
+) -> (
+    crate::gate_rules::autogate::Report,
+    Vec<crate::gate_rules::autogate::Placement>,
+    crate::review::RunRecord,
+) {
+    use crate::gate_rules::autogate::{measure_file, solve_all};
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in frames {
+        let (m, u) = measure_file(state, &Arc::from(*file), frame, map, store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let (report, placements) = solve_all(state, store, &measured, &unmeasured, map);
+    let mut names: std::collections::HashMap<Arc<str>, Arc<str>, rustc_hash::FxBuildHasher> =
+        Default::default();
+    for (file, _) in frames {
+        names.insert(Arc::from(format!("{file}.fcs").as_str()), Arc::from(*file));
+    }
+    let samples = crate::review::run_record::Samples::new(&names, map, &store.pairing);
+    let record = crate::review::RunRecord::from_run(&report, &placements, store, &samples);
+    (report, placements, record)
+}
+
+#[test]
+fn a_valley_placement_is_kept_with_both_valleys_it_read() {
+    use crate::review::run_record::{PlacementStatus, placement_status};
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let here = two_populations(400.0, 0.0);
+    let shifted = two_populations(550.0, 0.0);
+    let store = valley_rule("fs_qc");
+    let (report, placements, record) = record_of(
+        &state,
+        &store,
+        &map,
+        &[("fs_qc", &here), ("fs_b", &shifted)],
+    );
+
+    assert_eq!(record.placed.len(), report.positioned.len());
+    let placed = record
+        .placed
+        .iter()
+        .find(|p| p.specimen == "DONOR-B")
+        .expect("the donor is placed");
+    let line = report
+        .positioned
+        .iter()
+        .find(|p| &*p.specimen == "DONOR-B")
+        .unwrap();
+    let (reference, sample) = placed.valley.as_ref().expect("the valleys are kept");
+    let (line_ref, line_sample) = line.valley.as_ref().unwrap();
+    assert_eq!(
+        (reference.bottom, reference.depth, reference.offset),
+        (line_ref.bottom, line_ref.depth, line_ref.offset)
+    );
+    assert_eq!(
+        (sample.bottom, sample.at),
+        (line_sample.bottom, line_sample.at)
+    );
+    assert!(placed.negative.is_none() && placed.phenotype.is_none());
+    assert!(placed.shape.is_some());
+    assert_eq!(placed.sample.name.as_deref(), Some("fs_b.fcs"));
+    assert_eq!(placed.measured_on.id, "fs_qc");
+
+    crate::gate_rules::autogate::apply_placements(&mut state, &placements);
+    assert_eq!(
+        placement_status(placed, &state, &map),
+        PlacementStatus::AsPlaced
+    );
+}
+
+#[test]
+fn a_phenotype_placement_is_kept_with_what_it_matched_and_no_line() {
+    use crate::gate_rules::rule::ShapeFit;
+    use crate::review::run_record::{PlacementStatus, placement_status};
+    let (mut state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let store = phenotype_rule(ShapeFit::KeepShape, &["CD161"]);
+    let reference = panel(1, 1800, 200, (700.0, 700.0, 800.0));
+    let sample = panel(2, 1800, 200, (300.0, 650.0, 800.0));
+    let (report, placements, record) = record_of(
+        &state,
+        &store,
+        &map,
+        &[("fs_qc", &reference), ("fs_b", &sample)],
+    );
+
+    assert_eq!(
+        record.placed.len(),
+        1,
+        "{:?}",
+        report.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+    );
+    let placed = &record.placed[0];
+    let read = report.positioned[0].phenotype.as_ref().unwrap();
+    let kept = placed.phenotype.as_ref().expect("what it matched is kept");
+    assert_eq!(kept.markers, vec!["CD161".to_string()]);
+    assert_eq!(
+        (
+            kept.matched,
+            kept.parent,
+            kept.reference_matched,
+            kept.reference_parent
+        ),
+        (
+            read.matched,
+            read.parent,
+            read.reference_matched,
+            read.reference_parent
+        )
+    );
+    assert_eq!(
+        (kept.purity, kept.caught, kept.pieces),
+        (read.purity, read.caught, read.pieces)
+    );
+    // A phenotype rule reads no line, so it has none to summarise.
+    assert!(placed.shape.is_none() && placed.bound.is_none());
+    assert!(placed.negative.is_none() && placed.valley.is_none());
+    // Its position is both of its extents.
+    assert_eq!(placed.placed_at.len(), 2);
+    assert!(
+        placed
+            .placed_at
+            .iter()
+            .all(|e| e.lower.is_some() && e.upper.is_some())
+    );
+    // The reference it calibrated from is kept, not judged.
+    assert!(
+        record
+            .kept
+            .iter()
+            .any(|k| k.sample.id == "fs_qc" && !k.met_rule)
+    );
+
+    crate::gate_rules::autogate::apply_placements(&mut state, &placements);
+    assert_eq!(
+        placement_status(placed, &state, &map),
+        PlacementStatus::AsPlaced
+    );
+}

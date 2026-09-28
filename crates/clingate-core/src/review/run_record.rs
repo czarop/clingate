@@ -474,9 +474,13 @@ pub fn placement_status(
         (None, None) => true,
         _ => false,
     };
+    // By parameter, not by position: the same gate stored the other way
+    // round - drawn on a plot with its axes swapped - has not moved.
     let same = now.len() == placed.placed_at.len()
-        && now.iter().zip(&placed.placed_at).all(|(n, p)| {
-            n.parameter == p.parameter && close(n.lower, p.lower) && close(n.upper, p.upper)
+        && placed.placed_at.iter().all(|p| {
+            now.iter().any(|n| {
+                n.parameter == p.parameter && close(n.lower, p.lower) && close(n.upper, p.upper)
+            })
         });
     if same {
         PlacementStatus::AsPlaced
@@ -602,6 +606,59 @@ mod tests {
         let path = record().save(&folder).unwrap();
         assert_eq!(path, folder.join("reviews").join("rules_run.json"));
         assert_eq!(RunRecord::load(&folder).unwrap(), Some(record()));
+    }
+
+    #[test]
+    fn a_sample_no_metadata_row_names_is_recorded_by_its_id_alone() {
+        let names = HashMap::default();
+        let metadata = MetaDataFileMap::default();
+        let pairing = crate::gate_rules::rule_store::SamplePairing::default();
+        let samples = Samples::new(&names, &metadata, &pairing);
+        let sample = samples.sample("f-unknown");
+        assert_eq!(sample.id, "f-unknown");
+        assert_eq!(sample.name, None);
+        assert_eq!(sample.sample_type, None);
+    }
+
+    #[test]
+    fn a_damaged_record_is_an_error_naming_the_file() {
+        let folder = crate::file_load_tests::scratch("run-record-damaged");
+        let path = RunRecord::file_in(&folder);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not a record").unwrap();
+        let e = RunRecord::load(&folder).unwrap_err().to_string();
+        assert!(e.contains("rules_run.json"), "{e}");
+    }
+
+    #[test]
+    fn applying_stamps_the_time_and_replaces_the_last_run() {
+        let folder = crate::file_load_tests::scratch("run-record-applied");
+        let mut first = record();
+        first.applied_at = "an old run".into();
+        first.save(&folder).unwrap();
+        let before = chrono::Utc::now() - chrono::Duration::seconds(1);
+        record().applied(&folder).unwrap();
+        let kept = RunRecord::load(&folder).unwrap().unwrap();
+        let stamped = chrono::DateTime::parse_from_rfc3339(&kept.applied_at)
+            .expect("an RFC 3339 time")
+            .with_timezone(&chrono::Utc);
+        assert!(stamped >= before, "{}", kept.applied_at);
+        assert_ne!(kept.applied_at, "an old run");
+        assert_eq!(kept.placed, record().placed);
+    }
+
+    #[test]
+    fn a_record_from_before_distributions_were_kept_still_reads() {
+        // Written before `shape` and `bound`, and kept records' `line`.
+        let mut value = serde_json::to_value(record()).unwrap();
+        for p in value["placed"].as_array_mut().unwrap() {
+            let p = p.as_object_mut().unwrap();
+            p.remove("shape");
+            p.remove("bound");
+        }
+        let back: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(back.placed[0].shape, None);
+        assert_eq!(back.placed[0].bound, None);
     }
 
     #[test]

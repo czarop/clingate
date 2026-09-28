@@ -262,6 +262,117 @@ mod tests {
     }
 
     #[test]
+    fn every_event_in_one_place_is_one_peak_holding_them_all() {
+        let shape = summarise(&[2.5; 40]).unwrap();
+        assert_eq!(shape.events, 40);
+        assert_eq!(shape.peaks.len(), 1);
+        assert_eq!(shape.peaks[0].at, 2.5);
+        assert_eq!(shape.peaks[0].share, 1.0);
+        assert!(shape.percentiles.iter().all(|p| *p == 2.5));
+        assert_eq!(shape.iqr(), 0.0);
+        assert!(shape.two_peaks().is_none());
+        assert_eq!(shape.fraction_below(2.0), 0.0);
+        assert_eq!(shape.fraction_below(3.0), 1.0);
+    }
+
+    #[test]
+    fn values_that_are_not_numbers_are_left_out_and_not_counted() {
+        let mut values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        values.extend([f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::NAN]);
+        let shape = summarise(&values).unwrap();
+        assert_eq!(shape.events, 100);
+        assert_eq!(shape.percentiles[0], 0.0);
+        assert_eq!(shape.percentiles[100], 99.0);
+        assert!(shape.percentiles.iter().all(|p| p.is_finite()));
+    }
+
+    #[test]
+    fn exactly_five_events_are_enough_and_four_are_not() {
+        assert!(summarise(&[1.0, 2.0, 3.0, 4.0]).is_none());
+        let shape = summarise(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+        assert_eq!(shape.median(), 3.0);
+        assert_eq!(shape.percentiles.len(), 101);
+    }
+
+    #[test]
+    fn a_population_below_the_floor_is_not_a_peak_and_one_above_it_is() {
+        // 2% at 6 is under the 5%-of-the-highest floor once smoothed...
+        let faint = summarise(&draw(&[(0.0, 0.3, 9_800), (6.0, 0.3, 200)], 3)).unwrap();
+        assert_eq!(faint.peaks.len(), 1, "{faint:?}");
+        // ...15% is not.
+        let clear = summarise(&draw(&[(0.0, 0.3, 8_500), (6.0, 0.3, 1_500)], 3)).unwrap();
+        assert_eq!(clear.peaks.len(), 2, "{clear:?}");
+    }
+
+    #[test]
+    fn two_populations_without_a_dip_between_them_are_one_peak() {
+        // Means one standard deviation apart: a shoulder, not two peaks.
+        let shoulder = summarise(&draw(&[(0.0, 0.5, 5_000), (0.5, 0.5, 5_000)], 4)).unwrap();
+        assert_eq!(shoulder.peaks.len(), 1, "{shoulder:?}");
+        // Six apart: two.
+        let apart = summarise(&draw(&[(0.0, 0.5, 5_000), (3.0, 0.5, 5_000)], 4)).unwrap();
+        assert_eq!(apart.peaks.len(), 2, "{apart:?}");
+    }
+
+    #[test]
+    fn at_most_four_peaks_are_kept_the_highest_first() {
+        let parts: Vec<(f64, f64, usize)> = (0..6)
+            .map(|k| (k as f64 * 5.0, 0.3, 1_000 + k * 400))
+            .collect();
+        let shape = summarise(&draw(&parts, 5)).unwrap();
+        assert_eq!(shape.peaks.len(), 4, "{shape:?}");
+        for w in shape.peaks.windows(2) {
+            assert!(w[0].height >= w[1].height);
+        }
+        assert_eq!(shape.peaks[0].height, 1.0);
+        // The two smallest populations, at 0 and 5, are the ones left out.
+        assert!(shape.peaks.iter().all(|p| p.at > 7.0), "{shape:?}");
+    }
+
+    #[test]
+    fn the_shares_of_the_peaks_add_up_to_the_middle_of_the_population() {
+        let shape = summarise(&draw(&[(0.0, 0.3, 6_000), (3.0, 0.3, 4_000)], 6)).unwrap();
+        let total: f64 = shape.peaks.iter().map(|p| p.share).sum();
+        assert!((total - 1.0).abs() < 1e-9, "{total}");
+        let low = shape.peaks.iter().find(|p| p.at < 1.5).unwrap();
+        assert!((low.share - 0.6).abs() < 0.03, "{shape:?}");
+    }
+
+    #[test]
+    fn a_positive_taller_than_the_negative_still_comes_second() {
+        let shape = summarise(&draw(&[(0.0, 0.3, 2_000), (3.0, 0.3, 8_000)], 7)).unwrap();
+        assert!(shape.peaks[0].at > 2.0, "the positive is the highest peak");
+        let (neg, pos) = shape.two_peaks().unwrap();
+        assert!(neg < 1.0 && pos > 2.0);
+    }
+
+    #[test]
+    fn a_percentile_outside_0_to_100_is_the_nearest_end_and_between_is_read_across() {
+        let values: Vec<f64> = (0..=100).map(|i| i as f64).collect();
+        let shape = summarise(&values).unwrap();
+        assert_eq!(shape.percentile(-5.0), 0.0);
+        assert_eq!(shape.percentile(150.0), 100.0);
+        assert!((shape.percentile(12.5) - 12.5).abs() < 1e-9);
+        assert!((shape.fraction_below(12.5) - 0.125).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_same_events_in_any_order_give_the_same_summary() {
+        let values = draw(&[(0.0, 0.3, 3_000), (3.0, 0.4, 1_000)], 8);
+        let mut reversed = values.clone();
+        reversed.reverse();
+        assert_eq!(summarise(&values), summarise(&reversed));
+    }
+
+    #[test]
+    fn a_summary_is_written_and_read_back_unchanged() {
+        let shape = summarise(&draw(&[(0.0, 0.3, 3_000), (3.0, 0.4, 1_000)], 9)).unwrap();
+        let text = serde_json::to_string(&shape).unwrap();
+        let back: Shape = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, shape);
+    }
+
+    #[test]
     fn too_few_events_say_nothing() {
         assert!(summarise(&[1.0, 2.0]).is_none());
         assert!(summarise(&[f64::NAN; 20]).is_none());

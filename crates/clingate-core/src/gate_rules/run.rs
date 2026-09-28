@@ -605,6 +605,817 @@ mod tests {
             }
         }
 
+        /// A rectangle like `positive_gate`'s with its left edge at `edge`.
+        fn gate_with_edge(id: &Arc<str>, edge: f32) -> Arc<dyn DrawableGate> {
+            let geometry = flow_gates::create_rectangle_geometry(
+                vec![(edge, -1e16), (1e16, -1e16), (1e16, 1e16), (edge, 1e16)],
+                X,
+                Y,
+            )
+            .unwrap();
+            Arc::new(
+                crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                    flow_gates::Gate {
+                        id: id.clone(),
+                        name: "CD134+".into(),
+                        geometry,
+                        mode: flow_gates::GateMode::Global,
+                        parameters: (Arc::from(X), Arc::from(Y)),
+                        label_position: None,
+                    },
+                    true,
+                )
+                .unwrap(),
+            )
+        }
+
+        /// The QC, a drifted donor, and a file no metadata row names a
+        /// specimen for: one placed, one reference, one skipped.
+        /// The QC, a drifted donor, and a file no metadata row names a
+        /// specimen for: one placed, one reference, one skipped.
+        fn three_way_inputs(name: &str) -> RunInputs {
+            let mut files = workspace(name);
+            let dir = files[0].1.parent().unwrap().to_path_buf();
+            write_fcs_rows(
+                &dir.join("fs_x.fcs"),
+                &[(X, None), (Y, None)],
+                &population(300.0, 3),
+                &[],
+            );
+            files.push((Arc::from("fs_x.fcs"), dir.join("fs_x.fcs")));
+            let mut metadata = specimens();
+            let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
+            columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+            metadata.insert(Arc::from("fs_x"), columns);
+            RunInputs {
+                files,
+                compensation: crate::compensation::groups::Compensation::default(),
+                names: named(&[
+                    ("fs_qc.fcs", "fs_qc"),
+                    ("fs_b.fcs", "fs_b"),
+                    ("fs_x.fcs", "fs_x"),
+                ]),
+                cofactors: Vec::new(),
+                metadata,
+                rules: rules(),
+            }
+        }
+
+        fn three_way_run(
+            name: &str,
+        ) -> (
+            GateState,
+            Arc<str>,
+            RunOutcome,
+            crate::omiq::metadata::MetaDataFileMap,
+            RuleStore,
+        ) {
+            let (state, id) = positive_gate();
+            let inputs = three_way_inputs(name);
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            (state, id, outcome, inputs.metadata, inputs.rules)
+        }
+
+        /// Where a workspace built by `workspace` lives.
+        fn folder_of(inputs: &RunInputs) -> PathBuf {
+            inputs.files[0].1.parent().unwrap().to_path_buf()
+        }
+
+        /// Run, apply, and keep the record, as the app and the tools do.
+        fn applied(inputs: &RunInputs) -> (GateState, Arc<str>, crate::review::RunRecord) {
+            let (mut state, id) = positive_gate();
+            let outcome = run_rules(&state, inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            let samples = crate::review::run_record::Samples::new(
+                &inputs.names,
+                &inputs.metadata,
+                &inputs.rules.pairing,
+            );
+            let record = crate::review::RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            );
+            record.save(&folder_of(inputs)).unwrap();
+            (
+                state,
+                id,
+                crate::review::RunRecord::load(&folder_of(inputs))
+                    .unwrap()
+                    .unwrap(),
+            )
+        }
+
+        fn request(state: &GateState, id: &Arc<str>, sample: &str) -> crate::review::ReportRequest {
+            crate::review::ReportRequest {
+                node: state.nodes_for_gate(id)[0].clone(),
+                sample: Arc::from(sample),
+                problem: crate::review::Problem::TooLoose,
+                note: "  lets in the negatives  ".into(),
+            }
+        }
+
+        #[test]
+        fn a_report_before_any_run_says_so_and_keeps_the_population() {
+            use crate::review::report::{Decision, gather};
+            let inputs = three_way_inputs("report-no-run");
+            let (state, id) = positive_gate();
+            let report = gather(
+                &folder_of(&inputs),
+                &request(&state, &id, "fs_b"),
+                &state,
+                &inputs,
+                &Default::default(),
+            )
+            .unwrap();
+            let Decision::NotPlaced { why } = &report.decision else {
+                panic!("{:?}", report.decision);
+            };
+            assert!(why.contains("no rules run"), "{why}");
+            assert_eq!(report.run_applied_at, None);
+            // The workspace's own rule, as there was no run's.
+            assert_eq!(report.rule.as_ref(), inputs.rules.rule_for("CD134+", None));
+            assert_eq!(report.note, "lets in the negatives", "trimmed");
+            assert_eq!(report.problem, crate::review::Problem::TooLoose);
+            assert_eq!(report.path, "CD134+");
+            assert_eq!(report.gate_id, "CD134+");
+            assert_eq!(report.sample.name.as_deref(), Some("fs_b.fcs"));
+            assert_eq!(report.sample_metadata["SampleID"], "DONOR-B");
+
+            // The whole population, binned three ways and sampled.
+            let data = &report.data;
+            assert_eq!(data.events, 10_000);
+            assert_eq!(data.histograms.0.parameter, X);
+            assert_eq!(data.histograms.1.parameter, Y);
+            assert_eq!(data.histograms.0.counts.iter().sum::<u32>(), 10_000);
+            assert_eq!(data.histograms.1.counts.iter().sum::<u32>(), 10_000);
+            assert_eq!(data.density.counts.iter().sum::<u32>(), 10_000);
+            assert_eq!(
+                data.events_subsample.len(),
+                crate::review::report::SUBSAMPLE_EVENTS
+            );
+            // With no scaling, the axis is the data's own range.
+            let xs = data.events_subsample.iter().map(|p| p.0 as f64);
+            let lowest = xs.fold(f64::INFINITY, f64::min);
+            assert!(data.histograms.0.lower <= lowest);
+            // Where the gate was when reported.
+            let on_x = data.gate_at.iter().find(|e| e.parameter == X).unwrap();
+            assert_eq!(on_x.lower, Some(500.0));
+            assert!(report.reference_data.is_none());
+        }
+
+        #[test]
+        fn a_report_says_what_the_run_decided_for_each_kind_of_sample() {
+            use crate::review::report::{Decision, gather};
+            let inputs = three_way_inputs("report-kinds");
+            let (state, id, record) = applied(&inputs);
+            let folder = folder_of(&inputs);
+            let report = |sample: &str| {
+                gather(
+                    &folder,
+                    &request(&state, &id, sample),
+                    &state,
+                    &inputs,
+                    &Default::default(),
+                )
+                .unwrap()
+            };
+
+            // The donor: the rule moved it, reading the QC - both populations kept.
+            let donor = report("fs_b");
+            let Decision::Placed(placed) = &donor.decision else {
+                panic!("{:?}", donor.decision);
+            };
+            assert_eq!(**placed, record.placed[0]);
+            assert_eq!(
+                donor.run_applied_at.as_deref(),
+                Some(record.applied_at.as_str())
+            );
+            assert_eq!(donor.rule.as_ref(), record.rules.rule_for("CD134+", None));
+            let reference = donor
+                .reference_data
+                .as_ref()
+                .expect("the QC's population too");
+            assert_eq!(reference.sample.id, "fs_qc");
+            assert_eq!(reference.events, 10_000);
+            let on_x = donor
+                .data
+                .gate_at
+                .iter()
+                .find(|e| e.parameter == X)
+                .unwrap();
+            assert!((on_x.lower.unwrap() - placed.to.unwrap()).abs() < 1e-3);
+            assert_eq!(donor.placed(), Some(&**placed));
+
+            // The QC: kept as the reference, and it is its own population.
+            let qc = report("fs_qc");
+            let Decision::Kept(kept) = &qc.decision else {
+                panic!("{:?}", qc.decision);
+            };
+            assert!(!kept.met_rule);
+            assert!(qc.reference_data.is_none());
+
+            // The unnamed file: the run could not place it, and says why.
+            let unnamed = report("fs_x");
+            let Decision::NotPlaced { why } = &unnamed.decision else {
+                panic!("{:?}", unnamed.decision);
+            };
+            assert!(why.starts_with("the run could not place it"), "{why}");
+            assert!(why.contains("SampleID"), "{why}");
+        }
+
+        #[test]
+        fn a_report_that_cannot_be_made_says_why() {
+            use crate::review::report::gather;
+            let mut inputs = three_way_inputs("report-refused");
+            let (state, id) = positive_gate();
+            let folder = folder_of(&inputs);
+            let mut root = request(&state, &id, "fs_b");
+            root.node =
+                crate::gates::gate_store::NodeId::from(crate::gates::gate_store::ROOTGATE.clone());
+            let e = gather(&folder, &root, &state, &inputs, &Default::default()).unwrap_err();
+            assert!(e.contains("no gate"), "{e}");
+            let e = gather(
+                &folder,
+                &request(&state, &id, "nobody"),
+                &state,
+                &inputs,
+                &Default::default(),
+            )
+            .unwrap_err();
+            assert!(e.contains("no metadata row"), "{e}");
+            inputs.files.retain(|(n, _)| &**n != "fs_b.fcs");
+            let e = gather(
+                &folder,
+                &request(&state, &id, "fs_b"),
+                &state,
+                &inputs,
+                &Default::default(),
+            )
+            .unwrap_err();
+            assert!(e.contains("not in the workspace"), "{e}");
+        }
+
+        /// Three donors, each placed by a tail-fraction rule on itself.
+        fn three_donor_inputs(name: &str) -> RunInputs {
+            use crate::gate_rules::rule::TailFractionRule;
+            let dir = scratch(name);
+            let channels = [(X, None), (Y, None)];
+            let donors = [
+                ("fs_a", "DONOR-A", 250.0),
+                ("fs_b", "DONOR-B", 300.0),
+                ("fs_c", "DONOR-C", 380.0),
+            ];
+            let mut files = Vec::new();
+            let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+            for (at, (file, donor, centre)) in donors.iter().enumerate() {
+                let path = dir.join(format!("{file}.fcs"));
+                write_fcs_rows(&path, &channels, &population(*centre, at as u64 + 20), &[]);
+                files.push((Arc::from(format!("{file}.fcs").as_str()), path));
+                let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
+                columns.insert(Arc::from("SampleID"), Arc::from(*donor));
+                columns.insert(Arc::from("SampleType"), Arc::from("FS"));
+                metadata.insert(Arc::from(*file) as Arc<str>, columns);
+            }
+            let mut rules = RuleStore::default();
+            rules.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::Itself,
+                    rule: Rule::TailFraction(TailFractionRule::new((0.05, 0.08))),
+                },
+            );
+            RunInputs {
+                files,
+                compensation: crate::compensation::groups::Compensation::default(),
+                names: named(&[
+                    ("fs_a.fcs", "fs_a"),
+                    ("fs_b.fcs", "fs_b"),
+                    ("fs_c.fcs", "fs_c"),
+                ]),
+                cofactors: Vec::new(),
+                metadata,
+                rules,
+            }
+        }
+
+        #[test]
+        fn a_reviewed_run_says_what_became_of_every_placement_and_goes_to_the_library() {
+            use crate::review::board::LooksRight;
+            use crate::review::report::{
+                Outcome, gather, library_folder, mark_reviewed, reports_in,
+            };
+            use crate::review::run_record::KeptRecord;
+            let inputs = three_donor_inputs("review-outcomes");
+            let (mut state, id, mut record) = applied(&inputs);
+            let folder = folder_of(&inputs);
+            let metadata = &inputs.metadata;
+            assert_eq!(record.placed.len(), 3, "{:?}", record.skipped);
+
+            // fs_a and fs_b the rule was sure of - this fixture's rule moves
+            // every gate far from where it was drawn, which on its own scores
+            // them all 0 - and fs_c it was unsure of; the reviewer cleared
+            // fs_c's flag.
+            for p in &mut record.placed {
+                p.confidence = 0.9;
+            }
+            let c = record
+                .placed
+                .iter_mut()
+                .find(|p| p.sample.id == "fs_c")
+                .unwrap();
+            c.confidence = 0.1;
+            // A placement of a gate the document has since lost.
+            let mut lost = c.clone();
+            lost.gate_id = "lost gate".into();
+            record.placed.push(lost);
+            // Two gates the run left alone, one of them later reported.
+            let kept = |sample: &str| KeptRecord {
+                gate_id: "kept gate".into(),
+                gate: "Kept".into(),
+                parent_gate: None,
+                specimen: sample.into(),
+                sample: crate::review::run_record::SampleRef {
+                    id: sample.into(),
+                    name: None,
+                    sample_type: Some("FS".into()),
+                },
+                met_rule: true,
+                achieved: None,
+                above_the_line: None,
+                line: None,
+                shape: None,
+                bound: None,
+            };
+            record.kept = vec![kept("fs_a"), kept("fs_b")];
+            record.save(&folder).unwrap();
+            LooksRight::set(&folder, &record, "CD134+", "fs_c", true).unwrap();
+
+            // fs_a reported; fs_b moved by hand, unreported; fs_c left.
+            let reported = gather(
+                &folder,
+                &request(&state, &id, "fs_a"),
+                &state,
+                &inputs,
+                &Default::default(),
+            )
+            .unwrap();
+            reported.save(&folder).unwrap();
+            let mut about_kept = reported.clone();
+            about_kept.id = "kept-report".into();
+            about_kept.gate_id = "kept gate".into();
+            about_kept.sample.id = "fs_b".into();
+            about_kept.save(&folder).unwrap();
+            let mut elsewhere = reported.clone();
+            elsewhere.id = "elsewhere".into();
+            elsewhere.gate_id = "a gate the run never touched".into();
+            elsewhere.save(&folder).unwrap();
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, 900.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+
+            let library = scratch("review-outcomes-library");
+            let (review, copied) =
+                mark_reviewed(&folder, &state, metadata, Some(&library)).unwrap();
+            let outcome_of = |sample: &str, gate: &str| {
+                review
+                    .placements
+                    .iter()
+                    .find(|p| p.placed.sample.id == sample && p.placed.gate_id == gate)
+                    .unwrap()
+            };
+            assert_eq!(
+                outcome_of("fs_a", "CD134+").outcome,
+                Outcome::Reported {
+                    reports: vec![reported.id.clone()]
+                }
+            );
+            let Outcome::MovedUnreported { gate_at } = &outcome_of("fs_b", "CD134+").outcome else {
+                panic!("{:?}", outcome_of("fs_b", "CD134+").outcome);
+            };
+            let on_x = gate_at.iter().find(|e| e.parameter == X).unwrap();
+            assert_eq!(on_x.lower, Some(900.0));
+            assert_eq!(outcome_of("fs_c", "CD134+").outcome, Outcome::Accepted);
+            assert_eq!(outcome_of("fs_c", "lost gate").outcome, Outcome::Gone);
+
+            // The flag the reviewer cleared, and those never raised.
+            let c = &outcome_of("fs_c", "CD134+").flag;
+            assert_eq!(c.flagged_on, vec!["low_confidence".to_string()]);
+            assert!(c.flag_severity.unwrap() >= 3.0);
+            assert!(c.looked_right);
+            let a = &outcome_of("fs_a", "CD134+").flag;
+            assert!(
+                a.flagged_on.is_empty() && a.flag_severity.is_none() && !a.looked_right,
+                "{a:?}"
+            );
+
+            // The gates left alone: accepted, or reported.
+            let kept_outcome = |sample: &str| {
+                review
+                    .kept
+                    .iter()
+                    .find(|k| k.kept.sample.id == sample)
+                    .unwrap()
+                    .outcome
+                    .clone()
+            };
+            assert_eq!(kept_outcome("fs_a"), Outcome::Accepted);
+            assert_eq!(
+                kept_outcome("fs_b"),
+                Outcome::Reported {
+                    reports: vec!["kept-report".into()]
+                }
+            );
+            // And the report about a gate the run never touched.
+            assert_eq!(review.other_reports, vec!["elsewhere".to_string()]);
+            assert_eq!(
+                (
+                    review.accepted(),
+                    review.reported(),
+                    review.moved_unreported()
+                ),
+                (1, 2, 1)
+            );
+            assert_eq!(review.run_applied_at, record.applied_at);
+            assert_eq!(review.rules, record.rules);
+
+            // Kept in the workspace, and copied whole into the library.
+            let here = folder.join("reviews").join("review.json");
+            let text = std::fs::read_to_string(&here).unwrap();
+            let back: crate::review::RunReview = serde_json::from_str(&text).unwrap();
+            assert_eq!(back, review);
+            let into = copied.expect("a library was given");
+            assert_eq!(into, library_folder(&library, &folder, &record.applied_at));
+            assert_eq!(
+                std::fs::read_to_string(into.join("review.json")).unwrap(),
+                text
+            );
+            let mut copied_reports: Vec<String> = std::fs::read_dir(into.join("reports"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            copied_reports.sort();
+            let mut ours: Vec<String> = reports_in(&folder)
+                .iter()
+                .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            ours.sort();
+            assert_eq!(copied_reports, ours);
+
+            // Marked again with no library: replaced here, nothing copied.
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(
+                    &id,
+                    record
+                        .placed
+                        .iter()
+                        .find(|p| p.sample.id == "fs_b")
+                        .unwrap()
+                        .to
+                        .unwrap() as f32,
+                ),
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+            let (again, copied) = mark_reviewed(&folder, &state, metadata, None).unwrap();
+            assert!(copied.is_none());
+            assert_eq!(
+                outcome_of_in(&again, "fs_b"),
+                Outcome::Accepted,
+                "moved back: as placed"
+            );
+            let back: crate::review::RunReview =
+                serde_json::from_str(&std::fs::read_to_string(&here).unwrap()).unwrap();
+            assert_eq!(back, again);
+        }
+
+        fn outcome_of_in(
+            review: &crate::review::RunReview,
+            sample: &str,
+        ) -> crate::review::report::Outcome {
+            review
+                .placements
+                .iter()
+                .find(|p| p.placed.sample.id == sample && p.placed.gate_id == "CD134+")
+                .unwrap()
+                .outcome
+                .clone()
+        }
+
+        #[test]
+        fn a_workspace_with_no_run_has_nothing_to_mark_reviewed() {
+            let folder = scratch("review-no-run");
+            let e = crate::review::report::mark_reviewed(
+                &folder,
+                &GateState::default(),
+                &Default::default(),
+                None,
+            )
+            .unwrap_err();
+            assert!(e.contains("no rules run"), "{e}");
+            assert!(!folder.join("reviews").join("review.json").exists());
+        }
+
+        #[test]
+        fn a_correction_follows_the_gate_to_where_the_reviewer_left_it() {
+            use crate::review::report::{gather, record_corrections, reports_in};
+            let inputs = three_way_inputs("report-corrections");
+            let (mut state, id, record) = applied(&inputs);
+            let folder = folder_of(&inputs);
+            let metadata = &inputs.metadata;
+            for sample in ["fs_b", "fs_qc"] {
+                gather(
+                    &folder,
+                    &request(&state, &id, sample),
+                    &state,
+                    &inputs,
+                    &Default::default(),
+                )
+                .unwrap()
+                .save(&folder)
+                .unwrap();
+            }
+            // A report about a gate the document has since lost.
+            let mut lost = reports_in(&folder)[0].1.clone();
+            lost.id = "lost".into();
+            lost.gate_id = "no such gate".into();
+            lost.save(&folder).unwrap();
+            let correction_of = |sample: &str| {
+                reports_in(&folder)
+                    .into_iter()
+                    .map(|(_, r)| r)
+                    .find(|r| r.sample.id == sample && r.gate_id == "CD134+")
+                    .unwrap()
+                    .correction
+            };
+            let edge_of = |c: &crate::review::report::Correction| {
+                c.gate_at
+                    .iter()
+                    .find(|e| e.parameter == X)
+                    .unwrap()
+                    .lower
+                    .unwrap()
+            };
+
+            // Nothing moved: nothing to record.
+            assert_eq!(record_corrections(&folder, &state, metadata), 0);
+            assert!(correction_of("fs_b").is_none() && correction_of("fs_qc").is_none());
+
+            // The donor's gate moved by hand: its correction.
+            let to = record.placed[0].to.unwrap() as f32;
+            let place = |state: &mut GateState, sample: &str, edge: f32| {
+                state.place_gate(
+                    &[id.clone()],
+                    &gate_with_edge(&id, edge),
+                    &GateSource::Sample((id.clone(), Arc::from(sample))),
+                );
+            };
+            place(&mut state, "fs_b", to + 40.0);
+            assert_eq!(record_corrections(&folder, &state, metadata), 1);
+            assert!((edge_of(&correction_of("fs_b").unwrap()) - (to as f64 + 40.0)).abs() < 1e-3);
+            // Saved again unchanged: nothing new.
+            assert_eq!(record_corrections(&folder, &state, metadata), 0);
+            // Moved again: the correction follows.
+            place(&mut state, "fs_b", to + 60.0);
+            assert_eq!(record_corrections(&folder, &state, metadata), 1);
+            assert!((edge_of(&correction_of("fs_b").unwrap()) - (to as f64 + 60.0)).abs() < 1e-3);
+            // Put back where the rule had it: no correction after all.
+            place(&mut state, "fs_b", to);
+            assert_eq!(record_corrections(&folder, &state, metadata), 1);
+            assert!(correction_of("fs_b").is_none());
+
+            // The reference the rule did not move: moved since the report is a
+            // correction.
+            place(&mut state, "fs_qc", 520.0);
+            assert_eq!(record_corrections(&folder, &state, metadata), 1);
+            assert_eq!(edge_of(&correction_of("fs_qc").unwrap()), 520.0);
+            // The lost gate's report is left alone throughout.
+            let lost = reports_in(&folder)
+                .into_iter()
+                .find(|(_, r)| r.id == "lost")
+                .unwrap()
+                .1;
+            assert!(lost.correction.is_none());
+        }
+
+        #[test]
+        fn a_run_record_holds_each_placement_reference_and_skip_as_the_run_saw_it() {
+            use crate::review::run_record::{
+                PlacementStatus, RunRecord, Samples, placement_status,
+            };
+            let (mut state, id, outcome, metadata, rules) = three_way_run("record-three-way");
+            let names = named(&[
+                ("fs_qc.fcs", "fs_qc"),
+                ("fs_b.fcs", "fs_b"),
+                ("fs_x.fcs", "fs_x"),
+            ]);
+            let samples = Samples::new(&names, &metadata, &rules.pairing);
+            let record =
+                RunRecord::from_run(&outcome.report, &outcome.placements, &rules, &samples);
+
+            // The donor, moved; its line of the report and its record agree
+            // field for field.
+            assert_eq!(record.placed.len(), 1, "{record:#?}");
+            let line = &outcome.report.positioned[0];
+            let placed = &record.placed[0];
+            assert_eq!(placed.gate_id, "CD134+");
+            assert_eq!(placed.gate, "CD134+");
+            assert_eq!(placed.parent_gate, None);
+            assert_eq!(placed.specimen_column, "SampleID");
+            assert_eq!(placed.specimen, "DONOR-B");
+            assert_eq!(placed.sample.id, "fs_b");
+            assert_eq!(placed.sample.name.as_deref(), Some("fs_b.fcs"));
+            assert_eq!(placed.sample.sample_type.as_deref(), Some("FS"));
+            assert_eq!(placed.measured_on.id, "fs_qc");
+            assert_eq!(placed.from, Some(line.from));
+            assert_eq!(placed.to, Some(line.to));
+            assert_eq!(placed.confidence, line.confidence);
+            assert_eq!(placed.weakest.as_deref(), line.weakest);
+            assert_eq!(placed.components.len(), line.components.len());
+            for (c, l) in placed.components.iter().zip(&line.components) {
+                assert_eq!((c.name.as_str(), c.score), (l.name, l.score));
+            }
+            assert_eq!(placed.reference_events, line.reference_events);
+            assert_eq!(placed.in_band, line.in_band);
+            // An above-the-negative rule: the two negatives it read, no valley
+            // and no phenotype.
+            let (reference, here) = placed.negative.as_ref().expect("the negatives it read");
+            let (line_ref, line_here) = line.negative.as_ref().unwrap();
+            assert_eq!(
+                (reference.centre, here.centre),
+                (line_ref.centre, line_here.centre)
+            );
+            assert!(
+                here.centre > reference.centre + 200.0,
+                "the donor's negative drifted up"
+            );
+            assert!(placed.valley.is_none() && placed.phenotype.is_none());
+            // The donor's parent population, summarised on the rule's axis.
+            let shape = placed
+                .shape
+                .as_ref()
+                .expect("a summary of what the rule read");
+            assert_eq!(shape.events, 10_000);
+            assert!((shape.median() - 600.0).abs() < 20.0, "{}", shape.median());
+            assert_eq!(placed.bound, Some(Bound::Above));
+            // Where the placed gate sits: its left edge is the line.
+            let on_x = placed.placed_at.iter().find(|e| e.parameter == X).unwrap();
+            assert!(
+                (on_x.lower.unwrap() - line.to).abs() < 1e-3,
+                "{on_x:?} vs {}",
+                line.to
+            );
+
+            // The QC is the reference: kept, not judged, with its line where a
+            // person drew it.
+            let reference = record
+                .kept
+                .iter()
+                .find(|k| k.sample.id == "fs_qc")
+                .expect("the reference is kept");
+            assert!(!reference.met_rule);
+            assert_eq!(reference.line, Some(500.0));
+            assert_eq!(reference.shape.as_ref().map(|s| s.events), Some(10_000));
+            assert_eq!(reference.specimen, "QC-A");
+
+            // The file with no specimen is skipped, named, and says why.
+            let skipped = record
+                .skipped
+                .iter()
+                .find(|s| s.sample.id == "fs_x")
+                .expect("fs_x is skipped");
+            assert_eq!(skipped.sample.name.as_deref(), Some("fs_x.fcs"));
+            assert!(skipped.reason.contains("SampleID"), "{}", skipped.reason);
+
+            // Kept on disk and read back exactly.
+            let folder = scratch("record-three-way-saved");
+            record.save(&folder).unwrap();
+            assert_eq!(RunRecord::load(&folder).unwrap().as_ref(), Some(&record));
+
+            // Applied, every placement is as placed.
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            assert_eq!(
+                placement_status(placed, &state, &metadata),
+                PlacementStatus::AsPlaced
+            );
+            let _ = id;
+        }
+
+        #[test]
+        fn a_gate_that_already_meets_its_rule_is_kept_as_meeting_it() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::run_record::{RunRecord, Samples};
+            let (state, _id) = positive_gate();
+            let mut store = RuleStore::default();
+            store.insert(
+                RuleTarget::named("CD134+"),
+                GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::Itself,
+                    // The gate at 500 already admits the 10% positive.
+                    rule: Rule::TailFraction(TailFractionRule::new((0.05, 0.15))),
+                },
+            );
+            let files = workspace("record-kept");
+            let names = named(&[("fs_qc.fcs", "fs_qc"), ("fs_b.fcs", "fs_b")]);
+            let outcome = run_rules(
+                &state,
+                &RunInputs {
+                    files: files[..1].to_vec(),
+                    compensation: crate::compensation::groups::Compensation::default(),
+                    names: names.clone(),
+                    cofactors: Vec::new(),
+                    metadata: specimens(),
+                    rules: store.clone(),
+                },
+                |_| {},
+                &Arc::new(AtomicBool::new(false)),
+            );
+            let metadata = specimens();
+            let samples = Samples::new(&names, &metadata, &store.pairing);
+            let record =
+                RunRecord::from_run(&outcome.report, &outcome.placements, &store, &samples);
+            assert!(record.placed.is_empty(), "{record:#?}");
+            assert_eq!(record.kept.len(), 1);
+            let kept = &record.kept[0];
+            assert!(kept.met_rule);
+            assert_eq!(kept.sample.id, "fs_qc");
+            assert_eq!(kept.line, Some(500.0));
+            let achieved = kept.achieved.unwrap();
+            assert!((0.05..=0.15).contains(&achieved), "{achieved}");
+            assert_eq!(kept.bound, Some(Bound::Above));
+            assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn a_placement_reads_as_moved_only_when_the_gate_on_its_sample_has_moved() {
+            use crate::review::run_record::{
+                PlacementStatus, RunRecord, Samples, placement_status,
+            };
+            let (mut state, id, outcome, metadata, rules) = three_way_run("record-status");
+            let names = named(&[
+                ("fs_qc.fcs", "fs_qc"),
+                ("fs_b.fcs", "fs_b"),
+                ("fs_x.fcs", "fs_x"),
+            ]);
+            let samples = Samples::new(&names, &metadata, &rules.pairing);
+            let record =
+                RunRecord::from_run(&outcome.report, &outcome.placements, &rules, &samples);
+            let placed = record.placed[0].clone();
+            let status = |state: &GateState, p: &crate::review::run_record::PlacedRecord| {
+                placement_status(p, state, &metadata)
+            };
+
+            // Before the run's placements are applied, the gate is where it was.
+            assert_eq!(status(&state, &placed), PlacementStatus::Moved);
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            assert_eq!(status(&state, &placed), PlacementStatus::AsPlaced);
+
+            // Rounding of the kind a save through Omiq's format does is not a move.
+            let mut rounded = placed.clone();
+            for e in &mut rounded.placed_at {
+                e.lower = e.lower.map(|v| v * (1.0 + 1e-6));
+            }
+            assert_eq!(status(&state, &rounded), PlacementStatus::AsPlaced);
+            // A real difference is.
+            let mut off = placed.clone();
+            for e in &mut off.placed_at {
+                e.lower = e.lower.map(|v| v + 5.0);
+            }
+            assert_eq!(status(&state, &off), PlacementStatus::Moved);
+            // Its parameters listed the other way round are the same gate.
+            let mut swapped = placed.clone();
+            swapped.placed_at.reverse();
+            assert_eq!(status(&state, &swapped), PlacementStatus::AsPlaced);
+
+            // A person moves the gate on another sample: this one is untouched.
+            let to = placed.to.unwrap() as f32;
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, to + 40.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_qc"))),
+            );
+            assert_eq!(status(&state, &placed), PlacementStatus::AsPlaced);
+            // ...and on this one: moved.
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, to + 40.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+            assert_eq!(status(&state, &placed), PlacementStatus::Moved);
+
+            // A gate the document no longer has is gone.
+            let mut other = placed.clone();
+            other.gate_id = "no such gate".into();
+            assert_eq!(status(&state, &other), PlacementStatus::Gone);
+        }
+
         fn left_edge_in(
             state: &GateState,
             gate: &Arc<str>,

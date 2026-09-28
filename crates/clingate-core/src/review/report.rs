@@ -890,3 +890,156 @@ pub fn mark_reviewed(
     };
     Ok((review, copied))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_histogram_puts_each_value_in_its_bin_and_the_ends_in_the_end_bins() {
+        let values = [0.0f32, 0.99, 1.0, 63.99, 64.0, 100.0, -5.0];
+        let h = histogram("CD4", values.iter().copied(), (0.0, 64.0));
+        assert_eq!(h.counts.len(), BINS);
+        assert_eq!(h.counts[0], 3, "0, 0.99 and the -5 below the axis");
+        assert_eq!(h.counts[1], 1);
+        assert_eq!(h.counts[63], 3, "63.99, the upper edge, and 100 beyond it");
+        assert_eq!(h.counts.iter().sum::<u32>(), 7);
+        assert_eq!((h.parameter.as_str(), h.lower, h.upper), ("CD4", 0.0, 64.0));
+        // An axis with no width puts everything in the first bin.
+        let flat = histogram("CD4", values.iter().copied(), (1.0, 1.0));
+        assert_eq!(flat.counts[0], 7);
+    }
+
+    #[test]
+    fn the_density_is_rows_of_y_by_columns_of_x() {
+        let points = [(0.5f32, 63.5f32), (63.5, 0.5), (0.5, 0.5), (0.6, 0.4)];
+        let d = density("x", "y", &points, (0.0, 64.0), (0.0, 64.0));
+        assert_eq!(d.counts.len(), BINS * BINS);
+        assert_eq!(d.counts[63 * BINS], 1, "high y, low x");
+        assert_eq!(d.counts[63], 1, "low y, high x");
+        assert_eq!(d.counts[0], 2);
+        assert_eq!(d.counts.iter().sum::<u32>(), 4);
+        assert_eq!((d.x.as_str(), d.y.as_str(), d.bins), ("x", "y", BINS));
+    }
+
+    #[test]
+    fn a_subsample_keeps_every_event_of_a_small_population_and_spreads_through_a_large_one() {
+        let small: Vec<(f32, f32)> = (0..4_000).map(|i| (i as f32, 0.0)).collect();
+        assert_eq!(subsample(&small), small);
+        let large: Vec<(f32, f32)> = (0..12_000).map(|i| (i as f32, 0.0)).collect();
+        let kept = subsample(&large);
+        assert_eq!(kept.len(), SUBSAMPLE_EVENTS);
+        assert_eq!(kept[0].0, 0.0);
+        // Evenly: the last kept is near the end, not at the 5,000th event.
+        assert!(kept[SUBSAMPLE_EVENTS - 1].0 > 11_990.0, "{:?}", kept.last());
+        assert!(kept.windows(2).all(|w| w[1].0 > w[0].0));
+        assert_eq!(subsample(&large), kept, "the same every time");
+    }
+
+    #[test]
+    fn an_axis_is_the_scaling_s_where_it_has_one_and_the_data_s_where_not() {
+        let mut axes = AxisSettings::default();
+        let info = |lower: f32, upper: f32| crate::AxisInfo {
+            axis_lower: lower,
+            axis_upper: upper,
+            ..crate::AxisInfo::default()
+        };
+        axes.insert(Arc::from("CD4"), info(-1.0, 5.0));
+        axes.insert(Arc::from("backwards"), info(5.0, -1.0));
+        let data = [0.5f32, 2.0, 3.5, f32::NAN];
+        assert_eq!(axis_range(&axes, "CD4", &data), (-1.0, 5.0));
+        // A scaling the wrong way round, or none: the data's range.
+        assert_eq!(axis_range(&axes, "backwards", &data), (0.5, 3.5));
+        assert_eq!(axis_range(&axes, "CD8", &data), (0.5, 3.5));
+        // No spread to go on.
+        assert_eq!(axis_range(&axes, "CD8", &[2.0, 2.0]), (0.0, 1.0));
+        assert_eq!(axis_range(&axes, "CD8", &[]), (0.0, 1.0));
+    }
+
+    #[test]
+    fn every_problem_reads_back_from_its_key_and_is_described_differently() {
+        let mut keys = std::collections::HashSet::new();
+        let mut described = std::collections::HashSet::new();
+        for p in Problem::ALL {
+            assert_eq!(Problem::from_key(p.key()), Some(p));
+            // The key is what the file holds.
+            assert_eq!(serde_json::to_value(p).unwrap(), p.key());
+            assert!(keys.insert(p.key()));
+            assert!(described.insert(p.describe()));
+        }
+        assert_eq!(Problem::from_key("wonky"), None);
+    }
+
+    #[test]
+    fn a_reviewed_run_s_library_folder_is_named_for_its_workspace_and_time() {
+        let library = Path::new("/lib");
+        assert_eq!(
+            library_folder(library, Path::new("/data/Plate 10"), "2026-09-28T19:03:18Z"),
+            library.join("Plate 10__2026-09-28T19-03-18Z")
+        );
+        // Nothing that would make a path of it.
+        assert_eq!(
+            library_folder(library, Path::new("/data/a*b?c"), "t"),
+            library.join("a_b_c__t")
+        );
+        assert_eq!(
+            library_folder(library, Path::new("/"), "t"),
+            library.join("workspace__t")
+        );
+    }
+
+    fn a_report(id: &str, at: &str) -> PlacementReport {
+        let data = PopulationData {
+            sample: SampleRef {
+                id: "f1".into(),
+                name: None,
+                sample_type: None,
+            },
+            events: 1,
+            histograms: (
+                histogram("x", [1.0].into_iter(), (0.0, 1.0)),
+                histogram("y", [1.0].into_iter(), (0.0, 1.0)),
+            ),
+            density: density("x", "y", &[(1.0, 1.0)], (0.0, 1.0), (0.0, 1.0)),
+            events_subsample: vec![(1.0, 1.0)],
+            gate_at: Vec::new(),
+        };
+        PlacementReport {
+            format: FORMAT,
+            id: id.into(),
+            reported_at: at.into(),
+            workspace: String::new(),
+            gate_id: "g".into(),
+            gate: "CD4+".into(),
+            parent_gate: None,
+            path: "CD4+".into(),
+            sample: data.sample.clone(),
+            sample_metadata: BTreeMap::new(),
+            problem: Problem::TooHigh,
+            note: String::new(),
+            rule: None,
+            run_applied_at: None,
+            decision: Decision::NotPlaced { why: "x".into() },
+            data,
+            reference_data: None,
+            correction: None,
+        }
+    }
+
+    #[test]
+    fn reports_are_read_oldest_first_passing_over_what_is_not_one() {
+        let folder = crate::file_load_tests::scratch("reports-in");
+        assert!(reports_in(&folder).is_empty(), "no folder yet");
+        let later = a_report("b", "2026-09-28T12:00:00Z");
+        let earlier = a_report("a", "2026-09-28T09:00:00Z");
+        let path = later.save(&folder).unwrap();
+        assert_eq!(path, reports_dir(&folder).join("b.json"));
+        earlier.save(&folder).unwrap();
+        std::fs::write(reports_dir(&folder).join("junk.json"), "{ broken").unwrap();
+        std::fs::write(reports_dir(&folder).join("notes.txt"), "not a report").unwrap();
+
+        let found: Vec<PlacementReport> = reports_in(&folder).into_iter().map(|(_, r)| r).collect();
+        assert_eq!(found, vec![earlier, later]);
+        assert!(found[0].placed().is_none());
+    }
+}

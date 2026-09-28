@@ -5198,3 +5198,55 @@ fn the_axes_a_gate_arrived_on_are_captured() {
     );
     assert_eq!(captured("Z2Ti"), None, "a boolean has no axes");
 }
+
+// ─── Naming a gate's place in the tree, for a report ─────────────────────────
+
+#[test]
+fn a_linked_gate_is_found_under_the_population_it_was_reported_on() {
+    use crate::gates::gate_store::{NodeId, ROOTGATE};
+    use crate::review::report::{node_named, node_under};
+    let state = import_json(&linked_gate_json());
+    let shared: GateId = Arc::from("shared");
+
+    // By the node above it, as the editor names it...
+    assert_eq!(
+        node_under(&state, &shared, Some(&NodeId::from("na"))),
+        Some(NodeId::from("nc"))
+    );
+    assert_eq!(
+        node_under(&state, &shared, Some(&NodeId::from("nb"))),
+        Some(NodeId::from("nd"))
+    );
+    // ...and by the gate name above it, as a run names it.
+    assert_eq!(
+        node_named(&state, "shared", Some("Branch A")),
+        Some(NodeId::from("nc"))
+    );
+    assert_eq!(
+        node_named(&state, "shared", Some("Branch B")),
+        Some(NodeId::from("nd"))
+    );
+
+    // A gate at the root, named with or without the root.
+    let g1: GateId = Arc::from("g1");
+    assert_eq!(node_under(&state, &g1, None), Some(NodeId::from("na")));
+    assert_eq!(
+        node_under(&state, &g1, Some(&NodeId::from(ROOTGATE.clone()))),
+        Some(NodeId::from("na"))
+    );
+    assert_eq!(node_named(&state, "g1", None), Some(NodeId::from("na")));
+
+    // Where that does not settle it, its first place; a gate the tree does
+    // not hold, nowhere.
+    let first = state.nodes_for_gate(&shared)[0].clone();
+    assert_eq!(
+        node_named(&state, "shared", Some("no such parent")),
+        Some(first.clone())
+    );
+    assert_eq!(
+        node_under(&state, &shared, Some(&NodeId::from("g-nope"))),
+        Some(first)
+    );
+    assert_eq!(node_named(&state, "no such gate", None), None);
+    assert_eq!(node_under(&state, &Arc::from("no such gate"), None), None);
+}
