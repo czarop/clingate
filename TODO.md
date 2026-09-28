@@ -131,18 +131,11 @@ commit (`b7a77c4`).
 
 ## clingate
 
-- [ ] **Gate edits are not saved with the workspace - decide how.** The
-      workspace file names the gating file it loaded, and opening it loads
-      that file afresh: every gate drawn or moved since, by hand or by the
-      rules, is gone unless Write gating file was used. Options: write the
-      gates into the folder as they change (a working copy the workspace
-      opens in place of the original), or ask before closing. Needs a
-      decision on which file is the truth.
-- [ ] **The rules are not saved with the workspace either.** The Gate Rules
-      tab saves them to a path typed there, relative to wherever the program
-      was started; the tools for Claude look for `gate_rules.json` in the
-      folder. Saving them into the workspace folder by default would join
-      the two up.
+- [ ] **The rules' save path.** Rules stay saved from the Gate Rules tab,
+      separately from the gates (decided). But the path typed there is
+      relative to wherever the program was started, while the tools for
+      Claude look for `gate_rules.json` in the workspace folder; defaulting
+      the path to the workspace folder would join the two up.
 
 - [ ] **A shared cache of transformed frames** (flow-review 6) - the largest
       speed-up available. Every plot view, every gallery image and every file

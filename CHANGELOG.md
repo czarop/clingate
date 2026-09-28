@@ -4,6 +4,22 @@
 
 ### Added
 
+- **A working copy, with Save, Undo, Redo and Revert.** The gates on the
+  plots are a working copy; every edit is one step - a gate drawn, a drag
+  from press to release, a delete, link or unlink, a label moved, a whole
+  rules run, a change of scaling (the axes and the gates they carry
+  together) - and Undo steps back through the last 20. Save writes the
+  working copy into the workspace folder as `clingate_gating.omiqgt` with
+  `clingate_scaling.csv`, and the workspace opens on them next time; the
+  Omiq file that was loaded is never overwritten. Revert goes back to the
+  last save, and can itself be undone. Export writes the saved copy, and
+  says so when there are unsaved changes it leaves out. Loading a gating
+  file replaces both copies and asks first only when there are unsaved
+  changes. While there are some, a hidden recovery copy is kept in the
+  folder, and opening the workspace again after a crash or a close without
+  saving offers to restore or discard them. The bar is on the Workspace,
+  gate editor and Gate Rules tabs.
+
 - **Gate names on the plots, and labels that can be moved.** Every gate's
   label is its name with its percentage beneath. A gate's label sits where
   Omiq put it, or just above the gate if it was never placed; clicking the
