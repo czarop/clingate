@@ -37,6 +37,29 @@ pub struct ReportTarget {
     /// For the dialog's heading.
     pub gate: String,
     pub sample_name: String,
+    /// Where several gates are drawn on the plot - a gallery page shows
+    /// every gate on its axes - the others, to choose between in the dialog.
+    pub choices: Vec<(NodeId, String)>,
+}
+
+/// The gates drawn on a plot of the population at `parent` on `x` and `y`:
+/// each child gate on those two parameters, either way round.
+pub fn gates_on_plot(
+    state: &clingate_core::gates::GateState,
+    parent: &NodeId,
+    x: &str,
+    y: &str,
+) -> Vec<(NodeId, String)> {
+    state
+        .child_nodes(parent)
+        .into_iter()
+        .filter_map(|child| {
+            let gate = state.registered_gate(state.gate_for_node(&child)?)?;
+            let (a, b) = gate.get_params();
+            let on_axes = (&*a == x && &*b == y) || (&*a == y && &*b == x);
+            on_axes.then(|| (child, gate.get_name().to_string()))
+        })
+        .collect()
 }
 
 /// Report the gate selected on a plot, on that plot's sample. Disabled with
@@ -64,6 +87,7 @@ pub fn ReportButton(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
                 sample,
                 gate,
                 sample_name: sample_name.trim_end_matches(".fcs").to_string(),
+                choices: Vec::new(),
             })
         })
     };
@@ -186,7 +210,36 @@ pub fn ReportDialog() -> Element {
             div { class: "review-dialog",
                 h3 { "Report a badly placed gate" }
                 p { class: "review-dialog_what",
-                    strong { "{target.gate}" }
+                    if target.choices.len() > 1 {
+                        select {
+                            value: "{target.node}",
+                            onchange: move |e| {
+                                let chosen = e.value();
+                                let mut now = open();
+                                if let Some(t) = now.as_mut()
+                                    && let Some((node, name)) = t
+                                        .choices
+                                        .iter()
+                                        .find(|(n, _)| n.as_str() == chosen)
+                                        .cloned()
+                                {
+                                    t.node = node;
+                                    t.gate = name;
+                                }
+                                open.set(now);
+                            },
+                            for (node , name) in target.choices.iter() {
+                                option {
+                                    key: "{node}",
+                                    value: "{node}",
+                                    selected: *node == target.node,
+                                    "{name}"
+                                }
+                            }
+                        }
+                    } else {
+                        strong { "{target.gate}" }
+                    }
                     " on "
                     strong { "{target.sample_name}" }
                 }
@@ -303,7 +356,9 @@ pub fn ReviewPanel() -> Element {
     rsx! {
         fieldset { class: "gate_rules-form",
             legend { "Review" }
+            label { "Last run" }
             p { class: "gate_rules-hint", "{summary}" }
+            label { "" }
             p { class: "gate_rules-hint",
                 "Report a gate the rules placed badly from the gate editor (Report... above each plot) or the gallery. When the run has been checked, mark it reviewed: every placement not reported and still where the rule put it is recorded as accepted, which is what the confidence scores are measured against."
             }
@@ -333,7 +388,8 @@ pub fn ReviewPanel() -> Element {
                     "Set"
                 }
             }
-            div { class: "gate_rules-band gate_rules-actions_row",
+            label { "" }
+            div { class: "gate_rules-actions_row",
                 button {
                     disabled: !can_mark,
                     onclick: move |_| {

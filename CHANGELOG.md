@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Reviewing a rules run.** Every applied run is kept in the workspace
+  (`reviews/rules_run.json`): each gate it moved, where from and to, every
+  measure its confidence was taken from, what it read on the reference and
+  the sample - so a run can be reviewed afterwards, and a gate moved since
+  is told apart from the rule's placement. A gate the rules placed badly
+  can be reported from a **Report...** button over each plot in the gate
+  editor and on each gallery tile: what was wrong, a note, and - kept with
+  it - what the rule did, the rule itself, and the population on the
+  sample and on the sample the rule read (histograms, a coarse density and
+  up to 5,000 events, so the case can be replayed against a changed rule).
+  Saving records the reviewer's fix with the report. **Mark run reviewed**
+  on the Gate Rules tab records every other placement as accepted - or
+  moved without a report - and copies the review and its reports into a
+  **review library** folder set once on the computer, where reviews from
+  every run add up. The tools for Claude can report a placement and mark a
+  run reviewed on the user's word; both go through the same code as the
+  app, checked by the parity tests.
 - **Rules and figures have their own folders in the workspace.** The Gate
   Rules tab saves to and loads from `rules/gate_rules.json` in the workspace
   folder - made the first time rules are saved - and a workspace opens with
