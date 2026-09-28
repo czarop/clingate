@@ -7,7 +7,11 @@
 - **Tools for Claude.** `clingate-mcp` serves a workspace to Claude Desktop
   over the Model Context Protocol: open a folder, see what it holds, find
   samples, list populations, count a population across samples, and see how a
-  population's parent is spread on a parameter and where its gate sits. Names
+  population's parent is spread on a parameter and where its gate sits;
+  describe a gate as it applies to a sample; compare samples on a parameter
+  to find the one distributed unlike the rest; and run the gate rules as a
+  preview, apply what it proposes, and save the gating file - each step only
+  when asked, and never over an existing file unless told to. Names
   are the ones a person uses - samples by any word of their file name or
   metadata, populations by the markers of their gate path, parameters by
   marker or channel - and matching is strict: anything short of an exact

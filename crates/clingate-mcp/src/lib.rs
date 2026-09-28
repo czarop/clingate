@@ -47,8 +47,19 @@ If the overview says a compensation group needs an answer, those files cannot \
 be read until the user says whether compensation was applied in Omiq (and, if \
 it was, pastes the matrix exported from Omiq). Ask them; do not assume.
 
-Distributions are in the units the plots are drawn in: arcsinh-scaled where \
-the scaling says so.";
+Distributions, gate edges and comparisons are in the units the plots are drawn \
+in: arcsinh-scaled where the scaling says so.
+
+To see whether a sample is distributed unlike the rest - the usual reason a \
+rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
+from 0, or spread_ratio well above 1, marks a sample worth a closer look.
+
+The rules change gates, so they run in steps, each only when the user asks: \
+preview_rules says what would move and changes nothing; show the user the \
+moves, above all those marked review. apply_rule_placements applies the last \
+preview to this session only, and only once the user has said to. save_gating \
+writes the gates to a file in the workspace folder, under a name the user \
+chose; never overwrite a file unless the user has said to replace that file.";
 
 /// The server, holding the one open workspace.
 #[derive(Clone)]
@@ -109,6 +120,41 @@ pub struct AnswerOmiq {
     /// If it was: the compensation matrix the user exported from Omiq and pasted, exactly as
     /// pasted.
     pub matrix: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListParameters {
+    /// A marker or channel to look up, e.g. 'CD4' or 'BUV395-A'. Leave out to list every
+    /// parameter.
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GateDetailsArgs {
+    /// The population whose gate to describe, by its gate names.
+    pub population: String,
+    /// One sample, by words of its file name or metadata, to see the position that applies to
+    /// it. Leave out for the gate as drawn.
+    pub sample: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompareSamples {
+    /// The population, by its gate names. Its parent is what is compared.
+    pub population: String,
+    /// The parameter, by marker or channel.
+    pub parameter: String,
+    /// The samples, by words of their file names or metadata, or 'all'.
+    pub samples: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SaveGating {
+    /// The file name the user chose - a name alone, no folder. '.omiqgt' is added if missing.
+    pub file_name: String,
+    /// Replace a file of that name. Only when the user has said to replace that file.
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 #[derive(Serialize)]
@@ -173,6 +219,17 @@ impl Clingate {
         .await
         .map_err(|e| format!("the work stopped: {e}"))?
     }
+
+    /// Run a question on the open session and answer it.
+    async fn run<T: Serialize + Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Session) -> Result<T, Refusal> + Send + 'static,
+    ) -> String {
+        match self.with_session(work).await {
+            Ok(result) => answer(result),
+            Err(reason) => failed(reason),
+        }
+    }
 }
 
 #[tool_router]
@@ -226,26 +283,15 @@ impl Clingate {
     /// columns each word matched.
     #[tool(annotations(read_only_hint = true))]
     async fn find_samples(&self, Parameters(args): Parameters<FindSamples>) -> String {
-        match self
-            .with_session(move |s| s.find_samples(&args.query))
-            .await
-        {
-            Ok(result) => answer(result),
-            Err(reason) => failed(reason),
-        }
+        self.run(move |s| s.find_samples(&args.query)).await
     }
 
     /// The populations in the gating tree - each with the shortest name that names only it,
     /// its full path, and the two parameters its gate is drawn on. A query narrows the list.
     #[tool(annotations(read_only_hint = true))]
     async fn list_populations(&self, Parameters(args): Parameters<ListPopulations>) -> String {
-        match self
-            .with_session(move |s| s.populations(args.query.as_deref()))
+        self.run(move |s| s.populations(args.query.as_deref()))
             .await
-        {
-            Ok(result) => answer(result),
-            Err(reason) => failed(reason),
-        }
     }
 
     /// Events in a population, in its parent and in the whole file, and the population's
@@ -253,13 +299,8 @@ impl Clingate {
     /// maximum percent of parent across them.
     #[tool(annotations(read_only_hint = true))]
     async fn population_stats(&self, Parameters(args): Parameters<PopulationStats>) -> String {
-        match self
-            .with_session(move |s| s.population_stats(&args.population, &args.samples))
+        self.run(move |s| s.population_stats(&args.population, &args.samples))
             .await
-        {
-            Ok(result) => answer(result),
-            Err(reason) => failed(reason),
-        }
     }
 
     /// How a population's parent is spread on one parameter in one sample - percentiles and
@@ -267,13 +308,8 @@ impl Clingate {
     /// parent between them. In the units the plots are drawn in.
     #[tool(annotations(read_only_hint = true))]
     async fn distribution(&self, Parameters(args): Parameters<DistributionArgs>) -> String {
-        match self
-            .with_session(move |s| s.distribution(&args.population, &args.sample, &args.parameter))
+        self.run(move |s| s.distribution(&args.population, &args.sample, &args.parameter))
             .await
-        {
-            Ok(result) => answer(result),
-            Err(reason) => failed(reason),
-        }
     }
 
     /// Record what the user said about a compensation group of files exported from Omiq:
@@ -293,13 +329,64 @@ impl Clingate {
         } else {
             None
         };
-        match self
-            .with_session(move |s| s.answer_omiq(&args.group, matrix.as_deref()))
+        self.run(move |s| s.answer_omiq(&args.group, matrix.as_deref()))
             .await
-        {
-            Ok(result) => answer(result),
-            Err(reason) => failed(reason),
-        }
+    }
+
+    /// Every parameter - marker, channel, scale and axis range - or the one a query names.
+    #[tool(annotations(read_only_hint = true))]
+    async fn list_parameters(&self, Parameters(args): Parameters<ListParameters>) -> String {
+        self.run(move |s| s.parameters(args.query.as_deref())).await
+    }
+
+    /// A population's gate: the parameters it is drawn on, its extent on each, and its shape.
+    /// For one sample: the position that applies to that sample, and whether it is the gate as
+    /// drawn or a position set for a group of samples or for that sample alone.
+    #[tool(annotations(read_only_hint = true))]
+    async fn gate_details(&self, Parameters(args): Parameters<GateDetailsArgs>) -> String {
+        self.run(move |s| s.gate(&args.population, args.sample.as_deref()))
+            .await
+    }
+
+    /// How a population's parent is spread on one parameter in each sample named, side by
+    /// side: percentiles, each sample's distance from the others in typical interquartile
+    /// ranges, its spread against theirs, and where the population's gate sits in it.
+    #[tool(annotations(read_only_hint = true))]
+    async fn compare_samples(&self, Parameters(args): Parameters<CompareSamples>) -> String {
+        self.run(move |s| s.compare_samples(&args.population, &args.parameter, &args.samples))
+            .await
+    }
+
+    /// The workspace's gate rules: for each, the gate, the parameter, which side it keeps,
+    /// which sample it is measured on, and the rule in words.
+    #[tool(annotations(read_only_hint = true))]
+    async fn list_rules(&self) -> String {
+        self.run(|s| s.rules_view()).await
+    }
+
+    /// Run every rule and say what it would do, changing nothing: the gates it would move
+    /// (from where, to where, with what confidence, and which want review), those already in
+    /// place, the reference specimens, and any it could not position.
+    #[tool(annotations(read_only_hint = true))]
+    async fn preview_rules(&self) -> String {
+        self.run(|s| s.preview_rules()).await
+    }
+
+    /// Apply the placements of the last preview_rules to this session's gates. Only when the
+    /// user has said to. Writes nothing to disk; refused if the gates changed since the
+    /// preview.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn apply_rule_placements(&self) -> String {
+        self.run(|s| s.apply_previewed_rules()).await
+    }
+
+    /// Write this session's gates, as they now stand, as an Omiq gating file in the workspace
+    /// folder, under the name the user chose. Refuses to replace an existing file unless
+    /// overwrite is set - which only the user may decide.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn save_gating(&self, Parameters(args): Parameters<SaveGating>) -> String {
+        self.run(move |s| s.save_gating(&args.file_name, args.overwrite))
+            .await
     }
 }
 

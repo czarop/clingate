@@ -186,3 +186,155 @@ fn an_unknown_compensation_group_is_asked_about() {
     let asked = clarification(session.answer_omiq("no such group", None).unwrap_err());
     assert!(!asked.suggestions.is_empty());
 }
+
+#[test]
+fn parameters_are_listed_with_their_scales_or_named_one_at_a_time() {
+    let session = Session::open(&workspace("session-parameters")).unwrap();
+    let all = session.parameters(None).unwrap();
+    assert_eq!(all.len(), 2 + FLUORESCENCE.len());
+    let one = session.parameters(Some("BUV661-A")).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].channel, "BUV661-A");
+    assert!(one[0].scale.contains("arcsinh"), "{:?}", one[0]);
+    assert!(one[0].axis_from < one[0].axis_to);
+    let asked = clarification(session.parameters(Some("nothing")).unwrap_err());
+    assert_eq!(asked.about, "parameter");
+}
+
+#[test]
+fn a_gate_is_described_as_drawn_and_as_positioned_for_a_sample() {
+    let session = Session::open(&workspace("session-gate")).unwrap();
+    let drawn = session.gate("Tmem", None).unwrap();
+    assert_eq!(drawn.parameters.len(), 2);
+    assert!(drawn.position.starts_with("as drawn"), "{drawn:?}");
+    assert!(drawn.geometry.is_some());
+    assert!(
+        drawn
+            .extent
+            .iter()
+            .any(|e| e.lower.is_some() || e.upper.is_some()),
+        "{drawn:?}"
+    );
+    let for_sample = session.gate("Tmem", Some("fmx")).unwrap();
+    assert_eq!(for_sample.sample.as_deref(), Some("sample1_FMX.fcs"));
+    // Several samples where one is needed is a question.
+    clarification(session.gate("Tmem", Some("all")).unwrap_err());
+}
+
+#[test]
+fn samples_are_compared_on_a_parameter_against_the_plate() {
+    let session = Session::open(&workspace("session-compare")).unwrap();
+    let parameter = session.gate("Tmem", None).unwrap().parameters[0].clone();
+    let compared = session.compare_samples("Tmem", &parameter, "all").unwrap();
+    assert_eq!(compared.rows.len(), 2);
+    assert!(compared.plate_median.is_some() && compared.typical_iqr.is_some());
+    for row in &compared.rows {
+        assert!(row.problem.is_none(), "{row:?}");
+        let (p5, median, p95) = (row.p5.unwrap(), row.median.unwrap(), row.p95.unwrap());
+        assert!(p5 <= median && median <= p95, "{row:?}");
+        assert!(row.shift_in_iqrs.is_some() && row.spread_ratio.is_some());
+        assert!(row.gate.is_some(), "{row:?}");
+    }
+}
+
+/// The workspace with one rule: Tmem keeps the top 1-2% of its parent on its
+/// first parameter, measured on each sample itself.
+fn with_rules(name: &str) -> std::path::PathBuf {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let dir = workspace(name);
+    let parameter = Session::open(&dir)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: parameter.into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+        },
+    );
+    store.save(&dir.join("gate_rules.json")).unwrap();
+    dir
+}
+
+#[test]
+fn rules_are_listed_and_a_workspace_without_them_says_so() {
+    let session = Session::open(&workspace("session-no-rules")).unwrap();
+    assert!(matches!(
+        session.rules_view().unwrap_err(),
+        Refusal::Failed { .. }
+    ));
+
+    let session = Session::open(&with_rules("session-rules-view")).unwrap();
+    let view = session.rules_view().unwrap();
+    assert_eq!(view.rules.len(), 1);
+    assert_eq!(view.rules[0].population, "Tmem");
+    assert_eq!(view.rules[0].keeps, "above the line");
+    assert_eq!(view.specimen_column, "test");
+}
+
+#[test]
+fn a_preview_moves_nothing_until_applied_and_applies_once() {
+    let mut session = Session::open(&with_rules("session-rules-apply")).unwrap();
+    let before = session.population_stats("Tmem", "all").unwrap();
+
+    // Nothing to apply before a preview.
+    assert!(session.apply_previewed_rules().is_err());
+
+    let preview = session.preview_rules().unwrap();
+    assert_eq!(preview.would_move.len(), 2, "{preview:?}");
+    for m in &preview.would_move {
+        assert!(m.from != m.to, "{m:?}");
+    }
+    let unmoved = session.population_stats("Tmem", "all").unwrap();
+    for (a, b) in before.rows.iter().zip(&unmoved.rows) {
+        assert_eq!(a.events, b.events, "a preview moved a gate");
+    }
+
+    session.apply_previewed_rules().unwrap();
+    // Each specimen's gate edge is where the preview said it would go.
+    for (query, specimen) in [("fmx", "one"), ("fs", "two")] {
+        let proposed = preview
+            .would_move
+            .iter()
+            .find(|m| m.specimen == specimen)
+            .unwrap();
+        let placed = session.gate("Tmem", Some(query)).unwrap();
+        assert!(!placed.position.starts_with("as drawn"), "{placed:?}");
+        let lower = placed.extent[0].lower.unwrap();
+        assert!(
+            (lower - proposed.to).abs() < 1e-3,
+            "{placed:?} {proposed:?}"
+        );
+    }
+    // The preview is used up.
+    assert!(session.apply_previewed_rules().is_err());
+}
+
+#[test]
+fn gating_is_saved_by_name_into_the_folder_and_never_over_a_file_unasked() {
+    let folder = workspace("session-save");
+    let session = Session::open(&folder).unwrap();
+    for bad in ["", "../escape", "sub/dir.omiqgt", ".hidden"] {
+        assert!(session.save_gating(bad, false).is_err(), "{bad:?}");
+    }
+    let saved = session.save_gating("claude", false).unwrap();
+    assert_eq!(saved.file, folder.join("claude.omiqgt"));
+    assert!(saved.gates > 0);
+    assert!(session.save_gating("claude.omiqgt", false).is_err());
+    session.save_gating("claude.omiqgt", true).unwrap();
+    // What was written reads back as a gating file.
+    let text = std::fs::read_to_string(&saved.file).unwrap();
+    let _: serde_json::Value = serde_json::from_str(&text).unwrap();
+}

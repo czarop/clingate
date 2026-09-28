@@ -1395,6 +1395,23 @@ impl GateState {
     ///
     /// The same rule `get_current_sample` uses, for one gate rather than
     /// all of them - the export needs it per file when writing `perFileFilters`.
+    /// [`GateState::gate_for_file`], and which tier it came from: the file's
+    /// own position, its group's, or `GateSource::Global` for the gate as
+    /// drawn.
+    pub fn gate_and_source_for_file(
+        &self,
+        gate_id: &GateId,
+        file_id: &FileId,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+    ) -> Option<(GateSource, Arc<dyn DrawableGate>)> {
+        let groups = metadata.get(file_id).into_iter().flatten();
+        if let Some((source, gate)) = self.gate_store.position_for(gate_id, file_id, groups) {
+            return Some((source, gate.clone()));
+        }
+        self.registered_gate(gate_id)
+            .map(|gate| (GateSource::Global, gate))
+    }
+
     pub fn gate_for_file(
         &self,
         gate_id: &GateId,

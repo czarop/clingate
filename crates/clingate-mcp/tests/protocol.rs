@@ -178,6 +178,13 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "population_stats",
         "distribution",
         "answer_omiq_compensation",
+        "list_parameters",
+        "gate_details",
+        "compare_samples",
+        "list_rules",
+        "preview_rules",
+        "apply_rule_placements",
+        "save_gating",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -212,6 +219,55 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
     let asked = server.call("find_samples", json!({"query": "fm"}));
     assert_eq!(asked["outcome"], "needs_clarification", "{asked}");
     assert!(!asked["suggestions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn gates_are_described_compared_and_saved_only_as_asked() {
+    let folder = workspace();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let parameters = server.call("list_parameters", json!({}));
+    assert_eq!(
+        parameters["result"].as_array().unwrap().len(),
+        2 + FLUORESCENCE.len()
+    );
+
+    let gate = server.call(
+        "gate_details",
+        json!({"population": "Tmem", "sample": "fs"}),
+    );
+    assert_eq!(gate["outcome"], "ok", "{gate}");
+    assert_eq!(gate["result"]["sample"], "sample2_FS.fcs");
+    let parameter = gate["result"]["parameters"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let compared = server.call(
+        "compare_samples",
+        json!({"population": "Tmem", "parameter": parameter, "samples": "all"}),
+    );
+    assert_eq!(compared["outcome"], "ok", "{compared}");
+    assert_eq!(compared["result"]["rows"].as_array().unwrap().len(), 2);
+
+    // No rules in this workspace, and nothing to apply.
+    assert_eq!(server.call("list_rules", json!({}))["outcome"], "failed");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "failed"
+    );
+
+    // The gating file already there is not replaced unasked.
+    let refused = server.call("save_gating", json!({"file_name": "gating"}));
+    assert_eq!(refused["outcome"], "failed", "{refused}");
+    let saved = server.call("save_gating", json!({"file_name": "from claude"}));
+    assert_eq!(saved["outcome"], "ok", "{saved}");
+    assert!(folder.join("from claude.omiqgt").is_file());
 }
 
 #[test]

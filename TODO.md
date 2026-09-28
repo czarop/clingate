@@ -39,12 +39,19 @@ the running app.
       populations, population stats, distribution; the Omiq compensation
       answer.
 - [x] **Stage 5 - `clingate-mcp`** (`crates/clingate-mcp`): an `rmcp` stdio
-      server over the session, seven tools; how to add it to Claude Desktop is
+      server over the session, seven tools at first; how to add it to Claude Desktop is
       in its README. Tested by running the binary over the protocol.
 - [ ] **Try it in Claude Desktop** on macOS and Windows, and see what the
       questions actually asked need next.
-- [ ] **More tools** - rules (a practice run, then applying), comparing a
-      sample with its QC, writing the gating file. To be shaped by use.
+- [x] **More tools, round 2** - parameters, a gate's details (as drawn, or
+      as positioned for one sample), comparing samples on a parameter, the
+      rules listed, previewed, applied, and the gating file saved. Fourteen
+      tools; the rules steps checked on Plate 10 (CD134+ of CD4+ against
+      each specimen's FMX) with the saved file reopened.
+- [ ] **More tools, as use shows** - candidates: editing a rule or a
+      reference over MCP; the confidence behind a placement in more detail
+      (once the confidence scores are reworked); undoing an applied preview
+      without reopening the folder.
 - [ ] **A cache of scaled events**, if questions over a plate get slow: each
       question reads its files afresh, as the editor does per plot. Keyed by
       path, file modification time, cofactors and compensation, so a change

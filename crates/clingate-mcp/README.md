@@ -58,8 +58,17 @@ protocol.
 | `population_stats` | A population's events, parent events and percent of parent in each sample named, with min, median and max. |
 | `distribution` | A population's parent on one parameter in one sample: percentiles, a histogram, and where the gate's edges sit. |
 | `answer_omiq_compensation` | Records the user's answer about compensation applied in Omiq, for Omiq-exported files. Only with the user's own answer. |
+| `list_parameters` | Every parameter's marker, channel, scale and axis range, or the one a query names. |
+| `gate_details` | A population's gate: its parameters, its extent on each, its shape - and for one sample, the position that applies to it and whether it was set for that sample, for a group, or is the gate as drawn. |
+| `compare_samples` | A population's parent on one parameter across samples: percentiles, how far each sample's median is from the others' (in typical interquartile ranges), its spread against theirs, and where the gate sits. For finding the sample distributed unlike the rest. |
+| `list_rules` | The workspace's gate rules (`gate_rules.json`), each in words. |
+| `preview_rules` | Runs every rule and says what it would move, from where to where, with what confidence and which want review. Moves nothing. |
+| `apply_rule_placements` | Applies the last preview to the session's gates. Refused if the gates changed since. Writes nothing to disk. |
+| `save_gating` | Writes the session's gates as an Omiq gating file in the workspace folder, under a name the user chose. Never replaces a file unless told to. |
 
-All but the last are read-only; none writes to disk.
+`answer_omiq_compensation` and `apply_rule_placements` change only the open
+session; `save_gating` is the one tool that writes to disk. Claude is told
+to use all three only when the user says to.
 
 ## Naming things
 
@@ -83,3 +92,6 @@ Once it is added, in a new chat:
 - "What's the %CD4+ in the FMX samples?"
 - "How is CD4 spread in the WK1 FMX sample, and where does the CD4+ gate sit?"
 - "Which populations are called CD279+?"
+- "Is any sample's CD134 distribution in CD4+ unlike the others?"
+- "What would the rules do to this plate?" - then, if the moves look right,
+  "apply them and save the gating as plate10_rules".

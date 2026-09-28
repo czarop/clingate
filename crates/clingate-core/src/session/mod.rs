@@ -16,7 +16,12 @@
 //! editor does per plot; nothing is kept between questions but the workspace
 //! itself.
 
+mod gates;
 pub mod lookup;
+mod rules;
+
+pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
+pub use rules::{RulesPreview, RulesView, SavedGating};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -81,6 +86,9 @@ pub struct Session {
     rules: Option<RuleStore>,
     parts: Parts,
     warnings: Vec<String>,
+    /// The placements a rules preview proposed, until they are applied or
+    /// the gates change under them.
+    pending: Option<rules::Pending>,
 }
 
 /// Which file each part of the workspace was read from.
@@ -217,6 +225,7 @@ impl Session {
             rules,
             parts,
             warnings,
+            pending: None,
         })
     }
 
@@ -406,40 +415,87 @@ impl Session {
         parameter: &str,
     ) -> Result<Distribution, Refusal> {
         let (node, facts) = self.one_population(population)?;
-        let chosen = self.find_samples(sample)?;
-        let stubs = self.stubs_named(&chosen);
-        let stub = match stubs.as_slice() {
-            [one] => *one,
-            several => {
-                return Err(Refusal::NeedsClarification(Clarification {
-                    about: "samples",
-                    asked: sample.to_string(),
-                    problem: format!("{} samples match; this needs exactly one", several.len()),
-                    suggestions: several
-                        .iter()
-                        .map(|s| s.name.to_string())
-                        .take(20)
-                        .collect(),
-                }));
-            }
-        };
-        let (params, param_facts) = self.parameter_facts();
-        let which = lookup::one_parameter(parameter, &param_facts)?;
-        let param = &params[which];
+        let stub = self.one_sample(sample)?;
+        let param = self.one_parameter(parameter)?;
+        let (values, gate) = self.parent_on(stub, &node, &param).map_err(failed)?;
+        Ok(Distribution {
+            sample: stub.name.to_string(),
+            population: facts.label.clone(),
+            population_path: facts.full_path(),
+            of: "the population's parent".to_string(),
+            parameter: describe_param(&param),
+            scale: self.scale_of(&param),
+            events: values.len(),
+            percentiles: Percentiles::of(&values),
+            histogram: Histogram::of(&values, 24),
+            gate_on_this_parameter: gate,
+        })
+    }
 
-        let chain = self.gates.gate_chain_for_node(&node);
+    /// The one sample `query` names, or a question listing those it matched.
+    pub(crate) fn one_sample(&self, query: &str) -> Result<&FcsSampleStub, Refusal> {
+        let chosen = self.find_samples(query)?;
+        let stubs = self.stubs_named(&chosen);
+        match stubs.as_slice() {
+            [one] => Ok(*one),
+            several => Err(Refusal::NeedsClarification(Clarification {
+                about: "samples",
+                asked: query.to_string(),
+                problem: format!("{} samples match; this needs exactly one", several.len()),
+                suggestions: several
+                    .iter()
+                    .map(|s| s.name.to_string())
+                    .take(20)
+                    .collect(),
+            })),
+        }
+    }
+
+    /// The one parameter `query` names.
+    pub(crate) fn one_parameter(&self, query: &str) -> Result<crate::axis_store::Param, Refusal> {
+        let (params, facts) = self.parameter_facts();
+        let which = lookup::one_parameter(query, &facts)?;
+        Ok(params[which].clone())
+    }
+
+    /// How a parameter is drawn: "linear", or "arcsinh, cofactor 150".
+    pub(crate) fn scale_of(&self, param: &crate::axis_store::Param) -> String {
+        match self
+            .axes
+            .settings
+            .get(&param.fluoro)
+            .map(|a| a.transform.clone())
+        {
+            Some(flow_fcs::TransformType::Arcsinh { cofactor }) => {
+                format!("arcsinh, cofactor {cofactor}")
+            }
+            Some(flow_fcs::TransformType::Linear) | None => "linear".to_string(),
+            Some(other) => format!("{other:?}"),
+        }
+    }
+
+    /// The values, sorted, of `node`'s parent population on `param` in one
+    /// sample, and where `node`'s own gate sits on that parameter there.
+    pub(crate) fn parent_on(
+        &self,
+        stub: &FcsSampleStub,
+        node: &NodeId,
+        param: &crate::axis_store::Param,
+    ) -> Result<(Vec<f64>, Option<GateEdges>), String> {
+        let chain = self.gates.gate_chain_for_node(node);
         let Some((own, above)) = chain.split_last() else {
-            return Err(failed("that population has no gate"));
+            return Err("that population has no gate".to_string());
         };
-        let (frame, resolver) = self.read(stub).map_err(failed)?;
-        let parent = crate::events::under_chain(&frame, above, &resolver).map_err(failed)?;
+        let (frame, resolver) = self.read(stub).map_err(|e| e.to_string())?;
+        let parent =
+            crate::events::under_chain(&frame, above, &resolver).map_err(|e| e.to_string())?;
         let mut values: Vec<f64> = parent
             .column(&param.fluoro)
             .and_then(|c| {
                 c.f32()
                     .map(|v| v.into_no_null_iter().map(f64::from).collect())
             })
-            .map_err(|e| failed(format!("{}: {e}", param.fluoro)))?;
+            .map_err(|e| format!("{}: {e}", param.fluoro))?;
         values.retain(|v| v.is_finite());
         values.sort_by(f64::total_cmp);
 
@@ -467,30 +523,7 @@ impl Session {
                     ))
                 },
             });
-
-        let transform = self
-            .axes
-            .settings
-            .get(&param.fluoro)
-            .map(|a| a.transform.clone());
-        Ok(Distribution {
-            sample: stub.name.to_string(),
-            population: facts.label.clone(),
-            population_path: facts.full_path(),
-            of: "the population's parent".to_string(),
-            parameter: format!("{} ({})", param.marker, param.fluoro),
-            scale: match transform {
-                Some(flow_fcs::TransformType::Arcsinh { cofactor }) => {
-                    format!("arcsinh, cofactor {cofactor}")
-                }
-                Some(flow_fcs::TransformType::Linear) | None => "linear".to_string(),
-                Some(other) => format!("{other:?}"),
-            },
-            events: values.len(),
-            percentiles: Percentiles::of(&values),
-            histogram: Histogram::of(&values, 24),
-            gate_on_this_parameter: gate,
-        })
+        Ok((values, gate))
     }
 
     // ─── Compensation ─────────────────────────────────────────────────────
@@ -683,6 +716,15 @@ impl Session {
             .map_err(|e| e.to_string())?
             .height();
         Ok((total, parent.height(), events))
+    }
+}
+
+/// "CD4 (BUV395-A)", or the channel alone where it has no marker.
+fn describe_param(param: &crate::axis_store::Param) -> String {
+    if param.marker == param.fluoro {
+        param.fluoro.to_string()
+    } else {
+        format!("{} ({})", param.marker, param.fluoro)
     }
 }
 
