@@ -8,6 +8,17 @@ percentages, summaries - go to Claude.
 
 ## Build
 
+The quick way: a script does everything below except installing the Xcode
+tools and Rust on a Mac, and on Windows offers to install those too. Run it
+again to update.
+
+- macOS: `bash scripts/install-mcp-mac.sh`
+- Windows: `powershell -ExecutionPolicy Bypass -File scripts\install-mcp-windows.ps1`
+
+Either works on its own, before the repository is cloned: download it from
+GitHub and run it from wherever it was saved. The rest of this section is
+what they do, step by step.
+
 The server is built from source on the machine that will run it - a Mac, or a
 Windows PC. Only `clingate-core` and the server are built, not the desktop
 app, so no system libraries are needed beyond a compiler.
