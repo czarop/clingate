@@ -30,6 +30,8 @@ pub(crate) struct Pending {
     placements: Vec<Placement>,
     /// What the run decided, kept in the workspace once applied.
     record: crate::review::RunRecord,
+    /// The events it read, kept with it.
+    events: Vec<crate::review::events::EventSample>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -230,6 +232,7 @@ impl Session {
             snapshot: self.gates.clone(),
             placements: outcome.placements,
             record,
+            events: outcome.events,
         });
         Ok(preview)
     }
@@ -253,7 +256,7 @@ impl Session {
         crate::gate_rules::autogate::apply_placements(&mut self.gates, &pending.placements);
         self.edited(before);
         // Kept for reviewing the run, as the app keeps it.
-        let kept = match pending.record.applied(&self.folder) {
+        let kept = match pending.record.applied(&self.folder, &pending.events) {
             Ok(_) => String::new(),
             Err(e) => format!(" (the run's record could not be kept for review: {e})"),
         };

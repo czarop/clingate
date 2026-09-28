@@ -234,6 +234,9 @@ pub struct RunOutcome {
     pub placements: Vec<crate::gate_rules::autogate::Placement>,
     /// Whether it was stopped before solving; nothing is placed if so.
     pub cancelled: bool,
+    /// A sample of the events behind every gate on every file the run
+    /// measured, kept with the run once it is applied.
+    pub events: Vec<crate::review::events::EventSample>,
 }
 
 /// The whole solve. Blocking: run it off any thread that has to stay
@@ -268,6 +271,7 @@ pub fn run_rules(
             report: Report::default(),
             placements: Vec::new(),
             cancelled: true,
+            events: Vec::new(),
         };
     }
 
@@ -294,6 +298,7 @@ pub fn run_rules(
         report,
         placements,
         cancelled: false,
+        events: crate::review::events::of_run(&measured),
     }
 }
 
@@ -1467,6 +1472,70 @@ mod tests {
             assert!((0.05..=0.15).contains(&achieved), "{achieved}");
             assert_eq!(kept.bound, Some(Bound::Above));
             assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn a_run_keeps_the_events_behind_every_gate_on_every_file_it_measured() {
+            use crate::review::events::{KEPT_EVENTS, load};
+            let inputs = three_way_inputs("run-events");
+            let (state, _) = positive_gate();
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            // The donor it placed, the QC it read, and the file it could not
+            // place - measured all the same.
+            let mut files: Vec<&str> = outcome.events.iter().map(|e| e.file.as_str()).collect();
+            files.sort();
+            assert_eq!(files, vec!["fs_b", "fs_qc", "fs_x"]);
+            for e in &outcome.events {
+                assert_eq!(
+                    (e.gate_id.as_str(), e.parent_gate.as_deref()),
+                    ("CD134+", None)
+                );
+                assert_eq!((e.x.as_str(), e.y.as_str()), (X, Y));
+                assert_eq!(e.events, 10_000);
+                assert_eq!(e.points.len(), KEPT_EVENTS);
+            }
+            // The events are the file's: the donor's negative sits at 600,
+            // the QC's at 300.
+            let median_x = |file: &str| {
+                let e = outcome.events.iter().find(|e| e.file == file).unwrap();
+                let mut xs: Vec<f32> = e.points.iter().map(|p| p.0).collect();
+                xs.sort_by(f32::total_cmp);
+                xs[xs.len() / 2]
+            };
+            assert!(
+                (median_x("fs_b") - 600.0).abs() < 30.0,
+                "{}",
+                median_x("fs_b")
+            );
+            assert!(
+                (median_x("fs_qc") - 300.0).abs() < 30.0,
+                "{}",
+                median_x("fs_qc")
+            );
+
+            // Kept with the run on apply, for that run only.
+            let folder = folder_of(&inputs);
+            let samples = crate::review::run_record::Samples::new(
+                &inputs.names,
+                &inputs.metadata,
+                &inputs.rules.pairing,
+            );
+            let record = crate::review::RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            );
+            record.clone().applied(&folder, &outcome.events).unwrap();
+            let kept = crate::review::RunRecord::load(&folder).unwrap().unwrap();
+            let back = load(&folder, &kept.applied_at)
+                .unwrap()
+                .expect("kept with the run");
+            assert_eq!(back.len(), 3);
+            assert_eq!(load(&folder, "some other run").unwrap(), None);
+            // A cancelled run keeps nothing.
+            let cancelled = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(true)));
+            assert!(cancelled.cancelled && cancelled.events.is_empty());
         }
 
         #[test]

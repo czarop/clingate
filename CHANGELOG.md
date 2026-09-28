@@ -34,6 +34,13 @@
   reference sample), a typical peer, both, or nothing. The typical peer is
   chosen from the peers that are not flagged themselves. Filter by gate; the Gate Rules tab's
   Review section gives the counts and a way in.
+- **Every run keeps the events behind its gates.** Up to 5,000 events of
+  the parent population, on the gate's two parameters, for every gate on
+  every file a run measured - placed, left alone, and each FMX or
+  reference sample it read - in `reviews/run_events.bin` (about 20 KB a
+  gate a file), copied into the review library with the run's review. So
+  a changed rule can later be tried against the placements that were
+  right as well as the ones reported wrong.
 - **Which placements need a look.** Each sample is compared with its
   peers - the other samples of the same kind that the rule placed
   confidently - on where its gate sits between its own negative and

@@ -50,7 +50,7 @@ pub const REVIEW_FILE: &str = "review.json";
 /// misread.
 pub const FORMAT: u32 = 1;
 /// At most this many of a population's events are kept in a report.
-pub const SUBSAMPLE_EVENTS: usize = 5_000;
+pub const SUBSAMPLE_EVENTS: usize = super::events::KEPT_EVENTS;
 /// Bins across each parameter's axis, for the histograms and each side of
 /// the density.
 pub const BINS: usize = 64;
@@ -327,18 +327,6 @@ fn density(x: &str, y: &str, points: &[(f32, f32)], xr: (f64, f64), yr: (f64, f6
     }
 }
 
-/// Every `n`th event, so the subsample runs evenly through the file rather
-/// than stopping at its first few thousand.
-fn subsample(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    if points.len() <= SUBSAMPLE_EVENTS {
-        return points.to_vec();
-    }
-    let step = points.len() as f64 / SUBSAMPLE_EVENTS as f64;
-    (0..SUBSAMPLE_EVENTS)
-        .map(|i| points[(i as f64 * step) as usize])
-        .collect()
-}
-
 /// A parameter's axis, as the plots draw it; the data's own range where the
 /// scaling says nothing.
 fn axis_range(axes: &AxisSettings, parameter: &str, values: &[f32]) -> (f64, f64) {
@@ -421,7 +409,7 @@ fn population_data(
             histogram(&y, ys.iter().copied(), yr),
         ),
         density: density(&x, &y, &points, xr, yr),
-        events_subsample: subsample(&points),
+        events_subsample: super::events::subsample(&points),
         gate_at: here,
     })
 }
@@ -881,6 +869,14 @@ pub fn mark_reviewed(
                 for (path, report) in &reports {
                     std::fs::copy(path, into.join(REPORTS_DIR).join(report.file_name()))?;
                 }
+                // And the events behind every placement, the accepted as well
+                // as the reported - what a changed rule is tried against.
+                if super::events::load(folder, &run.applied_at)?.is_some() {
+                    std::fs::copy(
+                        super::events::file_in(folder),
+                        into.join(super::events::EVENTS_FILE),
+                    )?;
+                }
                 Ok(())
             };
             write().map_err(|e| format!("the review library {}: {e}", into.display()))?;
@@ -920,20 +916,6 @@ mod tests {
         assert_eq!(d.counts[0], 2);
         assert_eq!(d.counts.iter().sum::<u32>(), 4);
         assert_eq!((d.x.as_str(), d.y.as_str(), d.bins), ("x", "y", BINS));
-    }
-
-    #[test]
-    fn a_subsample_keeps_every_event_of_a_small_population_and_spreads_through_a_large_one() {
-        let small: Vec<(f32, f32)> = (0..4_000).map(|i| (i as f32, 0.0)).collect();
-        assert_eq!(subsample(&small), small);
-        let large: Vec<(f32, f32)> = (0..12_000).map(|i| (i as f32, 0.0)).collect();
-        let kept = subsample(&large);
-        assert_eq!(kept.len(), SUBSAMPLE_EVENTS);
-        assert_eq!(kept[0].0, 0.0);
-        // Evenly: the last kept is near the end, not at the 5,000th event.
-        assert!(kept[SUBSAMPLE_EVENTS - 1].0 > 11_990.0, "{:?}", kept.last());
-        assert!(kept.windows(2).all(|w| w[1].0 > w[0].0));
-        assert_eq!(subsample(&large), kept, "the same every time");
     }
 
     #[test]

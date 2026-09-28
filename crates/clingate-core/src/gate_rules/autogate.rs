@@ -342,6 +342,11 @@ pub struct Measurement {
     /// gate admits can be asked through the very function that draws the
     /// percentage on screen.
     pub index: EventIndexMapped,
+    /// How many events the parent population holds, and a sample of up to
+    /// [`crate::review::events::KEPT_EVENTS`] of them on the plot's axes -
+    /// kept with the run, so a changed rule can be tried against it later.
+    pub events: usize,
+    pub kept_events: Arc<Vec<(f32, f32)>>,
     /// The plot's axes, in order.
     pub params: (Arc<str>, Arc<str>),
     /// What a rule that moves one edge along one axis reads.
@@ -565,6 +570,8 @@ pub fn measure_file(
                 gate: name,
                 parent_gate,
                 index,
+                events: points.len(),
+                kept_events: Arc::new(crate::review::events::subsample(&points)),
                 params,
                 line: None,
                 phenotype: Some(PhenotypeReading {
@@ -653,6 +660,8 @@ pub fn measure_file(
             gate: name,
             parent_gate,
             index,
+            events: points.len(),
+            kept_events: Arc::new(crate::review::events::subsample(&points)),
             params,
             line: Some(LineReading {
                 parameter: rule.parameter.clone(),

@@ -550,6 +550,33 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
     );
     let copy = reviewed.library_copy.expect("copied into the library");
     assert!(copy.join("review.json").is_file());
+    // With the events behind every placement, the accepted one too.
+    let run = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .unwrap();
+    let here = clingate_core::review::events::load(&folder, &run.applied_at)
+        .unwrap()
+        .expect("kept on apply");
+    assert!(
+        here.len() >= run.placed.len(),
+        "{} for {}",
+        here.len(),
+        run.placed.len()
+    );
+    for placed in &run.placed {
+        assert!(
+            here.iter()
+                .any(|e| e.gate_id == placed.gate_id && e.file == placed.sample.id),
+            "no events for {} on {}",
+            placed.gate,
+            placed.sample.id
+        );
+    }
+    assert!(copy.join("run_events.bin").is_file());
+    assert_eq!(
+        std::fs::read(copy.join("run_events.bin")).unwrap(),
+        std::fs::read(folder.join("reviews").join("run_events.bin")).unwrap()
+    );
     assert_eq!(std::fs::read_dir(copy.join("reports")).unwrap().count(), 1);
 
     // The reviewer's fix - here, taking the run back - is the correction once

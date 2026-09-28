@@ -227,7 +227,7 @@ impl RulesRun {
         self.edits.after(before);
         match self.edits.folder() {
             Some(folder) => record
-                .applied(&folder)
+                .applied(&folder, &outcome.events)
                 .map(|_| ())
                 .map_err(|e| format!("the run could not be kept for review: {e}")),
             None => Ok(()),

@@ -409,10 +409,17 @@ impl RunRecord {
     }
 
     /// The run's placements have just been applied: stamp the time and keep
-    /// it as the workspace's last applied run.
-    pub fn applied(mut self, folder: &Path) -> anyhow::Result<PathBuf> {
+    /// it as the workspace's last applied run, with the events it read (see
+    /// [`super::events`]).
+    pub fn applied(
+        mut self,
+        folder: &Path,
+        events: &[super::events::EventSample],
+    ) -> anyhow::Result<PathBuf> {
         self.applied_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        self.save(folder)
+        let path = self.save(folder)?;
+        super::events::save(folder, &self.applied_at, events)?;
+        Ok(path)
     }
 
     /// Where a workspace keeps its last applied run.
@@ -646,7 +653,7 @@ mod tests {
         first.applied_at = "an old run".into();
         first.save(&folder).unwrap();
         let before = chrono::Utc::now() - chrono::Duration::seconds(1);
-        record().applied(&folder).unwrap();
+        record().applied(&folder, &[]).unwrap();
         let kept = RunRecord::load(&folder).unwrap().unwrap();
         let stamped = chrono::DateTime::parse_from_rfc3339(&kept.applied_at)
             .expect("an RFC 3339 time")

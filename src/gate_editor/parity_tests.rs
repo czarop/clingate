@@ -322,6 +322,20 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
     };
     assert!(!kept(&tools).placed.is_empty());
     assert_eq!(kept(&tools), kept(&ours), "the kept runs differ");
+    // And the same events kept with each.
+    let events = |folder: &Path| {
+        let run = clingate_core::review::RunRecord::load(folder)
+            .unwrap()
+            .unwrap();
+        let mut e = clingate_core::review::events::load(folder, &run.applied_at)
+            .unwrap()
+            .expect("events kept with the run");
+        e.sort_by(|a, b| (&a.gate_id, &a.file).cmp(&(&b.gate_id, &b.file)));
+        e
+    };
+    let (from_tools, from_app) = (events(&tools), events(&ours));
+    assert!(!from_tools.is_empty());
+    assert_eq!(from_tools, from_app, "the kept events differ");
     // And assess the same: the app's review list is `assess` over the gates
     // it holds, the tools' assess_run over the session's.
     let from_tools = session.assess_run().unwrap();
