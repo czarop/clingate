@@ -346,6 +346,12 @@ pub fn MainWindow() -> Element {
                 // its title, which is the opposite of what this row wants.
                 div { class: "controls-row",
 
+                    // The gate-type buttons sit under the axis controls rather
+                    // than in a row of their own: the sample pane beside them
+                    // is the taller of the two, so the space is there anyway,
+                    // and a row of its own pushed the plots' bottom edge off
+                    // the window.
+                    div { class: "controls-left",
                     div { class: "axis-controls-grid", style: "width: 600px;",
                         div { class: "grid-label", "X-Axis" }
                         SearchableSelectSet {
@@ -417,6 +423,10 @@ pub fn MainWindow() -> Element {
                             }
                         }
                     }
+                    div { class: "new-gate-pane",
+                        NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                    }
+                    }
                     div { class: "file-info",
                         PairingColumns {}
                         div { class: "file-info_button-panel",
@@ -462,9 +472,6 @@ pub fn MainWindow() -> Element {
                 }
 
                 div {
-                    div { class: "new-gate-pane",
-                        NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
-                    }
                     {
                         // The specimen holding the selected file, so both plots
                         // show the same donor and timepoint - and the selected

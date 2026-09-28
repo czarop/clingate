@@ -305,6 +305,84 @@ impl GateSubStore {
         }
     }
 
+    /// Put a gate's label at `label` - an offset in the orientation the drawn
+    /// gate is held in - on the drawn gate and on every per-group and
+    /// per-sample position of it, each turned to its own orientation.
+    ///
+    /// Every tier, so the file carries one label for the gate, as Omiq writes
+    /// it. The positions are replaced in place rather than through
+    /// `set_group_position`/`set_sample_position`: moving a label is not a new
+    /// position, and must not change which one counts as the newest.
+    pub fn set_label(
+        &mut self,
+        gate_id: &GateId,
+        label: Option<flow_gates::types::LabelPosition>,
+    ) -> anyhow::Result<()> {
+        let drawn = self
+            .primary_and_subgate_registry
+            .get(gate_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("gate {gate_id} is not registered"))?;
+        let drawn_params = drawn.get_params();
+        let relabel = |gate: &Arc<dyn DrawableGate>| -> anyhow::Result<Arc<dyn DrawableGate>> {
+            let params = gate.get_params();
+            let own = if params == drawn_params {
+                label.clone()
+            } else if params.0 == drawn_params.1 && params.1 == drawn_params.0 {
+                crate::gates::gate_label::swap_offset(label.clone())
+            } else {
+                return Err(anyhow!(
+                    "a position of gate {gate_id} is on other parameters than the gate"
+                ));
+            };
+            gate.with_label(own)
+                .map(Arc::from)
+                .ok_or_else(|| anyhow!("gate {gate_id} has no label that can be moved"))
+        };
+
+        // Everything first, so a failure part-way leaves nothing changed.
+        let new_drawn = relabel(&drawn)?;
+        let groups = self
+            .group_position_overrides
+            .iter()
+            .filter(|((id, _), _)| id == gate_id)
+            .map(|(key, gate)| Ok((key.clone(), relabel(gate)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let samples = self
+            .sample_position_overrides
+            .iter()
+            .filter(|((id, _), _)| id == gate_id)
+            .map(|(key, gate)| Ok((key.clone(), relabel(gate)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        self.primary_and_subgate_registry
+            .insert(gate_id.clone(), new_drawn);
+        self.group_position_overrides.extend(groups);
+        self.sample_position_overrides.extend(samples);
+        Ok(())
+    }
+
+    /// Move a gate's label so its middle is at `at`, a point on the plot
+    /// `axes` describes. Measured from the drawn gate - see
+    /// [`crate::gates::gate_label`].
+    pub fn move_label(
+        &mut self,
+        gate_id: &GateId,
+        at: (f32, f32),
+        axes: &crate::gates::gate_label::PlotAxes,
+    ) -> anyhow::Result<()> {
+        let drawn = self
+            .primary_and_subgate_registry
+            .get(gate_id)
+            .ok_or_else(|| anyhow!("gate {gate_id} is not registered"))?;
+        let b = drawn
+            .label_box()
+            .ok_or_else(|| anyhow!("gate {gate_id} has no label that can be moved"))?;
+        let offset = crate::gates::gate_label::offset_for(&b, at, axes)
+            .ok_or_else(|| anyhow!("gate {gate_id} is not on this plot's axes"))?;
+        self.set_label(gate_id, Some(offset))
+    }
+
     /// Write the gates [`oriented_to_plot`] turned, each into the tier it
     /// was resolved from.
     pub fn apply_orientation(&mut self, updates: Vec<OrientedGate>) {
@@ -630,6 +708,17 @@ pub struct GateState {
 }
 
 impl GateState {
+    /// Move a gate's label so its middle is at `at` on the plot `axes`
+    /// describes - see [`GateSubStore::move_label`].
+    pub fn move_label(
+        &mut self,
+        gate_id: &GateId,
+        at: (f32, f32),
+        axes: &crate::gates::gate_label::PlotAxes,
+    ) -> anyhow::Result<()> {
+        self.gate_store.move_label(gate_id, at, axes)
+    }
+
     /// Carry every gate drawn on `channel` through a change of its transform
     /// - see [`GateSubStore::rescale_channel`].
     pub fn rescale_channel(
@@ -2424,6 +2513,21 @@ impl<Lens> Store<GateState, Lens> {
             state.insert_for_source(&ids_to_update, &new_gate_arc, &gate_origin);
         });
         Ok(())
+    }
+
+    /// Move a gate's label, for a drag in progress - see
+    /// [`GateSubStore::move_label`].
+    fn move_label(
+        &mut self,
+        gate_id: GateId,
+        at: (f32, f32),
+        axes: &crate::gates::gate_label::PlotAxes,
+    ) -> anyhow::Result<()> {
+        let mut moved = Ok(());
+        self.gate_store().with_mut(|state| {
+            moved = state.move_label(&gate_id, at, axes);
+        });
+        moved
     }
 
     fn move_gate(

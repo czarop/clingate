@@ -2,9 +2,12 @@
    hint weight, the same bordered sections, the same field padding - two tabs of
    forms that looked different would read as two different programs. */
 
+/* The whole width of the window: the file table's paths and the
+   compensation grid both use every column they are given. */
 .workspace {
-    max-width: 70rem;
-    padding: 0.5rem 1rem 2rem;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.5rem 1.5rem 2rem;
 }
 .workspace h2 { margin: 0.25rem 0 0.75rem; }
 .workspace h3 {

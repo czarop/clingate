@@ -160,6 +160,25 @@ pub trait DrawableGate: Send + Sync {
     fn with_new_group_id(&self, _new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
         None
     }
+
+    /// The extent this gate's label is placed around, in its own two
+    /// parameters - see [`crate::gates::gate_label`].
+    ///
+    /// `None` by default: a composite labels each of its parts in the plot's
+    /// corners, and Omiq keeps no position for them, so they are never placed
+    /// from here; a boolean is not drawn.
+    fn label_box(&self) -> Option<crate::gates::gate_label::LabelBox> {
+        None
+    }
+
+    /// A copy with its label at `label`, an offset in this gate's own
+    /// orientation. `None` where [`label_box`](Self::label_box) is.
+    fn with_label(
+        &self,
+        _label: Option<flow_gates::types::LabelPosition>,
+    ) -> Option<Box<dyn DrawableGate>> {
+        None
+    }
 }
 
 impl Clone for Box<dyn DrawableGate> {

@@ -226,11 +226,20 @@ pub fn GalleryPlot(
             return Vec::new();
         };
         let selected = gate_store.selected_gate().read().clone();
+        // Read, so a label moved in the editor redraws the outline here. Only
+        // the outline: the picture's fingerprint does not include labels.
+        use clingate_core::gates::gate_store::GateSubStoreStoreExt;
+        let registry = gate_store.gate_store().primary_and_subgate_registry();
+        let registry = registry.read();
+        let labelled_from =
+            super::overlay::drawn_by_id(&setup.drawn, |id| registry.get(id).cloned());
         flatten_gates(
             &setup.drawn,
             &picture.stats,
             selected.as_ref(),
             &picture.mapper,
+            &labelled_from,
+            (setup.fingerprint.x.clone(), setup.fingerprint.y.clone()),
         )
     });
 

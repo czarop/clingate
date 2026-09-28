@@ -54,6 +54,8 @@ pub(super) struct ExportJob {
 pub(super) struct ToDraw {
     pub(super) job: PlotJob,
     pub(super) drawn: Vec<Arc<dyn DrawableGate>>,
+    /// The same gates as drawn, by id, that their labels are measured from.
+    pub(super) labelled_from: rustc_hash::FxHashMap<Arc<str>, Arc<dyn DrawableGate>>,
     pub(super) selected: Option<Arc<str>>,
 }
 
@@ -98,6 +100,8 @@ pub(super) fn contact_sheet(
                             &image.stats,
                             plot.selected.as_ref(),
                             &image.mapper,
+                            &plot.labelled_from,
+                            (plot.job.x.clone(), plot.job.y.clone()),
                         ),
                         rendered_at: plot.job.size as f32,
                     }),
@@ -240,6 +244,9 @@ pub fn ExportPdf(
                                 gates: drawn.clone(),
                                 size: EXPORT_SIZE,
                             },
+                            labelled_from: super::overlay::drawn_by_id(&drawn, |id| {
+                                state.registered_gate(id)
+                            }),
                             drawn,
                             selected: selected.clone(),
                         }),

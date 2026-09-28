@@ -41,7 +41,7 @@ button:hover {
 .main-content {
     flex: 1; 
     overflow-y: auto;
-    padding: 1.5rem;
+    padding: 0.75rem 1.5rem;
     /* This ensures content starts after the sidebar gap */
     position: relative; 
 }
@@ -71,7 +71,7 @@ button:hover {
 /* The axis controls keep the width they ask for; the sample pane takes what is
    left. Without this the pane grew to fit its longest line of text and squeezed
    the axis controls, which have fixed-width number fields and no room to give. */
-.controls-row > .axis-controls-grid { flex: 0 0 auto; }
+.controls-row > .controls-left { flex: 0 0 auto; }
 .controls-row > .file-info { flex: 1 1 22rem; min-width: 18rem; }
 
 .pairing-columns {
@@ -125,7 +125,7 @@ button:hover {
 /* Room to breathe around the gate tools, between the controls above and the
    plots below. */
 .new-gate-pane {
-    padding: 10px 0 12px;
+    padding: 8px 0 0;
 }
 
 .gate-window-container{

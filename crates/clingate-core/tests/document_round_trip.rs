@@ -720,3 +720,140 @@ fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
     };
     assert_eq!(edges(&reopened), edges(&import(&fixture(FIXTURE))));
 }
+
+/// Every gate, composites included, viewed on swapped axes in every tier -
+/// drawn, per specimen, per sample - is saved exactly as the file had it,
+/// labels and all. A label offset is turned with its gate (see
+/// `gate_label::swap_offset`), and turned back on the way out.
+#[test]
+fn every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
+    let mut state = import(&fixture(FIXTURE));
+    let metadata = fixture_metadata();
+    let before = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+
+    let mut pairs: Vec<(Arc<str>, Arc<str>)> = state
+        .registered_ids()
+        .into_iter()
+        .filter_map(|g| state.registered_gate(&g).map(|g| g.get_params()))
+        .filter(|(x, y)| x != y)
+        .collect();
+    pairs.sort();
+    pairs.dedup();
+    let mut samples: Vec<Arc<str>> = metadata.keys().cloned().collect();
+    samples.sort();
+    for sample in &samples {
+        let resolver = state.get_current_sample(sample.clone(), metadata.get(sample).unwrap());
+        for (x, y) in &pairs {
+            let ids: Vec<GateId> = state
+                .registered_ids()
+                .into_iter()
+                .filter(|g| {
+                    resolver
+                        .resolve_drawable(g)
+                        .is_ok_and(|g| g.get_params() == (x.clone(), y.clone()))
+                })
+                .collect();
+            state.orient_to_plot(&ids, y, x, &resolver).unwrap();
+        }
+    }
+
+    let after = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let (before, after) = (
+        before["tree"]["filterContainers"].as_object().unwrap(),
+        after["tree"]["filterContainers"].as_object().unwrap(),
+    );
+    assert_eq!(before.len(), after.len());
+    let mut labels = 0;
+    for (id, was) in before {
+        let now = &after[id];
+        // Every label, drawn and per file, exactly.
+        assert_eq!(
+            now["defaultFilter"]["labelLoc"], was["defaultFilter"]["labelLoc"],
+            "{id}'s label"
+        );
+        for (file, per_file) in was["perFileFilters"].as_object().into_iter().flatten() {
+            assert_eq!(
+                now["perFileFilters"][file]["labelLoc"], per_file["labelLoc"],
+                "{id}'s label for {file}"
+            );
+            labels += 1;
+        }
+        labels += 1;
+        // Everything else too, but an ellipse: turned and turned back it is
+        // the same ellipse written with its top and bottom handles exchanged,
+        // which predates labels and is not about them.
+        if was["defaultFilter"]["type"] != "EllipseGate" {
+            assert_eq!(now, was, "{id}");
+        }
+    }
+    assert!(labels >= 20, "checked {labels} labels");
+}
+
+/// A label moved here is saved, and opened again it is where it was put.
+#[test]
+fn a_moved_label_is_saved_and_comes_back() {
+    use clingate_core::gates::gate_label::{PlotAxes, placement};
+    let mut state = import(&fixture(FIXTURE));
+    let metadata = fixture_metadata();
+    let axes_of = fixture_axes();
+    // A single gate: the first registered one whose label can be placed.
+    let id = state
+        .registered_ids()
+        .into_iter()
+        .find(|g| {
+            state
+                .registered_gate(g)
+                .is_some_and(|g| g.label_box().is_some() && g.is_primary())
+        })
+        .expect("the fixture has a single gate");
+    let drawn = state.registered_gate(&id).unwrap();
+    let (x, y) = drawn.get_params();
+    let range = |p: &Arc<str>| {
+        let a = &axes_of[p];
+        (a.axis_lower, a.axis_upper)
+    };
+    let axes = PlotAxes {
+        x: x.clone(),
+        y: y.clone(),
+        x_range: range(&x),
+        y_range: range(&y),
+    };
+    let put = (
+        axes.x_range.0 + 0.25 * (axes.x_range.1 - axes.x_range.0),
+        axes.y_range.0 + 0.8 * (axes.y_range.1 - axes.y_range.0),
+    );
+    state.move_label(&id, put, &axes).unwrap();
+
+    let written = to_omiq_document(&state, &metadata, &axes_of).unwrap();
+    let loc = &written["tree"]["filterContainers"][id.as_ref()]["defaultFilter"]["labelLoc"];
+    assert!(
+        loc["f1Val"].is_number() && loc["f2Val"].is_number(),
+        "{loc}"
+    );
+    for (_, per_file) in written["tree"]["filterContainers"][id.as_ref()]["perFileFilters"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        assert_eq!(
+            &per_file["labelLoc"], loc,
+            "every file carries the one label"
+        );
+    }
+
+    let reopened = saved_and_reopened(&state, "moved-label");
+    let back = reopened.registered_gate(&id).unwrap();
+    let at = placement(
+        &back.label_box().unwrap(),
+        back.get_gate_ref(None).unwrap().label_position.as_ref(),
+        &axes,
+    )
+    .unwrap()
+    .at;
+    let near = |a: f32, b: f32, span: f32| (a - b).abs() < 1e-3 * span.abs();
+    assert!(
+        near(at.0, put.0, axes.x_range.1 - axes.x_range.0)
+            && near(at.1, put.1, axes.y_range.1 - axes.y_range.0),
+        "put at {put:?}, came back at {at:?}"
+    );
+}

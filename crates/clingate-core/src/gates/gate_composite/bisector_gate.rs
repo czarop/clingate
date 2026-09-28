@@ -369,7 +369,7 @@ impl super::super::gate_traits::DrawableGate for BisectorGate {
             let y_axis_min_max = plot_map.y_axis_min_max();
             let x_axis_offset = ((x_axis_min_max.end() - x_axis_min_max.start()) / 100f32) * 1f32;
             let y_axis_offset = ((y_axis_min_max.end() - y_axis_min_max.start()) / 100f32) * 1f32;
-            for (i, (id, _)) in self.gates.iter().enumerate() {
+            for (i, (id, part)) in self.gates.iter().enumerate() {
                 if let Some(percent) = gate_stats.get_percent_for_id(id.clone()) {
                     let text = format!("{:.2}%", percent);
                     let (origin, offset, text_anchor) = if i == 0 {
@@ -417,19 +417,23 @@ impl super::super::gate_traits::DrawableGate for BisectorGate {
                             )
                         }
                     };
-                    let shape = GateRenderShape::Text {
+                    // A composite's labels sit in the plot's corners: Omiq keeps no
+                    // position for its parts, so `offset` is not a place to put them.
+                    let _ = offset;
+                    let near_top = origin.1 > (y_axis_min_max.start() + y_axis_min_max.end()) / 2.0;
+                    labels.extend(crate::gates::gate_label::corner_label(
                         origin,
-                        offset,
-                        fontsize: 10f32,
-                        text,
                         text_anchor,
-                        shape_type: if self.axis_matched {
+                        near_top,
+                        part.get_name(),
+                        text,
+                        if self.axis_matched {
                             ShapeType::UndraggableText(gate_types::Direction::X)
                         } else {
                             ShapeType::UndraggableText(gate_types::Direction::Y)
                         },
-                    };
-                    labels.push(shape)
+                        plot_map,
+                    ));
                 }
             }
         }

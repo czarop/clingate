@@ -159,6 +159,18 @@ pub enum GateRenderShape {
         text_anchor: Option<String>,
         shape_type: ShapeType,
     },
+    /// A gate's label: its name with its percentage beneath, as one block of
+    /// lines placed against `at` - see [`crate::gates::gate_label`].
+    Label {
+        /// In the plot's data units.
+        at: (f32, f32),
+        lines: Vec<String>,
+        valign: crate::gates::gate_label::VAlign,
+        /// SVG's `text-anchor`: "start", "middle" or "end".
+        anchor: &'static str,
+        /// The gate whose label this is, when it can be picked up and moved.
+        movable: Option<Arc<str>>,
+    },
 }
 
 impl GateRenderShape {
@@ -249,7 +261,7 @@ impl GateRenderShape {
                 style,
                 shape_type,
             },
-            GateRenderShape::Text { .. } => self.clone(),
+            GateRenderShape::Text { .. } | GateRenderShape::Label { .. } => self.clone(),
         }
     }
 
@@ -360,7 +372,7 @@ impl GateRenderShape {
                 style,
                 shape_type: shape_type.clone(),
             },
-            GateRenderShape::Text { .. } => self.clone(),
+            GateRenderShape::Text { .. } | GateRenderShape::Label { .. } => self.clone(),
         }
     }
 
@@ -373,7 +385,7 @@ impl GateRenderShape {
             | GateRenderShape::Handle { shape_type, .. }
             | GateRenderShape::Rectangle { shape_type, .. }
             | GateRenderShape::Line { shape_type, .. } => shape_type,
-            GateRenderShape::Text { .. } => return false,
+            GateRenderShape::Text { .. } | GateRenderShape::Label { .. } => return false,
         };
 
         matches!(
@@ -394,7 +406,7 @@ impl GateRenderShape {
             | GateRenderShape::Handle { shape_type, .. }
             | GateRenderShape::Rectangle { shape_type, .. }
             | GateRenderShape::Line { shape_type, .. } => shape_type,
-            GateRenderShape::Text { .. } => return false,
+            GateRenderShape::Text { .. } | GateRenderShape::Label { .. } => return false,
         };
 
         matches!(
@@ -412,7 +424,7 @@ impl GateRenderShape {
             | GateRenderShape::Handle { shape_type, .. }
             | GateRenderShape::Rectangle { shape_type, .. }
             | GateRenderShape::Line { shape_type, .. } => shape_type,
-            GateRenderShape::Text { .. } => return true,
+            GateRenderShape::Text { .. } | GateRenderShape::Label { .. } => return true,
         };
 
         matches!(

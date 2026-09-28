@@ -31,6 +31,11 @@ fn mapper() -> PlotMapper {
     )
 }
 
+/// The plot `mapper` draws, by its two parameters.
+fn axes() -> (Arc<str>, Arc<str>) {
+    (Arc::from("FSC-A"), Arc::from("SSC-A"))
+}
+
 fn axis() -> AxisInfo {
     AxisInfo {
         param: Param {
@@ -953,12 +958,66 @@ fn a_whole_plot_flattens_every_gate_on_it() {
             &Default::default(),
             None,
             &mapper(),
+            &Default::default(),
+            axes(),
         )
         .len()
     };
-    let both = flatten_gates(&gates, &Default::default(), None, &mapper());
+    let both = flatten_gates(
+        &gates,
+        &Default::default(),
+        None,
+        &mapper(),
+        &Default::default(),
+        axes(),
+    );
     assert_eq!(both.len(), one(&gates[0]) + one(&gates[1]));
-    assert!(flatten_gates(&[], &Default::default(), None, &mapper()).is_empty());
+    assert!(
+        flatten_gates(
+            &[],
+            &Default::default(),
+            None,
+            &mapper(),
+            &Default::default(),
+            axes()
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_gate_in_the_gallery_is_labelled_with_its_name_over_its_percentage() {
+    use super::overlay::{Flat, flatten_gates};
+    use clingate_core::gates::gate_types::{GateStatValue, GateStats};
+    let a = gate("CD4+");
+    let stats: rustc_hash::FxHashMap<Arc<str>, GateStats> = [(
+        a.get_id(),
+        GateStats {
+            count: GateStatValue::Single(10.0),
+            percent_parent: GateStatValue::Single(61.714),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let texts: Vec<(String, f32)> = flatten_gates(
+        std::slice::from_ref(&a),
+        &stats,
+        None,
+        &mapper(),
+        &Default::default(),
+        axes(),
+    )
+    .into_iter()
+    .filter_map(|f| match f {
+        Flat::Text { text, at, .. } => Some((text, at.1)),
+        _ => None,
+    })
+    .collect();
+    assert_eq!(
+        texts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(),
+        ["CD4+", "61.71%"]
+    );
+    assert!(texts[0].1 < texts[1].1, "the name is above the percentage");
 }
 
 // ── the file's own structure ─────────────────────────────────────────────
@@ -1176,6 +1235,7 @@ mod the_export {
                     size: 160,
                 },
                 drawn,
+                labelled_from: Default::default(),
                 selected: None,
             }),
         }

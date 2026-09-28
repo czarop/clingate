@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Gate names on the plots, and labels that can be moved.** Every gate's
+  label is its name with its percentage beneath. A gate's label sits where
+  Omiq put it, or just above the gate if it was never placed; clicking the
+  label of the selected gate selects the label (it turns orange), and it can
+  then be dragged without moving the gate. A label is measured from the gate
+  as drawn, so it sits in the same place on every sample, follows the drawn
+  gate when that is moved, and is saved to the gating file as Omiq's
+  `labelLoc` - unmoved labels exactly as they came. Quadrants, skewed
+  quadrants and bisectors keep their labels in the plot's corners, now with
+  each part's name: Omiq keeps no position for them. The gallery and the PDF
+  show the same labels.
+- **The gating tab fits the window.** The plots are a little smaller and the
+  gate-type buttons sit under the axis controls, so the plots' lower edge no
+  longer needs a scroll. The Workspace tab uses the window's full width.
+
 - **The workspace is saved in its folder.** `clingate_workspace.json`, kept
   beside the FCS files and updated as you work: which FCS files are in the
   workspace, the metadata, scaling and gating files, the compensation groups

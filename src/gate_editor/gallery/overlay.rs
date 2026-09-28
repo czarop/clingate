@@ -160,6 +160,26 @@ pub fn flatten(shapes: Vec<GateRenderShape>, mapper: &PlotMapper) -> Vec<Flat> {
                 text,
                 anchor: text_anchor,
             }),
+            // One line of text each, placed as the editor places them.
+            GateRenderShape::Label {
+                at,
+                lines,
+                valign,
+                anchor,
+                ..
+            } => {
+                let at = point(at);
+                let (baselines, _) =
+                    clingate_core::gates::gate_label::line_baselines(at, lines.len(), valign);
+                for (text, y) in lines.into_iter().zip(baselines) {
+                    out.push(Flat::Text {
+                        at: (at.0, y),
+                        size: clingate_core::gates::gate_label::FONT_SIZE,
+                        text,
+                        anchor: Some(anchor.to_string()),
+                    });
+                }
+            }
             // Grab targets, not drawing. See the function comment.
             GateRenderShape::Handle { .. } | GateRenderShape::Circle { .. } => {}
         }
@@ -167,24 +187,51 @@ pub fn flatten(shapes: Vec<GateRenderShape>, mapper: &PlotMapper) -> Vec<Flat> {
     out
 }
 
-/// Flatten every gate on one plot, in drawing order.
+/// Flatten every gate on one plot, in drawing order, each followed by its
+/// label.
+///
+/// `labelled_from` holds the gates as drawn, by id: a label is measured from
+/// the drawn gate, not from the position this sample shows - see
+/// `gate_label`. A gate missing from it is labelled from its shown position.
+/// `axes` are the plot's two parameters, x then y.
 pub fn flatten_gates(
     gates: &[Arc<dyn DrawableGate>],
     stats: &rustc_hash::FxHashMap<Arc<str>, GateStats>,
     selected: Option<&Arc<str>>,
     mapper: &PlotMapper,
+    labelled_from: &rustc_hash::FxHashMap<Arc<str>, Arc<dyn DrawableGate>>,
+    axes: (Arc<str>, Arc<str>),
 ) -> Vec<Flat> {
+    let plot_axes = clingate_core::gates::gate_label::PlotAxes::of(mapper, axes.0, axes.1);
     let mut out = Vec::new();
     for gate in gates {
         let id = gate.get_id();
         let is_selected = selected.is_some_and(|s| *s == id);
         let stat = stats.get(&id).cloned();
-        out.extend(flatten(
-            gate.draw_self(is_selected, None, mapper, &stat),
-            mapper,
+        let mut shapes = gate.draw_self(is_selected, None, mapper, &stat);
+        let from = labelled_from.get(&id).unwrap_or(gate);
+        shapes.extend(clingate_core::gates::gate_label::label_shape(
+            from.as_ref(),
+            stat.as_ref(),
+            &plot_axes,
         ));
+        out.extend(flatten(shapes, mapper));
     }
     out
+}
+
+/// The drawn gate for each of `gates`, from the store, for [`flatten_gates`].
+pub fn drawn_by_id(
+    gates: &[Arc<dyn DrawableGate>],
+    registered: impl Fn(&Arc<str>) -> Option<Arc<dyn DrawableGate>>,
+) -> rustc_hash::FxHashMap<Arc<str>, Arc<dyn DrawableGate>> {
+    gates
+        .iter()
+        .filter_map(|g| {
+            let id = g.get_id();
+            registered(&id).map(|drawn| (id, drawn))
+        })
+        .collect()
 }
 
 /// The flattened primitives as SVG, over the plot image.

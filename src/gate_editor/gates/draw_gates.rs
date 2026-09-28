@@ -2,7 +2,10 @@ use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
 use clingate_core::axis_store::AxisStore;
 use clingate_core::axis_store::AxisStoreStoreExt;
 use clingate_core::axis_store::PlotMapper;
-use clingate_core::gates::gate_store::{GateOverrideResolver, GateStateStoreExt};
+use clingate_core::gates::gate_label::{self, PlotAxes, VAlign};
+use clingate_core::gates::gate_store::{
+    GateOverrideResolver, GateStateStoreExt, GateSubStoreStoreExt,
+};
 use clingate_core::gates::{
     GateState,
     gate_draft::GateDraft,
@@ -39,6 +42,50 @@ impl Deref for GateList {
     fn deref(&self) -> &Self::Target {
         &self.0
     }
+}
+
+/// The plot's size on screen, measured when a press starts, so a drag can
+/// turn window coordinates into the plot's own.
+type ClientRect = dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>;
+
+/// A label being dragged: whose, where the press started (window
+/// coordinates), and where the label's middle was then (plot pixels). The
+/// grab - the press's distance from the middle - is worked out on the first
+/// move, once the plot has been measured.
+#[derive(Clone, PartialEq, Debug)]
+struct LabelDrag {
+    gate_id: Arc<str>,
+    start_client: (f64, f64),
+    label_px: (f32, f32),
+    grab: Option<(f32, f32)>,
+}
+
+/// What the labels on a plot share with the layer they are drawn on.
+#[derive(Clone, Copy)]
+struct LabelControl {
+    /// The label picked up, of the selected gate: a second click on a selected
+    /// gate's label selects it, and only then can it be dragged.
+    selected: Signal<Option<Arc<str>>>,
+    drag: Signal<Option<LabelDrag>>,
+    svg: Signal<Option<std::rc::Rc<MountedData>>>,
+    rect: Signal<Option<ClientRect>>,
+}
+
+/// A point in window coordinates on the plot, in the plot's own pixels.
+fn client_to_plot(
+    client: (f64, f64),
+    rect: &ClientRect,
+    mapper: &PlotMapper,
+) -> Option<(f32, f32)> {
+    if rect.width() == 0.0 || rect.height() == 0.0 {
+        return None;
+    }
+    let scale_x = mapper.width() as f64 / rect.width();
+    let scale_y = mapper.height() as f64 / rect.height();
+    Some((
+        ((client.0 - rect.min_x()) * scale_x) as f32,
+        ((client.1 - rect.min_y()) * scale_y) as f32,
+    ))
 }
 
 #[component]
@@ -184,6 +231,22 @@ pub fn GateLayer(
     > = use_signal(|| None);
 
     let mut svg_data: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
+
+    let mut selected_label = use_signal(|| None::<Arc<str>>);
+    let mut label_drag = use_signal(|| None::<LabelDrag>);
+    use_context_provider(|| LabelControl {
+        selected: selected_label,
+        drag: label_drag,
+        svg: svg_data,
+        rect: cached_rect,
+    });
+    // A label stays picked up only while its gate is selected.
+    use_effect(move || {
+        let gate = gate_store.selected_gate().read().clone();
+        if selected_label.peek().is_some() && *selected_label.peek() != gate {
+            selected_label.set(None);
+        }
+    });
     let Some(current_resolver_move) = resolver.peek().clone() else {
         return rsx! { "No Gate Resolver" };
     };
@@ -211,6 +274,12 @@ pub fn GateLayer(
                 oncontextmenu: move |evt| evt.prevent_default(),
 
                 onclick: move |evt| {
+                    // The end of a label drag whose release landed off the
+                    // label: not a click on the plot.
+                    if label_drag.peek().is_some() {
+                        label_drag.set(None);
+                        return;
+                    }
                     if let Some(mapper) = plot_map() {
                         let local_coords = &evt.data.coordinates().element();
                         let norm_x = local_coords.x as f32;
@@ -319,6 +388,42 @@ pub fn GateLayer(
                 },
                 onmousemove: move |evt| {
                     evt.stop_propagation();
+
+                    if let Some(mut drag) = label_drag() {
+                        let now = std::time::Instant::now();
+                        if now.duration_since(*last_update.peek()) < Duration::from_millis(16) {
+                            return;
+                        }
+                        let Some(map) = plot_map.peek().clone() else { return };
+                        let Some(rect) = *cached_rect.peek() else { return };
+                        let client = evt.data.client_coordinates();
+                        let Some(px) = client_to_plot((client.x, client.y), &rect, &map) else {
+                            return;
+                        };
+                        let grab = match drag.grab {
+                            Some(grab) => grab,
+                            None => {
+                                let Some(start) = client_to_plot(drag.start_client, &rect, &map) else {
+                                    return;
+                                };
+                                let grab = (start.0 - drag.label_px.0, start.1 - drag.label_px.1);
+                                drag.grab = Some(grab);
+                                label_drag.set(Some(drag.clone()));
+                                grab
+                            }
+                        };
+                        let middle = (px.0 - grab.0, px.1 - grab.1);
+                        // Off the data area there is nowhere to put it: it
+                        // stays at the last place that was on the plot.
+                        if let Ok(at) = map.pixel_to_data(middle.0, middle.1, None, None) {
+                            let axes = PlotAxes::of(&map, x_channel.peek().clone(), y_channel.peek().clone());
+                            gate_store
+                                .move_label(drag.gate_id.clone(), at, &axes)
+                                .unwrap_or_else(|e| println!("label move failed: {e:?}"));
+                        }
+                        last_update.set(now);
+                        return;
+                    }
 
                     if let Some(data) = drag_data() {
                         let now = std::time::Instant::now();
@@ -517,10 +622,21 @@ pub fn GateLayer(
                         };
 
                         let gate_stats = plot_store.gate_stats().get(gate.get_id()).map(|stats| stats());
+                        // The label is measured from the gate as drawn, which
+                        // is not what this sample shows when a rule or a hand
+                        // has positioned it here.
+                        let drawn = gate_store
+                            .gate_store()
+                            .primary_and_subgate_registry()
+                            .read()
+                            .get(&gate.get_id())
+                            .cloned();
 
                         rsx! {
                             RenderGate {
                                 gate: gate.clone(),
+                                drawn,
+                                axes: (x_channel(), y_channel()),
                                 gate_index,
                                 is_selected,
                                 drag_data: dd,
@@ -549,6 +665,10 @@ pub fn GateLayer(
 #[derive(Props, Clone)]
 pub struct RenderGateProps {
     gate: Arc<dyn DrawableGate>,
+    /// The same gate as drawn, which its label is measured from.
+    drawn: Option<Arc<dyn DrawableGate>>,
+    /// The plot's parameters, x then y.
+    axes: (Arc<str>, Arc<str>),
     gate_index: usize,
     is_selected: bool,
     drag_data: Option<GateDragType>,
@@ -561,6 +681,12 @@ impl PartialEq for RenderGateProps {
         self.is_selected == other.is_selected
             && self.gate_index == other.gate_index
             && Arc::ptr_eq(&self.gate, &other.gate)
+            && match (&self.drawn, &other.drawn) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+            && self.axes == other.axes
             && self.gate_stats == other.gate_stats
             && self.drag_data == other.drag_data
             && Arc::ptr_eq(&self.mapper, &other.mapper)
@@ -586,6 +712,12 @@ fn RenderGate(props: RenderGateProps) -> Element {
         (false, 0)
     };
 
+    let label = gate_label::label_shape(
+        props.drawn.as_ref().unwrap_or(&g).as_ref(),
+        props.gate_stats.as_ref(),
+        &PlotAxes::of(&props.mapper, props.axes.0.clone(), props.axes.1.clone()),
+    );
+
     rsx! {
 
         for (shape_index , shape) in g.draw_self(is_selected, drag_data.clone(), &props.mapper, &props.gate_stats)
@@ -601,7 +733,113 @@ fn RenderGate(props: RenderGateProps) -> Element {
                 drag_data: if is_point { if idx == shape_index { props.drag_data.clone() } else { None } } else { props.drag_data.clone() },
             }
         }
+        if let Some(GateRenderShape::Label { at, lines, valign, anchor, movable }) = label {
+            RenderLabel {
+                at,
+                lines,
+                valign,
+                anchor,
+                movable,
+                gate_selected: is_selected,
+            }
+        }
 
+    }
+}
+
+/// A gate's label: its name over its percentage.
+///
+/// A label that can be moved is picked up in two steps, so a click meant for
+/// the gate does not move its label: a click on the label of a gate that is not
+/// selected selects the gate; a click on the selected gate's label selects the
+/// label (it turns orange); a press on a selected label then drags it. The
+/// label is dragged rather than the gate, and it moves on every sample - see
+/// `gate_label`.
+#[component]
+fn RenderLabel(
+    at: (f32, f32),
+    lines: Vec<String>,
+    valign: VAlign,
+    anchor: &'static str,
+    movable: Option<Arc<str>>,
+    gate_selected: bool,
+) -> Element {
+    let plot_map = use_context::<Signal<Option<Arc<PlotMapper>>>>();
+    let gate_store = use_context::<SyncStore<GateState>>();
+    let control = try_use_context::<LabelControl>();
+    let Some(mapper) = plot_map.read().clone() else {
+        return rsx! {};
+    };
+    let at_px = mapper.data_to_pixel(at.0, at.1, None, None);
+    let (baselines, middle) = gate_label::line_baselines(at_px, lines.len(), valign);
+    let label_selected =
+        movable.is_some() && control.is_some_and(|c| *c.selected.read() == movable);
+    let (fill, weight) = if label_selected {
+        ("#d9480f", "bold")
+    } else {
+        ("black", "normal")
+    };
+    let cursor = match (&movable, label_selected) {
+        (None, _) => "default",
+        (Some(_), true) => "move",
+        (Some(_), false) => "pointer",
+    };
+    let pressed = movable.clone();
+    rsx! {
+        text {
+            text_anchor: anchor,
+            font_size: gate_label::FONT_SIZE,
+            fill,
+            font_weight: weight,
+            style: "cursor: {cursor};",
+            onmousedown: move |evt| {
+                let (Some(id), Some(mut control)) = (pressed.clone(), control) else {
+                    return;
+                };
+                if evt.trigger_button() != Some(dioxus_elements::input_data::MouseButton::Primary) {
+                    return;
+                }
+                // Handled here, not by the plot: the plot would read the press
+                // as one on a gate's outline or empty space.
+                evt.stop_propagation();
+                if !gate_selected {
+                    gate_store.selected_gate().set(Some(id));
+                    control.selected.set(None);
+                    return;
+                }
+                if *control.selected.peek() != Some(id.clone()) {
+                    control.selected.set(Some(id));
+                    return;
+                }
+                if let Some(svg) = control.svg.peek().clone() {
+                    let mut rect = control.rect;
+                    spawn(async move {
+                        if let Ok(measured) = svg.get_client_rect().await {
+                            rect.set(Some(measured));
+                        }
+                    });
+                }
+                let client = evt.data.client_coordinates();
+                control.drag.set(Some(LabelDrag {
+                    gate_id: id,
+                    start_client: (client.x, client.y),
+                    label_px: (at_px.0, middle),
+                    grab: None,
+                }));
+            },
+            onclick: move |evt| {
+                if movable.is_some() {
+                    // Not a click on the plot, which would deselect the gate.
+                    evt.stop_propagation();
+                    if let Some(mut control) = control {
+                        control.drag.set(None);
+                    }
+                }
+            },
+            for (line , y) in lines.iter().zip(baselines) {
+                tspan { x: at_px.0, y, "{line}" }
+            }
+        }
     }
 }
 
@@ -931,6 +1169,22 @@ fn RenderShape(
 
                 }
             }
+            GateRenderShape::Label {
+                at,
+                lines,
+                valign,
+                anchor,
+                ..
+            } => rsx! {
+                RenderLabel {
+                    at,
+                    lines,
+                    valign,
+                    anchor,
+                    movable: None,
+                    gate_selected: false,
+                }
+            },
             GateRenderShape::Text {
                 origin,
                 offset,

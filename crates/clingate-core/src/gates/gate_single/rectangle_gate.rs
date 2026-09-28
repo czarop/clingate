@@ -69,7 +69,10 @@ impl RectangleGate {
                 id: self.inner.id.clone(),
                 parameters: new_parameters,
                 geometry: new_geometry,
-                label_position: self.inner.label_position.clone(),
+                // Turned with the gate: see `gate_label::swap_offset`.
+                label_position: crate::gates::gate_label::swap_offset(
+                    self.inner.label_position.clone(),
+                ),
                 name: self.inner.name.clone(),
                 mode: self.inner.mode.clone(),
             };
@@ -159,6 +162,19 @@ impl DrawableGate for RectangleGate {
     fn with_new_id(&self, new_id: Arc<str>) -> Option<Box<dyn DrawableGate>> {
         let mut copy = self.clone();
         copy.inner.id = new_id;
+        Some(Box::new(copy))
+    }
+
+    fn label_box(&self) -> Option<crate::gates::gate_label::LabelBox> {
+        crate::gates::gate_label::LabelBox::around(self.inner.parameters.clone(), &self.points)
+    }
+
+    fn with_label(
+        &self,
+        label: Option<flow_gates::types::LabelPosition>,
+    ) -> Option<Box<dyn DrawableGate>> {
+        let mut copy = self.clone();
+        copy.inner.label_position = label;
         Some(Box::new(copy))
     }
     fn get_id(&self) -> Arc<str> {
@@ -270,7 +286,7 @@ impl DrawableGate for RectangleGate {
         is_selected: bool,
         drag_point: Option<PointDragData>,
         _plot_map: &PlotMapper,
-        gate_stats: &Option<GateStats>,
+        _gate_stats: &Option<GateStats>,
     ) -> Vec<GateRenderShape> {
         let style = if is_selected {
             &SELECTED_LINE
@@ -293,55 +309,9 @@ impl DrawableGate for RectangleGate {
             .as_ref()
             .and_then(|d| draw_ghost_point_for_rectangle(d, pts));
 
-        let mut labels = vec![];
-
-        if let Some(gate_stats) = gate_stats {
-            // let x_offset = {
-            //     let axis = plot_map.x_axis_min_max();
-            //     let xrange = *axis.end() - *axis.start();
-            //     if let Some(label_pos) = &self.inner.label_position {
-            //         xrange * label_pos.offset_x
-            //     } else {
-            //         0f32
-            //     }
-            // };
-            // let y_offset = {
-            //     let axis = plot_map.y_axis_min_max();
-            //     let yrange = *axis.end() - *axis.start();
-            //     if let Some(label_pos) = &self.inner.label_position {
-            //         yrange * label_pos.offset_y
-            //     } else {
-            //         // yrange * 0.02
-            //         0f32
-            //     }
-            // };
-            // let offset = (x_offset, y_offset);
-            let offset = (0f32, 0f32);
-            if let Some(percent) = gate_stats.get_percent_for_id(self.inner.id.clone()) {
-                let center = {
-                    let bl = self.points[0];
-                    let tr = self.points[2];
-                    ((bl.0 + tr.0) / 2.0, (bl.1 + tr.1) / 2.0)
-                };
-                let shape = GateRenderShape::Text {
-                    origin: center,
-                    offset,
-                    fontsize: 10f32,
-                    text: format!("{:.2}%", percent),
-                    text_anchor: None,
-                    shape_type: ShapeType::Text,
-                };
-                labels.push(shape)
-            }
-        }
-
-        let labels = if labels.is_empty() {
-            None
-        } else {
-            Some(labels)
-        };
-
-        crate::collate_vecs!(main, selected, ghost, labels)
+        // The label - name and percentage - is drawn from the gate as drawn,
+        // not from this position: see `gate_label::label_shape`.
+        crate::collate_vecs!(main, selected, ghost)
     }
 
     fn is_primary(&self) -> bool {

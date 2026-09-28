@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// pixels each time the sample changes, and a browser clamps the scroll
 /// position to fit the shorter page: you were reading half way down, and the
 /// view jumps back to the top. Reserving the space is what holds it still.
-pub const PLOT_SIZE: u32 = 600;
+pub const PLOT_SIZE: u32 = 540;
 
 /// The square a plot occupies whatever it is currently showing.
 fn plot_box() -> String {
