@@ -321,7 +321,7 @@ pub fn place_for_specimen(
 use crate::events::EventIndexMapped;
 use crate::gate_rules::rule_store::{GateRule, RuleStore};
 use crate::gates::gate_stats::get_percent_and_counts_gate;
-use crate::gates::gate_store::{GroupId, NodeId};
+use crate::gates::gate_store::GroupId;
 use crate::gates::gate_types::GateStatValue;
 use crate::omiq::metadata::MetaDataParameter;
 use polars::prelude::*;
@@ -855,7 +855,7 @@ fn slide_to_capture(
 
     let (mut low, mut high) = bracket;
     let mut best: Option<(f64, f64)> = None;
-    let mut consider = |delta: f64, got: f64, best: &mut Option<(f64, f64)>| {
+    let consider = |delta: f64, got: f64, best: &mut Option<(f64, f64)>| {
         let better = match best {
             None => true,
             Some((_, prev)) => {
