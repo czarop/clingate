@@ -49,9 +49,10 @@ impl Deref for GateList {
 type ClientRect = dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>;
 
 /// A label being dragged: whose, where the press started (window
-/// coordinates), and where the label's middle was then (plot pixels). The
-/// grab - the press's distance from the middle - is worked out on the first
-/// move, once the plot has been measured.
+/// coordinates), and where the label's point was then (plot pixels) - the
+/// bottom centre a placed label is measured from. The grab - the press's
+/// distance from that point - is worked out on the first move, once the plot
+/// has been measured.
 #[derive(Clone, PartialEq, Debug)]
 struct LabelDrag {
     gate_id: Arc<str>,
@@ -412,10 +413,10 @@ pub fn GateLayer(
                                 grab
                             }
                         };
-                        let middle = (px.0 - grab.0, px.1 - grab.1);
+                        let point = (px.0 - grab.0, px.1 - grab.1);
                         // Off the data area there is nowhere to put it: it
                         // stays at the last place that was on the plot.
-                        if let Ok(at) = map.pixel_to_data(middle.0, middle.1, None, None) {
+                        if let Ok(at) = map.pixel_to_data(point.0, point.1, None, None) {
                             let axes = PlotAxes::of(&map, x_channel.peek().clone(), y_channel.peek().clone());
                             gate_store
                                 .move_label(drag.gate_id.clone(), at, &axes)
@@ -770,8 +771,13 @@ fn RenderLabel(
     let Some(mapper) = plot_map.read().clone() else {
         return rsx! {};
     };
-    let at_px = mapper.data_to_pixel(at.0, at.1, None, None);
-    let (baselines, middle) = gate_label::line_baselines(at_px, lines.len(), valign);
+    let at_px = gate_label::keep_on_plot(
+        mapper.data_to_pixel(at.0, at.1, None, None),
+        &lines,
+        valign,
+        &mapper,
+    );
+    let baselines = gate_label::line_baselines(at_px, lines.len(), valign);
     let label_selected =
         movable.is_some() && control.is_some_and(|c| *c.selected.read() == movable);
     let (fill, weight) = if label_selected {
@@ -823,7 +829,7 @@ fn RenderLabel(
                 control.drag.set(Some(LabelDrag {
                     gate_id: id,
                     start_client: (client.x, client.y),
-                    label_px: (at_px.0, middle),
+                    label_px: at_px,
                     grab: None,
                 }));
             },

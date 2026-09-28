@@ -14,7 +14,12 @@
   `labelLoc` - unmoved labels exactly as they came. Quadrants, skewed
   quadrants and bisectors keep their labels in the plot's corners, now with
   each part's name: Omiq keeps no position for them. The gallery and the PDF
-  show the same labels.
+  show the same labels. Omiq's `labelLoc` was pinned down from exports with
+  a label dragged to known corners: pixels on a 300-pixel plot, from the
+  gate's centre to the label's bottom centre; a label whose offset would put
+  it off the plot is drawn just inside it, as Omiq does.
+- **An ellipse keeps the handles Omiq gave it** when viewed on swapped axes;
+  it used to be saved back with its top and bottom handles exchanged.
 - **The gating tab fits the window.** The plots are a little smaller and the
   gate-type buttons sit under the axis controls, so the plots' lower edge no
   longer needs a scroll. The Workspace tab uses the window's full width.

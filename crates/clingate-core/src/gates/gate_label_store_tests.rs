@@ -210,7 +210,7 @@ fn the_label_is_the_drawn_gates_name_and_the_shown_positions_percent() {
         panic!("a single gate has a label");
     };
     assert_eq!(lines, [drawn.get_name().to_string(), "61.71%".to_string()]);
-    assert_eq!(valign, VAlign::Middle);
+    assert_eq!(valign, VAlign::Bottom);
     assert_eq!(movable, Some(Arc::from("rect")));
     close(where_, at(&drawn, &axes_xy()));
 }

@@ -721,9 +721,9 @@ fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
     assert_eq!(edges(&reopened), edges(&import(&fixture(FIXTURE))));
 }
 
-/// Every gate, composites included, viewed on swapped axes in every tier -
-/// drawn, per specimen, per sample - is saved exactly as the file had it,
-/// labels and all. A label offset is turned with its gate (see
+/// Every gate, composites and ellipses included, viewed on swapped axes in
+/// every tier - drawn, per specimen, per sample - is saved exactly as the file
+/// had it, labels and handles and all. A label offset is turned with its gate (see
 /// `gate_label::swap_offset`), and turned back on the way out.
 #[test]
 fn every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
@@ -779,12 +779,8 @@ fn every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
             labels += 1;
         }
         labels += 1;
-        // Everything else too, but an ellipse: turned and turned back it is
-        // the same ellipse written with its top and bottom handles exchanged,
-        // which predates labels and is not about them.
-        if was["defaultFilter"]["type"] != "EllipseGate" {
-            assert_eq!(now, was, "{id}");
-        }
+        // And everything else, ellipse handles included.
+        assert_eq!(now, was, "{id}");
     }
     assert!(labels >= 20, "checked {labels} labels");
 }

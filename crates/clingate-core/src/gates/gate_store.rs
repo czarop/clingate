@@ -362,8 +362,8 @@ impl GateSubStore {
         Ok(())
     }
 
-    /// Move a gate's label so its middle is at `at`, a point on the plot
-    /// `axes` describes. Measured from the drawn gate - see
+    /// Move a gate's label so its bottom centre is at `at`, a point on the
+    /// plot `axes` describes. Measured from the drawn gate - see
     /// [`crate::gates::gate_label`].
     pub fn move_label(
         &mut self,
@@ -708,7 +708,7 @@ pub struct GateState {
 }
 
 impl GateState {
-    /// Move a gate's label so its middle is at `at` on the plot `axes`
+    /// Move a gate's label so its bottom centre is at `at` on the plot `axes`
     /// describes - see [`GateSubStore::move_label`].
     pub fn move_label(
         &mut self,

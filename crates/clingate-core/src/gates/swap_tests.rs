@@ -126,3 +126,45 @@ fn transposing_twice_gives_back_the_same_gate() {
         );
     }
 }
+
+/// An imported ellipse keeps the handles the file gave it through a view on
+/// swapped axes and back - including handles named the other way round from
+/// the canonical pair, as a real export had them (its `left` to the right of
+/// its `right`). Re-deriving them wrote the same ellipse back with `top` and
+/// `bottom` exchanged.
+#[test]
+fn an_ellipse_keeps_its_imported_handles_through_a_turn_and_back() {
+    use super::gate_single::ellipse_gate::{EllipseGate, EllipseHandles};
+    let plain = ellipse("e", &OLD);
+    let canonical = plain
+        .as_any()
+        .downcast_ref::<EllipseGate>()
+        .unwrap()
+        .omiq_handles()
+        .unwrap();
+    let from_file = EllipseHandles {
+        left: canonical.right,
+        right: canonical.left,
+        top: canonical.bottom,
+        bottom: canonical.top,
+    };
+    let imported: Arc<dyn DrawableGate> = Arc::new(
+        EllipseGate::try_new_with_handles(
+            plain.get_gate_ref(None).unwrap().clone(),
+            true,
+            from_file,
+        )
+        .unwrap(),
+    );
+    let handles = |g: &Arc<dyn DrawableGate>| {
+        g.as_any()
+            .downcast_ref::<EllipseGate>()
+            .unwrap()
+            .omiq_handles()
+            .unwrap()
+    };
+    let turned = swapped(&imported);
+    assert_eq!(handles(&turned), from_file.transposed());
+    let back: Arc<dyn DrawableGate> = Arc::from(turned.match_to_plot_axis(X, Y).unwrap().unwrap());
+    assert_eq!(handles(&back), from_file);
+}

@@ -4,12 +4,19 @@
 //!
 //! A gate's `label_position` holds what Omiq's `labelLoc` holds, unchanged,
 //! so a label that is never moved here goes back to Omiq exactly as it came.
-//! Omiq does not document it. Read from a real export it is an offset in
-//! screen pixels from the centre of the gate's bounding box, `x` to the
-//! right and `y` down, on an Omiq plot [`OMIQ_PLOT_PX`] across. Converting
-//! through a fraction of each axis's range makes it independent of how big
-//! the plot here is drawn, and of a change of cofactor: the label keeps its
-//! place relative to the gate on screen.
+//! Omiq does not document it; it was worked out from three exports of one
+//! gate, its label left where Omiq put it and then dragged into the plot's
+//! top-right and bottom-left corners. It is an offset in screen pixels, `x`
+//! to the right and `y` down, on an Omiq plot [`OMIQ_PLOT_PX`] across:
+//!
+//! - from the centre of the gate's bounding box - Omiq's own default is
+//!   (0, 0);
+//! - to the bottom centre of the label - dragged into a corner, the label's
+//!   bottom edge sat on the x axis, and its top edge on the plot's top.
+//!
+//! Converting through a fraction of each axis's range makes it independent
+//! of how big the plot here is drawn, and of a change of cofactor: the label
+//! keeps its place relative to the gate on screen.
 //!
 //! The offset is held in the orientation the gate is held in. A gate turned
 //! to a plot whose axes are the other way round turns its label with it -
@@ -31,10 +38,11 @@ use flow_gates::types::LabelPosition;
 
 use crate::axis_store::PlotMapper;
 
-/// How wide Omiq's plot is taken to be, in the pixels `labelLoc` is written
-/// in. An assumption until checked against an export with labels placed at
-/// known spots; it is the only number the conversion depends on.
-pub const OMIQ_PLOT_PX: f32 = 500.0;
+/// How wide Omiq's plot is, in the pixels `labelLoc` is written in. From the
+/// exports the module comment describes: between the two corners the label
+/// travelled 240 by 269 pixels, the plot's size less the label's own, which
+/// puts the plot at about 300 either way.
+pub const OMIQ_PLOT_PX: f32 = 300.0;
 
 /// The size labels are drawn at, in plot pixels.
 pub const FONT_SIZE: f32 = 11.0;
@@ -109,12 +117,13 @@ impl PlotAxes {
 /// How a block of label lines sits against its point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VAlign {
-    /// The block's bottom edge on the point.
+    /// The block's bottom edge a little above the point: a label left in its
+    /// default place, clear of the gate's top edge.
     Above,
     /// Its top edge on the point.
     Below,
-    /// Its middle on the point.
-    Middle,
+    /// Its bottom edge on the point: where Omiq measures a placed label from.
+    Bottom,
 }
 
 /// Where a label goes on a plot.
@@ -196,13 +205,13 @@ pub fn placement(
             centre.0 + on_plot.offset_x / OMIQ_PLOT_PX * span(axes.x_range),
             centre.1 - on_plot.offset_y / OMIQ_PLOT_PX * span(axes.y_range),
         ),
-        valign: VAlign::Middle,
+        valign: VAlign::Bottom,
         placed: true,
     })
 }
 
-/// The offset that puts a gate's label's middle at `at`, a point on the
-/// plot - the inverse of [`placement`], in the gate's own orientation.
+/// The offset that puts the bottom centre of a gate's label at `at`, a point
+/// on the plot - the inverse of [`placement`], in the gate's own orientation.
 pub fn offset_for(b: &LabelBox, at: (f32, f32), axes: &PlotAxes) -> Option<LabelPosition> {
     let (reversed, lo, hi) = on_plot(b, axes)?;
     let (xs, ys) = (span(axes.x_range), span(axes.y_range));
@@ -221,20 +230,19 @@ pub fn offset_for(b: &LabelBox, at: (f32, f32), axes: &PlotAxes) -> Option<Label
     }
 }
 
-/// The baseline of each of `lines` lines, in plot pixels, and the middle of
-/// the block they make, for a label whose point is at `at_px`.
-pub fn line_baselines(at_px: (f32, f32), lines: usize, valign: VAlign) -> (Vec<f32>, f32) {
+/// The baseline of each of `lines` lines, in plot pixels, for a label whose
+/// point is at `at_px`.
+pub fn line_baselines(at_px: (f32, f32), lines: usize, valign: VAlign) -> Vec<f32> {
     let height = lines as f32 * LINE_HEIGHT;
     let top = match valign {
         VAlign::Above => at_px.1 - DEFAULT_GAP - height,
         VAlign::Below => at_px.1,
-        VAlign::Middle => at_px.1 - height / 2.0,
+        VAlign::Bottom => at_px.1 - height,
     };
     // The baseline sits about four-fifths of the font down its line.
-    let baselines = (0..lines)
+    (0..lines)
         .map(|i| top + i as f32 * LINE_HEIGHT + FONT_SIZE * 0.85 + (LINE_HEIGHT - FONT_SIZE) / 2.0)
-        .collect();
-    (baselines, top + height / 2.0)
+        .collect()
 }
 
 /// A label's lines: the gate's name, then its percentage when it has been
@@ -305,4 +313,52 @@ pub fn corner_label(
     } else {
         [text(line, name.to_string()), text(0.0, percent)]
     }
+}
+
+/// Where to draw a label so the whole of it is on the plot's data area, in
+/// plot pixels: `at_px` itself when it already is, otherwise moved just far
+/// enough in.
+///
+/// Omiq keeps labels on the plot the same way - dragged into a corner, its
+/// label stopped at the edges - and a stored offset can point off the plot
+/// here, where the plot is not the size Omiq's was. Only the drawing moves;
+/// the stored offset, and so the file, is unchanged. A centred label's width
+/// is estimated from its longest line.
+pub fn keep_on_plot(
+    at_px: (f32, f32),
+    lines: &[String],
+    valign: VAlign,
+    mapper: &PlotMapper,
+) -> (f32, f32) {
+    let (xr, yr) = (mapper.x_axis_min_max(), mapper.y_axis_min_max());
+    let a = mapper.data_to_pixel(*xr.start(), *yr.start(), None, None);
+    let b = mapper.data_to_pixel(*xr.end(), *yr.end(), None, None);
+    let (left, right) = (a.0.min(b.0), a.0.max(b.0));
+    let (top, bottom) = (a.1.min(b.1), a.1.max(b.1));
+
+    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+    let half_width = longest * FONT_SIZE * 0.3;
+    let height = lines.len() as f32 * LINE_HEIGHT;
+    let block_top = match valign {
+        VAlign::Above => at_px.1 - DEFAULT_GAP - height,
+        VAlign::Below => at_px.1,
+        VAlign::Bottom => at_px.1 - height,
+    };
+
+    let shift = |lo: f32, hi: f32, min: f32, max: f32| {
+        if hi - lo > max - min {
+            // Larger than the plot: its start on the plot's start.
+            min - lo
+        } else if lo < min {
+            min - lo
+        } else if hi > max {
+            max - hi
+        } else {
+            0.0
+        }
+    };
+    (
+        at_px.0 + shift(at_px.0 - half_width, at_px.0 + half_width, left, right),
+        at_px.1 + shift(block_top, block_top + height, top, bottom),
+    )
 }

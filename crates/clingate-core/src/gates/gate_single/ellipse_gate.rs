@@ -67,6 +67,20 @@ impl EllipseHandles {
         }
     }
 
+    /// The same handles for the ellipse drawn with its axes exchanged: each
+    /// point's two coordinates swapped, the names kept. A reflection keeps a
+    /// conjugate pair conjugate, and swapping twice gives back exactly the
+    /// file's numbers.
+    pub fn transposed(&self) -> Self {
+        let swap = |p: (f32, f32)| (p.1, p.0);
+        Self {
+            left: swap(self.left),
+            top: swap(self.top),
+            right: swap(self.right),
+            bottom: swap(self.bottom),
+        }
+    }
+
     /// The centre implied by the handles: the midpoint of either diameter.
     pub fn centre(&self) -> (f32, f32) {
         (
@@ -302,10 +316,12 @@ impl DrawableGate for EllipseGate {
                 name: self.inner.name.clone(),
                 mode: self.inner.mode.clone(),
             };
-            return Ok(Some(Box::new(EllipseGate::try_new(
-                new_gate,
-                self.is_primary,
-            )?)));
+            // The imported handles come across with the gate, so a gate viewed
+            // on swapped axes is written back with the handles the file had,
+            // not a canonical pair with top and bottom exchanged.
+            let mut turned = EllipseGate::try_new(new_gate, self.is_primary)?;
+            turned.source_handles = self.source_handles.map(|h| h.transposed());
+            return Ok(Some(Box::new(turned)));
         }
 
         Err(anyhow!("Axis mismatch for Ellipse Gate"))

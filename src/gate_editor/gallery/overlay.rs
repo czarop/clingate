@@ -168,8 +168,13 @@ pub fn flatten(shapes: Vec<GateRenderShape>, mapper: &PlotMapper) -> Vec<Flat> {
                 anchor,
                 ..
             } => {
-                let at = point(at);
-                let (baselines, _) =
+                let at = clingate_core::gates::gate_label::keep_on_plot(
+                    point(at),
+                    &lines,
+                    valign,
+                    mapper,
+                );
+                let baselines =
                     clingate_core::gates::gate_label::line_baselines(at, lines.len(), valign);
                 for (text, y) in lines.into_iter().zip(baselines) {
                     out.push(Flat::Text {

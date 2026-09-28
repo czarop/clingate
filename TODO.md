@@ -131,19 +131,6 @@ commit (`b7a77c4`).
 
 ## clingate
 
-- [ ] **Confirm what Omiq's `labelLoc` measures.** Read as screen pixels
-      from the centre of the gate's bounding box, x right and y down, on an
-      Omiq plot 500 pixels across (`gate_label::OMIQ_PLOT_PX`). The user is
-      exporting a file from Omiq with labels dragged to known corners to
-      check both the anchor and the size; only that constant and
-      `gate_label::placement`/`offset_for` should need to change. Unmoved
-      labels round-trip exactly whatever the answer.
-- [ ] **An ellipse viewed on swapped axes is saved with its top and bottom
-      handles exchanged.** Same ellipse, but the file's handle labelling is
-      not kept through a turn and back (found by
-      `every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it`, which
-      skips ellipses for it). Omiq may not care; worth a look.
-
 - [ ] **Gate edits are not saved with the workspace - decide how.** The
       workspace file names the gating file it loaded, and opening it loads
       that file afresh: every gate drawn or moved since, by hand or by the
