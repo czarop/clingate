@@ -164,6 +164,44 @@ impl RulesRun {
         (inputs, axes)
     }
 
+    /// A report of a badly placed gate, ready to gather off the UI thread:
+    /// the workspace as it stands now, and the one function the tools for
+    /// Claude report through. `None` with no workspace folder to keep it in.
+    pub(crate) fn report_job(
+        &self,
+        request: clingate_core::review::ReportRequest,
+    ) -> Option<
+        impl FnOnce() -> Result<(std::path::PathBuf, clingate_core::review::PlacementReport), String>
+        + Send
+        + 'static
+        + use<>,
+    > {
+        let folder = self.edits.folder()?;
+        let (inputs, axes) = self.inputs_now();
+        let gates = self.gates.peek().clone();
+        Some(move || {
+            let report =
+                clingate_core::review::report::gather(&folder, &request, &gates, &inputs, &axes)?;
+            let path = report.save(&folder).map_err(|e| e.to_string())?;
+            Ok((path, report))
+        })
+    }
+
+    /// Mark the workspace's last applied run reviewed, copying it into
+    /// `library` - as the tools for Claude do.
+    pub(crate) fn mark_reviewed(
+        &self,
+        library: Option<&std::path::Path>,
+    ) -> Result<(clingate_core::review::RunReview, Option<std::path::PathBuf>), String> {
+        let folder = self.edits.folder().ok_or("there is no workspace folder")?;
+        clingate_core::review::report::mark_reviewed(
+            &folder,
+            &self.gates.peek(),
+            &self.metadata.peek().metadata().clone(),
+            library,
+        )
+    }
+
     /// A finished run's placements, written into the working copy as one
     /// step, and the run kept in the workspace's `reviews` folder for
     /// reviewing it - as the tools for Claude keep it. `rules` are the rules
@@ -1162,6 +1200,7 @@ pub fn GateRulesWindow() -> Element {
                         if let Err(e) = run_with.apply(&outcome, &started.0.rules) {
                             warn(&toasts, e);
                         }
+                        crate::gate_editor::review::reviews_changed();
 
                         let run = outcome.report;
                         say(
@@ -1560,6 +1599,8 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
             }
+
+            crate::gate_editor::review::ReviewPanel {}
 
             if let Some(text) = editing_note() {
                 p { class: "gate_rules-message", "{text}" }

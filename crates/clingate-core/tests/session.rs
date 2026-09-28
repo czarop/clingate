@@ -499,3 +499,73 @@ fn an_applied_run_is_kept_for_review_and_knows_when_a_gate_has_moved_since() {
         );
     }
 }
+
+#[test]
+fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
+    use clingate_core::review::report::{Decision, reports_in};
+    let folder = with_rules("session-report");
+    let library = scratch("session-report-library");
+    let mut session = Session::open(&folder).unwrap();
+    session.set_review_library(Some(library.clone()));
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+
+    // The problem is one of the listed ones.
+    assert!(
+        session
+            .report_placement("Tmem", "fmx", "wonky", "")
+            .is_err()
+    );
+    let reported = session
+        .report_placement("Tmem", "fmx", "too high", "misses the dim positives")
+        .unwrap();
+    assert!(
+        reported.rule_did.starts_with("the rule moved it"),
+        "{reported:?}"
+    );
+    assert!(reported.events_kept > 0);
+
+    let reports = reports_in(&folder);
+    assert_eq!(reports.len(), 1);
+    let report = &reports[0].1;
+    assert_eq!(report.gate, "Tmem");
+    assert_eq!(report.note, "misses the dim positives");
+    assert!(matches!(report.decision, Decision::Placed(_)));
+    assert!(report.rule.is_some(), "the rule as it stood");
+    assert_eq!(report.data.histograms.0.counts.len(), 64);
+    assert_eq!(
+        report.data.histograms.0.counts.iter().sum::<u32>() as usize,
+        report.data.events,
+        "every event is in the histogram"
+    );
+    assert!(report.data.events_subsample.len() <= 5_000);
+    assert!(report.correction.is_none(), "not fixed yet");
+
+    // Reviewed: the reported one, and the other accepted as placed.
+    let reviewed = session.mark_run_reviewed().unwrap();
+    assert_eq!(
+        (reviewed.reported, reviewed.accepted),
+        (1, 1),
+        "{reviewed:?}"
+    );
+    let copy = reviewed.library_copy.expect("copied into the library");
+    assert!(copy.join("review.json").is_file());
+    assert_eq!(std::fs::read_dir(copy.join("reports")).unwrap().count(), 1);
+
+    // The reviewer's fix - here, taking the run back - is the correction once
+    // saved; and the other gate, moved with no report, is counted as such.
+    session.undo().unwrap();
+    session.save().unwrap();
+    let report = &reports_in(&folder)[0].1;
+    let fixed = report.correction.as_ref().expect("recorded on save");
+    assert_ne!(fixed.gate_at, report.data.gate_at);
+    let reviewed = session.mark_run_reviewed().unwrap();
+    assert_eq!(
+        (
+            reviewed.reported,
+            reviewed.accepted,
+            reviewed.moved_without_a_report
+        ),
+        (1, 0, 1)
+    );
+}

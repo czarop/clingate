@@ -327,7 +327,11 @@ pub fn EditBar() -> Element {
                 disabled: !saved || !dirty,
                 title: "Write the working copy into the workspace folder",
                 onclick: move |_| match edits.save() {
-                    Ok(path) => say(&toasts, format!("Saved to {}", path.display())),
+                    Ok(path) => {
+                        // Reported gates' fixes are recorded on save.
+                        crate::gate_editor::review::reviews_changed();
+                        say(&toasts, format!("Saved to {}", path.display()))
+                    }
                     Err(e) => warn(&toasts, format!("Not saved: {e}")),
                 },
                 "Save"

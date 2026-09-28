@@ -328,7 +328,12 @@ pub fn GalleryWindow() -> Element {
                                         match filled {
                                             Some(file) => rsx! {
                                                 div { class: "gallery-plot", key: "{slot}",
-                                                    div { class: "gallery-plot_name", title: "{file.name}", "{file.label()}" }
+                                                    div { class: "gallery-plot_name", title: "{file.name}",
+                                                        "{file.label()}"
+                                                        if let Some(node) = showing_node().filter(|n| **n != **ROOTGATE) {
+                                                            ReportTile { sample_name: file.name.clone(), node }
+                                                        }
+                                                    }
                                                     // Only the page in front renders. A hidden
                                                     // tab is still mounted - that is how the
                                                     // shell keeps state - and twenty plots
@@ -361,6 +366,47 @@ pub fn GalleryWindow() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Report the gate this page checks, on one tile's sample.
+#[component]
+fn ReportTile(sample_name: Arc<str>, node: Arc<str>) -> Element {
+    use clingate_core::gates::gate_store::NodeId;
+    use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+    let gates = use_context::<SyncStore<GateState>>();
+    let metadata = use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let mut open = use_context::<Signal<Option<crate::gate_editor::review::ReportTarget>>>();
+    let node = NodeId::from(node);
+    let target = {
+        let state = gates.read();
+        let sample = metadata
+            .file_name_to_gating_id()
+            .read()
+            .get(&sample_name)
+            .cloned();
+        sample.and_then(|sample| {
+            let gate_id = state.gate_for_node(&node)?;
+            let gate = state.registered_gate(gate_id)?.get_name().to_string();
+            Some(crate::gate_editor::review::ReportTarget {
+                node: node.clone(),
+                sample,
+                gate,
+                sample_name: sample_name.trim_end_matches(".fcs").to_string(),
+            })
+        })
+    };
+    rsx! {
+        button {
+            class: "review-report_button",
+            disabled: target.is_none(),
+            title: "Report this gate as badly placed on this sample",
+            onclick: move |e| {
+                e.stop_propagation();
+                open.set(target.clone());
+            },
+            "Report..."
         }
     }
 }

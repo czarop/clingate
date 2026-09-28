@@ -453,3 +453,83 @@ fn rules_saved_on_the_rules_tab_are_the_ones_the_tools_open() {
         serde_json::to_value(from_tools.rules().unwrap()).unwrap(),
     );
 }
+
+#[test]
+fn a_report_and_a_review_come_out_the_same() {
+    use clingate_core::review::Problem;
+    use clingate_core::review::report::{PlacementReport, reports_in};
+    let (tools, ours) = twins("parity-review");
+    let mut session = Session::open(&tools).unwrap();
+    session.set_review_library(None);
+    let mut app = App::new();
+    app.open(&ours);
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    app.run_rules();
+
+    // Tmem on the FMX sample, reported by each.
+    session
+        .report_placement("Tmem", "sample1_FMX", "too_low", "let in negatives")
+        .unwrap();
+    let job = app.with(|h| {
+        let state = h.gates.peek().clone();
+        let node = state
+            .placements()
+            .find(|(_, p)| {
+                state
+                    .registered_gate(&p.gate_id)
+                    .is_some_and(|g| g.get_name() == "Tmem")
+            })
+            .map(|(n, _)| n.clone())
+            .expect("Tmem is in the tree");
+        let sample = h
+            .metadata
+            .file_name_to_gating_id()
+            .peek()
+            .get("sample1_FMX.fcs")
+            .cloned()
+            .unwrap();
+        h.rules_run
+            .report_job(clingate_core::review::ReportRequest {
+                node,
+                sample,
+                problem: Problem::TooLow,
+                note: "let in negatives".into(),
+            })
+            .expect("the app has a folder")
+    });
+    job().unwrap();
+
+    let one = |folder: &Path| -> PlacementReport {
+        let mut found = reports_in(folder);
+        assert_eq!(found.len(), 1);
+        let mut r = found.remove(0).1;
+        r.id.clear();
+        r.reported_at.clear();
+        r.workspace.clear();
+        r
+    };
+    let (from_tools, from_app) = (one(&tools), one(&ours));
+    assert!(from_tools.placed().is_some(), "the rule placed it");
+    assert!(from_tools == from_app, "the reports differ");
+
+    // Reviewed by each: the same outcomes for every placement.
+    session.mark_run_reviewed().unwrap();
+    app.with(|h| h.rules_run.mark_reviewed(None)).unwrap();
+    let review = |folder: &Path| {
+        let text = std::fs::read_to_string(folder.join("reviews").join("review.json")).unwrap();
+        let mut r: clingate_core::review::RunReview = serde_json::from_str(&text).unwrap();
+        r.reviewed_at.clear();
+        r.workspace.clear();
+        r.run_applied_at.clear();
+        for p in &mut r.placements {
+            if let clingate_core::review::report::Outcome::Reported { reports } = &mut p.outcome {
+                reports.clear();
+            }
+        }
+        r
+    };
+    let (a, b) = (review(&tools), review(&ours));
+    assert_eq!(a.reported(), 1);
+    assert!(a == b, "the reviews differ");
+}

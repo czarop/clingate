@@ -551,6 +551,10 @@ pub fn MainWindow() -> Element {
                                                 style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
                                                 title: "{name}",
                                                 "{name}"
+                                                crate::gate_editor::review::ReportButton {
+                                                    sample_name: sample_stub.name.clone(),
+                                                    parental_gate,
+                                                }
                                             }
                                             PlotWindow {
                                                 sample_stub,

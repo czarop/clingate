@@ -1,0 +1,50 @@
+/* The report dialog and the report buttons over the plots. */
+.review-report_button {
+  font-size: 0.75rem;
+  padding: 1px 8px;
+  margin-left: 8px;
+}
+
+.review-dialog_backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.review-dialog {
+  background: var(--primary-color, #fff);
+  color: var(--secondary-color-4, #111);
+  border-radius: 8px;
+  padding: 16px 20px;
+  width: min(560px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.review-dialog h3 { margin: 0 0 8px; }
+.review-dialog_what { margin: 0 0 6px; }
+.review-dialog_did { margin: 0 0 10px; opacity: 0.85; }
+.review-dialog_hint { font-size: 0.8rem; opacity: 0.75; }
+
+.review-dialog_problems {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  margin: 0 0 10px;
+}
+.review-dialog_problems legend { font-weight: 600; }
+
+.review-dialog_note { display: flex; flex-direction: column; gap: 4px; }
+.review-dialog_note textarea { width: 100%; box-sizing: border-box; }
+
+.review-dialog_buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}

@@ -19,10 +19,12 @@
 mod edits;
 mod gates;
 pub mod lookup;
+mod review;
 mod rules;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
+pub use review::{Reported, Reviewed};
 pub use rules::{RulesPreview, RulesView};
 
 use std::collections::BTreeMap;
@@ -94,6 +96,8 @@ pub struct Session {
     /// The working copy's history and saved copy - the same type the app
     /// uses, so undo, save and the rest behave alike. See `working_copy`.
     working: crate::working_copy::WorkingCopy,
+    /// Where reviewed runs are copied - see `crate::review::library`.
+    review_library: Option<PathBuf>,
 }
 
 /// Which file each part of the workspace was read from.
@@ -273,6 +277,7 @@ impl Session {
             warnings,
             pending: None,
             working: crate::working_copy::WorkingCopy::default(),
+            review_library: crate::review::library::configured(),
         };
         // As the app does when its gating file loads: both copies.
         if matches!(session.parts.gating, PartState::Loaded { .. }) {

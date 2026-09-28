@@ -115,6 +115,13 @@ pub(crate) fn provide_document() {
         )
     });
     use_context_provider(|| edits);
+
+    // Reviewing the rules: what the report dialog is open on, and a count
+    // the review panel reads its files again on.
+    let report_target = use_signal(|| None::<crate::gate_editor::review::ReportTarget>);
+    use_context_provider(|| report_target);
+    let reviews_changed = use_signal(crate::gate_editor::review::ReviewsChanged::default);
+    use_context_provider(|| reviews_changed);
 }
 
 #[component]
@@ -140,6 +147,7 @@ pub fn Shell() -> Element {
         // window. A class is a value the renderer always replaces wholesale.
         //
         // Hiding, not unmounting: that difference is the whole point.
+        crate::gate_editor::review::ReportDialog {}
         div { class: panel_class(active(), Tab::Workspace), WorkspaceWindow {} }
         div { class: panel_class(active(), Tab::Editor), MainWindow {} }
         div { class: panel_class(active(), Tab::Rules), GateRulesWindow {} }

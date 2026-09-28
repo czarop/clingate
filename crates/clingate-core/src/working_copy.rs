@@ -190,6 +190,8 @@ impl WorkingCopy {
         self.saved = Some(current.clone());
         GatingFiles::recovery(folder).remove();
         record_save(folder, &files);
+        // A reported gate is where the reviewer means it to be once saved.
+        crate::review::report::record_corrections(folder, &current.gates, metadata);
         Ok(files)
     }
 

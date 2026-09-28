@@ -65,7 +65,13 @@ the saved copy under another name. Save and export only when the user says \
 to, and never replace a file unless the user has said to replace that file.
 
 If the overview says an earlier session left unsaved changes, ask the user \
-whether to restore or discard them.";
+whether to restore or discard them.
+
+When the user says a gate was placed badly, report_placement records it - with \
+their reason - so the rules' confidence scores can be improved; do not report \
+a gate on your own judgement. mark_run_reviewed records that the user has \
+finished reviewing a run: only when they say so, since every placement they \
+did not report then counts as accepted.";
 
 /// The server, holding the one open workspace.
 #[derive(Clone)]
@@ -152,6 +158,21 @@ pub struct CompareSamples {
     pub parameter: String,
     /// The samples, by words of their file names or metadata, or 'all'.
     pub samples: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReportPlacement {
+    /// The population whose gate was placed badly, by its gate names.
+    pub population: String,
+    /// Exactly one sample, by words of its file name or metadata.
+    pub sample: String,
+    /// What the user says is wrong: too_high, too_low, cuts_through_a_population,
+    /// wrong_population, too_tight, too_loose, wrong_reference, should_not_have_moved, or
+    /// other.
+    pub problem: String,
+    /// The user's own words about it, if they gave any.
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -434,6 +455,27 @@ impl Clingate {
     #[tool(annotations(read_only_hint = false, destructive_hint = true))]
     async fn discard_unsaved_changes(&self) -> String {
         self.run(|s| s.discard_unsaved_changes()).await
+    }
+
+    /// Report a gate the rules placed badly on one sample, as the app's Report dialog does:
+    /// what the rule did and why, the population's distribution on this sample and the one the
+    /// rule read, and the user's reason. These reports are how the confidence scores are
+    /// improved. Only when the user has said this gate is wrong - never on your own judgement.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn report_placement(&self, Parameters(args): Parameters<ReportPlacement>) -> String {
+        self.run(move |s| {
+            s.report_placement(&args.population, &args.sample, &args.problem, &args.note)
+        })
+        .await
+    }
+
+    /// Mark the last applied rules run as reviewed, as the Gate Rules tab's button does: every
+    /// placement not reported and still where the rule put it is recorded as accepted, and the
+    /// review is copied into the review library. Only when the user says they have finished
+    /// reviewing the run.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn mark_run_reviewed(&self) -> String {
+        self.run(|s| s.mark_run_reviewed()).await
     }
 }
 
