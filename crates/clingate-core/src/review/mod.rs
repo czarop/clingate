@@ -11,6 +11,7 @@
 //! runs.
 
 pub mod assess;
+pub mod board;
 pub mod library;
 pub mod report;
 pub mod run_record;

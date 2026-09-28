@@ -174,6 +174,16 @@ pub struct CompareToPeers {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MarkLooksRight {
+    /// The population whose gate it is, by its gate names.
+    pub population: String,
+    /// Exactly one sample, by words of its file name or metadata.
+    pub sample: String,
+    /// True to mark it as looking right; false to take the mark back.
+    pub looks_right: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReportPlacement {
     /// The population whose gate was placed badly, by its gate names.
     pub population: String,
@@ -486,6 +496,16 @@ impl Clingate {
     #[tool(annotations(read_only_hint = true))]
     async fn compare_to_peers(&self, Parameters(args): Parameters<CompareToPeers>) -> String {
         self.run(move |s| s.compare_to_peers(&args.population, &args.sample))
+            .await
+    }
+
+    /// Mark a flagged placement of the last run as looking right - the flag was wrong - or take
+    /// the mark back, as the app's Looks right button does. It moves the placement from "needs a
+    /// look" to "passed", and the review records that the flag was cleared. Only when the user
+    /// says so.
+    #[tool]
+    async fn mark_looks_right(&self, Parameters(args): Parameters<MarkLooksRight>) -> String {
+        self.run(move |s| s.mark_looks_right(&args.population, &args.sample, args.looks_right))
             .await
     }
 

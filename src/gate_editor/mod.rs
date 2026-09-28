@@ -11,5 +11,6 @@ pub mod path_picker;
 pub mod plots;
 mod reactivity_tests;
 pub mod review;
+pub mod review_window;
 pub mod route;
 pub mod workspace_window;

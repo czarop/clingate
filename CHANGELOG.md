@@ -21,18 +21,31 @@
   every run add up. The tools for Claude can report a placement and mark a
   run reviewed on the user's word; both go through the same code as the
   app, checked by the parity tests.
-- **Which placements need a look.** The Review section lists the
-  placements of the last run that look unlike their peers - the other
-  samples of the same kind that the rule placed confidently - or that the
-  rule was unsure of, worst first, each with its reasons in words and a
-  Report... button. A sample is compared on where its gate sits between
-  its own negative and positive peaks (or against its spread, with one
-  peak), what it lets through, and its distribution's position, spread
-  and number of peaks. Each run keeps a small summary of every sample's
-  distribution for this (101 percentiles and its peaks), so assessing a
-  run reads no files. The tools for Claude get the same assessment
-  (`assess_run`) and one sample beside its peers in numbers
-  (`compare_to_peers`).
+- **A Review tab.** The last rules run's placements as pictures, sorted
+  into **Needs a look**, **Passed**, **Reported** and **Changed since**.
+  Each tile is the population above the gate on the gate's own axes, with
+  the gate as it stands on that sample; a flagged one is drawn beside the
+  peer that placed the same gate most typically, with the reasons in
+  words. From a tile: **Open in editor** shows that sample, population and
+  axes in the gate editor to reposition the gate (its tile then moves to
+  Changed since), **Report...**, or **Looks right** to clear a flag the
+  assessment should not have raised. Filter by gate; the Gate Rules tab's
+  Review section gives the counts and a way in.
+- **Which placements need a look.** Each sample is compared with its
+  peers - the other samples of the same kind that the rule placed
+  confidently - on where its gate sits between its own negative and
+  positive peaks (or against its spread, with one peak), what it lets
+  through, and its distribution's position, spread and number of peaks;
+  and flagged whatever its peers say when the rule was unsure of it. The
+  kind of sample is the one the Gate Rules tab's pairing gives it,
+  derived from another column where it has no type column. Each run keeps
+  a small summary of every sample's distribution for this (101
+  percentiles and its peaks), so assessing a run reads no files. Marking a
+  run reviewed records, with each placement, whether it was flagged and on
+  what, and whether the flag was cleared - what the thresholds are tuned
+  against. The tools for Claude get the same piles (`assess_run`), one
+  sample beside its peers in numbers (`compare_to_peers`), and
+  `mark_looks_right`.
 - **Rules and figures have their own folders in the workspace.** The Gate
   Rules tab saves to and loads from `rules/gate_rules.json` in the workspace
   folder - made the first time rules are saved - and a workspace opens with

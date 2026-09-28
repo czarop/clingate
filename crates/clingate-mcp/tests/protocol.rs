@@ -195,6 +195,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "mark_run_reviewed",
         "assess_run",
         "compare_to_peers",
+        "mark_looks_right",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }

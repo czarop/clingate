@@ -333,9 +333,43 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
         let files = h.metadata.metadata().peek().clone();
         clingate_core::review::assess::assess(&run, Some((&state, &files)))
     });
-    assert_eq!(from_tools.placements, from_app.placements);
-    assert_eq!(from_tools.flags, from_app.flags, "the assessments differ");
     assert_eq!(from_tools.gates, from_app.gates);
+    // And sort into the same piles: the Review tab's board, the tools'
+    // assess_run.
+    let board = app.with(|h| {
+        let state = h.gates.peek();
+        let files = h.metadata.metadata().peek().clone();
+        clingate_core::review::board::board_in(&ours, &state, &files)
+            .unwrap()
+            .unwrap()
+    });
+    use clingate_core::review::board::Pile;
+    assert_eq!(from_tools.placements, board.entries.len());
+    let app_piles: Vec<(Pile, usize)> = Pile::ALL.iter().map(|p| (*p, board.count(*p))).collect();
+    assert_eq!(from_tools.piles, app_piles, "the piles differ");
+    let app_flags: Vec<_> = board
+        .pile(Pile::NeedsALook)
+        .filter_map(|e| e.flag.clone())
+        .collect();
+    assert_eq!(
+        from_tools.flags, app_flags,
+        "the flags needing a look differ"
+    );
+    // The raw assessment agrees too.
+    let tools_raw = clingate_core::review::assess::assess(
+        &clingate_core::review::RunRecord::load(&tools)
+            .unwrap()
+            .unwrap(),
+        None,
+    );
+    let app_raw = clingate_core::review::assess::assess(
+        &clingate_core::review::RunRecord::load(&ours)
+            .unwrap()
+            .unwrap(),
+        None,
+    );
+    assert_eq!(tools_raw.flags.len(), app_raw.flags.len());
+    assert_eq!(from_app.placements, app_raw.placements);
 
     session.undo().unwrap();
     assert!(app.with(|h| h.edits.undo()));
@@ -521,6 +555,9 @@ fn a_report_and_a_review_come_out_the_same() {
         r.id.clear();
         r.reported_at.clear();
         r.workspace.clear();
+        // Each side applied its own run, stamped to the second: the two can
+        // straddle a second boundary.
+        r.run_applied_at = None;
         r
     };
     let (from_tools, from_app) = (one(&tools), one(&ours));

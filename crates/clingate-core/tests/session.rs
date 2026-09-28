@@ -594,6 +594,14 @@ fn a_kept_run_is_assessed_and_a_sample_compared_with_its_peers() {
         );
     }
 
+    // Every placement is on the board, in one pile or another.
+    let on_board: usize = assessed.piles.iter().map(|(_, n)| n).sum();
+    assert_eq!(on_board, assessed.placements);
+
+    // Looks right needs a placement the run made.
+    assert!(session.mark_looks_right("Tmem", "fmx", true).is_ok());
+    assert!(session.mark_looks_right("Tmem", "fmx", false).is_ok());
+
     let compared = session.compare_to_peers("Tmem", "fmx").unwrap();
     assert!(compared.peers.is_empty(), "no other FMX: {compared:?}");
     assert!(compared.line.is_some());

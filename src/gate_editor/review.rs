@@ -291,7 +291,7 @@ pub fn ReportDialog() -> Element {
 }
 
 /// "28 Sep 2026, 12:03" from a record's timestamp.
-fn p_time(stamp: &str) -> String {
+pub(crate) fn p_time(stamp: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(stamp)
         .map(|t| {
             t.with_timezone(&chrono::Local)
@@ -353,21 +353,10 @@ pub fn ReviewPanel() -> Element {
     };
     let can_mark = matches!(&*state.read(), Some((Ok(Some(_)), _, _)));
 
-    // What needs a look: the run assessed against the gates as they stand.
-    let gates = use_context::<GateStore>();
-    let metadata = use_context::<MetadataStore>();
-    let flags = use_memo(move || {
-        let state = state.read();
-        let Some((Ok(Some(run)), _, _)) = &*state else {
-            return Vec::new();
-        };
-        let held = gates.read();
-        let files = metadata.metadata();
-        let files = files.read();
-        clingate_core::review::assess::assess(run, Some((&held, &files))).flags
-    });
-    let mut report_target = use_context::<Signal<Option<ReportTarget>>>();
-    let mut shown = use_signal(|| 20usize);
+    // What needs a look, counted as the Review tab sorts it.
+    let (sorted, _) =
+        crate::gate_editor::review_window::use_board(crate::gate_editor::route::Tab::Rules);
+    let mut active = use_context::<Signal<crate::gate_editor::route::Tab>>();
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/review.css") }
@@ -379,90 +368,25 @@ pub fn ReviewPanel() -> Element {
             p { class: "gate_rules-hint",
                 "Report a gate the rules placed badly from the gate editor (Report... above each plot) or the gallery. When the run has been checked, mark it reviewed: every placement not reported and still where the rule put it is recorded as accepted, which is what the confidence scores are measured against."
             }
-            if can_mark {
+            if let Some(board) = sorted() {
                 label { "Needs a look" }
                 div { class: "review-flags",
-                    if flags.read().is_empty() {
-                        p { class: "gate_rules-hint",
-                            "Nothing: every placement looks like its peers', and the rule was sure of each. Worth a glance at the gallery all the same."
+                    p { class: "gate_rules-hint",
+                        {
+                            use clingate_core::review::board::Pile;
+                            format!(
+                                "{} need a look, {} passed, {} reported, {} changed since. Work through them on the Review tab, where each is drawn beside a typical peer and can be opened in the editor.",
+                                board.count(Pile::NeedsALook),
+                                board.count(Pile::Passed),
+                                board.count(Pile::Reported),
+                                board.count(Pile::Changed),
+                            )
                         }
-                    } else {
-                        p { class: "gate_rules-hint",
-                            "{flags.read().len()} placement(s) look unlike their peers - the other samples of the same kind the rule placed confidently - or the rule was unsure of them. Worst first."
-                        }
-                        table { class: "review-flags_table",
-                            thead {
-                                tr {
-                                    th { "" }
-                                    th { "Sample" }
-                                    th { "Gate" }
-                                    th { "Confidence" }
-                                    th { "Why" }
-                                    th { "" }
-                                }
-                            }
-                            tbody {
-                                for (at , flag) in flags.read().iter().take(shown()).enumerate() {
-                                    tr {
-                                        key: "{at}-{flag.gate_id}-{flag.sample.id}",
-                                        class: if matches!(flag.status, Some(clingate_core::review::run_record::PlacementStatus::Moved)) { "review-flags_dealt" } else { "" },
-                                        td { class: if flag.severity >= 5.0 { "review-flags_severe" } else { "review-flags_notable" }, "●" }
-                                        td { title: "{flag.sample.name.clone().unwrap_or_default()}",
-                                            {flag.sample.name.clone().unwrap_or_else(|| flag.sample.id.clone()).trim_end_matches(".fcs").to_string()}
-                                        }
-                                        td {
-                                            {clingate_core::gate_rules::autogate::describe(&flag.gate, flag.parent_gate.as_deref())}
-                                        }
-                                        td {
-                                            {flag.confidence.map(|c| format!("{c:.2}")).unwrap_or_else(|| "met rule".to_string())}
-                                        }
-                                        td {
-                                            for reason in flag.reasons.iter() {
-                                                div { "{reason.says}" }
-                                            }
-                                            if matches!(flag.status, Some(clingate_core::review::run_record::PlacementStatus::Moved)) {
-                                                div { class: "review-flags_note", "no longer where the run put it - moved, undone or not saved" }
-                                            }
-                                        }
-                                        td {
-                                            button {
-                                                class: "review-report_button",
-                                                onclick: {
-                                                    let flag = flag.clone();
-                                                    move |_| {
-                                                        let state = gates.peek();
-                                                        let Some(node) = clingate_core::review::report::node_named(
-                                                            &state,
-                                                            &flag.gate_id,
-                                                            flag.parent_gate.as_deref(),
-                                                        ) else {
-                                                            warn(&toasts, "That gate is no longer in the document");
-                                                            return;
-                                                        };
-                                                        report_target.set(Some(ReportTarget {
-                                                            node,
-                                                            sample: Arc::from(flag.sample.id.as_str()),
-                                                            gate: flag.gate.clone(),
-                                                            sample_name: flag
-                                                                .sample
-                                                                .name
-                                                                .clone()
-                                                                .unwrap_or_else(|| flag.sample.id.clone())
-                                                                .trim_end_matches(".fcs")
-                                                                .to_string(),
-                                                            choices: Vec::new(),
-                                                        }));
-                                                    }
-                                                },
-                                                "Report..."
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if flags.read().len() > shown() {
-                            button { onclick: move |_| shown.set(shown() + 20), "Show more" }
+                    }
+                    div {
+                        button {
+                            onclick: move |_| active.set(crate::gate_editor::route::Tab::Review),
+                            "Open the Review tab"
                         }
                     }
                 }

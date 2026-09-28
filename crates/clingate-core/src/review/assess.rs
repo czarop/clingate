@@ -87,6 +87,9 @@ pub struct Flag {
     /// ones.
     pub peers: usize,
     pub confident_peers: bool,
+    /// The peer that placed this gate most typically - the one closest to
+    /// the peers' median on where the gate sits - to show beside it.
+    pub typical_peer: Option<SampleRef>,
 }
 
 /// A gate across the run, in a line.
@@ -517,7 +520,28 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
                 continue;
             }
             reasons.sort_by(|a, b| b.severity.total_cmp(&a.severity));
+            let typical_peer = {
+                let measure = if item.between_peaks().is_some() {
+                    Measure::BetweenPeaks
+                } else {
+                    Measure::FractionBeyond
+                };
+                let valued: Vec<(f64, &Item)> = peers
+                    .iter()
+                    .filter_map(|p| p.measure(measure).map(|v| (v, *p)))
+                    .collect();
+                let mut values: Vec<f64> = valued.iter().map(|(v, _)| *v).collect();
+                median(&mut values)
+                    .and_then(|m| {
+                        valued
+                            .iter()
+                            .min_by(|a, b| (a.0 - m).abs().total_cmp(&(b.0 - m).abs()))
+                            .map(|(_, p)| p.sample.clone())
+                    })
+                    .or_else(|| peers.first().map(|p| p.sample.clone()))
+            };
             flags.push(Flag {
+                typical_peer,
                 gate_id: item.gate_id.to_string(),
                 gate: item.gate.to_string(),
                 parent_gate: item.parent_gate.map(str::to_string),
@@ -905,6 +929,10 @@ mod tests {
                 .contains("of the way from the negative")
         );
         assert!(flag.confident_peers && flag.peers == 10);
+        // Beside it, a peer that placed the gate in the valley.
+        let peer = flag.typical_peer.as_ref().expect("a typical peer");
+        assert_ne!(peer.id, "f99");
+        assert!(peer.id.starts_with('f'));
     }
 
     #[test]

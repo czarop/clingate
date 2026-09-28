@@ -34,6 +34,7 @@ pub enum Tab {
     Editor,
     Rules,
     Gallery,
+    Review,
 }
 
 impl Tab {
@@ -43,6 +44,7 @@ impl Tab {
             Tab::Editor => "🏠",
             Tab::Rules => "📐",
             Tab::Gallery => "🖼",
+            Tab::Review => "🔍",
         }
     }
 
@@ -52,11 +54,18 @@ impl Tab {
             Tab::Editor => "Gate editor",
             Tab::Rules => "Gate rules",
             Tab::Gallery => "Gate gallery",
+            Tab::Review => "Review the rules run",
         }
     }
 }
 
-const TABS: [Tab; 4] = [Tab::Workspace, Tab::Editor, Tab::Rules, Tab::Gallery];
+const TABS: [Tab; 5] = [
+    Tab::Workspace,
+    Tab::Editor,
+    Tab::Rules,
+    Tab::Gallery,
+    Tab::Review,
+];
 
 /// Every panel is mounted; only the one in front is displayed.
 fn panel_class(active: Tab, tab: Tab) -> &'static str {
@@ -122,6 +131,9 @@ pub(crate) fn provide_document() {
     use_context_provider(|| report_target);
     let reviews_changed = use_signal(crate::gate_editor::review::ReviewsChanged::default);
     use_context_provider(|| reviews_changed);
+    // Where "Open in editor" on the Review tab asks the editor to go.
+    let focus = use_signal(|| None::<crate::gate_editor::review_window::EditorFocus>);
+    use_context_provider(|| focus);
 }
 
 #[component]
@@ -152,6 +164,9 @@ pub fn Shell() -> Element {
         div { class: panel_class(active(), Tab::Editor), MainWindow {} }
         div { class: panel_class(active(), Tab::Rules), GateRulesWindow {} }
         div { class: panel_class(active(), Tab::Gallery), GalleryWindow {} }
+        div { class: panel_class(active(), Tab::Review),
+            crate::gate_editor::review_window::ReviewWindow {}
+        }
 
         div { class: "route-nav_bar",
             nav { aria_label: "main navigation", role: "navigation",

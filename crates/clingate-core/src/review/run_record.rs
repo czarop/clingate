@@ -218,14 +218,14 @@ pub fn extent_of(gate: &dyn DrawableGate) -> Vec<ExtentRecord> {
 pub struct Samples<'a> {
     names: HashMap<&'a str, &'a str>,
     metadata: &'a MetaDataFileMap,
-    sample_type_column: &'a str,
+    pairing: &'a crate::gate_rules::rule_store::SamplePairing,
 }
 
 impl<'a> Samples<'a> {
     pub fn new(
         file_name_to_gating_id: &'a HashMap<Arc<str>, FileId, FxBuildHasher>,
         metadata: &'a MetaDataFileMap,
-        sample_type_column: &'a str,
+        pairing: &'a crate::gate_rules::rule_store::SamplePairing,
     ) -> Self {
         Self {
             names: file_name_to_gating_id
@@ -233,7 +233,7 @@ impl<'a> Samples<'a> {
                 .map(|(name, id)| (id.as_ref(), name.as_ref()))
                 .collect(),
             metadata,
-            sample_type_column,
+            pairing,
         }
     }
 
@@ -241,10 +241,12 @@ impl<'a> Samples<'a> {
         SampleRef {
             id: id.to_string(),
             name: self.names.get(id).map(|n| n.to_string()),
+            // As the Gate Rules tab reads it: the type column, or where that
+            // is empty, derived from whichever column the pairing names.
             sample_type: self
                 .metadata
                 .get(id)
-                .and_then(|m| m.get(self.sample_type_column))
+                .and_then(|m| self.pairing.sample_type_of(m))
                 .map(|v| v.to_string()),
         }
     }
@@ -368,7 +370,7 @@ impl RunRecord {
     }
 
     /// The record of a run, naming each sample from the workspace's
-    /// metadata, and its kind from the column the rules' pairing names. What
+    /// metadata, and its kind as the rules' pairing reads it. What
     /// the app and the tools both call when a run finishes.
     pub fn of_run(
         report: &Report,
@@ -379,7 +381,7 @@ impl RunRecord {
         let samples = Samples::new(
             metadata.file_name_to_gating_id(),
             metadata.metadata(),
-            &rules.pairing.sample_type_column,
+            &rules.pairing,
         );
         Self::from_run(report, placements, rules, &samples)
     }
@@ -537,6 +539,48 @@ mod tests {
             kept: Vec::new(),
             skipped: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_sample_type_derived_from_another_column_is_the_one_recorded() {
+        use crate::gate_rules::rule_store::{DerivedSampleType, SamplePairing, SampleTypeMarker};
+        let pairing = SamplePairing {
+            derive_type: Some(DerivedSampleType {
+                column: "FileName".into(),
+                markers: vec![
+                    SampleTypeMarker {
+                        contains: "_FMX_".into(),
+                        sample_type: "FMX".into(),
+                    },
+                    SampleTypeMarker {
+                        contains: "_FS_".into(),
+                        sample_type: "FS".into(),
+                    },
+                ],
+            }),
+            ..SamplePairing::default()
+        };
+        let row = |name: &str| {
+            let mut m = rustc_hash::FxHashMap::default();
+            m.insert(Arc::<str>::from("FileName"), Arc::<str>::from(name));
+            m
+        };
+        let mut metadata = MetaDataFileMap::default();
+        metadata.insert(Arc::from("a"), row("x_FMX_1.fcs"));
+        metadata.insert(Arc::from("b"), row("x_FS_1.fcs"));
+        let mut explicit = row("x_FS_2.fcs");
+        explicit.insert(Arc::from("SampleType"), Arc::from("Unstained"));
+        metadata.insert(Arc::from("c"), explicit);
+        let names = HashMap::default();
+        let samples = Samples::new(&names, &metadata, &pairing);
+        assert_eq!(samples.sample("a").sample_type.as_deref(), Some("FMX"));
+        assert_eq!(samples.sample("b").sample_type.as_deref(), Some("FS"));
+        // The type column wins where it says something.
+        assert_eq!(
+            samples.sample("c").sample_type.as_deref(),
+            Some("Unstained")
+        );
+        assert_eq!(samples.sample("nobody").sample_type, None);
     }
 
     #[test]

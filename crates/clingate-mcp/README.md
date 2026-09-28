@@ -167,8 +167,9 @@ Privacy & Security, Files and Folders (or Full Disk Access).
 | `export_gating` | Writes the saved copy as an Omiq gating file in the workspace folder, under a name the user chose - the app's Export. Never replaces a file unless told to. |
 | `restore_unsaved_changes` | Takes back unsaved changes an earlier session - the app's or Claude's - left in the folder. |
 | `discard_unsaved_changes` | Throws those away. |
-| `assess_run` | The last applied run's placements that look unlike their peers, or that the rule was unsure of, with reasons - and each gate across the run in a line. Reads no files. |
+| `assess_run` | How many of the last applied run's placements are in each pile of the Review tab, the ones needing a look - unlike their peers, or the rule was unsure - with reasons, and each gate across the run in a line. Reads no files. |
 | `compare_to_peers` | One sample's placement of a gate beside its peers', in numbers: percentiles, peaks, the line, where it sits between the peaks and what it lets through. |
+| `mark_looks_right` | Clears a placement's flag - the user judged it right - or takes that back, as the Review tab's Looks right does. Only on the user's word. |
 | `report_placement` | Reports a gate the rules placed badly on one sample, with the user's reason - as the app's Report... button does. Only on the user's word. |
 | `mark_run_reviewed` | Marks the last applied rules run reviewed: placements not reported count as accepted, and the review is copied into the review library. Only on the user's word. |
 

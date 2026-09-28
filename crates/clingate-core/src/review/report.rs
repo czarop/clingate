@@ -447,11 +447,7 @@ pub fn gather(
     let run = RunRecord::load(folder).map_err(|e| e.to_string())?;
     // The rules as they stood for the run; the workspace's own without one.
     let rules = run.as_ref().map(|r| &r.rules).unwrap_or(&inputs.rules);
-    let samples = Samples::new(
-        &inputs.names,
-        &inputs.metadata,
-        &rules.pairing.sample_type_column,
-    );
+    let samples = Samples::new(&inputs.names, &inputs.metadata, &rules.pairing);
 
     let placed = run.as_ref().and_then(|r| {
         r.placed
@@ -664,6 +660,21 @@ pub struct ReviewedPlacement {
     pub placed: PlacedRecord,
     #[serde(flatten)]
     pub outcome: Outcome,
+    #[serde(flatten)]
+    pub flag: FlagOutcome,
+}
+
+/// Whether the assessment flagged a placement, and whether the reviewer then
+/// judged it to look right - a flag it should not have raised.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FlagOutcome {
+    /// The measures the flag was raised on; empty if it was not flagged.
+    #[serde(default)]
+    pub flagged_on: Vec<String>,
+    #[serde(default)]
+    pub flag_severity: Option<f64>,
+    #[serde(default)]
+    pub looked_right: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -673,6 +684,8 @@ pub struct ReviewedKept {
     /// moved from.
     #[serde(flatten)]
     pub outcome: Outcome,
+    #[serde(flatten)]
+    pub flag: FlagOutcome,
 }
 
 /// A run, reviewed: every placement with what the reviewer made of it - the
@@ -759,6 +772,22 @@ pub fn mark_reviewed(
         .ok_or("no rules run has been applied in this workspace, so there is nothing to review")?;
     // Corrections as the gates stand now, whether or not saved yet.
     let reports = reports_in(folder);
+    // What the assessment flagged, and which flags the reviewer cleared.
+    let assessment = super::assess::assess(&run, Some((state, metadata)));
+    let looks = super::board::LooksRight::load(folder, &run);
+    let flag_outcome = |gate_id: &str, sample: &str| {
+        let flag = assessment
+            .flags
+            .iter()
+            .find(|f| f.gate_id == gate_id && f.sample.id == sample);
+        FlagOutcome {
+            flagged_on: flag
+                .map(|f| f.reasons.iter().map(|r| r.measure.to_string()).collect())
+                .unwrap_or_default(),
+            flag_severity: flag.map(|f| f.severity),
+            looked_right: looks.contains(gate_id, sample),
+        }
+    };
     let reports_for = |gate_id: &str, sample: &str| -> Vec<String> {
         reports
             .iter()
@@ -794,6 +823,7 @@ pub fn mark_reviewed(
             ReviewedPlacement {
                 placed: p.clone(),
                 outcome,
+                flag: flag_outcome(&p.gate_id, &p.sample.id),
             }
         })
         .collect();
@@ -809,6 +839,7 @@ pub fn mark_reviewed(
                 } else {
                     Outcome::Reported { reports: reported }
                 },
+                flag: flag_outcome(&k.gate_id, &k.sample.id),
             }
         })
         .collect();

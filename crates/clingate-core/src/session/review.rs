@@ -41,8 +41,11 @@ pub struct Reviewed {
 pub struct RunAssessment {
     pub run_applied_at: String,
     pub placements: usize,
-    pub flagged: usize,
-    /// The worst [`FLAGS_SHOWN`] of them, worst first.
+    /// How many placements are in each pile of the Review tab: needs a look,
+    /// passed, reported, changed since.
+    pub piles: Vec<(crate::review::board::Pile, usize)>,
+    /// The worst [`FLAGS_SHOWN`] of those needing a look, worst first -
+    /// flagged, and not yet reported, changed or judged to look right.
     pub flags: Vec<crate::review::assess::Flag>,
     pub gates: Vec<crate::review::assess::GateSummary>,
     pub next: &'static str,
@@ -66,19 +69,71 @@ impl Session {
     /// Which placements of the last applied run need a look, and why - as
     /// the Gate Rules tab's review list shows them.
     pub fn assess_run(&self) -> Result<RunAssessment, Refusal> {
+        use crate::review::board::Pile;
         let run = self.kept_run()?;
-        let mut assessment =
+        let assessment =
             crate::review::assess::assess(&run, Some((&self.gates, self.metadata.metadata())));
-        let flagged = assessment.flags.len();
-        assessment.flags.truncate(FLAGS_SHOWN);
+        let board =
+            crate::review::board::board_in(&self.folder, &self.gates, self.metadata.metadata())
+                .map_err(failed)?
+                .ok_or_else(|| failed("no rules run has been applied in this workspace"))?;
         Ok(RunAssessment {
             run_applied_at: assessment.run_applied_at,
-            placements: assessment.placements,
-            flagged,
-            flags: assessment.flags,
+            placements: board.entries.len(),
+            piles: Pile::ALL.iter().map(|p| (*p, board.count(*p))).collect(),
+            flags: board
+                .pile(Pile::NeedsALook)
+                .filter_map(|e| e.flag.clone())
+                .take(FLAGS_SHOWN)
+                .collect(),
             gates: assessment.gates,
             next: "compare_to_peers shows one flagged sample's distribution beside its peers'; \
                    show the user the flags and let them decide what is wrong",
+        })
+    }
+
+    /// Mark a placement of the last run as looking right despite its flag -
+    /// or take the mark back - as the Review tab's Looks right does. Only on
+    /// the user's word.
+    pub fn mark_looks_right(
+        &self,
+        population: &str,
+        sample: &str,
+        looks_right: bool,
+    ) -> Result<String, Refusal> {
+        let run = self.kept_run()?;
+        let (node, _) = self.one_population(population)?;
+        let gate_id = self
+            .gates
+            .gate_for_node(&node)
+            .cloned()
+            .ok_or_else(|| failed("that population has no gate"))?;
+        let stub = self.one_sample(sample)?;
+        let id = self
+            .metadata
+            .file_name_to_gating_id()
+            .get(&stub.name)
+            .cloned()
+            .ok_or_else(|| failed(format!("{}: no metadata row names this sample", stub.name)))?;
+        let on_board = run
+            .placed
+            .iter()
+            .any(|p| *p.gate_id == *gate_id && *p.sample.id == *id)
+            || run
+                .kept
+                .iter()
+                .any(|k| k.met_rule && *k.gate_id == *gate_id && *k.sample.id == *id);
+        if !on_board {
+            return Err(failed(
+                "the last applied run did not place or keep this gate on this sample",
+            ));
+        }
+        crate::review::board::LooksRight::set(&self.folder, &run, &gate_id, &id, looks_right)
+            .map_err(failed)?;
+        Ok(if looks_right {
+            format!("{} on {}: marked as looking right", population, stub.name)
+        } else {
+            format!("{} on {}: the mark is taken back", population, stub.name)
         })
     }
 

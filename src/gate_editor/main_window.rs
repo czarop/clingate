@@ -310,6 +310,40 @@ pub fn MainWindow() -> Element {
         sample_index.set(0);
     });
 
+    // Asked from the Review tab: show this sample, the population a gate is
+    // drawn on, and the gate's axes - so it can be moved. Taken once and
+    // cleared.
+    let mut focus = use_context::<Signal<Option<crate::gate_editor::review_window::EditorFocus>>>();
+    use_effect(move || {
+        let Some(want) = focus.read().clone() else {
+            return;
+        };
+        parental_gate.set(Some(want.parent.clone()));
+        let param = |channel: &Arc<str>| {
+            axis_store
+                .sorted_settings()
+                .peek()
+                .iter()
+                .find(|p| p.fluoro == *channel)
+                .cloned()
+        };
+        if let Some(x) = param(&want.x) {
+            x_axis_marker.set(x);
+        }
+        if let Some(y) = param(&want.y) {
+            y_axis_marker.set(y);
+        }
+        let at = filehandler.peek().as_ref().and_then(|f| {
+            f.file_list()
+                .iter()
+                .position(|s| s.name == want.sample_name)
+        });
+        if let Some(at) = at {
+            select_file(at);
+        }
+        focus.set(None);
+    });
+
     // Nothing to edit until the workspace has files and the metadata that
     // says which sample each one is. Said, rather than left as a spinner that
     // never finishes.
