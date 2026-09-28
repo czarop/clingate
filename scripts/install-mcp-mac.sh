@@ -4,25 +4,36 @@
 # Needs the Xcode command line tools and Rust already installed. Does the rest:
 # checks git can reach the private repositories (and signs in to GitHub with
 # `gh` if it cannot), clones or updates clingate, builds the server, copies it
-# to ~/bin, adds it to Claude Desktop's config (backing the old one up), and
-# checks the program answers as Claude Desktop will ask it.
+# into its own folder, adds it to Claude Desktop's config (backing the old one
+# up), and checks the program answers as Claude Desktop will ask it.
 #
-# Run it from anywhere:
+# Run it from anywhere, from the folder it was saved in:
 #
 #     bash install-mcp-mac.sh
 #
-# Run it again to update. Settings, if the defaults do not suit:
+# Run it again to update. Everything goes in one folder:
 #
-#     CLINGATE_DIR     where the code is kept    (default ~/clingate)
+#     ~/programs/clingate/source   the code, and everything cargo builds from it
+#                                  (a few GB); only used to build and update
+#     ~/programs/clingate/bin      the finished program, the one file Claude
+#                                  Desktop runs
+#
+# Kept apart so a rebuild, or deleting the source to save space, never takes
+# away the program Claude Desktop is using. Settings, if these do not suit -
+# put them before the command, e.g. CLINGATE_HOME=~/tools/clingate bash ...:
+#
+#     CLINGATE_HOME    the folder for both       (default ~/programs/clingate)
+#     CLINGATE_DIR     the code alone            (default $CLINGATE_HOME/source)
+#     CLINGATE_BIN     the program alone         (default $CLINGATE_HOME/bin)
 #     CLINGATE_BRANCH  the branch to build       (default below)
-#     CLINGATE_BIN     where the program goes    (default ~/bin)
 
 set -euo pipefail
 
 # The server is on this branch until it is merged; then this becomes `main`.
 BRANCH="${CLINGATE_BRANCH:-claude/funny-bardeen-bleqcn}"
-DIR="${CLINGATE_DIR:-$HOME/clingate}"
-BIN="${CLINGATE_BIN:-$HOME/bin}"
+HOME_DIR="${CLINGATE_HOME:-$HOME/programs/clingate}"
+DIR="${CLINGATE_DIR:-$HOME_DIR/source}"
+BIN="${CLINGATE_BIN:-$HOME_DIR/bin}"
 REPO="https://github.com/czarop/clingate"
 FLOW="https://github.com/czarop/flow"
 CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
@@ -71,6 +82,7 @@ if [ -d "$DIR/.git" ]; then
 else
     [ -e "$DIR" ] && fail "$DIR exists but is not a clone of clingate. Move it, or set CLINGATE_DIR."
     step "Cloning clingate ($BRANCH) into $DIR"
+    mkdir -p "$(dirname "$DIR")"
     git clone --branch "$BRANCH" "$REPO" "$DIR"
 fi
 

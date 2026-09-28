@@ -5,26 +5,40 @@ Checks for Git, Rust and the Visual Studio C++ build tools, and offers to
 install whichever is missing with winget. Then: checks git can reach the
 private repositories (Git Credential Manager signs you in to GitHub in the
 browser the first time), clones or updates clingate, builds the server,
-copies it to %USERPROFILE%\bin, adds it to Claude Desktop's config (backing
+copies it into its own folder, adds it to Claude Desktop's config (backing
 the old one up), and checks the program answers as Claude Desktop will ask it.
 
 Run it in PowerShell - from anywhere - with:
 
     powershell -ExecutionPolicy Bypass -File .\install-mcp-windows.ps1
 
-Run it again to update. Settings, if the defaults do not suit:
+Run it again to update. Everything goes in one folder:
 
-    -Dir     where the code is kept   (default %USERPROFILE%\clingate)
+    %USERPROFILE%\programs\clingate\source   the code, and everything cargo
+                                             builds from it (a few GB); only
+                                             used to build and update
+    %USERPROFILE%\programs\clingate\bin      the finished program, the one
+                                             file Claude Desktop runs
+
+Kept apart so a rebuild, or deleting the source to save space, never takes
+away the program Claude Desktop is using. Settings, if these do not suit,
+e.g. -Root D:\tools\clingate:
+
+    -Root    the folder for both      (default %USERPROFILE%\programs\clingate)
+    -Dir     the code alone           (default <Root>\source)
+    -Bin     the program alone        (default <Root>\bin)
     -Branch  the branch to build      (default below)
-    -Bin     where the program goes   (default %USERPROFILE%\bin)
 #>
 
 param(
     # The server is on this branch until it is merged; then this becomes `main`.
     [string]$Branch = "claude/funny-bardeen-bleqcn",
-    [string]$Dir = (Join-Path $env:USERPROFILE "clingate"),
-    [string]$Bin = (Join-Path $env:USERPROFILE "bin")
+    [string]$Root = (Join-Path $env:USERPROFILE "programs\clingate"),
+    [string]$Dir = "",
+    [string]$Bin = ""
 )
+if (-not $Dir) { $Dir = Join-Path $Root "source" }
+if (-not $Bin) { $Bin = Join-Path $Root "bin" }
 
 $ErrorActionPreference = "Stop"
 $Repo = "https://github.com/czarop/clingate"
@@ -129,6 +143,7 @@ if (Test-Path (Join-Path $Dir ".git")) {
 } else {
     if (Test-Path $Dir) { Fail "$Dir exists but is not a clone of clingate. Move it, or pass -Dir." }
     Step "Cloning clingate ($Branch) into $Dir"
+    New-Item -ItemType Directory -Force -Path (Split-Path $Dir) | Out-Null
     Run "git" @("clone", "--branch", $Branch, $Repo, $Dir)
 }
 
