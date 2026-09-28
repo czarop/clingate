@@ -338,3 +338,39 @@ fn gating_is_saved_by_name_into_the_folder_and_never_over_a_file_unasked() {
     let text = std::fs::read_to_string(&saved.file).unwrap();
     let _: serde_json::Value = serde_json::from_str(&text).unwrap();
 }
+
+#[test]
+fn a_workspace_the_app_saved_in_the_folder_opens_as_it_was_left() {
+    use clingate_core::gate_rules::rule_store::SamplePairing;
+    use clingate_core::workspace::Remembered;
+    let dir = with_rules("session-saved-workspace");
+    // Only the first sample was in the workspace; a stray file arrived since.
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    write_fcs(&dir.join("stray.fcs"), &channels, &events(3, 100));
+    Remembered {
+        folder: Some(dir.clone()),
+        fcs: vec![dir.join("sample1_FMX.fcs")],
+        metadata: Some(dir.join("metadata.csv")),
+        scaling: Some(dir.join("scaling.csv")),
+        gating: Some(dir.join("gating.omiqgt")),
+        compensation: None,
+        pairing: Some(SamplePairing {
+            sample_id_column: "Type".into(),
+            ..SamplePairing::default()
+        }),
+    }
+    .save_into_folder()
+    .unwrap();
+
+    let session = Session::open(&dir).unwrap();
+    let overview = serde_json::to_value(session.overview()).unwrap();
+    assert_eq!(
+        overview["parts"]["workspace"]["state"], "loaded",
+        "{overview}"
+    );
+    assert_eq!(overview["samples"], 1, "{overview}");
+    assert_eq!(overview["parts"]["gating"]["state"], "loaded");
+    // The grouping as the app left it, over the rules file's own.
+    assert_eq!(session.rules_view().unwrap().specimen_column, "Type");
+}

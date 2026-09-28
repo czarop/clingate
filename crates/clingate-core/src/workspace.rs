@@ -318,15 +318,27 @@ fn lexically_normal(path: &Path) -> PathBuf {
 
 // ── remembering the last one ─────────────────────────────────────────────
 
-/// The files a workspace was last opened with, for opening it again.
+/// The name of the workspace file kept in a workspace's folder.
+pub const WORKSPACE_FILE: &str = "clingate_workspace.json";
+
+/// The files a workspace was last opened with, and the choices made about
+/// them, for opening it again.
 ///
 /// The files themselves rather than the folder. Any part may have been
 /// replaced with a file from elsewhere, and FCS files added or removed one at
 /// a time, so re-reading the folder would open something other than what was
 /// closed.
 ///
+/// Kept in two places. In the workspace's own folder, as
+/// [`WORKSPACE_FILE`], with the paths inside the folder written relative to
+/// it - so the folder can be moved, copied to another machine, or opened by
+/// the tools for Claude, and still open as it was left. And in this
+/// program's configuration folder, with every path in full, so the last
+/// workspace can be offered at launch.
+///
 /// The rules are deliberately absent. They are exported to their own file and
-/// imported on purpose; a new workspace starts without any.
+/// imported on purpose; a new workspace starts without any. Which metadata
+/// columns group and order the samples is not a rule, and is kept.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Remembered {
     /// The folder it was opened from, if it was - shown so a person knows
@@ -346,6 +358,12 @@ pub struct Remembered {
     /// are grouped afresh.
     #[serde(default)]
     pub compensation: Option<crate::compensation::groups::Saved>,
+    /// The metadata columns that say which files are one specimen and what
+    /// each file is, the order a specimen's files are shown in, and the
+    /// column samples are sorted by. `None` for a workspace remembered before
+    /// they were kept: it opens with the defaults.
+    #[serde(default)]
+    pub pairing: Option<crate::gate_rules::rule_store::SamplePairing>,
 }
 
 impl Remembered {
@@ -359,6 +377,66 @@ impl Remembered {
 
     pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
+    }
+
+    /// Where a folder's own workspace file is.
+    pub fn in_folder(folder: &Path) -> PathBuf {
+        folder.join(WORKSPACE_FILE)
+    }
+
+    /// The workspace saved in `folder`, if there is one, with its paths put
+    /// back in full against the folder as it is now - wherever it has moved.
+    pub fn load_from_folder(folder: &Path) -> anyhow::Result<Option<Self>> {
+        let at = Self::in_folder(folder);
+        if !at.is_file() {
+            return Ok(None);
+        }
+        let mut loaded = Self::load_from(&at)?;
+        loaded.map_paths(|path| from_folder(folder, path));
+        loaded.folder = Some(folder.to_path_buf());
+        Ok(Some(loaded))
+    }
+
+    /// Save into the workspace's own folder, with the paths inside it written
+    /// relative to it. Nothing is written for a workspace with no folder.
+    pub fn save_into_folder(&self) -> anyhow::Result<Option<PathBuf>> {
+        let Some(folder) = self.folder.clone() else {
+            return Ok(None);
+        };
+        let mut portable = self.clone();
+        portable.map_paths(|path| in_folder(&folder, path));
+        portable.folder = None;
+        let at = Self::in_folder(&folder);
+        portable.save_to(&at)?;
+        Ok(Some(at))
+    }
+
+    /// Every path this names: the parts, the FCS files, and the files and
+    /// matrices the compensation groups hold.
+    fn map_paths(&mut self, f: impl Fn(&Path) -> PathBuf) {
+        use crate::compensation::groups::{SavedApplied, SavedSource};
+        for path in self
+            .fcs
+            .iter_mut()
+            .chain(self.metadata.iter_mut())
+            .chain(self.scaling.iter_mut())
+            .chain(self.gating.iter_mut())
+        {
+            *path = f(path);
+        }
+        if let Some(compensation) = &mut self.compensation {
+            for (path, _) in &mut compensation.files {
+                *path = f(path);
+            }
+            for group in &mut compensation.groups {
+                if let SavedSource::Csv(path) = &mut group.source {
+                    *path = f(path);
+                }
+                if let SavedApplied::Csv(path) = &mut group.applied {
+                    *path = f(path);
+                }
+            }
+        }
     }
 
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
@@ -399,4 +477,35 @@ impl Remembered {
             && self.scaling.is_none()
             && self.gating.is_none()
     }
+}
+
+/// A path inside `folder` as the steps down from it, joined with `/` whatever
+/// the platform, so the file reads the same on macOS and Windows. A path
+/// outside the folder is kept in full.
+fn in_folder(folder: &Path, path: &Path) -> PathBuf {
+    match path.strip_prefix(folder) {
+        Ok(inside) => PathBuf::from(
+            inside
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
+        ),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+/// The inverse of [`in_folder`]: a relative path is put back under `folder`,
+/// one step at a time so it carries this platform's separators.
+fn from_folder(folder: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let mut full = folder.to_path_buf();
+    for step in path.to_string_lossy().split('/') {
+        if !step.is_empty() {
+            full.push(step);
+        }
+    }
+    full
 }

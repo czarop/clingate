@@ -4,6 +4,18 @@
 
 ### Added
 
+- **The workspace is saved in its folder.** `clingate_workspace.json`, kept
+  beside the FCS files and updated as you work: which FCS files are in the
+  workspace, the metadata, scaling and gating files, the compensation groups
+  and the answers to the Omiq question, and - new - which metadata columns
+  group the samples into specimens, say what each file is, and sort them,
+  with the plot order. Opening the folder opens it as it was left, and says
+  if FCS files have arrived in the folder since. Paths inside the folder are
+  written relative to it, so the folder can be moved or opened on another
+  machine. The tools for Claude read the same file. The copy in the
+  configuration folder, for offering the last workspace at launch, carries
+  the grouping too.
+
 - **Tools for Claude.** `clingate-mcp` serves a workspace to Claude Desktop
   over the Model Context Protocol: open a folder, see what it holds, find
   samples, list populations, count a population across samples, and see how a

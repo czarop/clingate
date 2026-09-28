@@ -37,7 +37,7 @@ use crate::gate_rules::rule_store::RuleStore;
 use crate::gates::GateState;
 use crate::gates::gate_store::NodeId;
 use crate::omiq::metadata::MetaDataStore;
-use crate::workspace::{Found, detect, gating_needs};
+use crate::workspace::{Found, Remembered, detect, gating_needs};
 use lookup::{Clarification, ParameterFacts, PopulationFacts, SampleFacts, SampleMatch};
 
 /// The rules sidecar a session picks up from the folder, as the Gate Rules
@@ -94,6 +94,10 @@ pub struct Session {
 /// Which file each part of the workspace was read from.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Parts {
+    /// The workspace file the app keeps in the folder. When it is there, the
+    /// files, parts, compensation groups and sample grouping are the ones it
+    /// names, as the app last left them; otherwise the folder is searched.
+    pub workspace: PartState,
     pub metadata: PartState,
     pub scaling: PartState,
     pub gating: PartState,
@@ -125,18 +129,55 @@ pub enum PartState {
 }
 
 impl Session {
-    /// Open the workspace in `folder` the way the Workspace tab does: the FCS
-    /// files anywhere under it, then compensation grouped by each file's own
-    /// matrix, then the metadata, the scaling, and the gating file through
-    /// both. A part that cannot be read is recorded as such rather than
+    /// Open the workspace in `folder` the way the Workspace tab does. Where
+    /// the app has saved the workspace in the folder, as it was left: its FCS
+    /// files, compensation groups and answers, parts and sample grouping.
+    /// Otherwise found afresh: the FCS files anywhere under it, compensation
+    /// grouped by each file's own matrix, then the metadata, the scaling, and
+    /// the gating file through both. A part that cannot be read is recorded as such rather than
     /// failing the whole; only a folder that cannot be read at all is an error.
     pub fn open(folder: &Path) -> anyhow::Result<Self> {
-        let detected = detect(folder)?;
-        let files = FcsFiles::open(Some(folder), &detected.fcs);
-        let mut compensation = Compensation::default();
-        compensation.sync(crate::compensation::own_matrices(files.file_list()));
-
         let mut parts = Parts::default();
+        let saved_at = Remembered::in_folder(folder);
+        let saved = match Remembered::load_from_folder(folder) {
+            Ok(Some(saved)) => {
+                parts.workspace = PartState::Loaded {
+                    file: saved_at.clone(),
+                };
+                Some(saved)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                parts.workspace = PartState::Failed {
+                    file: saved_at.clone(),
+                    reason: format!("{e}; the folder was searched instead"),
+                };
+                None
+            }
+        };
+        let named = |path: &Option<PathBuf>| path.clone().map_or(Found::Missing, Found::One);
+        let detected = match &saved {
+            Some(saved) => crate::workspace::Detected {
+                fcs: saved.fcs.clone(),
+                metadata: named(&saved.metadata),
+                scaling: named(&saved.scaling),
+                gating: named(&saved.gating),
+            },
+            None => detect(folder)?,
+        };
+        let files = FcsFiles::open(Some(folder), &detected.fcs);
+        let owns = crate::compensation::own_matrices(files.file_list());
+        let compensation = match saved.as_ref().and_then(|s| s.compensation.as_ref()) {
+            Some(groups) => Compensation::restore(groups, owns, |path| {
+                crate::compensation::Spillover::read_omiq_csv(path).map_err(|e| e.to_string())
+            }),
+            None => {
+                let mut fresh = Compensation::default();
+                fresh.sync(owns);
+                fresh
+            }
+        };
+
         let mut warnings = Vec::new();
 
         let mut metadata = MetaDataStore::default();
@@ -202,7 +243,12 @@ impl Session {
         let mut rules = None;
         parts.rules = if rules_file.is_file() {
             match RuleStore::load(&rules_file) {
-                Ok(store) => {
+                Ok(mut store) => {
+                    // The grouping as the app last left it, over whatever the
+                    // rules file was exported with.
+                    if let Some(pairing) = saved.as_ref().and_then(|s| s.pairing.clone()) {
+                        store.pairing = pairing;
+                    }
                     rules = Some(store);
                     PartState::Loaded { file: rules_file }
                 }

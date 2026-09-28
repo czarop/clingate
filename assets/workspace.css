@@ -42,6 +42,7 @@
 .workspace-primary { font-weight: 600; }
 
 .workspace-busy { font-style: italic; opacity: 0.8; }
+.workspace-restored { margin: 0 0 0.75rem; font-size: 0.9rem; }
 
 /* The confirmation that stands between a click and discarded gates. Loud on
    purpose: it is the only thing between a person and an afternoon's gating. */

@@ -304,6 +304,7 @@ fn a_remembered_workspace_survives_a_save_and_a_load() {
             }],
             files: vec![(PathBuf::from("/data/run1/a.fcs"), 0)],
         }),
+        pairing: None,
     };
     saved.save_to(&at).unwrap();
     assert_eq!(Remembered::load_from(&at).unwrap(), saved);
@@ -311,6 +312,85 @@ fn a_remembered_workspace_survives_a_save_and_a_load() {
         !at.with_extension("json.tmp").exists(),
         "the temporary file is renamed away"
     );
+}
+
+/// A workspace in `dir`, with one part and one matrix kept elsewhere.
+fn in_a_folder(dir: &std::path::Path, elsewhere: &std::path::Path) -> Remembered {
+    use crate::compensation::groups::{Saved, SavedApplied, SavedGroup, SavedSource};
+    use crate::gate_rules::rule_store::SamplePairing;
+    Remembered {
+        folder: Some(dir.to_path_buf()),
+        fcs: vec![dir.join("plate 1").join("a.fcs"), dir.join("b.fcs")],
+        metadata: Some(dir.join("metadata.csv")),
+        scaling: Some(elsewhere.join("scaling.csv")),
+        gating: Some(dir.join("gates.omiqgt")),
+        compensation: Some(Saved {
+            groups: vec![SavedGroup {
+                name: "Group 1".into(),
+                source: SavedSource::Csv(elsewhere.join("comp.csv")),
+                applied: SavedApplied::Csv(dir.join("omiq comp.csv")),
+            }],
+            files: vec![
+                (dir.join("plate 1").join("a.fcs"), 0),
+                (dir.join("b.fcs"), 0),
+            ],
+        }),
+        pairing: Some(SamplePairing {
+            sample_id_column: "GROUPNAME".into(),
+            sample_type_column: "Kind".into(),
+            sort_column: Some("Timepoint".into()),
+            ..SamplePairing::default()
+        }),
+    }
+}
+
+#[test]
+fn a_workspace_saved_in_its_folder_opens_wherever_the_folder_is_moved() {
+    let root = scratch("folder-file");
+    let elsewhere = root.join("shared");
+    let first = root.join("run1");
+    std::fs::create_dir_all(&first).unwrap();
+    let saved = in_a_folder(&first, &elsewhere);
+    let at = saved.save_into_folder().unwrap().unwrap();
+    assert_eq!(at, first.join(WORKSPACE_FILE));
+
+    // Inside the folder, paths are written relative to it, with '/'.
+    let text = std::fs::read_to_string(&at).unwrap();
+    assert!(text.contains("\"plate 1/a.fcs\""), "{text}");
+    assert!(!text.contains(&*first.to_string_lossy()), "{text}");
+    // Outside it, in full.
+    assert!(text.contains(&*elsewhere.join("scaling.csv").to_string_lossy()));
+
+    // Moved: it opens against the folder where it now is.
+    let moved = root.join("run1 moved");
+    std::fs::rename(&first, &moved).unwrap();
+    let opened = Remembered::load_from_folder(&moved).unwrap().unwrap();
+    assert_eq!(opened, in_a_folder(&moved, &elsewhere));
+}
+
+#[test]
+fn a_folder_without_a_workspace_file_has_none_and_one_without_a_folder_writes_none() {
+    let dir = scratch("folder-none");
+    assert!(Remembered::load_from_folder(&dir).unwrap().is_none());
+    let no_folder = Remembered {
+        fcs: vec![dir.join("a.fcs")],
+        ..Default::default()
+    };
+    assert!(no_folder.save_into_folder().unwrap().is_none());
+    assert!(!dir.join(WORKSPACE_FILE).exists());
+}
+
+#[test]
+fn a_workspace_remembered_before_the_pairing_was_kept_still_loads() {
+    let dir = scratch("folder-old");
+    std::fs::write(
+        dir.join(WORKSPACE_FILE),
+        r#"{"fcs":["a.fcs"],"metadata":"metadata.csv"}"#,
+    )
+    .unwrap();
+    let opened = Remembered::load_from_folder(&dir).unwrap().unwrap();
+    assert_eq!(opened.fcs, vec![dir.join("a.fcs")]);
+    assert!(opened.pairing.is_none());
 }
 
 #[test]

@@ -61,7 +61,7 @@ use clingate_core::omiq::metadata::{
 };
 use clingate_core::omiq::serialise::to_omiq_document;
 use clingate_core::workspace::{
-    Found, Remembered, ScalingCarried, carry_to_scaling, detect, gating_needs,
+    Found, Remembered, ScalingCarried, WORKSPACE_FILE, carry_to_scaling, detect, gating_needs,
 };
 
 pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
@@ -110,6 +110,9 @@ pub struct Loaded {
     /// What is running, while something is. One thing at a time: two loads
     /// interleaving would leave the stores holding half of each.
     pub busy: Option<&'static str>,
+    /// Set when the folder was opened from the workspace saved in it: how
+    /// many FCS files in the folder that workspace leaves out.
+    pub restored: Option<usize>,
 }
 
 /// Counts that go up when the workspace changes under the other tabs.
@@ -227,14 +230,14 @@ impl Handles {
         self.gates.read().gate_count() > 0
     }
 
-    /// Record what is open, so it can be offered again next launch.
+    /// Record what is open: in the workspace's own folder, so opening the
+    /// folder again - here, on another machine, or from the tools for Claude -
+    /// finds it as it was left, and in this program's configuration folder,
+    /// so it can be offered again next launch.
     ///
-    /// A failure is said once rather than swallowed: it means the next launch
-    /// will not offer this workspace, which is worth knowing now.
+    /// A failure is said rather than swallowed: it means the workspace will
+    /// not open as it was left, which is worth knowing now.
     fn remember(self) {
-        let Some(location) = Remembered::location() else {
-            return;
-        };
         let loaded = self.loaded.peek().clone();
         let remembered = Remembered {
             folder: loaded.folder.clone(),
@@ -248,8 +251,20 @@ impl Handles {
             scaling: loaded.scaling.path().map(Path::to_path_buf),
             gating: loaded.gating.path().map(Path::to_path_buf),
             compensation: Some(self.compensation.peek().saved()),
+            pairing: Some(self.rules.peek().pairing.clone()),
         };
-        if let Err(e) = remembered.save_to(&location) {
+        if remembered.is_empty() {
+            return;
+        }
+        if let Err(e) = remembered.save_into_folder() {
+            warn(
+                &self.toasts,
+                format!("Could not save the workspace into its folder: {e}"),
+            );
+        }
+        if let Some(location) = Remembered::location()
+            && let Err(e) = remembered.save_to(&location)
+        {
             warn(
                 &self.toasts,
                 format!("Could not remember this workspace for next time: {e}"),
@@ -408,6 +423,19 @@ impl Handles {
         }
     }
 
+    /// Record that the folder opened as it was saved, and how many FCS files
+    /// in it the saved workspace does not include - added since, or left out
+    /// on purpose - so none is missed. Shown on the tab rather than said: a
+    /// message would be buried under the loads' own.
+    async fn note_unlisted(mut self, folder: &Path, named: &[PathBuf]) {
+        let looking = folder.to_path_buf();
+        let unlisted = match tokio::task::spawn_blocking(move || detect(&looking)).await {
+            Ok(Ok(found)) => found.fcs.iter().filter(|f| !named.contains(f)).count(),
+            _ => 0,
+        };
+        self.loaded.write().restored = Some(unlisted);
+    }
+
     /// Import the chosen gating file if it was waiting for this.
     async fn gating_if_waiting(self) {
         if let Part::Waiting(path, _) = self.loaded.peek().gating.clone() {
@@ -420,6 +448,23 @@ impl Handles {
     async fn open_folder(self, folder: PathBuf) {
         if !self.begin("Opening the folder") {
             return;
+        }
+        match Remembered::load_from_folder(&folder) {
+            Ok(Some(saved)) => {
+                let named = saved.fcs.clone();
+                self.restore(saved).await;
+                self.note_unlisted(&folder, &named).await;
+                self.end();
+                return;
+            }
+            Ok(None) => {}
+            Err(e) => warn(
+                &self.toasts,
+                format!(
+                    "The workspace saved in {} could not be read, so the folder is opened afresh: {e}",
+                    folder.display()
+                ),
+            ),
         }
         let looking = folder.clone();
         let detected = match flatten(
@@ -474,8 +519,31 @@ impl Handles {
         if !self.begin("Reopening the last workspace") {
             return;
         }
+        // The folder's own copy where there is one: it is the one kept with
+        // the data, and may have been saved since on another machine.
+        let saved = remembered
+            .folder
+            .as_deref()
+            .and_then(|folder| Remembered::load_from_folder(folder).ok().flatten());
+        match saved {
+            Some(saved) => {
+                let named = saved.fcs.clone();
+                let folder = saved.folder.clone().unwrap_or_default();
+                self.restore(saved).await;
+                self.note_unlisted(&folder, &named).await;
+            }
+            None => self.restore(remembered).await,
+        }
+        self.end();
+    }
+
+    /// Open everything a remembered workspace names, as it was left.
+    async fn restore(mut self, remembered: Remembered) {
         let gone = remembered.missing();
         self.clear_all(remembered.folder.clone());
+        if let Some(pairing) = remembered.pairing.clone() {
+            self.rules.write().pairing = pairing;
+        }
         self.open_fcs(remembered.folder.clone(), remembered.fcs.clone())
             .await;
         if let Some(saved) = remembered.compensation.clone() {
@@ -501,7 +569,6 @@ impl Handles {
                 ),
             );
         }
-        self.end();
     }
 
     async fn open_fcs(mut self, root: Option<PathBuf>, paths: Vec<PathBuf>) {
@@ -973,6 +1040,19 @@ pub fn WorkspaceWindow() -> Element {
     let files = handles.files;
     let toasts = handles.toasts;
 
+    // Which columns group and order the samples is chosen beside the sample
+    // selector and on the rules tab, not here; it is kept with the workspace
+    // whenever it changes. A memo, so an edit to a rule is not a save. Not
+    // while something is loading: a reopen clears the grouping before it
+    // puts the saved one back, and the load saves when it ends.
+    let pairing = use_memo(move || handles.rules.read().pairing.clone());
+    use_effect(move || {
+        pairing.read();
+        if loaded.peek().busy.is_none() {
+            handles.remember();
+        }
+    });
+
     let mut pending = use_signal(|| None::<Pending>);
     // What was typed into the folder box, if anything; `None` shows the open
     // folder, so the box follows a folder opened any other way.
@@ -1050,11 +1130,21 @@ pub fn WorkspaceWindow() -> Element {
                 }
             }
             p { class: "workspace-hint",
-                "Opening a folder starts a new workspace. FCS files are found anywhere under it, sub-folders included. A file in a sub-folder is known in the program by its folders and its name joined with underscores - Plate_10/A1.fcs is Plate_10_A1.fcs - and that is the name the metadata has to use for it. Nothing on disk is renamed. The gating file, the metadata and the scaling have to be at the top of the folder: an .omiqgt, and CSVs with \"metadata\" and \"scaling\" in their names."
+                "Opening a folder opens the workspace saved in it as it was left - its files, compensation, and which columns group and sort the samples, kept in {WORKSPACE_FILE} and updated as you work. A folder without one starts a new workspace: FCS files are found anywhere under it, sub-folders included. A file in a sub-folder is known in the program by its folders and its name joined with underscores - Plate_10/A1.fcs is Plate_10_A1.fcs - and that is the name the metadata has to use for it. Nothing on disk is renamed. The gating file, the metadata and the scaling have to be at the top of the folder: an .omiqgt, and CSVs with \"metadata\" and \"scaling\" in their names."
             }
 
             if let Some(doing) = busy {
                 p { class: "workspace-busy", "{doing}..." }
+            }
+            if let Some(unlisted) = loaded.read().restored {
+                p { class: "workspace-restored",
+                    "Opened as it was last saved."
+                    if unlisted == 1 {
+                        " 1 FCS file in the folder is not in this workspace: add it with Add files if it belongs."
+                    } else if unlisted > 1 {
+                        " {unlisted} FCS files in the folder are not in this workspace: add them with Add files if they belong."
+                    }
+                }
             }
 
             if let Some(action) = pending() {

@@ -70,6 +70,14 @@ protocol.
 session; `save_gating` is the one tool that writes to disk. Claude is told
 to use all three only when the user says to.
 
+## The saved workspace
+
+When the app has saved the workspace in the folder (`clingate_workspace.json`),
+`open_workspace` opens it as the app left it: the same FCS files, the
+compensation groups and the answers already given to the Omiq question, and
+the metadata columns that group and sort the samples. Without one, the folder
+is searched as the app would for a new workspace. The tools never write it.
+
 ## Naming things
 
 Samples, populations and parameters are named the way a person names them:
