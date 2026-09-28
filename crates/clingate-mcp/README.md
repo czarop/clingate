@@ -61,14 +61,34 @@ protocol.
 | `list_parameters` | Every parameter's marker, channel, scale and axis range, or the one a query names. |
 | `gate_details` | A population's gate: its parameters, its extent on each, its shape - and for one sample, the position that applies to it and whether it was set for that sample, for a group, or is the gate as drawn. |
 | `compare_samples` | A population's parent on one parameter across samples: percentiles, how far each sample's median is from the others' (in typical interquartile ranges), its spread against theirs, and where the gate sits. For finding the sample distributed unlike the rest. |
-| `list_rules` | The workspace's gate rules (`gate_rules.json`), each in words. |
+| `list_rules` | The workspace's gate rules (`rules/gate_rules.json`, where the Gate Rules tab saves them), each in words. |
 | `preview_rules` | Runs every rule and says what it would move, from where to where, with what confidence and which want review. Moves nothing. |
-| `apply_rule_placements` | Applies the last preview to the session's gates. Refused if the gates changed since. Writes nothing to disk. |
-| `save_gating` | Writes the session's gates as an Omiq gating file in the workspace folder, under a name the user chose. Never replaces a file unless told to. |
+| `apply_rule_placements` | Applies the last preview to the working copy - one undo step, as a run is in the app. Refused if the gates changed since. |
+| `undo` | Steps the working copy back one edit. |
+| `redo` | Steps forward again after an undo. |
+| `revert_to_saved` | Puts the working copy back to the last save; `undo` brings the changes back. |
+| `save_gating` | Saves the working copy into the workspace folder as `clingate_gating.omiqgt` with `clingate_scaling.csv` - the app's Save. The workspace opens on it next time, in the app too. |
+| `export_gating` | Writes the saved copy as an Omiq gating file in the workspace folder, under a name the user chose - the app's Export. Never replaces a file unless told to. |
+| `restore_unsaved_changes` | Takes back unsaved changes an earlier session - the app's or Claude's - left in the folder. |
+| `discard_unsaved_changes` | Throws those away. |
 
-`answer_omiq_compensation` and `apply_rule_placements` change only the open
-session; `save_gating` is the one tool that writes to disk. Claude is told
-to use all three only when the user says to.
+## The working copy
+
+The tools edit the same working copy the app does, through the same code:
+the gates Claude changes are a working copy, every change is one step that
+`undo` and `redo` walk, `save_gating` writes it where the app's Save does,
+and `export_gating` writes the saved copy, as the app's Export does. While
+there are unsaved changes a hidden recovery copy is kept in the folder, so
+the app offers Claude's unsaved changes back when it opens the folder, and
+the other way round. Tests in the app (`src/gate_editor/parity_tests.rs`)
+do the same things through the app's own buttons' code and through these
+tools, and fail if the two ever come out differently.
+
+`answer_omiq_compensation` and the edits change only the open session.
+`save_gating` and `export_gating` write to disk, and the recovery copy is
+kept up to date as Claude edits. Claude is told to change, save or export
+only when the user says to, and to ask the user before restoring or
+discarding earlier unsaved changes.
 
 ## The saved workspace
 
@@ -102,4 +122,4 @@ Once it is added, in a new chat:
 - "Which populations are called CD279+?"
 - "Is any sample's CD134 distribution in CD4+ unlike the others?"
 - "What would the rules do to this plate?" - then, if the moves look right,
-  "apply them and save the gating as plate10_rules".
+  "apply them and save", or "undo that".

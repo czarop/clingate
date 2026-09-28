@@ -35,10 +35,11 @@
 //!
 //! ## A new workspace starts empty
 //!
-//! Opening a folder discards everything, rules included. Rules - and the
-//! sample pairing that travels with them - are exported to a file on the rules
-//! tab and imported on purpose; they are not carried from one workspace to the
-//! next.
+//! Opening a folder discards everything, rules included, and then opens what
+//! the folder holds - its rules too, from `rules/gate_rules.json`, where the
+//! rules tab saves them (see [`clingate_core::workspace::workspace_rules`],
+//! which the tools for Claude open a workspace's rules with as well). Rules
+//! are not carried from one workspace to the next.
 
 use std::path::{Path, PathBuf};
 
@@ -53,14 +54,15 @@ use clingate_core::axis_store::{
 use clingate_core::compensation::groups::{Compensation, GroupId, Source};
 use clingate_core::compensation::{Spillover, own_matrices};
 use clingate_core::file_load::FcsFiles;
-use clingate_core::gate_rules::rule_store::RuleStore;
+use clingate_core::gate_rules::rule_store::{RuleStore, SamplePairing};
 use clingate_core::gates::GateState;
 use clingate_core::omiq::metadata::{
     MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt, OMIQ_FILE_NAME_COLUMN,
     OMIQ_ID_COLUMN,
 };
 use clingate_core::workspace::{
-    Found, Remembered, ScalingCarried, WORKSPACE_FILE, carry_to_scaling, detect, gating_needs,
+    Found, Remembered, RulesRead, ScalingCarried, WORKSPACE_FILE, carry_to_scaling, detect,
+    gating_needs,
 };
 
 pub type GateStore = Store<GateState, CopyValue<GateState, SyncStorage>>;
@@ -136,7 +138,7 @@ pub struct Generation {
 /// Every handle the loading needs, so each operation is one value to move
 /// into a task. All of them are cheap copies of handles to shared state.
 #[derive(Clone, Copy)]
-struct Handles {
+pub(crate) struct Handles {
     gates: GateStore,
     metadata: MetadataStore,
     axes: AxesStore,
@@ -265,7 +267,9 @@ impl Handles {
                 format!("Could not save the workspace into its folder: {e}"),
             );
         }
-        if let Some(location) = Remembered::location()
+        // Not from tests: they would overwrite the real last workspace.
+        if !cfg!(test)
+            && let Some(location) = Remembered::location()
             && let Err(e) = remembered.save_to(&location)
         {
             warn(
@@ -451,7 +455,7 @@ impl Handles {
 
     // ── what the buttons do ──────────────────────────────────────────────
 
-    async fn open_folder(self, folder: PathBuf) {
+    pub(crate) async fn open_folder(self, folder: PathBuf) {
         if !self.begin("Opening the folder") {
             return;
         }
@@ -490,6 +494,7 @@ impl Handles {
         };
 
         self.clear_all(Some(folder.clone()));
+        self.open_rules(&folder, None);
         self.open_fcs(Some(folder.clone()), detected.fcs).await;
 
         let mut chosen: Vec<(Which, PathBuf)> = Vec::new();
@@ -550,8 +555,13 @@ impl Handles {
     async fn restore(mut self, remembered: Remembered) {
         let gone = remembered.missing();
         self.clear_all(remembered.folder.clone());
-        if let Some(pairing) = remembered.pairing.clone() {
-            self.rules.write().pairing = pairing;
+        match remembered.folder.as_deref() {
+            Some(folder) => self.open_rules(folder, remembered.pairing.clone()),
+            None => {
+                if let Some(pairing) = remembered.pairing.clone() {
+                    self.rules.write().pairing = pairing;
+                }
+            }
         }
         self.open_fcs(remembered.folder.clone(), remembered.fcs.clone())
             .await;
@@ -578,6 +588,22 @@ impl Handles {
                 ),
             );
         }
+    }
+
+    /// The folder's rules, with the pairing the workspace was last left with
+    /// over them.
+    fn open_rules(mut self, folder: &Path, pairing: Option<SamplePairing>) {
+        let opened = clingate_core::workspace::workspace_rules(folder, pairing);
+        if let RulesRead::Failed(e) = &opened.read {
+            warn(
+                &self.toasts,
+                format!(
+                    "The rules in {} could not be read: {e}",
+                    opened.file.display()
+                ),
+            );
+        }
+        self.rules.set(opened.store);
     }
 
     async fn open_fcs(mut self, root: Option<PathBuf>, paths: Vec<PathBuf>) {
@@ -942,7 +968,12 @@ impl Handles {
     }
 
     /// Export the saved copy - not unsaved changes - as an Omiq gating file.
-    fn write_gating(self, target: &Path) {
+    /// A bare name goes into the workspace folder, as the tools' export does.
+    pub(crate) fn write_gating(self, typed: &Path) {
+        let folder = self.loaded.peek().folder.clone();
+        let target =
+            clingate_core::workspace::export_target(folder.as_deref(), &typed.to_string_lossy());
+        let target = target.as_path();
         match self.edits.export(target) {
             Ok(false) => say(&self.toasts, format!("Exported to {}", target.display())),
             Ok(true) => say(
@@ -1035,20 +1066,28 @@ fn run(handles: Handles, action: Pending) {
     });
 }
 
+impl Handles {
+    /// The Workspace tab's handles, from the document every tab shares. The
+    /// tab takes its own through this, and so do the parity tests.
+    pub(crate) fn from_context() -> Self {
+        Handles {
+            gates: use_context::<GateStore>(),
+            metadata: use_context::<MetadataStore>(),
+            axes: use_context::<AxesStore>(),
+            rules: use_context::<Signal<RuleStore>>(),
+            files: use_context::<Signal<Option<FcsFiles>>>(),
+            compensation: use_context::<Signal<Compensation>>(),
+            loaded: use_context::<Signal<Loaded>>(),
+            generation: use_context::<Signal<Generation>>(),
+            toasts: use_toast(),
+            edits: use_context::<crate::gate_editor::edits::Edits>(),
+        }
+    }
+}
+
 #[component]
 pub fn WorkspaceWindow() -> Element {
-    let handles = Handles {
-        gates: use_context::<GateStore>(),
-        metadata: use_context::<MetadataStore>(),
-        axes: use_context::<AxesStore>(),
-        rules: use_context::<Signal<RuleStore>>(),
-        files: use_context::<Signal<Option<FcsFiles>>>(),
-        compensation: use_context::<Signal<Compensation>>(),
-        loaded: use_context::<Signal<Loaded>>(),
-        generation: use_context::<Signal<Generation>>(),
-        toasts: use_toast(),
-        edits: use_context::<crate::gate_editor::edits::Edits>(),
-    };
+    let handles = Handles::from_context();
     let loaded = handles.loaded;
     let files = handles.files;
     let toasts = handles.toasts;

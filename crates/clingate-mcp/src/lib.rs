@@ -54,12 +54,18 @@ To see whether a sample is distributed unlike the rest - the usual reason a \
 rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
 from 0, or spread_ratio well above 1, marks a sample worth a closer look.
 
-The rules change gates, so they run in steps, each only when the user asks: \
+Gates are edited in a working copy, exactly as in the clingate app. The \
+rules change gates, so they run in steps, each only when the user asks: \
 preview_rules says what would move and changes nothing; show the user the \
 moves, above all those marked review. apply_rule_placements applies the last \
-preview to this session only, and only once the user has said to. save_gating \
-writes the gates to a file in the workspace folder, under a name the user \
-chose; never overwrite a file unless the user has said to replace that file.";
+preview to the working copy - one step, which undo takes back - only once the \
+user has said to. save_gating saves the working copy into the workspace folder \
+(clingate_gating.omiqgt), where the app will open it; export_gating writes \
+the saved copy under another name. Save and export only when the user says \
+to, and never replace a file unless the user has said to replace that file.
+
+If the overview says an earlier session left unsaved changes, ask the user \
+whether to restore or discard them.";
 
 /// The server, holding the one open workspace.
 #[derive(Clone)]
@@ -149,7 +155,7 @@ pub struct CompareSamples {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SaveGating {
+pub struct ExportGating {
     /// The file name the user chose - a name alone, no folder. '.omiqgt' is added if missing.
     pub file_name: String,
     /// Replace a file of that name. Only when the user has said to replace that file.
@@ -372,21 +378,62 @@ impl Clingate {
         self.run(|s| s.preview_rules()).await
     }
 
-    /// Apply the placements of the last preview_rules to this session's gates. Only when the
-    /// user has said to. Writes nothing to disk; refused if the gates changed since the
-    /// preview.
+    /// Apply the placements of the last preview_rules to the working copy - one step, which
+    /// undo takes back. Only when the user has said to. Nothing is saved; refused if the gates
+    /// changed since the preview.
     #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn apply_rule_placements(&self) -> String {
         self.run(|s| s.apply_previewed_rules()).await
     }
 
-    /// Write this session's gates, as they now stand, as an Omiq gating file in the workspace
-    /// folder, under the name the user chose. Refuses to replace an existing file unless
-    /// overwrite is set - which only the user may decide.
+    /// Step the working copy back one edit - a rules run is one step. As the app's Undo.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn undo(&self) -> String {
+        self.run(|s| s.undo()).await
+    }
+
+    /// Step forward again after an undo. As the app's Redo.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn redo(&self) -> String {
+        self.run(|s| s.redo()).await
+    }
+
+    /// Put the working copy back to the last save, discarding unsaved changes - undo brings
+    /// them back. As the app's Revert. Only when the user has said to.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn revert_to_saved(&self) -> String {
+        self.run(|s| s.revert()).await
+    }
+
+    /// Save the working copy into the workspace folder as clingate_gating.omiqgt with its
+    /// scaling, as the app's Save does; the workspace opens on it next time. Only when the user
+    /// has said to save.
     #[tool(annotations(read_only_hint = false, destructive_hint = true))]
-    async fn save_gating(&self, Parameters(args): Parameters<SaveGating>) -> String {
-        self.run(move |s| s.save_gating(&args.file_name, args.overwrite))
+    async fn save_gating(&self) -> String {
+        self.run(|s| s.save()).await
+    }
+
+    /// Write the saved copy - not unsaved changes - as an Omiq gating file in the workspace
+    /// folder, under the name the user chose, as the app's Export does. Refuses to replace an
+    /// existing file unless overwrite is set - which only the user may decide.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn export_gating(&self, Parameters(args): Parameters<ExportGating>) -> String {
+        self.run(move |s| s.export(&args.file_name, args.overwrite))
             .await
+    }
+
+    /// Take back the unsaved changes an earlier session - the app's or a previous one of these -
+    /// left in the workspace folder. Only with the user's say-so.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn restore_unsaved_changes(&self) -> String {
+        self.run(|s| s.restore_unsaved_changes()).await
+    }
+
+    /// Throw away the unsaved changes an earlier session left in the workspace folder. Only
+    /// with the user's say-so.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn discard_unsaved_changes(&self) -> String {
+        self.run(|s| s.discard_unsaved_changes()).await
     }
 }
 

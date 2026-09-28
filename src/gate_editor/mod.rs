@@ -6,6 +6,7 @@ pub mod gate_sidebar;
 pub mod gates;
 pub mod main_window;
 pub mod pairing_controls;
+mod parity_tests;
 pub mod path_picker;
 pub mod plots;
 mod reactivity_tests;

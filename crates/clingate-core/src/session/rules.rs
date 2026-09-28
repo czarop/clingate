@@ -1,12 +1,10 @@
-//! The rules, run as a preview whose placements are applied only when asked,
-//! and the gating file written only when asked.
+//! The rules, run as a preview whose placements are applied only when asked.
 //!
 //! A preview runs every rule the way the Gate Rules tab's button does and
 //! keeps what it would place, moving nothing. Applying writes those
-//! placements into this session's gates - and refuses if the gates have
-//! changed since the preview, since the answers were measured on gates that
-//! are no longer there. Writing the gating file is a third, separate step,
-//! and never overwrites a file unless told to.
+//! placements into the working copy as one undo step - and refuses if the
+//! gates have changed since the preview, since the answers were measured on
+//! gates that are no longer there. Saving is a separate step (see `edits`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -105,19 +103,14 @@ pub struct NotPositioned {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct SavedGating {
-    pub file: PathBuf,
-    pub gates: usize,
-}
-
 impl Session {
     fn rules_or_refuse(&self) -> Result<&crate::gate_rules::rule_store::RuleStore, Refusal> {
         self.rules.as_ref().ok_or_else(|| {
             failed(format!(
-                "this workspace has no rules: the Gate Rules tab saves them as {} beside the \
-                 gating file",
-                super::RULES_FILE
+                "this workspace has no rules: the Gate Rules tab saves them as {} in the \
+                 workspace's {} folder",
+                crate::workspace::RULES_FILE,
+                crate::workspace::RULES_DIR
             ))
         })
     }
@@ -161,19 +154,13 @@ impl Session {
     /// placements are kept for [`Session::apply_previewed_rules`].
     pub fn preview_rules(&mut self) -> Result<RulesPreview, Refusal> {
         let rules = self.rules_or_refuse()?.clone();
-        let inputs = RunInputs {
-            files: self
-                .files
-                .file_list()
-                .iter()
-                .map(|stub| (stub.name.clone(), stub.get_filepath().to_path_buf()))
-                .collect(),
-            compensation: self.compensation.clone(),
-            names: self.metadata.file_name_to_gating_id().clone(),
-            cofactors: RunInputs::cofactors_of(&self.axes.settings),
-            metadata: self.metadata.metadata().clone(),
-            rules,
-        };
+        let inputs = RunInputs::assemble(
+            Some(&self.files),
+            &self.compensation,
+            &self.metadata,
+            &self.axes.settings,
+            &rules,
+        );
         let outcome = run_rules(&self.gates, &inputs, |_| {}, &AtomicBool::new(false));
         let report = outcome.report;
 
@@ -225,8 +212,8 @@ impl Session {
             next: if would_move.is_empty() {
                 "nothing would move".to_string()
             } else {
-                "nothing has moved yet: apply_rule_placements applies these to this session's \
-                 gates, and save_gating writes them to a file"
+                "nothing has moved yet: apply_rule_placements applies these to the working \
+                 copy, and save_gating saves it"
                     .to_string()
             },
             would_move,
@@ -252,51 +239,15 @@ impl Session {
                  run preview_rules again",
             ));
         }
+        // The whole run is one step of the working copy, as in the app.
+        let before = self.working_state();
         crate::gate_rules::autogate::apply_placements(&mut self.gates, &pending.placements);
+        self.edited(before);
         Ok(format!(
-            "{} placement(s) applied to this session's gates; nothing is written to disk until \
-             save_gating",
+            "{} placement(s) applied to the working copy; nothing is saved until save_gating \
+             (undo takes them back)",
             pending.placements.len()
         ))
-    }
-
-    /// Write the gates, as they now stand, as an Omiq gating file in the
-    /// workspace folder. `file_name` is a name, not a path; an existing file
-    /// is never replaced unless `overwrite` says so.
-    pub fn save_gating(&self, file_name: &str, overwrite: bool) -> Result<SavedGating, Refusal> {
-        let name = file_name.trim();
-        let plain = std::path::Path::new(name)
-            .file_name()
-            .is_some_and(|n| n == std::ffi::OsStr::new(name));
-        if name.is_empty() || !plain || name.starts_with('.') {
-            return Err(failed(
-                "give a file name alone, with no folder: it is written into the workspace folder",
-            ));
-        }
-        let name = if name.ends_with(".omiqgt") {
-            name.to_string()
-        } else {
-            format!("{name}.omiqgt")
-        };
-        let path = self.folder.join(&name);
-        if path.exists() && !overwrite {
-            return Err(failed(format!(
-                "{} already exists: ask the user whether to replace it, or choose another name",
-                path.display()
-            )));
-        }
-        let document = crate::omiq::serialise::to_omiq_document(
-            &self.gates,
-            self.metadata.metadata(),
-            &self.axes.settings,
-        )
-        .map_err(failed)?;
-        let text = serde_json::to_string_pretty(&document).map_err(failed)?;
-        std::fs::write(&path, text).map_err(|e| failed(format!("{}: {e}", path.display())))?;
-        Ok(SavedGating {
-            file: path,
-            gates: self.gates.gate_count(),
-        })
     }
 
     /// A file's name in the program, from its gating id.

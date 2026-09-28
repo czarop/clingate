@@ -163,7 +163,10 @@ pub fn ExportPdf(
     let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
 
     let toasts = use_toast();
-    let mut path = use_signal(|| "gate_gallery.pdf".to_string());
+    // A bare name is written into the workspace folder's `figures` folder,
+    // made the first time.
+    let mut path = use_signal(|| clingate_core::workspace::FIGURE_FILE.to_string());
+    let loaded = use_context::<Signal<crate::gate_editor::workspace_window::Loaded>>();
     let mut progress = use_signal(|| None::<(usize, usize)>);
     let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
 
@@ -179,7 +182,8 @@ pub fn ExportPdf(
         // written out as a question mark. A dash that survives beats one that
         // turns into punctuation nobody chose.
         let heading = format!("{gate_name}  -  {x} / {y}");
-        let target = std::path::PathBuf::from(path());
+        let target =
+            clingate_core::workspace::figure_path(loaded.peek().folder.as_deref(), &path());
 
         // Every store read happens here, on the UI thread, before anything is
         // handed to a worker. A resolver built now is a snapshot: the run
@@ -294,7 +298,8 @@ pub fn ExportPdf(
             progress.set(None);
 
             let written = match outcome {
-                Ok(Ok(sheet)) => std::fs::write(&target, &sheet.pdf)
+                Ok(Ok(sheet)) => clingate_core::workspace::make_parent(&target)
+                    .and_then(|()| std::fs::write(&target, &sheet.pdf))
                     .map(|()| (target.display().to_string(), sheet.failed))
                     .map_err(|e| e.to_string()),
                 Ok(Err(e)) => Err(e.to_string()),

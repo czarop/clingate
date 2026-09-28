@@ -36,6 +36,34 @@ pub struct RunInputs {
 }
 
 impl RunInputs {
+    /// Everything a run reads, from the workspace as it stands. The one way
+    /// both the Gate Rules tab and the tools for Claude put a run together,
+    /// so they cannot measure different things.
+    pub fn assemble(
+        files: Option<&crate::file_load::FcsFiles>,
+        compensation: &crate::compensation::groups::Compensation,
+        metadata: &crate::omiq::metadata::MetaDataStore,
+        axes: &crate::omiq::serialise::AxisSettings,
+        rules: &RuleStore,
+    ) -> Self {
+        Self {
+            // Each file with the name the metadata knows it by.
+            files: files
+                .map(|f| {
+                    f.file_list()
+                        .iter()
+                        .map(|stub| (stub.name.clone(), stub.get_filepath().to_path_buf()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            compensation: compensation.clone(),
+            names: metadata.file_name_to_gating_id().clone(),
+            cofactors: Self::cofactors_of(axes),
+            metadata: metadata.metadata().clone(),
+            rules: rules.clone(),
+        }
+    }
+
     /// The arcsinh cofactors out of the axis settings, as a run reads them.
     pub fn cofactors_of(axes: &crate::omiq::serialise::AxisSettings) -> Vec<(Arc<str>, f32)> {
         let mut out = Vec::new();

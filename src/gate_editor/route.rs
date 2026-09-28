@@ -67,8 +67,12 @@ fn panel_class(active: Tab, tab: Tab) -> &'static str {
     }
 }
 
-#[component]
-pub fn Shell() -> Element {
+/// The document every tab shares, provided as context: the stores, the
+/// workspace's files and what it holds, and the working copy.
+///
+/// The shell calls this, and so do the parity tests, so the app they hold to
+/// the tools for Claude is put together exactly as the one on screen.
+pub(crate) fn provide_document() {
     // The document, shared by every tab. A store here is the document; a signal
     // inside a component is that component's own business.
     let gate_store = use_store_sync(GateState::default);
@@ -111,6 +115,11 @@ pub fn Shell() -> Element {
         )
     });
     use_context_provider(|| edits);
+}
+
+#[component]
+pub fn Shell() -> Element {
+    provide_document();
 
     // The workspace first: nothing else has anything to show until it has
     // loaded something.

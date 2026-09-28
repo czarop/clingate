@@ -28,6 +28,9 @@ pub mod sample_pairs;
 #[cfg(test)]
 mod sample_pairs_tests;
 pub mod session;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_workspace;
+pub mod working_copy;
 pub mod workspace;
 
 /// An insertion-ordered map with the fast hasher.

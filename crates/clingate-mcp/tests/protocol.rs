@@ -185,6 +185,12 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "preview_rules",
         "apply_rule_placements",
         "save_gating",
+        "export_gating",
+        "undo",
+        "redo",
+        "revert_to_saved",
+        "restore_unsaved_changes",
+        "discard_unsaved_changes",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -262,12 +268,21 @@ fn gates_are_described_compared_and_saved_only_as_asked() {
         "failed"
     );
 
+    // Nothing edited: nothing to undo.
+    assert_eq!(server.call("undo", json!({}))["outcome"], "failed");
+
     // The gating file already there is not replaced unasked.
-    let refused = server.call("save_gating", json!({"file_name": "gating"}));
+    let refused = server.call("export_gating", json!({"file_name": "gating"}));
     assert_eq!(refused["outcome"], "failed", "{refused}");
-    let saved = server.call("save_gating", json!({"file_name": "from claude"}));
-    assert_eq!(saved["outcome"], "ok", "{saved}");
+    let exported = server.call("export_gating", json!({"file_name": "from claude"}));
+    assert_eq!(exported["outcome"], "ok", "{exported}");
     assert!(folder.join("from claude.omiqgt").is_file());
+
+    // Save writes the working copy where the app saves it.
+    let saved = server.call("save_gating", json!({}));
+    assert_eq!(saved["outcome"], "ok", "{saved}");
+    assert!(folder.join("clingate_gating.omiqgt").is_file());
+    assert!(folder.join("clingate_scaling.csv").is_file());
 }
 
 #[test]

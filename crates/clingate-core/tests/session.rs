@@ -264,8 +264,17 @@ fn with_rules(name: &str) -> std::path::PathBuf {
             rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
         },
     );
-    store.save(&dir.join("gate_rules.json")).unwrap();
+    store
+        .save(&clingate_core::workspace::rules_file(&dir))
+        .unwrap();
     dir
+}
+
+/// Where Tmem's gate edge is on the sample `fmx` - what a rules run moves.
+fn tmem_edge(session: &Session) -> f64 {
+    session.gate("Tmem", Some("fmx")).unwrap().extent[0]
+        .lower
+        .unwrap()
 }
 
 #[test]
@@ -323,20 +332,94 @@ fn a_preview_moves_nothing_until_applied_and_applies_once() {
 }
 
 #[test]
-fn gating_is_saved_by_name_into_the_folder_and_never_over_a_file_unasked() {
-    let folder = workspace("session-save");
+fn the_saved_copy_is_exported_by_name_into_the_folder_and_never_over_a_file_unasked() {
+    let folder = workspace("session-export");
     let session = Session::open(&folder).unwrap();
-    for bad in ["", "../escape", "sub/dir.omiqgt", ".hidden"] {
-        assert!(session.save_gating(bad, false).is_err(), "{bad:?}");
+    for bad in [
+        "",
+        "../escape",
+        "sub/dir.omiqgt",
+        ".hidden",
+        "clingate_gating",
+    ] {
+        assert!(session.export(bad, false).is_err(), "{bad:?}");
     }
-    let saved = session.save_gating("claude", false).unwrap();
-    assert_eq!(saved.file, folder.join("claude.omiqgt"));
-    assert!(saved.gates > 0);
-    assert!(session.save_gating("claude.omiqgt", false).is_err());
-    session.save_gating("claude.omiqgt", true).unwrap();
+    let exported = session.export("claude", false).unwrap();
+    assert_eq!(exported.file, folder.join("claude.omiqgt"));
+    assert!(!exported.unsaved_changes_left_out);
+    assert!(session.export("claude.omiqgt", false).is_err());
+    session.export("claude.omiqgt", true).unwrap();
     // What was written reads back as a gating file.
-    let text = std::fs::read_to_string(&saved.file).unwrap();
+    let text = std::fs::read_to_string(&exported.file).unwrap();
     let _: serde_json::Value = serde_json::from_str(&text).unwrap();
+}
+
+#[test]
+fn a_rules_run_is_one_step_undone_redone_saved_and_opened_again() {
+    let folder = with_rules("session-working-copy");
+    let mut session = Session::open(&folder).unwrap();
+    let drawn = tmem_edge(&session);
+    assert!(!session.edit_state().unsaved_changes);
+    assert!(session.undo().is_err(), "nothing to undo yet");
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let placed = tmem_edge(&session);
+    assert_ne!(placed, drawn);
+    let state = session.edit_state();
+    assert!(state.unsaved_changes && state.undo_steps == 1);
+    assert!(
+        folder.join(".clingate_recovery.omiqgt").is_file(),
+        "kept for a crash"
+    );
+
+    session.undo().unwrap();
+    assert_eq!(tmem_edge(&session), drawn);
+    assert!(
+        !session.edit_state().unsaved_changes,
+        "back to the saved copy"
+    );
+    assert!(!folder.join(".clingate_recovery.omiqgt").exists());
+    session.redo().unwrap();
+    assert_eq!(tmem_edge(&session), placed);
+
+    // An export is the saved copy, not the working one.
+    let exported = session.export("before-save", false).unwrap();
+    assert!(exported.unsaved_changes_left_out);
+
+    let saved = session.save().unwrap();
+    assert_eq!(saved.gating_file, folder.join("clingate_gating.omiqgt"));
+    assert!(!saved.edits.unsaved_changes);
+    assert!(session.revert().is_err(), "nothing unsaved to revert");
+
+    // Opened again, the folder opens on the save.
+    let reopened = Session::open(&folder).unwrap();
+    assert_eq!(tmem_edge(&reopened), placed);
+    assert!(!reopened.edit_state().unsaved_changes);
+}
+
+#[test]
+fn unsaved_changes_left_behind_are_offered_back_and_revert_is_undoable() {
+    let folder = with_rules("session-recovery");
+    {
+        let mut session = Session::open(&folder).unwrap();
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        // Dropped without saving - a close, or a crash.
+    }
+    let mut session = Session::open(&folder).unwrap();
+    assert!(session.edit_state().earlier_unsaved_changes);
+    let drawn = tmem_edge(&session);
+    session.restore_unsaved_changes().unwrap();
+    let state = session.edit_state();
+    assert!(state.unsaved_changes && !state.earlier_unsaved_changes);
+    let restored = tmem_edge(&session);
+    assert_ne!(restored, drawn);
+
+    session.revert().unwrap();
+    assert_eq!(tmem_edge(&session), drawn);
+    session.undo().unwrap();
+    assert_eq!(tmem_edge(&session), restored, "the revert itself is undone");
 }
 
 #[test]

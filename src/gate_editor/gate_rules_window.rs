@@ -24,7 +24,6 @@ use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 static CSS_STYLE: Asset = asset!("assets/gate_rules.css");
@@ -122,10 +121,62 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
     });
 }
 
+/// What a rules run reads and writes, from the document every tab shares.
+///
+/// The tab's Run button goes through this, and so do the parity tests that
+/// hold the app to the tools for Claude: whatever the button does, they do.
+#[derive(Clone, Copy)]
+pub(crate) struct RulesRun {
+    gates: crate::gate_editor::workspace_window::GateStore,
+    metadata: crate::gate_editor::workspace_window::MetadataStore,
+    axes: crate::gate_editor::workspace_window::AxesStore,
+    rules: Signal<RuleStore>,
+    files: Signal<Option<clingate_core::file_load::FcsFiles>>,
+    compensation: Signal<clingate_core::compensation::groups::Compensation>,
+    edits: crate::gate_editor::edits::Edits,
+}
+
+impl RulesRun {
+    pub(crate) fn from_context() -> Self {
+        Self {
+            gates: use_context(),
+            metadata: use_context(),
+            axes: use_context(),
+            rules: use_context(),
+            files: use_context(),
+            compensation: use_context(),
+            edits: use_context(),
+        }
+    }
+
+    /// Everything the run reads, as it stands now - assembled as the tools
+    /// for Claude assemble it - and the axis settings, compared whole: any
+    /// new scaling is a new workspace as far as the answers are concerned.
+    pub(crate) fn inputs_now(&self) -> (RunInputs, clingate_core::omiq::serialise::AxisSettings) {
+        let axes = self.axes.settings().read().clone();
+        let inputs = RunInputs::assemble(
+            self.files.read().as_ref(),
+            &self.compensation.read(),
+            &self.metadata.read(),
+            &axes,
+            &self.rules.read(),
+        );
+        (inputs, axes)
+    }
+
+    /// A finished run's placements, written into the working copy as one
+    /// step.
+    pub(crate) fn apply(mut self, placements: &[clingate_core::gate_rules::autogate::Placement]) {
+        let before = self.edits.before();
+        clingate_core::gate_rules::autogate::apply_placements(&mut self.gates.write(), placements);
+        self.edits.after(before);
+    }
+}
+
 #[component]
 pub fn GateRulesWindow() -> Element {
-    let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
-    let edits = use_context::<crate::gate_editor::edits::Edits>();
+    let run_with = RulesRun::from_context();
+    let gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
@@ -167,10 +218,14 @@ pub fn GateRulesWindow() -> Element {
     // the gallery show, so the three cannot be looking at different
     // experiments.
     let filehandler = use_context::<Signal<Option<clingate_core::file_load::FcsFiles>>>();
-    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
-    let mut sidecar = use_signal(|| "gate_rules.json".to_string());
+    // A bare name is kept in the workspace folder's `rules` folder; the
+    // default is the rules file the workspace opens with.
+    let mut sidecar = use_signal(|| clingate_core::workspace::RULES_FILE.to_string());
+    let loaded = use_context::<Signal<crate::gate_editor::workspace_window::Loaded>>();
+    let sidecar_path =
+        move || clingate_core::workspace::rules_path(loaded.peek().folder.as_deref(), &sidecar());
     let toasts = use_toast();
     // Not a message: it says what the form in front of you is currently doing,
     // and has to stay readable while you fill it in. A toast that faded after
@@ -1006,28 +1061,7 @@ pub fn GateRulesWindow() -> Element {
                         // The axis settings are compared whole, not only the
                         // cofactors the run reads: any new scaling is a new
                         // workspace as far as the answers are concerned.
-                        let inputs_now = move || {
-                            let axes = axis_store.settings().read().clone();
-                            let inputs = RunInputs {
-                                // Each file with the name the metadata knows it by.
-                                files: filehandler
-                                    .read()
-                                    .as_ref()
-                                    .map(|f| {
-                                        f.file_list()
-                                            .iter()
-                                            .map(|stub| (stub.name.clone(), stub.get_filepath().to_owned()))
-                                            .collect()
-                                    })
-                                    .unwrap_or_default(),
-                                compensation: compensation.read().clone(),
-                                names: metadata_store.file_name_to_gating_id().read().clone(),
-                                cofactors: RunInputs::cofactors_of(&axes),
-                                metadata: metadata_store.metadata().read().clone(),
-                                rules: rules.read().clone(),
-                            };
-                            (inputs, axes)
-                        };
+                        let inputs_now = move || run_with.inputs_now();
                         let started = inputs_now();
                         if started.0.files.is_empty() {
                             warn(&toasts, "No FCS files are loaded - open a workspace on the first tab");
@@ -1101,12 +1135,7 @@ pub fn GateRulesWindow() -> Element {
                         // store, and only once the document is known to be the
                         // one the run measured.
                         // The whole run is one step of the working copy.
-                        let before = edits.before();
-                        clingate_core::gate_rules::autogate::apply_placements(
-                            &mut gate_store.write(),
-                            &outcome.placements,
-                        );
-                        edits.after(before);
+                        run_with.apply(&outcome.placements);
 
                         let run = outcome.report;
                         say(
@@ -1446,7 +1475,7 @@ pub fn GateRulesWindow() -> Element {
 
             // ── the sidecar ───────────────────────────────────────────────
             fieldset { class: "gate_rules-form",
-                legend { "Sidecar" }
+                legend { "Rules file" }
                 label { "File" }
                 div { class: "gate_rules-path",
                     input {
@@ -1466,7 +1495,7 @@ pub fn GateRulesWindow() -> Element {
                 div { class: "gate_rules-band gate_rules-actions_row",
                     button {
                         onclick: move |_| {
-                            let path = PathBuf::from(sidecar());
+                            let path = sidecar_path();
                             match rules.read().save(&path) {
                                 Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
                                 Err(e) => warn(&toasts, format!("Could not save: {e}")),
@@ -1486,7 +1515,7 @@ pub fn GateRulesWindow() -> Element {
                     span { class: "gate_rules-gap" }
                     button {
                         onclick: move |_| {
-                            let path = PathBuf::from(sidecar());
+                            let path = sidecar_path();
                             match RuleStore::load(&path) {
                                 Ok(loaded) => {
                                     let n = loaded.len();
@@ -1497,6 +1526,11 @@ pub fn GateRulesWindow() -> Element {
                             }
                         },
                         "Load"
+                    }
+                }
+                if let Some(folder) = loaded.read().folder.clone() {
+                    p { class: "gate_rules-hint",
+                        "A name alone is kept in {folder.join(clingate_core::workspace::RULES_DIR).display()}, and the workspace opens with {clingate_core::workspace::RULES_FILE} there."
                     }
                 }
             }

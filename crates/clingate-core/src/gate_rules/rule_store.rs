@@ -458,7 +458,9 @@ impl RuleStore {
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     }
 
+    /// Write the rules, making the folder they go in if it is not there.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        crate::workspace::make_parent(path)?;
         std::fs::write(path, serde_json::to_string_pretty(self)?)?;
         Ok(())
     }

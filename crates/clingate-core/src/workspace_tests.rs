@@ -651,3 +651,101 @@ fn the_saved_and_recovery_files_live_in_the_folder() {
     recovery.remove();
     assert!(!recovery.gating.exists() && !recovery.scaling.exists());
 }
+
+#[test]
+fn rules_and_figures_go_into_their_own_folders_in_the_workspace() {
+    let dir = scratch("rules-figures");
+    assert_eq!(rules_file(&dir), dir.join("rules").join("gate_rules.json"));
+    // An older workspace's rules at the top level are still found...
+    std::fs::write(dir.join("gate_rules.json"), "{}").unwrap();
+    assert_eq!(rules_file(&dir), dir.join("gate_rules.json"));
+    // ...until there are some in the rules folder.
+    std::fs::create_dir_all(dir.join("rules")).unwrap();
+    std::fs::write(dir.join("rules").join("gate_rules.json"), "{}").unwrap();
+    assert_eq!(rules_file(&dir), dir.join("rules").join("gate_rules.json"));
+
+    assert_eq!(
+        figure_file(&dir),
+        dir.join("figures").join("gate_gallery.pdf")
+    );
+    assert_eq!(
+        in_workspace(Some(&dir), "plate10.json", RULES_DIR),
+        dir.join("rules").join("plate10.json")
+    );
+    let absolute = dir.join("elsewhere.pdf");
+    assert_eq!(
+        in_workspace(Some(&dir), absolute.to_str().unwrap(), FIGURES_DIR),
+        absolute
+    );
+    assert_eq!(
+        in_workspace(None, "x.pdf", FIGURES_DIR),
+        PathBuf::from("x.pdf")
+    );
+
+    // Saving makes the folder.
+    let fresh = scratch("rules-first-save");
+    let path = rules_file(&fresh);
+    crate::gate_rules::rule_store::RuleStore::default()
+        .save(&path)
+        .unwrap();
+    assert!(path.is_file());
+
+    // The default name is the workspace's own rules file; another bare name
+    // goes beside it; a figure goes into figures.
+    assert_eq!(rules_path(Some(&fresh), " gate_rules.json "), path);
+    assert_eq!(
+        rules_path(Some(&fresh), "other.json"),
+        fresh.join("rules").join("other.json")
+    );
+    assert_eq!(
+        figure_path(Some(&fresh), "plate.pdf"),
+        fresh.join("figures").join("plate.pdf")
+    );
+    // An export goes beside the data, as Omiq's format.
+    assert_eq!(
+        export_target(Some(&fresh), "for omiq"),
+        fresh.join("for omiq.omiqgt")
+    );
+    assert_eq!(
+        export_target(Some(&fresh), "for omiq.omiqgt"),
+        fresh.join("for omiq.omiqgt")
+    );
+    assert_eq!(
+        export_target(Some(&fresh), "plate v1.2"),
+        fresh.join("plate v1.2.omiqgt")
+    );
+}
+
+#[test]
+fn a_workspace_opens_its_rules_with_the_pairing_it_was_left_with() {
+    use crate::gate_rules::rule_store::{RuleStore, SamplePairing};
+    let dir = scratch("workspace-rules");
+    let left = SamplePairing {
+        sample_id_column: "left".into(),
+        ..SamplePairing::default()
+    };
+    // No rules file: no rules, but the pairing is kept.
+    let opened = workspace_rules(&dir, Some(left.clone()));
+    assert!(matches!(opened.read, RulesRead::Missing));
+    assert_eq!(&*opened.store.pairing.sample_id_column, "left");
+
+    let saved = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "in the file".into(),
+        ..SamplePairing::default()
+    });
+    saved.save(&rules_file(&dir)).unwrap();
+    let opened = workspace_rules(&dir, None);
+    assert!(matches!(opened.read, RulesRead::Loaded));
+    assert_eq!(&*opened.store.pairing.sample_id_column, "in the file");
+    let opened = workspace_rules(&dir, Some(left));
+    assert_eq!(
+        &*opened.store.pairing.sample_id_column, "left",
+        "as last left"
+    );
+
+    std::fs::write(rules_file(&dir), "not json").unwrap();
+    assert!(matches!(
+        workspace_rules(&dir, None).read,
+        RulesRead::Failed(_)
+    ));
+}

@@ -193,6 +193,130 @@ fn saved_first(candidates: Vec<PathBuf>, saved: &str) -> Found {
     Found::from(candidates)
 }
 
+// ── where things are kept in a workspace folder ──────────────────────────
+
+/// The folder rules are saved to and loaded from, inside the workspace
+/// folder. Made the first time rules are saved.
+pub const RULES_DIR: &str = "rules";
+/// The rules file a workspace opens with, in [`RULES_DIR`].
+pub const RULES_FILE: &str = "gate_rules.json";
+/// The folder figures - the gallery's contact sheets - are written to.
+pub const FIGURES_DIR: &str = "figures";
+/// The contact sheet's file name, in [`FIGURES_DIR`], until another is typed.
+pub const FIGURE_FILE: &str = "gate_gallery.pdf";
+
+/// A workspace's rules file.
+///
+/// Where a workspace has none there yet but has one at its top level - where
+/// rules used to be kept - that one, so an older workspace still finds its
+/// rules. Saving then writes into [`RULES_DIR`].
+pub fn rules_file(folder: &Path) -> PathBuf {
+    let kept = folder.join(RULES_DIR).join(RULES_FILE);
+    let older = folder.join(RULES_FILE);
+    if !kept.is_file() && older.is_file() {
+        older
+    } else {
+        kept
+    }
+}
+
+/// A workspace's contact sheet, until another name is typed.
+pub fn figure_file(folder: &Path) -> PathBuf {
+    folder.join(FIGURES_DIR).join(FIGURE_FILE)
+}
+
+/// Where a path typed into a box goes: as typed when it is a full path, and
+/// otherwise into `default_dir` inside the workspace folder, when there is
+/// one. So a bare name like `plate10_rules.json` lands beside the others.
+pub fn in_workspace(folder: Option<&Path>, typed: &str, default_dir: &str) -> PathBuf {
+    let typed = PathBuf::from(typed.trim());
+    match folder {
+        Some(folder) if typed.is_relative() => folder.join(default_dir).join(typed),
+        _ => typed,
+    }
+}
+
+/// Where a rules file named in a box is: the workspace's own rules file for
+/// the default name, and otherwise as [`in_workspace`] puts it, in
+/// [`RULES_DIR`].
+pub fn rules_path(folder: Option<&Path>, typed: &str) -> PathBuf {
+    match folder {
+        Some(folder) if typed.trim() == RULES_FILE => rules_file(folder),
+        _ => in_workspace(folder, typed, RULES_DIR),
+    }
+}
+
+/// Where a figure named in a box is written: into [`FIGURES_DIR`] unless a
+/// full path is given.
+pub fn figure_path(folder: Option<&Path>, typed: &str) -> PathBuf {
+    in_workspace(folder, typed, FIGURES_DIR)
+}
+
+/// Where an export of the gating named in a box is written: into the
+/// workspace folder unless a full path is given, always as Omiq's
+/// `.omiqgt`. The app's Export and the tools' export both name their file
+/// through this.
+pub fn export_target(folder: Option<&Path>, typed: &str) -> PathBuf {
+    let path = in_workspace(folder, typed, "");
+    let omiq = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("omiqgt"));
+    if omiq {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".omiqgt");
+        PathBuf::from(name)
+    }
+}
+
+/// The rules a workspace opens with - the app's and the tools' alike.
+pub struct WorkspaceRules {
+    /// Its rules file, whether or not there is one yet.
+    pub file: PathBuf,
+    /// The rules in it, with the sample pairing the workspace was last left
+    /// with over whatever the file was saved with. Empty rules - but the
+    /// pairing still - when the file is missing or unreadable.
+    pub store: crate::gate_rules::rule_store::RuleStore,
+    pub read: RulesRead,
+}
+
+pub enum RulesRead {
+    Loaded,
+    Missing,
+    Failed(String),
+}
+
+/// Read a workspace's rules file, and put the pairing it was last left with
+/// over it.
+pub fn workspace_rules(
+    folder: &Path,
+    pairing: Option<crate::gate_rules::rule_store::SamplePairing>,
+) -> WorkspaceRules {
+    use crate::gate_rules::rule_store::RuleStore;
+    let file = rules_file(folder);
+    let (mut store, read) = if file.is_file() {
+        match RuleStore::load(&file) {
+            Ok(store) => (store, RulesRead::Loaded),
+            Err(e) => (RuleStore::default(), RulesRead::Failed(e.to_string())),
+        }
+    } else {
+        (RuleStore::default(), RulesRead::Missing)
+    };
+    if let Some(pairing) = pairing {
+        store.pairing = pairing;
+    }
+    WorkspaceRules { file, store, read }
+}
+
+/// Make the folder a file is about to be written into, if it is not there.
+pub fn make_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => std::fs::create_dir_all(parent),
+        _ => Ok(()),
+    }
+}
+
 // ── saving the working copy ──────────────────────────────────────────────
 
 /// The file Save writes the gates to, in the workspace folder. Omiq's format,

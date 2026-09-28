@@ -131,12 +131,6 @@ commit (`b7a77c4`).
 
 ## clingate
 
-- [ ] **The rules' save path.** Rules stay saved from the Gate Rules tab,
-      separately from the gates (decided). But the path typed there is
-      relative to wherever the program was started, while the tools for
-      Claude look for `gate_rules.json` in the workspace folder; defaulting
-      the path to the workspace folder would join the two up.
-
 - [ ] **A shared cache of transformed frames** (flow-review 6) - the largest
       speed-up available. Every plot view, every gallery image and every file
       of a rules run opens the FCS and re-applies the transforms (and now

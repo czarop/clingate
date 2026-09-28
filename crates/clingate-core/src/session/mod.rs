@@ -16,12 +16,14 @@
 //! editor does per plot; nothing is kept between questions but the workspace
 //! itself.
 
+mod edits;
 mod gates;
 pub mod lookup;
 mod rules;
 
+pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
-pub use rules::{RulesPreview, RulesView, SavedGating};
+pub use rules::{RulesPreview, RulesView};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,7 +44,7 @@ use lookup::{Clarification, ParameterFacts, PopulationFacts, SampleFacts, Sample
 
 /// The rules sidecar a session picks up from the folder, as the Gate Rules
 /// tab saves it by default.
-pub const RULES_FILE: &str = "gate_rules.json";
+pub use crate::workspace::RULES_FILE;
 
 /// Why a question could not be answered.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -89,6 +91,9 @@ pub struct Session {
     /// The placements a rules preview proposed, until they are applied or
     /// the gates change under them.
     pending: Option<rules::Pending>,
+    /// The working copy's history and saved copy - the same type the app
+    /// uses, so undo, save and the rest behave alike. See `working_copy`.
+    working: crate::working_copy::WorkingCopy,
 }
 
 /// Which file each part of the workspace was read from.
@@ -239,29 +244,24 @@ impl Session {
             Found::Missing => PartState::Missing,
         };
 
-        let rules_file = folder.join(RULES_FILE);
+        let opened = crate::workspace::workspace_rules(
+            folder,
+            saved.as_ref().and_then(|s| s.pairing.clone()),
+        );
         let mut rules = None;
-        parts.rules = if rules_file.is_file() {
-            match RuleStore::load(&rules_file) {
-                Ok(mut store) => {
-                    // The grouping as the app last left it, over whatever the
-                    // rules file was exported with.
-                    if let Some(pairing) = saved.as_ref().and_then(|s| s.pairing.clone()) {
-                        store.pairing = pairing;
-                    }
-                    rules = Some(store);
-                    PartState::Loaded { file: rules_file }
-                }
-                Err(e) => PartState::Failed {
-                    file: rules_file,
-                    reason: e.to_string(),
-                },
+        parts.rules = match opened.read {
+            crate::workspace::RulesRead::Loaded => {
+                rules = Some(opened.store);
+                PartState::Loaded { file: opened.file }
             }
-        } else {
-            PartState::Missing
+            crate::workspace::RulesRead::Failed(reason) => PartState::Failed {
+                file: opened.file,
+                reason,
+            },
+            crate::workspace::RulesRead::Missing => PartState::Missing,
         };
 
-        Ok(Self {
+        let mut session = Self {
             folder: folder.to_path_buf(),
             files,
             metadata,
@@ -272,7 +272,14 @@ impl Session {
             parts,
             warnings,
             pending: None,
-        })
+            working: crate::working_copy::WorkingCopy::default(),
+        };
+        // As the app does when its gating file loads: both copies.
+        if matches!(session.parts.gating, PartState::Loaded { .. }) {
+            let now = session.working_state();
+            session.working.loaded(&now);
+        }
+        Ok(session)
     }
 
     pub fn folder(&self) -> &Path {
@@ -281,6 +288,14 @@ impl Session {
 
     pub fn gates(&self) -> &GateState {
         &self.gates
+    }
+
+    pub fn axes(&self) -> &AxisStore {
+        &self.axes
+    }
+
+    pub fn metadata(&self) -> &MetaDataStore {
+        &self.metadata
     }
 
     pub fn rules(&self) -> Option<&RuleStore> {
@@ -328,6 +343,7 @@ impl Session {
                 })
                 .collect(),
             compensation: self.compensation_groups(),
+            edits: self.edit_state(),
             warnings: self.warnings.clone(),
         }
     }
@@ -807,6 +823,9 @@ pub struct Overview {
     pub parameters: usize,
     pub metadata_columns: Vec<MetadataColumn>,
     pub compensation: Vec<CompensationGroup>,
+    /// Whether the working copy has unsaved changes, what can be undone,
+    /// and whether an earlier session left unsaved changes behind.
+    pub edits: EditState,
     pub warnings: Vec<String>,
 }
 

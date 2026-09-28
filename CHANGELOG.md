@@ -4,6 +4,22 @@
 
 ### Added
 
+- **Rules and figures have their own folders in the workspace.** The Gate
+  Rules tab saves to and loads from `rules/gate_rules.json` in the workspace
+  folder - made the first time rules are saved - and a workspace opens with
+  the rules there (with the sample pairing it was last left with), in the
+  app and for the tools for Claude alike. A name alone typed into the box
+  goes into `rules`; a full path is used as it is. An older workspace's
+  `gate_rules.json` at the top of the folder is still found. The gate
+  checker's PDF is written into `figures` the same way.
+- **The tools for Claude edit the same working copy as the app.** They
+  gained `undo`, `redo`, `revert_to_saved`, `save_gating` (the app's Save),
+  `export_gating` (the app's Export: the saved copy, under a name the user
+  chose) and `restore_unsaved_changes` / `discard_unsaved_changes`; a rules
+  run applied by Claude is one undo step, as in the app. The two share one
+  implementation in `clingate-core` (`working_copy`), and parity tests do
+  the same things through the app's code and through the tools and compare
+  every result - the gates, the edit state, and every file written.
 - **A working copy, with Save, Undo, Redo and Revert.** The gates on the
   plots are a working copy; every edit is one step - a gate drawn, a drag
   from press to release, a delete, link or unlink, a label moved, a whole
