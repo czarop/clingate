@@ -659,6 +659,61 @@ pub fn read_axis_configs(
     Ok(configs)
 }
 
+/// Write axis settings as an Omiq scaling export, the file
+/// [`read_axis_configs`] reads.
+///
+/// For keeping a scaling edited here beside the gating file saved with it: a
+/// gate's coordinates are in the units its axes are drawn in, so the two are
+/// only right together. `Min` and `Max` go back to raw values through each
+/// axis's own transform, as Omiq writes them. Channels in name order, so the
+/// same settings always write the same file.
+pub fn write_axis_configs<'a>(
+    axes: impl IntoIterator<Item = &'a AxisInfo>,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let mut rows: Vec<&AxisInfo> = axes.into_iter().collect();
+    rows.sort_by(|a, b| a.param.fluoro.cmp(&b.param.fluoro));
+    let mut out = [PRIMARY, SECONDARY, SCALING_TYPE, COFACTOR, MIN, MAX]
+        .map(quote)
+        .join(",");
+    out.push('\n');
+    for axis in rows {
+        let (kind, cofactor) = match &axis.transform {
+            TransformType::Linear => ("None (linear)", String::new()),
+            TransformType::Arcsinh { cofactor } => ("Arcsinh", cofactor.to_string()),
+            other => {
+                return Err(anyhow!(
+                    "{} has a scaling this program cannot write: {other:?}",
+                    axis.param.fluoro
+                ));
+            }
+        };
+        let raw = |v: f32| axis.transform.inverse_transform(&v).to_string();
+        let secondary = if axis.param.marker == axis.param.fluoro {
+            ""
+        } else {
+            &axis.param.marker
+        };
+        out.push_str(
+            &[
+                quote(&axis.param.fluoro),
+                quote(secondary),
+                quote(kind),
+                quote(&cofactor),
+                quote(&raw(axis.axis_lower)),
+                quote(&raw(axis.axis_upper)),
+            ]
+            .join(","),
+        );
+        out.push('\n');
+    }
+    let temporary = path.with_extension("csv.tmp");
+    std::fs::write(&temporary, out)?;
+    std::fs::rename(&temporary, path)?;
+    Ok(())
+}
+
 pub enum ScalingInfoSource {
     Omiq,
 }

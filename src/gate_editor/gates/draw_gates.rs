@@ -100,6 +100,9 @@ pub fn GateLayer(
     let resolver = use_context::<Signal<Option<Arc<GateOverrideResolver>>>>();
 
     let mut gate_store = use_context::<SyncStore<GateState>>();
+    // Every change made here is a step in the working copy's history.
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
+    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
     let mut draft_gate_coords = use_signal(Vec::<(f32, f32)>::new);
 
     let current_gate_type = use_context::<Signal<PrimaryGateType>>();
@@ -130,6 +133,8 @@ pub fn GateLayer(
             return;
         };
         let _ = plot_store.current_file_id();
+        // An undo can put back gates this plot has never turned to its axes.
+        let _ = generation.read().restored;
         let _ = gate_store
             .match_gates_to_plot(x.clone(), y.clone(), parent.clone(), &resolver)
             .inspect_err(|e| println!("{}", e));
@@ -279,6 +284,7 @@ pub fn GateLayer(
                     // label: not a click on the plot.
                     if label_drag.peek().is_some() {
                         label_drag.set(None);
+                        edits.commit();
                         return;
                     }
                     if let Some(mapper) = plot_map() {
@@ -320,6 +326,8 @@ pub fn GateLayer(
 
                     }
                     drag_data.set(None);
+                    // The end of any drag: all of it is one step.
+                    edits.commit();
                 },
                 ondoubleclick: move |evt| {
                     if gate_store.selected_gate().peek().is_some() || dbl_click_lockout() {
@@ -367,6 +375,7 @@ pub fn GateLayer(
                     } else {
                         None
                     };
+                    let before = edits.before();
                     match gate_store
                         .add_gate(
                             &mapper,
@@ -380,7 +389,7 @@ pub fn GateLayer(
                             name,
                         )
                     {
-                        Ok(_) => {}
+                        Ok(_) => edits.after(before),
                         Err(e) => {
                             draft_gate_coords.set(vec![]);
                             println!("{e}");
@@ -417,6 +426,7 @@ pub fn GateLayer(
                         // Off the data area there is nowhere to put it: it
                         // stays at the last place that was on the plot.
                         if let Ok(at) = map.pixel_to_data(point.0, point.1, None, None) {
+                            edits.begin();
                             let axes = PlotAxes::of(&map, x_channel.peek().clone(), y_channel.peek().clone());
                             gate_store
                                 .move_label(drag.gate_id.clone(), at, &axes)
@@ -462,6 +472,12 @@ pub fn GateLayer(
                             return;
                         };
                         let mut new_data = data.clone_with_point(data_coords);
+                        if selected_gate_op.is_some() {
+                            // The first move of a drag keeps the state before
+                            // it; the click that ends it commits one step. A
+                            // press and release without a move is no step.
+                            edits.begin();
+                        }
                         if let Some(selected_gate_id) = selected_gate_op {
                             match &mut new_data {
                                 GateDragType::Point(point_drag_data) => {
@@ -768,6 +784,7 @@ fn RenderLabel(
     let plot_map = use_context::<Signal<Option<Arc<PlotMapper>>>>();
     let gate_store = use_context::<SyncStore<GateState>>();
     let control = try_use_context::<LabelControl>();
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
     let Some(mapper) = plot_map.read().clone() else {
         return rsx! {};
     };
@@ -840,6 +857,8 @@ fn RenderLabel(
                     if let Some(mut control) = control {
                         control.drag.set(None);
                     }
+                    // The end of a label drag: one step.
+                    edits.commit();
                 }
             },
             for (line , y) in lines.iter().zip(baselines) {

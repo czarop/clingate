@@ -300,3 +300,54 @@ fn a_mapper_for_a_plot_uses_its_layout() {
         "the premise: the default layout puts that pixel elsewhere"
     );
 }
+
+// ── writing the scaling ──────────────────────────────────────────────────
+
+/// A scaling written out reads back as the same axes, so a scaling edited
+/// here and saved beside its gates opens as it was.
+#[test]
+fn a_written_scaling_reads_back_as_the_same_axes() {
+    use crate::AxisInfo;
+    use crate::axis_store::{ScalingInfoSource, read_axis_configs, write_axis_configs};
+    let axis = |fluoro: &str, marker: &str, t: TransformType, raw: (f32, f32)| AxisInfo {
+        param: Param {
+            marker: Arc::from(marker),
+            fluoro: Arc::from(fluoro),
+        },
+        axis_lower: t.transform(&raw.0),
+        axis_upper: t.transform(&raw.1),
+        transform: t,
+    };
+    use flow_fcs::Transformable;
+    let written = vec![
+        axis("FSC-A", "FSC-A", TransformType::Linear, (0.0, 4_194_304.0)),
+        axis(
+            "BUV395-A",
+            "CD4",
+            TransformType::Arcsinh { cofactor: 1000.0 },
+            (-13_000.0, 4_194_304.0),
+        ),
+        // A marker name with a comma and a quote in it.
+        axis(
+            "BV421-A",
+            "CD27, \"memory\"",
+            TransformType::Arcsinh { cofactor: 6000.5 },
+            (-2000.0, 250_000.0),
+        ),
+    ];
+    let dir = crate::file_load_tests::scratch("scaling-write");
+    let path = dir.join("scaling.csv");
+    write_axis_configs(&written, &path).unwrap();
+    let mut back = read_axis_configs(path, ScalingInfoSource::Omiq).unwrap();
+    back.sort_by(|a, b| a.param.fluoro.cmp(&b.param.fluoro));
+    let mut want = written.clone();
+    want.sort_by(|a, b| a.param.fluoro.cmp(&b.param.fluoro));
+    assert_eq!(back.len(), want.len());
+    for (b, w) in back.iter().zip(&want) {
+        assert_eq!(b.param, w.param);
+        assert_eq!(b.transform, w.transform);
+        let near = |x: f32, y: f32| (x - y).abs() <= 1e-5 * y.abs().max(1.0);
+        assert!(near(b.axis_lower, w.axis_lower), "{b:?} vs {w:?}");
+        assert!(near(b.axis_upper, w.axis_upper), "{b:?} vs {w:?}");
+    }
+}

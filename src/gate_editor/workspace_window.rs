@@ -59,7 +59,6 @@ use clingate_core::omiq::metadata::{
     MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt, OMIQ_FILE_NAME_COLUMN,
     OMIQ_ID_COLUMN,
 };
-use clingate_core::omiq::serialise::to_omiq_document;
 use clingate_core::workspace::{
     Found, Remembered, ScalingCarried, WORKSPACE_FILE, carry_to_scaling, detect, gating_needs,
 };
@@ -129,6 +128,9 @@ pub struct Generation {
     /// The file list changed: indices into it from before may name another
     /// file, or none.
     pub files: u64,
+    /// The working copy was put back to another state - an undo, a redo, a
+    /// revert. Plots match their gates to their axes again.
+    pub restored: u64,
 }
 
 /// Every handle the loading needs, so each operation is one value to move
@@ -144,6 +146,7 @@ struct Handles {
     loaded: Signal<Loaded>,
     generation: Signal<Generation>,
     toasts: Toasts,
+    edits: crate::gate_editor::edits::Edits,
 }
 
 /// Which part of the workspace an action is about.
@@ -274,6 +277,7 @@ impl Handles {
 
     /// Discard everything, for a new workspace.
     fn clear_all(mut self, folder: Option<PathBuf>) {
+        self.edits.cleared();
         self.gates.set(GateState::default());
         self.metadata.set(MetaDataStore::default());
         self.axes.set(AxisStore::default());
@@ -408,6 +412,8 @@ impl Handles {
                 let count = fresh.gate_count();
                 let mut gates = self.gates;
                 gates.set(fresh);
+                // Both the saved copy and the working copy.
+                self.edits.loaded_fresh();
                 self.document_changed();
                 self.set_part(Which::Gating, Part::Loaded(path.clone()));
                 say(
@@ -454,6 +460,7 @@ impl Handles {
                 let named = saved.fcs.clone();
                 self.restore(saved).await;
                 self.note_unlisted(&folder, &named).await;
+                self.edits.check_recovery();
                 self.end();
                 return;
             }
@@ -512,6 +519,7 @@ impl Handles {
         if let Some((_, path)) = chosen.iter().find(|(w, _)| *w == Which::Gating) {
             self.load_gating(path.clone()).await;
         }
+        self.edits.check_recovery();
         self.end();
     }
 
@@ -534,6 +542,7 @@ impl Handles {
             }
             None => self.restore(remembered).await,
         }
+        self.edits.check_recovery();
         self.end();
     }
 
@@ -915,7 +924,13 @@ impl Handles {
                 }
             }
             Which::Scaling => {
+                // Carrying the gates to a new scaling is an edit of the
+                // working copy, when there is one.
+                let before = self.edits.before();
                 if self.load_scaling(path).await {
+                    if self.edits.has_saved_now() {
+                        self.edits.after(before);
+                    }
                     self.gating_if_waiting().await;
                 }
             }
@@ -926,21 +941,18 @@ impl Handles {
         self.end();
     }
 
+    /// Export the saved copy - not unsaved changes - as an Omiq gating file.
     fn write_gating(self, target: &Path) {
-        let written = (|| -> anyhow::Result<()> {
-            let document = to_omiq_document(
-                &self.gates.read(),
-                &self.metadata.metadata().read(),
-                &self.axes.settings().read(),
-            )?;
-            // Pretty-printed: the first thing anyone does with a file Omiq
-            // rejects is open it and look.
-            std::fs::write(target, serde_json::to_string_pretty(&document)?)?;
-            Ok(())
-        })();
-        match written {
-            Ok(()) => say(&self.toasts, format!("Written to {}", target.display())),
-            Err(e) => warn(&self.toasts, format!("Could not write: {e}")),
+        match self.edits.export(target) {
+            Ok(false) => say(&self.toasts, format!("Exported to {}", target.display())),
+            Ok(true) => say(
+                &self.toasts,
+                format!(
+                    "Exported the last save to {} - the unsaved changes are not in it",
+                    target.display()
+                ),
+            ),
+            Err(e) => warn(&self.toasts, format!("Could not export: {e}")),
         }
     }
 
@@ -982,7 +994,7 @@ impl Pending {
     }
 
     fn describe(&self) -> String {
-        let consequence = "Every gate position changed since the gating file was loaded - by hand or by the autogater - will be lost. Write the gating file first if you need them.";
+        let consequence = "The working copy has unsaved changes - by hand or by the rules - and they will be lost. Save first if you need them.";
         match self {
             Pending::OpenFolder(folder) => format!(
                 "Opening {} starts a new workspace: the gates, the metadata, the scaling and the rules all go. {consequence}",
@@ -1006,7 +1018,7 @@ impl Pending {
 
 /// Run an action now, or hold it for confirmation if it would discard gates.
 fn act(handles: Handles, mut pending: Signal<Option<Pending>>, action: Pending) {
-    if action.discards_gates() && handles.gates_loaded() {
+    if action.discards_gates() && handles.gates_loaded() && handles.edits.dirty_now() {
         pending.set(Some(action));
         return;
     }
@@ -1035,6 +1047,7 @@ pub fn WorkspaceWindow() -> Element {
         loaded: use_context::<Signal<Loaded>>(),
         generation: use_context::<Signal<Generation>>(),
         toasts: use_toast(),
+        edits: use_context::<crate::gate_editor::edits::Edits>(),
     };
     let loaded = handles.loaded;
     let files = handles.files;
@@ -1045,6 +1058,22 @@ pub fn WorkspaceWindow() -> Element {
     // whenever it changes. A memo, so an edit to a rule is not a save. Not
     // while something is loading: a reopen clears the grouping before it
     // puts the saved one back, and the load saves when it ends.
+    // Save points the workspace at the saved files; remembered at once, so
+    // the folder opens on them next time.
+    let parts = use_memo(move || {
+        let l = loaded.read();
+        (
+            l.gating.path().map(Path::to_path_buf),
+            l.scaling.path().map(Path::to_path_buf),
+        )
+    });
+    use_effect(move || {
+        parts.read();
+        if loaded.peek().busy.is_none() {
+            handles.remember();
+        }
+    });
+
     let pairing = use_memo(move || handles.rules.read().pairing.clone());
     use_effect(move || {
         pairing.read();
@@ -1083,6 +1112,7 @@ pub fn WorkspaceWindow() -> Element {
         document::Stylesheet { href: asset!("/assets/workspace.css") }
         div { class: "workspace",
             h2 { "Workspace" }
+            crate::gate_editor::edits::EditBar {}
 
             // A box beside the dialog, as everywhere else. The dialog is a
             // separate service a machine may not be running, and without the
@@ -1215,9 +1245,9 @@ pub fn WorkspaceWindow() -> Element {
             }
 
             div { class: "workspace-row",
-                h3 { "Write gating file" }
+                h3 { "Export gating file" }
                 p { class: "workspace-hint",
-                    "Writes the gates as they stand - drawn, per specimen and per sample - as an Omiq gating file. A gating file has to have been loaded: its header carries the dataset and workflow ids Omiq checks on import."
+                    "Writes the saved copy - the gates as last saved, drawn, per specimen and per sample - as an Omiq gating file. Unsaved changes are not in it: Save first. A gating file has to have been loaded: its header carries the dataset and workflow ids Omiq checks on import."
                 }
                 div { class: "workspace-path",
                     input {
@@ -1248,7 +1278,7 @@ pub fn WorkspaceWindow() -> Element {
                         class: "workspace-primary",
                         disabled: busy.is_some(),
                         onclick: move |_| handles.write_gating(&PathBuf::from(export_to.peek().trim())),
-                        "Write"
+                        "Export"
                     }
                 }
             }

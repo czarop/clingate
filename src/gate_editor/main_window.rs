@@ -73,6 +73,8 @@ pub fn MainWindow() -> Element {
     // document, and the gate rules tab counts them to say whether the pairing
     // column actually reaches them.
     let filehandler = use_context::<Signal<Option<FcsFiles>>>();
+    // Axis edits carry the gates, and are steps of the working copy.
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
     // Reports of what just happened. This used to be a signal that nothing
     // rendered, so an axis rescale that failed said nothing at all.
     let toasts = use_toast();
@@ -200,6 +202,8 @@ pub fn MainWindow() -> Element {
             );
             return false;
         }
+        // The axis and the gates it carries are one step of the working copy.
+        let before = edits.before();
         let carried = match edit {
             AxisEdit::Cofactor => match axis_store.update_cofactor(&channel, value as f32) {
                 Ok((old, new)) => gate_store.rescale_gates(&channel, &old, &new),
@@ -225,6 +229,7 @@ pub fn MainWindow() -> Element {
                 }
             }
         };
+        edits.after(before);
         if let Err(errors) = carried {
             warn(
                 &toasts,
@@ -426,6 +431,7 @@ pub fn MainWindow() -> Element {
                     div { class: "new-gate-pane",
                         NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
                     }
+                    crate::gate_editor::edits::EditBar {}
                     }
                     div { class: "file-info",
                         PairingColumns {}

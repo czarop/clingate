@@ -100,6 +100,18 @@ pub fn Shell() -> Element {
     let generation = use_signal(Generation::default);
     use_context_provider(|| generation);
 
+    // The working copy's history, save and recovery - see `edits`.
+    let edits = use_hook(|| {
+        crate::gate_editor::edits::Edits::provide(
+            gate_store,
+            axis_store,
+            metadata_store,
+            loaded,
+            generation,
+        )
+    });
+    use_context_provider(|| edits);
+
     // The workspace first: nothing else has anything to show until it has
     // loaded something.
     let mut active = use_signal(|| Tab::Workspace);

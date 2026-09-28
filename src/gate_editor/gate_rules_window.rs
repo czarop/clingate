@@ -125,6 +125,7 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
 #[component]
 pub fn GateRulesWindow() -> Element {
     let mut gate_store = use_context::<Store<GateState, CopyValue<GateState, SyncStorage>>>();
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
@@ -433,6 +434,7 @@ pub fn GateRulesWindow() -> Element {
         document::Link { rel: "stylesheet", href: CSS_STYLE }
         div { class: "gate_rules",
             h2 { "Gate rules" }
+            crate::gate_editor::edits::EditBar {}
             p { class: "gate_rules-hint",
                 "A rule names a population, not a gate on one plot. Leaving the parent as "
                 em { "any" }
@@ -1098,10 +1100,13 @@ pub fn GateRulesWindow() -> Element {
                         // Writing happens here, on the one thread that owns the
                         // store, and only once the document is known to be the
                         // one the run measured.
+                        // The whole run is one step of the working copy.
+                        let before = edits.before();
                         clingate_core::gate_rules::autogate::apply_placements(
                             &mut gate_store.write(),
                             &outcome.placements,
                         );
+                        edits.after(before);
 
                         let run = outcome.report;
                         say(

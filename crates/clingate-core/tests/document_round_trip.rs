@@ -853,3 +853,55 @@ fn a_moved_label_is_saved_and_comes_back() {
         "put at {put:?}, came back at {at:?}"
     );
 }
+
+/// Saving writes the gates and the scaling together, and the pair opens as
+/// what was saved - including after a cofactor was changed here, which moves
+/// every gate on that channel and is only right read back against the new
+/// scaling.
+#[test]
+fn a_saved_working_copy_opens_again_as_it_was_saved() {
+    use clingate_core::axis_store::{ScalingInfoSource, read_axis_configs};
+    use clingate_core::workspace::GatingFiles;
+    use flow_fcs::TransformType;
+
+    let mut state = import(&fixture(FIXTURE));
+    let metadata = fixture_metadata();
+    let mut axes = fixture_axes();
+
+    // Change one arcsinh channel's cofactor, carrying its gates, as the
+    // editor does.
+    let channel: Arc<str> = axes
+        .iter()
+        .find(|(_, a)| matches!(a.transform, TransformType::Arcsinh { .. }))
+        .map(|(c, _)| c.clone())
+        .unwrap();
+    let old = axes[&channel].clone();
+    let mut new = old.clone();
+    new.transform = TransformType::Arcsinh { cofactor: 2500.0 };
+    {
+        use flow_fcs::Transformable;
+        let raw = |v: f32| old.transform.inverse_transform(&v);
+        new.axis_lower = new.transform.transform(&raw(old.axis_lower));
+        new.axis_upper = new.transform.transform(&raw(old.axis_upper));
+    }
+    state.rescale_channel(&channel, &old, &new).unwrap();
+    axes.insert(channel.clone(), new);
+    let before = to_omiq_document(&state, &metadata, &axes).unwrap();
+
+    let dir = scratch("saved-working-copy");
+    let files = GatingFiles::saved(&dir);
+    files.write(&state, &metadata, &axes).unwrap();
+
+    let mut reread = clingate_core::axis_store::AxisStore::default();
+    reread.replace_axis_configs(
+        read_axis_configs(files.scaling.clone(), ScalingInfoSource::Omiq).unwrap(),
+    );
+    let reopened =
+        GateState::from_gating_file(files.gating.clone(), &metadata, reread.settings.clone())
+            .unwrap();
+    let after = to_omiq_document(&reopened, &metadata, &reread.settings).unwrap();
+    assert_eq!(
+        after["tree"]["filterContainers"], before["tree"]["filterContainers"],
+        "the saved copy opened as something other than what was saved"
+    );
+}

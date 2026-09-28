@@ -173,10 +173,105 @@ pub fn detect(folder: &Path) -> std::io::Result<Detected> {
 
     Ok(Detected {
         fcs: fcs_under(folder)?,
-        gating: Found::from(gating),
+        gating: saved_first(gating, SAVED_GATING),
         metadata: Found::from(metadata),
-        scaling: Found::from(scaling),
+        scaling: saved_first(scaling, SAVED_SCALING),
     })
+}
+
+/// Among several candidates, the one this program saved, which is the one
+/// worked on last: after a first save a folder holds both the Omiq export and
+/// the saved copy, and without this opening it afresh would ask which.
+fn saved_first(candidates: Vec<PathBuf>, saved: &str) -> Found {
+    if candidates.len() > 1
+        && let Some(ours) = candidates
+            .iter()
+            .find(|p| p.file_name().is_some_and(|n| n == saved))
+    {
+        return Found::One(ours.clone());
+    }
+    Found::from(candidates)
+}
+
+// ── saving the working copy ──────────────────────────────────────────────
+
+/// The file Save writes the gates to, in the workspace folder. Omiq's format,
+/// so it can go back to Omiq; never the file that was loaded, which is left
+/// as it came.
+pub const SAVED_GATING: &str = "clingate_gating.omiqgt";
+/// The scaling saved with them. A gate's coordinates are in the units its
+/// axes are drawn in, so gates saved after a cofactor changed are only right
+/// read against the scaling they were saved with.
+pub const SAVED_SCALING: &str = "clingate_scaling.csv";
+/// The working copy as it stands, kept as it is edited so a crash or a close
+/// without saving loses nothing. Hidden, so opening the folder afresh does not
+/// mistake it for a part of the workspace.
+pub const RECOVERY_GATING: &str = ".clingate_recovery.omiqgt";
+pub const RECOVERY_SCALING: &str = ".clingate_recovery_scaling.csv";
+
+/// A gating file and the scaling that goes with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatingFiles {
+    pub gating: PathBuf,
+    pub scaling: PathBuf,
+}
+
+impl GatingFiles {
+    /// Where Save writes, in `folder`.
+    pub fn saved(folder: &Path) -> Self {
+        Self {
+            gating: folder.join(SAVED_GATING),
+            scaling: folder.join(SAVED_SCALING),
+        }
+    }
+
+    /// Where the recovery copy is kept, in `folder`.
+    pub fn recovery(folder: &Path) -> Self {
+        Self {
+            gating: folder.join(RECOVERY_GATING),
+            scaling: folder.join(RECOVERY_SCALING),
+        }
+    }
+
+    /// Whether both are there.
+    pub fn exist(&self) -> bool {
+        self.gating.is_file() && self.scaling.is_file()
+    }
+
+    /// When the gating file was last written, for saying how old a recovery
+    /// copy is.
+    pub fn modified(&self) -> Option<std::time::SystemTime> {
+        std::fs::metadata(&self.gating)
+            .and_then(|m| m.modified())
+            .ok()
+    }
+
+    /// Write `gates` and the scaling `axes` describes.
+    ///
+    /// The gating document is built before anything is written, so a gate
+    /// that cannot be written leaves both files as they were. Each is written
+    /// beside itself and renamed over, so a crash part-way leaves the old file
+    /// rather than half a new one.
+    pub fn write(
+        &self,
+        gates: &crate::gates::GateState,
+        metadata: &crate::omiq::metadata::MetaDataFileMap,
+        axes: &crate::omiq::serialise::AxisSettings,
+    ) -> anyhow::Result<()> {
+        let document = crate::omiq::serialise::to_omiq_document(gates, metadata, axes)?;
+        let text = serde_json::to_string_pretty(&document)?;
+        crate::axis_store::write_axis_configs(axes.values(), &self.scaling)?;
+        let temporary = self.gating.with_extension("omiqgt.tmp");
+        std::fs::write(&temporary, text)?;
+        std::fs::rename(&temporary, &self.gating)?;
+        Ok(())
+    }
+
+    /// Remove both, where they are there.
+    pub fn remove(&self) {
+        let _ = std::fs::remove_file(&self.gating);
+        let _ = std::fs::remove_file(&self.scaling);
+    }
 }
 
 /// Every FCS file under `folder`, sub-folders included, sorted.

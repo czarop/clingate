@@ -603,3 +603,51 @@ fn a_gating_file_says_what_it_is_waiting_for() {
     metadata.clear();
     assert_eq!(gating_needs(&metadata, &axes), Some("the metadata"));
 }
+
+// ── the saved copy ───────────────────────────────────────────────────────
+
+#[test]
+fn a_folder_with_both_the_omiq_export_and_the_saved_copy_opens_the_saved_one() {
+    let dir = scratch("saved-first");
+    for name in [
+        "Omiq export.omiqgt",
+        SAVED_GATING,
+        RECOVERY_GATING,
+        "scaling.csv",
+        SAVED_SCALING,
+        RECOVERY_SCALING,
+    ] {
+        std::fs::write(dir.join(name), "{}").unwrap();
+    }
+    let found = detect(&dir).unwrap();
+    assert_eq!(found.gating, Found::One(dir.join(SAVED_GATING)));
+    assert_eq!(found.scaling, Found::One(dir.join(SAVED_SCALING)));
+
+    // Without the saved copy, two exports are still a question - and the
+    // hidden recovery copy is never one of the candidates.
+    std::fs::remove_file(dir.join(SAVED_GATING)).unwrap();
+    std::fs::write(dir.join("another.omiqgt"), "{}").unwrap();
+    match detect(&dir).unwrap().gating {
+        Found::Several(c) => {
+            assert_eq!(c.len(), 2, "{c:?}");
+            assert!(!c.iter().any(|p| p.ends_with(RECOVERY_GATING)));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_saved_and_recovery_files_live_in_the_folder() {
+    let dir = scratch("gating-files");
+    let saved = GatingFiles::saved(&dir);
+    let recovery = GatingFiles::recovery(&dir);
+    assert_eq!(saved.gating, dir.join(SAVED_GATING));
+    assert_eq!(recovery.scaling, dir.join(RECOVERY_SCALING));
+    assert!(!recovery.exist());
+    std::fs::write(&recovery.gating, "{}").unwrap();
+    assert!(!recovery.exist(), "both files or none");
+    std::fs::write(&recovery.scaling, "").unwrap();
+    assert!(recovery.exist() && recovery.modified().is_some());
+    recovery.remove();
+    assert!(!recovery.gating.exists() && !recovery.scaling.exists());
+}

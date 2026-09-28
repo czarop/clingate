@@ -1,4 +1,5 @@
 pub mod compensation_panel;
+pub mod edits;
 pub mod gallery;
 pub mod gate_rules_window;
 pub mod gate_sidebar;

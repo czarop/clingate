@@ -21,6 +21,7 @@ pub mod file_load_tests;
 pub mod gate_move;
 pub mod gate_rules;
 pub mod gates;
+pub mod history;
 pub mod macros;
 pub mod omiq;
 pub mod sample_pairs;
