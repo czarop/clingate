@@ -1505,3 +1505,123 @@ fn a_report_belongs_to_the_run_it_was_made_against() {
     assert_eq!((reviewed.accepted, reviewed.reported), (2, 0));
     assert!(is_reviewed(&folder, &second));
 }
+
+/// Tmem's rule, done another way, as a whole rule.
+fn tmem_candidate(
+    session: &Session,
+    how: clingate_core::gate_rules::rule::Rule,
+) -> clingate_core::gate_rules::rule_store::GateRule {
+    tmem_rule(session, how).rule
+}
+
+#[test]
+fn candidate_rules_are_tried_side_by_side_and_nothing_moves() {
+    let folder = rule_in(tmem_workspace("session-try"), percentile(0.0));
+    let session = Session::open(&folder).unwrap();
+    let before = tmem_edge(&session);
+    let rules_file = std::fs::read(clingate_core::workspace::rules_file(&folder)).unwrap();
+
+    let candidates = vec![
+        // The gate as drawn holds the positives, about a third of the parent:
+        // a band round that is already met, so the gate is kept.
+        tmem_candidate(&session, band((0.30, 0.40))),
+        // Half a unit below the median: the slanted gate takes the negatives in.
+        tmem_candidate(&session, percentile(-0.5)),
+        // A unit above it: in the gap, as drawn.
+        tmem_candidate(&session, percentile(1.0)),
+    ];
+    let trial = session.try_rules("Tmem", &candidates, None).unwrap();
+    assert!(trial.gate.starts_with("Tmem of "), "{}", trial.gate);
+    assert_eq!(trial.files_read, 2);
+    assert!(trial.problems.is_empty(), "{:?}", trial.problems);
+    assert_eq!(trial.specimen_column, "test");
+    assert_eq!(trial.candidates.len(), 3);
+    assert!(
+        trial.candidates[0]
+            .rule
+            .contains("capture 30.000% to 40.000%")
+    );
+    assert!(trial.candidates[1].rule.contains("50th percentile"));
+
+    // One row per specimen's gated file, each with a cell per candidate.
+    assert_eq!(trial.rows_total, 2);
+    for row in &trial.rows {
+        assert_eq!(row.candidates.len(), 3);
+        let current = row.current_holds.unwrap();
+        assert!((0.25..0.45).contains(&current), "{row:?}");
+        let [kept, lower, gap] = &row.candidates[..] else {
+            unreachable!()
+        };
+        assert_eq!(kept.what, "kept", "{row:?}");
+        assert_eq!(kept.holds, row.current_holds);
+        assert_eq!(lower.what, "moved");
+        assert!(lower.holds.unwrap() > current + 0.05, "{row:?}");
+        assert_eq!(gap.what, "moved");
+        assert!((gap.holds.unwrap() - current).abs() < 0.02, "{row:?}");
+        assert!(lower.line.unwrap() < gap.line.unwrap());
+        assert!(lower.confidence.is_some() && lower.weakest.is_some());
+    }
+
+    // Summed up by sample type: the pairing's FMX and FS, one sample each.
+    for summary in trial.candidates.iter().map(|c| &c.summary) {
+        let types: Vec<(&str, usize)> = summary
+            .by_type
+            .iter()
+            .map(|t| (t.sample_type.as_str(), t.samples))
+            .collect();
+        assert_eq!(types, vec![("FMX", 1), ("FS", 1)]);
+        assert_eq!(
+            summary.placed + summary.kept + summary.not_placed,
+            2,
+            "{summary:?}"
+        );
+    }
+    assert_eq!(trial.candidates[0].summary.kept, 2);
+    assert_eq!(trial.candidates[1].summary.placed, 2);
+    let lower_fs = trial.candidates[1].summary.by_type[1]
+        .holds
+        .as_ref()
+        .unwrap();
+    let current_fs = trial.current[1].holds.as_ref().unwrap();
+    assert!(lower_fs.median > current_fs.median + 0.05);
+
+    // Nothing written, nothing moved.
+    assert_eq!(tmem_edge(&session), before);
+    assert_eq!(
+        std::fs::read(clingate_core::workspace::rules_file(&folder)).unwrap(),
+        rules_file
+    );
+    assert!(!folder.join("reviews").exists(), "no run was recorded");
+
+    // Fewer rows on request, the total still said.
+    let one = session.try_rules("Tmem", &candidates, Some(1)).unwrap();
+    assert_eq!((one.rows.len(), one.rows_total), (1, 2));
+}
+
+#[test]
+fn a_trial_needs_one_to_four_candidates_and_a_population_that_is_there() {
+    let folder = rule_in(tmem_workspace("session-try-refused"), percentile(0.0));
+    let session = Session::open(&folder).unwrap();
+    let one = tmem_candidate(&session, percentile(0.0));
+    assert!(session.try_rules("Tmem", &[], None).is_err());
+    let five = vec![one.clone(); 5];
+    let refused = format!("{:?}", session.try_rules("Tmem", &five, None).unwrap_err());
+    assert!(refused.contains("at most 4"), "{refused}");
+    assert!(matches!(
+        session.try_rules("Tme", std::slice::from_ref(&one), None),
+        Err(Refusal::NeedsClarification(_))
+    ));
+    // A rule on a marker the gate is not drawn on is not placed, and says why.
+    let mut elsewhere = one.clone();
+    elsewhere.parameter = "BUV661-A".into();
+    let trial = session.try_rules("Tmem", &[elsewhere], None).unwrap();
+    let summary = &trial.candidates[0].summary;
+    assert_eq!(summary.placed, 0);
+    assert!(
+        summary
+            .not_placed_because
+            .iter()
+            .any(|(why, _)| why.contains("the rule positions BUV661-A")),
+        "{summary:?}"
+    );
+}

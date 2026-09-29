@@ -200,6 +200,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "mark_looks_right",
         "explain_gate_positioning",
         "rule_guide",
+        "try_rules",
         "read_positioning_code",
         "replay_rules",
         "replay_case",
@@ -577,6 +578,21 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
     );
     let bad_scope = server.call("replay_rules", json!({"scope": "everywhere"}));
     assert_eq!(bad_scope["outcome"], "failed", "{bad_scope}");
+
+    // Candidates tried on the files as they are, nothing moved.
+    let tried = server.call(
+        "try_rules",
+        json!({"population": "Tmem", "candidates": [rule(0.05, 0.06), rule(0.01, 0.02)], "max_rows": 1}),
+    );
+    assert_eq!(tried["outcome"], "ok", "{tried}");
+    assert_eq!(tried["result"]["candidates"].as_array().unwrap().len(), 2);
+    assert_eq!(tried["result"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(tried["result"]["rows_total"], 2);
+    let bad_candidates = server.call(
+        "try_rules",
+        json!({"population": "Tmem", "candidates": [{"kind": "TailFraction"}]}),
+    );
+    assert_eq!(bad_candidates["outcome"], "failed", "{bad_candidates}");
 
     // Written only when asked, into the rules file.
     let updated = server.call(

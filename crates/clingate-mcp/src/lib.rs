@@ -80,7 +80,10 @@ did not report then counts as accepted.
 
 To choose a rule for a gate, or to see why one misplaced a gate, start with \
 rule_guide: how to choose by what the data looks like, and each rule's \
-workings, settings and traps. To work out with the user how the rules could \
+workings, settings and traps. Then try_rules tries up to four candidates on \
+the files as they are, moving nothing - shortlist from what the data looks \
+like, try, and let the results decide, discussing them with the user. Keep \
+it lean: a few candidates, not every setting. To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
 decides, and \
 read_positioning_code shows the code itself - read what you need rather than \
@@ -214,6 +217,18 @@ pub struct ReportPlacement {
     /// The user's own words about it, if they gave any.
     #[serde(default)]
     pub note: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TryRules {
+    /// The population whose gate the rules are for, by its gate names.
+    pub population: String,
+    /// One to four candidate rules, each a whole rule: {"parameter", "bound",
+    /// "measured_on", "rule": {"kind", ...}} - see rule_guide.
+    pub candidates: serde_json::Value,
+    /// How many samples to list, most telling first (default 30, at most 300). The summaries
+    /// always count every sample.
+    pub max_rows: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -674,6 +689,25 @@ impl Clingate {
                 )),
             },
         }
+    }
+
+    /// Try one to four candidate rules for one population's gate on the workspace's files as
+    /// they are, moving nothing: for each, what the gate would hold on every sample, summed up
+    /// by sample type, beside what it holds as the gates stand now, with what each rule was
+    /// unsure of or could not place. Each file is read once for all the candidates.
+    #[tool(annotations(read_only_hint = true))]
+    async fn try_rules(&self, Parameters(args): Parameters<TryRules>) -> String {
+        self.run(move |s| {
+            let candidates: Vec<clingate_core::gate_rules::rule_store::GateRule> =
+                serde_json::from_value(args.candidates).map_err(|e| Refusal::Failed {
+                    reason: format!(
+                        "the candidates could not be read ({e}): give a list of whole rules, \
+                         each the rule part of {RULE_CHANGES}"
+                    ),
+                })?;
+            s.try_rules(&args.population, &candidates, args.max_rows)
+        })
+        .await
     }
 
     /// The source code that positions gates, scores them and replays them - exactly what the

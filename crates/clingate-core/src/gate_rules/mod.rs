@@ -26,6 +26,7 @@ pub mod rule_store;
 pub mod run;
 pub mod shape_fit;
 pub mod threshold;
+pub mod trial;
 
 #[cfg(test)]
 mod autogate_tests;

@@ -280,4 +280,151 @@ impl Session {
             .map(|n| n.to_string())
             .unwrap_or_else(|| file.to_string())
     }
+
+    /// Try up to four candidate rules for one population's gate on the files
+    /// as they are, moving nothing - see [`crate::gate_rules::trial`]. The
+    /// workspace's pairing and hand-picked references are used; its other
+    /// rules are not touched.
+    pub fn try_rules(
+        &self,
+        population: &str,
+        candidates: &[crate::gate_rules::rule_store::GateRule],
+        max_rows: Option<usize>,
+    ) -> Result<TrialAnswer, Refusal> {
+        use crate::gate_rules::rule_store::RuleTarget;
+        let (_, facts) = self.one_population(population)?;
+        let gate = facts
+            .path
+            .last()
+            .cloned()
+            .ok_or_else(|| failed("that population has no gate"))?;
+        let target = match facts.path.len() {
+            0 | 1 => RuleTarget::named(gate),
+            n => RuleTarget::under(gate, facts.path[n - 2].clone()),
+        };
+        let rules = self.rules.clone().unwrap_or_default();
+        let inputs = RunInputs::assemble(
+            Some(&self.files),
+            &self.compensation,
+            &self.metadata,
+            &self.axes.settings,
+            &rules,
+        );
+        let trial = crate::gate_rules::trial::try_rules(
+            &self.gates,
+            &inputs,
+            &target,
+            candidates,
+            &AtomicBool::new(false),
+        )
+        .map_err(failed)?;
+
+        let r = |v: Option<f64>| v.map(|v| round(v, 5));
+        let rows_total = trial.rows.len();
+        // Most telling first: flagged under any candidate, then where the
+        // candidates disagree most about what the gate holds.
+        let mut rows = trial.rows;
+        let disagreement = |row: &crate::gate_rules::trial::Row| {
+            let held: Vec<f64> = row
+                .candidates
+                .iter()
+                .filter_map(|c| c.holds)
+                .chain(row.current_holds)
+                .collect();
+            let lo = held.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = held.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            if hi >= lo { hi - lo } else { 0.0 }
+        };
+        rows.sort_by(|a, b| {
+            let flagged = |row: &crate::gate_rules::trial::Row| {
+                row.candidates
+                    .iter()
+                    .any(|c| c.flagged || c.what == "not placed")
+            };
+            flagged(b)
+                .cmp(&flagged(a))
+                .then(disagreement(b).total_cmp(&disagreement(a)))
+        });
+        let shown = max_rows.unwrap_or(TRIAL_ROWS).clamp(1, TRIAL_ROWS_MAX);
+        let rows = rows
+            .into_iter()
+            .take(shown)
+            .map(|row| TrialRow {
+                sample: self.sample_name(&Arc::from(row.file.as_str())),
+                sample_type: row.sample_type,
+                specimen: row.specimen,
+                current_holds: r(row.current_holds),
+                candidates: row
+                    .candidates
+                    .into_iter()
+                    .map(|mut c| {
+                        c.holds = r(c.holds);
+                        c.line = r(c.line);
+                        c.confidence = c.confidence.map(|v| round(v, 3));
+                        c
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(TrialAnswer {
+            gate: trial.gate,
+            specimen_column: rules.pairing.sample_id_column.to_string(),
+            sample_type_column: rules.pairing.sample_type_column.to_string(),
+            files_read: trial.files_read,
+            problems: trial.problems,
+            current: trial.current,
+            candidates: candidates
+                .iter()
+                .zip(trial.candidates)
+                .map(|(rule, summary)| TrialCandidate {
+                    rule: crate::session::describe_rule(rule),
+                    summary,
+                })
+                .collect(),
+            rows_total,
+            rows,
+            next: "holds is the fraction of each sample's parent the gate would hold - compare \
+                   each candidate's spread per sample type with the gates as they stand \
+                   (current) and with the hand-gated reference; look at the flagged rows. \
+                   Nothing has moved. update_rule writes a candidate to the rules file only when \
+                   the user says to",
+        })
+    }
+}
+
+/// Rows a trial lists by default, and at most.
+pub const TRIAL_ROWS: usize = 30;
+pub const TRIAL_ROWS_MAX: usize = 300;
+
+/// One candidate, and what it did.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialCandidate {
+    pub rule: String,
+    pub summary: crate::gate_rules::trial::Summary,
+}
+
+/// One sample under every candidate.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialRow {
+    pub sample: String,
+    pub sample_type: Option<String>,
+    pub specimen: Option<String>,
+    pub current_holds: Option<f64>,
+    pub candidates: Vec<crate::gate_rules::trial::Cell>,
+}
+
+/// A trial, for the tools.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrialAnswer {
+    pub gate: String,
+    pub specimen_column: String,
+    pub sample_type_column: String,
+    pub files_read: usize,
+    pub problems: Vec<String>,
+    /// What the gate holds as the gates stand now, by sample type.
+    pub current: Vec<crate::gate_rules::trial::TypeSpread>,
+    pub candidates: Vec<TrialCandidate>,
+    pub rows_total: usize,
+    pub rows: Vec<TrialRow>,
+    pub next: &'static str,
 }

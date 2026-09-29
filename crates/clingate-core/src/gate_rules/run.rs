@@ -180,6 +180,43 @@ pub fn measure_all(
     Vec<crate::gate_rules::autogate::Unmeasured>,
     Vec<String>,
 ) {
+    let (mut per_store, problems) = measure_many(
+        snapshot,
+        files,
+        compensation,
+        names,
+        arcsinh,
+        metadata,
+        std::slice::from_ref(rules),
+        cancel,
+        progress,
+    );
+    let (measured, unmeasured) = per_store.pop().unwrap_or_default();
+    (measured, unmeasured, problems)
+}
+
+/// What one set of rules measured.
+pub type Measured = (
+    Vec<crate::gate_rules::autogate::Measurement>,
+    Vec<crate::gate_rules::autogate::Unmeasured>,
+);
+
+/// [`measure_all`] for several sets of rules at once: each file is read once
+/// and measured for every set - reading is most of the cost, so trying three
+/// candidate rules costs little more than trying one. One result per set, in
+/// the order given, and the problems reading files.
+#[allow(clippy::too_many_arguments)]
+pub fn measure_many(
+    snapshot: &GateState,
+    files: &[(Arc<str>, PathBuf)],
+    compensation: &crate::compensation::groups::Compensation,
+    names: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    arcsinh: &[(Arc<str>, f32)],
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+    stores: &[RuleStore],
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: impl Fn(usize, usize) + Sync,
+) -> (Vec<Measured>, Vec<String>) {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -187,18 +224,15 @@ pub fn measure_all(
     let total = files.len();
     let done = AtomicUsize::new(0);
 
-    type Measured = (
-        Vec<crate::gate_rules::autogate::Measurement>,
-        Vec<crate::gate_rules::autogate::Unmeasured>,
-        Vec<String>,
-    );
-
-    let per_file: Vec<Measured> = files
+    let per_file: Vec<(Vec<Measured>, Vec<String>)> = files
         .par_iter()
         .map(|(path, id)| {
-            let mut out: Measured = (Vec::new(), Vec::new(), Vec::new());
+            let mut out: Vec<Measured> = (0..stores.len())
+                .map(|_| (Vec::new(), Vec::new()))
+                .collect();
+            let mut trouble = Vec::new();
             if cancel.load(Ordering::Relaxed) {
-                return out;
+                return (out, trouble);
             }
             // Compensated as its group says and scaled as it is drawn, as the
             // editor and the gallery read it, so a gate is placed on the
@@ -208,28 +242,37 @@ pub fn measure_all(
             // and placing nothing.
             let frame = crate::events::read_scaled(path, &compensation.matrix_for(path), arcsinh);
             match frame {
-                Ok(df) => match measure_file(snapshot, id, &df, metadata, rules) {
-                    Ok((m, u)) => {
-                        out.0 = m;
-                        out.1 = u;
+                Ok(df) => {
+                    for (store, slot) in stores.iter().zip(out.iter_mut()) {
+                        match measure_file(snapshot, id, &df, metadata, store) {
+                            Ok((m, u)) => *slot = (m, u),
+                            Err(e) => {
+                                let said = format!("{id}: {e}");
+                                if !trouble.contains(&said) {
+                                    trouble.push(said);
+                                }
+                            }
+                        }
                     }
-                    Err(e) => out.2.push(format!("{id}: {e}")),
-                },
-                Err(e) => out.2.push(format!("{}: {e}", path.display())),
+                }
+                Err(e) => trouble.push(format!("{}: {e}", path.display())),
             }
             progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
-            out
+            (out, trouble)
         })
         .collect();
 
-    let mut measured = Vec::new();
-    let mut unmeasured = Vec::new();
-    for (m, u, p) in per_file {
-        measured.extend(m);
-        unmeasured.extend(u);
-        problems.extend(p);
+    let mut results: Vec<Measured> = (0..stores.len())
+        .map(|_| (Vec::new(), Vec::new()))
+        .collect();
+    for (per_store, trouble) in per_file {
+        for ((m, u), (all_m, all_u)) in per_store.into_iter().zip(results.iter_mut()) {
+            all_m.extend(m);
+            all_u.extend(u);
+        }
+        problems.extend(trouble);
     }
-    (measured, unmeasured, problems)
+    (results, problems)
 }
 
 /// Everything a run produces, handed back in one piece.
@@ -1782,6 +1825,65 @@ mod tests {
             assert!((0.05..=0.15).contains(&achieved), "{achieved}");
             assert_eq!(kept.bound, Some(Bound::Above));
             assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn measuring_several_rule_sets_in_one_read_gives_what_each_gives_alone() {
+            use crate::gate_rules::rule::TailFractionRule;
+            let inputs = three_way_inputs("run-measure-many");
+            let (state, _) = positive_gate();
+            let mut band = inputs.rules.clone();
+            let mut rule = band.entries()[0].rule.clone();
+            rule.rule = Rule::TailFraction(TailFractionRule::new((0.002, 0.005)));
+            band.insert(RuleTarget::named("CD134+"), rule);
+            let none = RuleStore::default();
+            let stores = [inputs.rules.clone(), band.clone(), none];
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let (many, problems) = measure_many(
+                &state,
+                &inputs.files,
+                &inputs.compensation,
+                &inputs.names,
+                &inputs.cofactors,
+                &inputs.metadata,
+                &stores,
+                &AtomicBool::new(false),
+                |_, _| {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                },
+            );
+            // Each file read once, for all three.
+            assert_eq!(calls.into_inner(), inputs.files.len());
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(many.len(), 3);
+            for (store, (measured, _)) in stores.iter().zip(&many) {
+                let (alone, _, _) = measure_all(
+                    &state,
+                    &inputs.files,
+                    &inputs.compensation,
+                    &inputs.names,
+                    &inputs.cofactors,
+                    &inputs.metadata,
+                    store,
+                    &AtomicBool::new(false),
+                    |_, _| {},
+                );
+                let key = |m: &crate::gate_rules::autogate::Measurement| {
+                    (
+                        m.file.to_string(),
+                        m.gate_id.to_string(),
+                        m.events,
+                        m.kept_events.len(),
+                    )
+                };
+                assert_eq!(
+                    measured.iter().map(key).collect::<Vec<_>>(),
+                    alone.iter().map(key).collect::<Vec<_>>()
+                );
+            }
+            // No rules, nothing measured; the band keeps more events.
+            assert!(many[2].0.is_empty());
+            assert!(many[1].0[0].kept_events.len() > many[0].0[0].kept_events.len());
         }
 
         #[test]

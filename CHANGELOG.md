@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Trying candidate rules without applying them** (`try_rules` in the
+  tools for Claude): up to four rules for one gate, run on the files as
+  they are - each file read once for all of them - with what the gate
+  would hold on every sample, summed up by sample type beside what it
+  holds now. Nothing is moved or recorded.
+
 - **A guide to every rule** (`docs/rules`, and `rule_guide` in the tools
   for Claude): how to choose a rule by what the data looks like, and for
   each rule what it suits and does not, how it works step by step, every

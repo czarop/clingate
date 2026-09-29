@@ -30,7 +30,9 @@ pub use replay::{
     RuleUpdated, describe_rule,
 };
 pub use review::{FLAGS_SHOWN, Reported, Reviewed, RunAssessment};
-pub use rules::{RulesPreview, RulesView};
+pub use rules::{
+    RulesPreview, RulesView, TRIAL_ROWS, TRIAL_ROWS_MAX, TrialAnswer, TrialCandidate, TrialRow,
+};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
