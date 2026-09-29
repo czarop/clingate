@@ -974,3 +974,153 @@ fn a_phenotype_sidecar_can_be_written_for_trying_the_app() {
     std::fs::write(&out, serde_json::to_string_pretty(&store).unwrap()).expect("written");
     eprintln!("wrote {out}");
 }
+
+// ─── the order the rules are listed in ────────────────────────────────────────
+//
+// The list is the user's: they build it in an order that means something to
+// them, and an edit that sent a rule to the bottom lost it among the rest.
+
+fn listed(store: &RuleStore) -> Vec<String> {
+    store
+        .entries()
+        .iter()
+        .map(|e| e.target.describe())
+        .collect()
+}
+
+fn three_rules() -> RuleStore {
+    let mut store = RuleStore::default();
+    for (gate, parent) in [("CD4+", "CD3+"), ("IFNy+", "CD4+"), ("TNF+", "CD4+")] {
+        store.insert(
+            RuleTarget::under(gate, parent),
+            gate_rule(Bound::Above, (0.01, 0.02)),
+        );
+    }
+    store
+}
+
+#[test]
+fn editing_a_rule_keeps_it_where_it_was_in_the_list() {
+    let mut store = three_rules();
+    let edited = gate_rule(Bound::Below, (0.03, 0.04));
+
+    let was = store.insert(RuleTarget::under("CD4+", "CD3+"), edited.clone());
+
+    assert_eq!(
+        listed(&store),
+        ["CD4+ of CD3+", "IFNy+ of CD4+", "TNF+ of CD4+"],
+        "the first rule, edited, is still first"
+    );
+    assert_eq!(was, Some(gate_rule(Bound::Above, (0.01, 0.02))));
+    assert_eq!(store.get(&RuleTarget::under("CD4+", "CD3+")), Some(&edited));
+    assert_eq!(store.len(), 3, "replaced, not added beside");
+}
+
+#[test]
+fn a_new_rule_goes_at_the_end() {
+    let mut store = three_rules();
+    let was = store.insert(
+        RuleTarget::under("IL2+", "CD4+"),
+        gate_rule(Bound::Above, (0.01, 0.02)),
+    );
+    assert_eq!(was, None);
+    assert_eq!(
+        listed(&store),
+        [
+            "CD4+ of CD3+",
+            "IFNy+ of CD4+",
+            "TNF+ of CD4+",
+            "IL2+ of CD4+"
+        ]
+    );
+}
+
+#[test]
+fn an_edit_that_moves_a_rule_to_another_population_keeps_its_place() {
+    let mut store = three_rules();
+    let rule = gate_rule(Bound::Above, (0.05, 0.06));
+
+    store.replace(
+        &RuleTarget::under("IFNy+", "CD4+"),
+        RuleTarget::under("IFNy+", "CD8+"),
+        rule.clone(),
+    );
+
+    assert_eq!(
+        listed(&store),
+        ["CD4+ of CD3+", "IFNy+ of CD8+", "TNF+ of CD4+"],
+        "moved, in the same slot - not copied, not sent to the bottom"
+    );
+    assert_eq!(store.get(&RuleTarget::under("IFNy+", "CD8+")), Some(&rule));
+    assert_eq!(store.get(&RuleTarget::under("IFNy+", "CD4+")), None);
+}
+
+#[test]
+fn an_edit_moved_onto_a_population_that_already_has_a_rule_replaces_that_rule() {
+    let mut store = three_rules();
+    let rule = gate_rule(Bound::Above, (0.05, 0.06));
+
+    // TNF+ of CD4+ edited into IFNy+ of CD4+, which already has one.
+    store.replace(
+        &RuleTarget::under("TNF+", "CD4+"),
+        RuleTarget::under("IFNy+", "CD4+"),
+        rule.clone(),
+    );
+
+    assert_eq!(
+        listed(&store),
+        ["CD4+ of CD3+", "IFNy+ of CD4+"],
+        "one rule per population: the edited one, where the edit started... \
+         the older IFNy+ rule is dropped rather than kept beside it"
+    );
+    assert_eq!(store.get(&RuleTarget::under("IFNy+", "CD4+")), Some(&rule));
+}
+
+#[test]
+fn an_edit_of_a_rule_saved_unmoved_is_an_ordinary_replace() {
+    let mut store = three_rules();
+    let rule = gate_rule(Bound::Below, (0.05, 0.06));
+    store.replace(
+        &RuleTarget::under("IFNy+", "CD4+"),
+        RuleTarget::under("IFNy+", "CD4+"),
+        rule.clone(),
+    );
+    assert_eq!(
+        listed(&store),
+        ["CD4+ of CD3+", "IFNy+ of CD4+", "TNF+ of CD4+"]
+    );
+    assert_eq!(store.get(&RuleTarget::under("IFNy+", "CD4+")), Some(&rule));
+}
+
+#[test]
+fn an_edit_of_a_rule_deleted_meanwhile_is_added_at_the_end() {
+    let mut store = three_rules();
+    store.remove(&RuleTarget::under("IFNy+", "CD4+"));
+    store.replace(
+        &RuleTarget::under("IFNy+", "CD4+"),
+        RuleTarget::under("IFNy+", "CD8+"),
+        gate_rule(Bound::Above, (0.05, 0.06)),
+    );
+    assert_eq!(
+        listed(&store),
+        ["CD4+ of CD3+", "TNF+ of CD4+", "IFNy+ of CD8+"]
+    );
+}
+
+#[test]
+fn the_order_survives_being_saved_and_read_back() {
+    let mut store = three_rules();
+    store.insert(
+        RuleTarget::under("CD4+", "CD3+"),
+        gate_rule(Bound::Below, (0.03, 0.04)),
+    );
+    let path = std::env::temp_dir().join(format!(
+        "clingate-rule-order-{}-{:?}.json",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    store.save(&path).unwrap();
+    let read = RuleStore::load(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(listed(&read), listed(&store));
+}

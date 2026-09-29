@@ -295,6 +295,7 @@ pub fn profile(
         &inputs.cofactors,
         &inputs.metadata,
         &stores,
+        None,
         cancel,
         |_, _| {},
     );

@@ -41,6 +41,23 @@ show, not raw channel values.
 
 `gate_rules::run` drives it; `autogate` does the work.
 
+0. **Levels** (`rule_levels`). A gate's population is its parent's events,
+   so a gate under another gate a rule moves has to be measured after that
+   gate is placed. The ruled gates are put in levels by the tree: level 0 has
+   no ruled gate above it, level 1 has one, and so on. Steps 1-6 run once per
+   level, each measuring on the gates as the levels above left them, and the
+   next level reads through those placements. The order the rules are listed
+   in plays no part. A run with no ruled gate under another is one level,
+   and reads each file once; each further level reads every file again.
+   Before any level: a rule that reaches no gate is reported
+   (`rules_reaching_nothing`), and a linked gate the rules reach at more than
+   one place - two rules, or one rule at two parents - is left alone and
+   reported (`linked_conflicts`): it has one position, and two readings of it
+   would fight over it.
+   A trial (`try_rules`) and a profile read the gates as they stand, not as
+   a run would leave the levels above; a replay re-solves each gate on the
+   events its run kept, so a changed parent rule does not re-filter the
+   gates under it.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and
    every gate a rule names, the gate's parent population is filtered exactly
    as the plot filters it (same gate chain, same override resolution, same
@@ -57,7 +74,8 @@ show, not raw channel values.
      (`admitted_by`).
    Refused here (reported as skipped): the rule's parameter is not one of
    the gate's axes; the gate is a shape that cannot slide along one axis; its
-   line is unbounded; the parent has fewer than 2 events.
+   line is unbounded; the parent has fewer than 2 events. The same reason on
+   several files is one line, naming the first file and counting the rest.
 2. **One file per specimen** (`solve_all_reporting`). A specimen's files
    share one gate position, so only one of them is solved: the file whose
    sample type comes *latest* in `display_order` (`gated_rank`) - normally
@@ -70,7 +88,10 @@ show, not raw channel values.
 4. **Resolve the reference file** (`resolve_reference`): `Itself` is the
    gated file, `File(id)` is that file, `Partner(type)` is the override for
    this file if one exists, otherwise the specimen's file of that type. No
-   reference file measured -> skipped ("no reference sample to measure").
+   reference file measured -> skipped, saying which: the named file is not
+   in the workspace; the specimen has no file of that type; the reference
+   was read but could not be measured (and why); or it is in the metadata
+   but was not loaded (`why_no_reference`).
 5. **Position** (`position_one`, section 3).
 6. **Write back** (`apply_placements`). The moved gate is written as a
    per-specimen (group) override, so every file of the specimen - FMX and

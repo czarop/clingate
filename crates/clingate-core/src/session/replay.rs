@@ -142,6 +142,10 @@ pub struct RuleUpdated {
     pub population: String,
     pub was: Option<String>,
     pub now: String,
+    /// Names given the way the tools show them, put the way the rules file
+    /// holds them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resolved: Vec<String>,
     pub next: &'static str,
 }
 
@@ -227,6 +231,22 @@ fn changes_tried(changes: &[RuleChange], runs: &[ReviewedRun]) -> Vec<String> {
 }
 
 impl Session {
+    /// Changes with their names put as the runs hold them, where this
+    /// workspace can say. A run from the library may be of another panel, so
+    /// a name this workspace cannot resolve is left as given, not refused.
+    fn resolve_changes(&self, changes: &[RuleChange]) -> Vec<RuleChange> {
+        changes
+            .iter()
+            .map(|change| RuleChange {
+                target: change.target.clone(),
+                rule: self
+                    .resolve_rule(change.rule.clone())
+                    .map(|(rule, _)| rule)
+                    .unwrap_or_else(|_| change.rule.clone()),
+            })
+            .collect()
+    }
+
     /// The reviewed runs a replay reads, and the library folders that could
     /// not be read.
     fn reviewed_runs(
@@ -286,6 +306,8 @@ impl Session {
         max_cases: Option<usize>,
     ) -> Result<ReplayAnswer, Refusal> {
         let (runs, unreadable) = self.reviewed_runs(scope)?;
+        let changes = self.resolve_changes(changes);
+        let changes = changes.as_slice();
         let mut replay = crate::review::replay::replay(&runs, changes);
         if let Some(wanted) = gate.filter(|g| !g.trim().is_empty()) {
             let before: Vec<String> = {
@@ -351,6 +373,8 @@ impl Session {
             ));
         };
         let (runs, _) = self.reviewed_runs(scope)?;
+        let changes = self.resolve_changes(changes);
+        let changes = changes.as_slice();
         let run = runs.iter().find(|r| r.name == run_name).ok_or_else(|| {
             failed(format!(
                 "no run named {run_name}; the runs are: {}",
@@ -481,12 +505,28 @@ impl Session {
                 ));
             }
         };
+        if self.rules.is_none() {
+            return Err(failed("this workspace has no rules"));
+        }
+        let (rule, resolved) = self.resolve_rule(change.rule)?;
+        self.check_target(&change.target, &rule)?;
+        let change = RuleChange {
+            target: change.target,
+            rule,
+        };
         let store = self
             .rules
             .as_mut()
             .ok_or_else(|| failed("this workspace has no rules"))?;
         let mut changed = store.clone();
         let was = changed.insert(change.target.clone(), change.rule.clone());
+        let described = change.target.describe();
+        if let Some(conflict) = crate::gate_rules::autogate::linked_conflicts(&self.gates, &changed)
+            .into_iter()
+            .find(|c| c.rules.contains(&described))
+        {
+            return Err(failed(conflict.reason));
+        }
         changed.save(&file).map_err(failed)?;
         *store = changed;
         // A preview made under the old rule would apply placements the rules
@@ -497,6 +537,7 @@ impl Session {
             population: change.target.describe(),
             was: was.as_ref().map(describe_rule),
             now: describe_rule(&change.rule),
+            resolved,
             next: "preview_rules shows what the changed rules would move; the app reads the \
                    rules file when the workspace is next opened",
         })

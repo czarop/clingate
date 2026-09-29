@@ -94,6 +94,28 @@ and what they flag. \
 Do not picture every gate or try every setting: a few well-chosen \
 candidates per gate is the point.
 
+Writing a rule: name its parameter and markers by marker or channel, and a \
+reference file by any words that pick out one sample - they are stored as the \
+channel and the metadata row a run reads, and update_rule says what it \
+changed. A rule is refused, with what would work, if its gate is not drawn \
+under the parent named, its parameter is not one the gate is drawn on, or the \
+sample type or file it reads is not in the workspace. A parent is named as \
+list_populations names it - under a subset that can be a path, e.g. \
+'CD161+Va7.2+ / CD4+CD8-'. list_rules shows any rule already written that \
+cannot run, under problems; fix those before previewing.
+
+A run places gates down the tree: a gate under another gate a rule moves is \
+measured only after that gate is placed, whatever order the rules are listed \
+in. So settle the rules for the gates higher up before those under them. \
+preview_rules runs every level; try_rules and gate_profile read the gates as \
+they stand, so a child is only judged on its parent's new position once the \
+parent's placements are applied (with the user's say-so) - until then, say \
+that the child's numbers are on the parent as it was. A replay keeps each \
+gate's events as its run read them, so a changed rule for a parent does not \
+change what the gates under it are replayed on. A linked gate (one gate drawn at several places) must be reached by one \
+rule at one place, the population that should decide it; the copies follow. \
+Two rules for it, or one rule that reaches it at two parents, is refused.
+
 To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
 decides, and \

@@ -22,6 +22,7 @@ pub mod lookup;
 mod profile;
 mod replay;
 mod review;
+mod rule_check;
 mod rules;
 
 pub use edits::{EditState, Exported, Saved};

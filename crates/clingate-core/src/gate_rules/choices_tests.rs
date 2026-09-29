@@ -242,3 +242,69 @@ fn a_phenotype_rule_with_nothing_ticked_says_it_uses_every_marker() {
     let described = describe_phenotype(&PhenotypeRule::default(), &[]);
     assert!(described.contains("every marker"), "got: {described}");
 }
+
+// ─── the phenotype rule's marker picker ───────────────────────────────────────
+
+fn panel() -> Vec<crate::axis_store::Param> {
+    vec![
+        param("FSC-A", "FSC-A"),
+        param("CD161", "BUV395-A"),
+        param("TCRVa7.2", "BV421-A"),
+        param("CD3", "BUV805-A"),
+    ]
+}
+
+#[test]
+fn a_new_phenotype_rule_starts_with_the_gate_s_own_two_markers_ticked() {
+    use crate::gate_rules::choices::plot_markers;
+    let drawn = [Arc::from("BV421-A"), Arc::from("BUV395-A")];
+    assert_eq!(
+        plot_markers(&drawn, &panel()),
+        ["BV421-A", "BUV395-A"],
+        "ticked as the channels the rule stores, in the plot's order"
+    );
+}
+
+#[test]
+fn a_gate_drawn_on_marker_names_ticks_the_same_boxes() {
+    // A gating document can name its axes by marker. The box to tick is still
+    // the channel's - there is one box per channel.
+    use crate::gate_rules::choices::plot_markers;
+    let drawn = [Arc::from("TCRVa7.2"), Arc::from("CD161")];
+    assert_eq!(plot_markers(&drawn, &panel()), ["BV421-A", "BUV395-A"]);
+}
+
+#[test]
+fn a_gate_drawn_twice_on_one_channel_ticks_it_once() {
+    use crate::gate_rules::choices::plot_markers;
+    let drawn = [Arc::from("CD3"), Arc::from("BUV805-A")];
+    assert_eq!(plot_markers(&drawn, &panel()), ["BUV805-A"]);
+}
+
+#[test]
+fn a_gate_axis_the_panel_does_not_carry_is_kept_as_named() {
+    // Shown and ticked as the rule will look for it, rather than dropped.
+    use crate::gate_rules::choices::plot_markers;
+    let drawn = [Arc::from("CD3"), Arc::from("Time")];
+    assert_eq!(plot_markers(&drawn, &panel()), ["BUV805-A", "Time"]);
+}
+
+#[test]
+fn the_picker_offers_each_channel_once() {
+    use crate::gate_rules::choices::marker_panel;
+    let mut doubled = panel();
+    doubled.push(param("BUV805-A", "BUV805-A")); // the same channel, unnamed
+    let offered: Vec<String> = marker_panel(&doubled)
+        .iter()
+        .map(|p| p.fluoro.to_string())
+        .collect();
+    assert_eq!(offered, ["FSC-A", "BUV395-A", "BV421-A", "BUV805-A"]);
+}
+
+#[test]
+fn a_parameter_is_shown_with_its_marker_and_channel() {
+    use crate::gate_rules::choices::marker_label;
+    assert_eq!(marker_label("BUV395-A", &panel()), "CD161-BUV395");
+    assert_eq!(marker_label("FSC-A", &panel()), "FSC-A");
+    assert_eq!(marker_label("Time", &panel()), "Time", "unknown: as stored");
+}

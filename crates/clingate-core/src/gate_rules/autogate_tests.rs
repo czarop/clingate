@@ -620,7 +620,12 @@ fn a_missing_partner_is_reported_rather_than_guessed() {
 
     assert!(report.positioned.is_empty());
     assert_eq!(report.skipped.len(), 1);
-    assert!(report.skipped[0].reason.contains("reference"));
+    assert_eq!(
+        report.skipped[0].reason,
+        "no file with SampleID QC-A has the sample type FMX, so there is no FMX to measure",
+        "says which control is missing, for which specimen"
+    );
+    assert_eq!(&*report.skipped[0].file, "fs_a");
 }
 
 #[test]
@@ -645,6 +650,7 @@ fn a_gate_a_rule_names_but_cannot_measure_says_so() {
     let (mut state, _) = one_positive_gate();
     let map = fs_and_fmx();
     let unmeasured = vec![Unmeasured {
+        file: Arc::from("fs_a"),
         gate_id: Arc::from("whatever"),
         gate: Arc::from("CD134+"),
         parent_gate: Some(Arc::from("CD4+")),

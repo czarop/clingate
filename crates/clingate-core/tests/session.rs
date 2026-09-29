@@ -1234,9 +1234,9 @@ fn a_rule_is_written_to_the_rules_file_and_a_preview_made_before_it_is_dropped()
 
     // A rule for a new target is added beside it.
     let mut other = change.clone();
-    other.target = clingate_core::gate_rules::rule_store::RuleTarget::under("Tmem", "CD4+");
+    other.target = clingate_core::gate_rules::rule_store::RuleTarget::under("Tmem", "1");
     let added = session.update_rule(other).unwrap();
-    assert_eq!(added.population, "Tmem of CD4+");
+    assert_eq!(added.population, "Tmem of 1");
     assert_eq!(added.was, None);
     assert_eq!(
         Session::open(&folder)
@@ -1256,7 +1256,7 @@ fn a_rule_is_not_written_where_there_is_no_rules_file_or_one_that_did_not_read()
     let change = clingate_core::review::replay::RuleChange {
         target: clingate_core::gate_rules::rule_store::RuleTarget::named("Tmem"),
         rule: clingate_core::gate_rules::rule_store::GateRule {
-            parameter: "BUV661-A".into(),
+            parameter: "BUV805-A".into(),
             bound: clingate_core::gate_rules::rule_store::Bound::Above,
             measured_on: clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
             rule: clingate_core::gate_rules::rule::Rule::TailFraction(
@@ -1611,18 +1611,18 @@ fn a_trial_needs_one_to_four_candidates_and_a_population_that_is_there() {
         session.try_rules("Tme", std::slice::from_ref(&one), None),
         Err(Refusal::NeedsClarification(_))
     ));
-    // A rule on a marker the gate is not drawn on is not placed, and says why.
+    // A rule on a marker the gate is not drawn on is refused before anything
+    // is read, and says which markers it is drawn on.
     let mut elsewhere = one.clone();
     elsewhere.parameter = "BUV661-A".into();
-    let trial = session.try_rules("Tmem", &[elsewhere], None).unwrap();
-    let summary = &trial.candidates[0].summary;
-    assert_eq!(summary.placed, 0);
+    let refused = session
+        .try_rules("Tmem", &[elsewhere], None)
+        .unwrap_err()
+        .to_string();
     assert!(
-        summary
-            .not_placed_because
-            .iter()
-            .any(|(why, _)| why.contains("the rule positions BUV661-A")),
-        "{summary:?}"
+        refused.contains("candidate 1: Tmem of 1 is drawn on BUV805-A and BUV563-A")
+            && refused.contains("not BUV661-A"),
+        "{refused}"
     );
 }
 
@@ -1765,4 +1765,540 @@ fn a_gate_is_pictured_on_the_samples_worth_seeing_with_its_outline_drawn_in() {
             .gate_picture("Tmem", Some("nothing like it"), None)
             .is_err()
     );
+}
+
+// ─── rules as Claude writes them ──────────────────────────────────────────────
+//
+// A rule names things the way the tools show them - a marker, a file name -
+// and the rules file holds what a run reads: a channel, a metadata row. Rules
+// written the first way were stored without a word and then failed on every
+// file of every run as "no reference sample to measure". These are checked
+// against a panel whose markers have names of their own, as a real one does.
+
+/// The marker each channel carries in [`marked_workspace`].
+const MARKERS: [&str; 8] = [
+    "CD161", "CD4", "CD8", "CCR6", "CD69", "TCRgd", "IL17A", "CD3",
+];
+
+/// [`workspace`], with a scaling export that names each channel's marker, and
+/// a rules file holding one rule for Tmem as the Gate Rules tab would write it.
+fn marked_workspace(name: &str) -> std::path::PathBuf {
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let dir = workspace(name);
+    let mut scaling = vec![
+        ("FSC-A", "", "None (linear)", 0, 0, 4_194_304),
+        ("SSC-A", "", "None (linear)", 0, 0, 4_194_304),
+    ];
+    for (channel, marker) in FLUORESCENCE.iter().zip(MARKERS) {
+        scaling.push((channel, marker, "Arcsinh", 6000, -2000, 200_000));
+    }
+    write_scaling(&dir.join("scaling.csv"), &scaling);
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "BUV805-A".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: band((0.01, 0.02)),
+        },
+    );
+    store
+        .save(&clingate_core::workspace::rules_file(&dir))
+        .unwrap();
+    dir
+}
+
+fn change(
+    gate: &str,
+    parent: Option<&str>,
+    parameter: &str,
+    measured_on: clingate_core::gate_rules::rule_store::MeasuredOn,
+    rule: clingate_core::gate_rules::rule::Rule,
+) -> clingate_core::review::replay::RuleChange {
+    use clingate_core::gate_rules::rule_store::{Bound, GateRule, RuleTarget};
+    clingate_core::review::replay::RuleChange {
+        target: match parent {
+            Some(p) => RuleTarget::under(gate, p),
+            None => RuleTarget::named(gate),
+        },
+        rule: GateRule {
+            parameter: parameter.into(),
+            bound: Bound::Above,
+            measured_on,
+            rule,
+        },
+    }
+}
+
+fn file(named: &str) -> clingate_core::gate_rules::rule_store::MeasuredOn {
+    clingate_core::gate_rules::rule_store::MeasuredOn::File(named.into())
+}
+
+fn refusal_text(refused: Refusal) -> String {
+    refused.to_string()
+}
+
+#[test]
+fn a_rule_naming_a_marker_and_a_file_is_stored_as_the_channel_and_metadata_row_a_run_reads() {
+    let folder = marked_workspace("session-rule-names");
+    let mut session = Session::open(&folder).unwrap();
+    // Tmem is drawn on BUV805-A, whose marker is CD69; sample1_FMX.fcs is the
+    // file the metadata calls sample1.
+    let written = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "CD69",
+            file("sample1_FMX.fcs"),
+            band((0.01, 0.02)),
+        ))
+        .unwrap();
+    assert_eq!(
+        written.resolved,
+        [
+            "parameter CD69 is the channel BUV805-A",
+            "the reference sample1_FMX.fcs is the file sample1",
+        ]
+    );
+
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&clingate_core::gate_rules::rule_store::RuleTarget::named(
+            "Tmem",
+        ))
+        .unwrap()
+        .clone();
+    assert_eq!(&*stored.parameter, "BUV805-A");
+    assert_eq!(stored.measured_on, file("sample1"));
+
+    // And it runs: the reference is found, so the other specimen is placed
+    // and nothing is left for want of a reference.
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.not_positioned.is_empty(),
+        "{:?}",
+        preview.not_positioned
+    );
+    assert_eq!(preview.references.len(), 1, "sample1 is the reference");
+    assert_eq!(
+        preview.would_move.len() + preview.already_in_place.len(),
+        1,
+        "and sample2 is positioned from it"
+    );
+}
+
+#[test]
+fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_and_the_run() {
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    // What Claude wrote before these checks existed, straight into the file.
+    let folder = marked_workspace("session-rule-names-already-wrong");
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "CD69".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+            rule: clingate_core::gate_rules::rule::Rule::AboveTheNegative(Default::default()),
+        },
+    );
+    store.insert(
+        RuleTarget::named("teff_naive"),
+        GateRule {
+            parameter: "BUV805-A".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Partner("FMO".into()),
+            rule: band((0.01, 0.02)),
+        },
+    );
+    store
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let mut session = Session::open(&folder).unwrap();
+
+    let listed = session.rules_view().unwrap().rules;
+    let tmem = &listed[0].problems;
+    assert!(
+        tmem.iter()
+            .any(|p| p.contains("parameter CD69 is the channel BUV805-A")),
+        "{tmem:?}"
+    );
+    assert!(
+        tmem.iter()
+            .any(|p| p.contains("the reference sample1_FMX.fcs is the file sample1")),
+        "{tmem:?}"
+    );
+    let naive = &listed[1].problems;
+    assert!(
+        naive
+            .iter()
+            .any(|p| p.contains("no file has the sample type FMO") && p.contains("FMX, FS")),
+        "{naive:?}"
+    );
+
+    // The run says the same, in terms a person can act on - not "no
+    // reference sample to measure".
+    let preview = session.preview_rules().unwrap();
+    let said: Vec<String> = preview
+        .not_positioned
+        .iter()
+        .map(|n| n.reason.clone())
+        .collect();
+    assert!(
+        said.iter().all(|r| r != "no reference sample to measure"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|r| r
+            .contains("the rule positions CD69 but this gate is drawn on BUV805-A and BUV563-A")),
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .any(|r| r.contains("has the sample type FMO, so there is no FMO to measure")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_phenotype_rule_s_markers_are_stored_as_channels() {
+    let folder = marked_workspace("session-rule-phenotype-names");
+    let mut session = Session::open(&folder).unwrap();
+    let rule = clingate_core::gate_rules::rule::Rule::MatchThePhenotype(
+        clingate_core::gate_rules::rule::PhenotypeRule {
+            markers: vec!["CD69".into(), "cd4".into(), "BUV563-A".into()],
+            ..Default::default()
+        },
+    );
+    let written = session
+        .update_rule(change("Tmem", None, "", file("sample2"), rule))
+        .unwrap();
+    assert_eq!(
+        written.resolved,
+        [
+            "marker CD69 is the channel BUV805-A",
+            "marker cd4 is the channel BV785-A"
+        ],
+        "a channel given as a channel needs no note"
+    );
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&clingate_core::gate_rules::rule_store::RuleTarget::named(
+            "Tmem",
+        ))
+        .unwrap()
+        .clone();
+    match stored.rule {
+        clingate_core::gate_rules::rule::Rule::MatchThePhenotype(p) => assert_eq!(
+            p.markers.iter().map(|m| m.to_string()).collect::<Vec<_>>(),
+            ["BUV805-A", "BV785-A", "BUV563-A"]
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_rule_that_cannot_run_is_refused_with_what_would_and_the_file_is_left_alone() {
+    let folder = marked_workspace("session-rule-refused");
+    let rules_file = clingate_core::workspace::rules_file(&folder);
+    let before = std::fs::read_to_string(&rules_file).unwrap();
+    let mut session = Session::open(&folder).unwrap();
+    let itself = clingate_core::gate_rules::rule_store::MeasuredOn::Itself;
+    let other_marker = {
+        let drawn = session.gate("Tmem", None).unwrap().parameters;
+        FLUORESCENCE
+            .iter()
+            .zip(MARKERS)
+            .find(|(channel, _)| !drawn.iter().any(|d| d == **channel))
+            .map(|(_, marker)| marker)
+            .unwrap()
+    };
+
+    let cases: Vec<(clingate_core::review::replay::RuleChange, &str)> = vec![
+        (
+            change("Tmem2", None, "CD69", itself.clone(), band((0.01, 0.02))),
+            "there is no gate called Tmem2",
+        ),
+        (
+            change(
+                "Tmem",
+                Some("CD4+"),
+                "CD69",
+                itself.clone(),
+                band((0.01, 0.02)),
+            ),
+            "no Tmem gate is drawn under CD4+ - its parents are: 1",
+        ),
+        (
+            change(
+                "Tmem",
+                None,
+                other_marker,
+                itself.clone(),
+                band((0.01, 0.02)),
+            ),
+            "is drawn on BUV805-A and",
+        ),
+        (
+            change(
+                "Tmem",
+                None,
+                "CD69",
+                clingate_core::gate_rules::rule_store::MeasuredOn::Partner("FMO".into()),
+                band((0.01, 0.02)),
+            ),
+            "the types in this workspace are: FMX, FS",
+        ),
+        (
+            change(
+                "Tmem",
+                None,
+                "",
+                itself.clone(),
+                clingate_core::gate_rules::rule::Rule::MatchThePhenotype(Default::default()),
+            ),
+            "measured on one named file",
+        ),
+        (
+            change("Tmem", None, "CD69", file("sample9"), band((0.01, 0.02))),
+            "sample9",
+        ),
+    ];
+    for (asked, expected) in cases {
+        let said = refusal_text(session.update_rule(asked.clone()).unwrap_err());
+        assert!(said.contains(expected), "{asked:?}\nsaid: {said}");
+    }
+    // A marker nobody has is a question, not a guess.
+    let unknown = session
+        .update_rule(change("Tmem", None, "CD999", itself, band((0.01, 0.02))))
+        .unwrap_err();
+    assert_eq!(clarification(unknown).about, "parameter");
+
+    assert_eq!(
+        std::fs::read_to_string(&rules_file).unwrap(),
+        before,
+        "nothing refused was written"
+    );
+}
+
+#[test]
+fn a_rule_edited_by_claude_keeps_its_place_in_the_file() {
+    let folder = marked_workspace("session-rule-order");
+    let mut session = Session::open(&folder).unwrap();
+    let itself = clingate_core::gate_rules::rule_store::MeasuredOn::Itself;
+    let naive_parameter = session.gate("teff_naive", None).unwrap().parameters[0].clone();
+    session
+        .update_rule(change(
+            "teff_naive",
+            None,
+            &naive_parameter,
+            itself.clone(),
+            band((0.01, 0.02)),
+        ))
+        .unwrap();
+    session
+        .update_rule(change("Tmem", None, "CD69", itself, band((0.05, 0.06))))
+        .unwrap();
+    let listed: Vec<String> = Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap()
+        .rules
+        .iter()
+        .map(|r| format!("{}: {}", r.population, r.rule))
+        .collect();
+    assert_eq!(listed.len(), 2);
+    assert!(
+        listed[0].starts_with("Tmem: capture 5.000% to 6.000%"),
+        "{listed:?}"
+    );
+    assert!(listed[1].starts_with("teff_naive"), "{listed:?}");
+}
+
+#[test]
+fn candidates_are_tried_under_the_names_a_run_reads_and_a_bad_one_is_named_by_its_number() {
+    use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
+    let session = Session::open(&marked_workspace("session-try-names")).unwrap();
+    let candidate = |parameter: &str, measured_on: MeasuredOn| GateRule {
+        parameter: parameter.into(),
+        bound: Bound::Above,
+        measured_on,
+        rule: band((0.01, 0.02)),
+    };
+    let tried = session.try_rules(
+        "Tmem",
+        &[
+            candidate("CD69", MeasuredOn::Itself),
+            candidate("BUV805-A", MeasuredOn::Itself),
+        ],
+        None,
+    );
+    assert!(tried.is_ok(), "{:?}", tried.err());
+
+    let refused = session
+        .try_rules(
+            "Tmem",
+            &[
+                candidate("CD69", MeasuredOn::Itself),
+                candidate("CD69", MeasuredOn::Partner("FMO".into())),
+            ],
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(refused.starts_with("candidate 2:"), "{refused}");
+    assert!(refused.contains("FMO"), "{refused}");
+}
+
+// ─── a linked gate is set from one place ──────────────────────────────────────
+
+fn omiq_rectangle(id: &str, name: &str) -> String {
+    format!(
+        r#"{{
+            "containerType": "AtomicFilterContainer",
+            "id": "{id}",
+            "name": "{name}",
+            "defaultFilter": {{
+                "type": "RectangleGate",
+                "f1": "FSC-A",
+                "f2": "SSC-A",
+                "min": {{ "f1Val": 0.0, "f2Val": 0.0 }},
+                "max": {{ "f1Val": 4194304.0, "f2Val": 4194304.0 }}
+            }}
+        }}"#
+    )
+}
+
+/// [`workspace`], gated as Omiq links a gate: "Shared" is one gate drawn
+/// under both Branch A and Branch B. An empty rules file is ready to write to.
+fn linked_workspace(name: &str) -> std::path::PathBuf {
+    use clingate_core::gate_rules::rule_store::{RuleStore, SamplePairing};
+    let dir = workspace(name);
+    let gating = format!(
+        r#"{{
+            "tree": {{
+                "nodes": {{
+                    "na": {{ "id": "na", "parentId": "",   "filterContainerId": "a", "ord": 0, "collapsed": false }},
+                    "nb": {{ "id": "nb", "parentId": "",   "filterContainerId": "b", "ord": 1, "collapsed": false }},
+                    "nc": {{ "id": "nc", "parentId": "na", "filterContainerId": "shared", "ord": 2, "collapsed": false }},
+                    "nd": {{ "id": "nd", "parentId": "nb", "filterContainerId": "shared", "ord": 3, "collapsed": false }}
+                }},
+                "filterContainers": {{ "a": {}, "b": {}, "shared": {} }}
+            }}
+        }}"#,
+        omiq_rectangle("a", "Branch A"),
+        omiq_rectangle("b", "Branch B"),
+        omiq_rectangle("shared", "Shared"),
+    );
+    std::fs::write(dir.join("gating.omiqgt"), gating).unwrap();
+    RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    })
+    .save(&clingate_core::workspace::rules_file(&dir))
+    .unwrap();
+    dir
+}
+
+#[test]
+fn a_second_rule_for_a_linked_gate_is_refused_and_the_first_kept() {
+    let folder = linked_workspace("session-linked-two-rules");
+    let rules_file = clingate_core::workspace::rules_file(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let itself = clingate_core::gate_rules::rule_store::MeasuredOn::Itself;
+
+    session
+        .update_rule(change(
+            "Shared",
+            Some("Branch A"),
+            "SSC-A",
+            itself.clone(),
+            band((0.1, 0.2)),
+        ))
+        .expect("one rule, at one place, is what linking wants");
+    let after_first = std::fs::read_to_string(&rules_file).unwrap();
+
+    for (parent, rule) in [
+        (Some("Branch B"), band((0.3, 0.4))),
+        // A rule naming no parent reaches the copy under B, where no more
+        // specific rule applies - a second rule for the same gate.
+        (None, band((0.3, 0.4))),
+    ] {
+        let said = session
+            .update_rule(change("Shared", parent, "SSC-A", itself.clone(), rule))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("Shared is one gate linked under Branch A and Branch B")
+                && said.contains("would fight over its one position"),
+            "{parent:?}: {said}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&rules_file).unwrap(),
+        after_first,
+        "nothing refused was written"
+    );
+}
+
+#[test]
+fn rules_already_fighting_over_a_linked_gate_are_flagged_in_the_list_and_left_alone_by_a_run() {
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let folder = linked_workspace("session-linked-listed");
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    for (parent, low) in [("Branch A", 0.1), ("Branch B", 0.3)] {
+        store.insert(
+            RuleTarget::under("Shared", parent),
+            GateRule {
+                parameter: "SSC-A".into(),
+                bound: Bound::Above,
+                measured_on: MeasuredOn::Itself,
+                rule: band((low, low + 0.1)),
+            },
+        );
+    }
+    store
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let mut session = Session::open(&folder).unwrap();
+
+    for row in session.rules_view().unwrap().rules {
+        assert!(
+            row.problems
+                .iter()
+                .any(|p| p.contains("2 rules set it - Shared of Branch A and Shared of Branch B")),
+            "{}: {:?}",
+            row.population,
+            row.problems
+        );
+    }
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.would_move.is_empty() && preview.already_in_place.is_empty());
+    assert_eq!(
+        preview.not_positioned.len(),
+        1,
+        "{:?}",
+        preview.not_positioned
+    );
+    assert!(preview.not_positioned[0].reason.contains("would fight"));
 }

@@ -168,6 +168,7 @@ pub fn try_rules(
         &inputs.cofactors,
         &inputs.metadata,
         &stores,
+        None,
         cancel,
         |_, _| {},
     );

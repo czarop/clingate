@@ -25,7 +25,7 @@ use crate::gates::GateState;
 use crate::gates::gate_single::line_gate::LineGate;
 use crate::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gates::gate_single::rectangle_gate::RectangleGate;
-use crate::gates::gate_store::{FileId, GateId, GateSource, GateSubStore};
+use crate::gates::gate_store::{FileId, GateId, GateSource, GateSubStore, NodeId};
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey};
 use flow_gates::{GateGeometry, GateNode};
@@ -418,6 +418,19 @@ pub fn measure_file(
     metadata: &MetaDataFileMap,
     rules: &RuleStore,
 ) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
+    measure_file_at(state, file, df, metadata, rules, None)
+}
+
+/// [`measure_file`], at the gates `only` names, when it names any - one level
+/// of a run, see [`rule_levels`].
+pub fn measure_file_at(
+    state: &GateState,
+    file: &FileId,
+    df: &DataFrame,
+    metadata: &MetaDataFileMap,
+    rules: &RuleStore,
+    only: Option<&rustc_hash::FxHashSet<NodeId>>,
+) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
     let mut unmeasured: Vec<Unmeasured> = Vec::new();
     let groups: FxHashMap<MetaDataParameter, GroupId> = metadata
         .get(file)
@@ -430,6 +443,9 @@ pub fn measure_file(
 
     let mut out = Vec::new();
     for (node, placement) in state.placements() {
+        if only.is_some_and(|only| !only.contains(node)) {
+            continue;
+        }
         let gate_id = &placement.gate_id;
         let Some(gate) = state.gate_for_file(gate_id, file, metadata) else {
             continue;
@@ -451,6 +467,7 @@ pub fn measure_file(
         // Checked before the population is cut out, which is the costly part.
         if gate.get_gate_ref(None).is_none() {
             unmeasured.push(Unmeasured {
+                file: file.clone(),
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
@@ -463,6 +480,7 @@ pub fn measure_file(
             Ok(frame) => frame,
             Err(e) => {
                 unmeasured.push(Unmeasured {
+                    file: file.clone(),
                     gate_id: gate_id.clone(),
                     gate: name,
                     parent_gate: parent_gate.clone(),
@@ -499,6 +517,7 @@ pub fn measure_population(
     let params = gate.get_params();
     let Some(inner) = gate.get_gate_ref(None) else {
         return Err(Unmeasured {
+            file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
             parent_gate,
@@ -509,6 +528,7 @@ pub fn measure_population(
         Ok(pair) => pair,
         Err(e) => {
             return Err(Unmeasured {
+                file: file.clone(),
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
@@ -518,6 +538,7 @@ pub fn measure_population(
     };
     if points.len() < 2 {
         return Err(Unmeasured {
+            file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
             parent_gate: parent_gate.clone(),
@@ -553,6 +574,7 @@ pub fn measure_population(
         };
         if let Some(wrong) = wrong_reference {
             return Err(Unmeasured {
+                file: file.clone(),
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
@@ -566,6 +588,7 @@ pub fn measure_population(
         let markers = markers_for(&frame, &wanted.markers);
         if markers.is_empty() {
             return Err(Unmeasured {
+                file: file.clone(),
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
@@ -589,6 +612,7 @@ pub fn measure_population(
             Ok(rows) => rows,
             Err(e) => {
                 return Err(Unmeasured {
+                    file: file.clone(),
                     gate_id: gate_id.clone(),
                     gate: name,
                     parent_gate: parent_gate.clone(),
@@ -620,6 +644,7 @@ pub fn measure_population(
 
     if *rule.parameter != *params.0 && *rule.parameter != *params.1 {
         return Err(Unmeasured {
+            file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
             parent_gate: parent_gate.clone(),
@@ -631,6 +656,7 @@ pub fn measure_population(
     }
     let Some((low, high)) = extent_on(&inner.geometry, &rule.parameter) else {
         return Err(Unmeasured {
+            file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
             parent_gate: parent_gate.clone(),
@@ -643,6 +669,7 @@ pub fn measure_population(
     } as f64;
     if !current.is_finite() || current.abs() > UNBOUNDED as f64 {
         return Err(Unmeasured {
+            file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
             parent_gate: parent_gate.clone(),
@@ -654,6 +681,7 @@ pub fn measure_population(
         Ok(values) => values,
         Err(e) => {
             return Err(Unmeasured {
+                file: file.clone(),
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
@@ -1114,6 +1142,8 @@ pub struct PhenotypeRead {
 
 /// A gate no rule could even be tried against, and why.
 pub struct Unmeasured {
+    /// The file it could not be measured on.
+    pub file: FileId,
     pub gate_id: GateId,
     pub gate: Arc<str>,
     pub parent_gate: Option<Arc<str>>,
@@ -1219,6 +1249,173 @@ pub struct Placement {
     pub gate: Arc<dyn DrawableGate>,
 }
 
+/// The gates rules place, in the order they have to be placed: a gate comes
+/// after every gate above it that a rule also places.
+///
+/// A gate's population is its parent's events, so a gate measured before a
+/// rule moves its parent is measured on the wrong cells. Measuring everything
+/// first and placing everything after - which is how a run worked - did
+/// exactly that to every gate under another ruled gate: CD3+CD56+ read under
+/// a TCRgd+ NOT that was about to move. The order comes from the tree, not
+/// from the order the rules are listed in, so no ordering of the list can get
+/// it wrong. Gates with no ruled gate above them are level 0, and a run with
+/// one level is what a run always was.
+pub fn rule_levels(state: &GateState, rules: &RuleStore) -> Vec<rustc_hash::FxHashSet<NodeId>> {
+    let names = crate::gates::gate_paths::unique_names(state);
+    let ruled = |node: &NodeId| entry_at(state, rules, &names, node).is_some();
+    let refused: rustc_hash::FxHashSet<NodeId> = linked_conflicts(state, rules)
+        .into_iter()
+        .flat_map(|c| c.nodes)
+        .collect();
+    let mut levels: Vec<rustc_hash::FxHashSet<NodeId>> = Vec::new();
+    for (node, _) in state.placements() {
+        if !ruled(node) || refused.contains(node) {
+            continue;
+        }
+        let mut level = 0;
+        let mut above = state.parent_node(node);
+        while let Some(ancestor) = above {
+            if ruled(&ancestor) {
+                level += 1;
+            }
+            above = state.parent_node(&ancestor);
+        }
+        if levels.len() <= level {
+            levels.resize_with(level + 1, Default::default);
+        }
+        levels[level].insert(node.clone());
+    }
+    // A level can only be empty if a ruled ancestor had no placement of its
+    // own, which the tree does not allow; dropped all the same, so a run never
+    // reads every file for nothing.
+    levels.retain(|level| !level.is_empty());
+    levels
+}
+
+/// The rule entry that applies at `node`, as [`measure_file`] finds it.
+fn entry_at<'r>(
+    state: &GateState,
+    rules: &'r RuleStore,
+    names: &FxHashMap<NodeId, Arc<str>>,
+    node: &NodeId,
+) -> Option<&'r crate::gate_rules::rule_store::RuleEntry> {
+    let gate = state
+        .gate_for_node(node)
+        .and_then(|id| state.registered_gate(id))?;
+    let parent = state.parent_node(node)?;
+    rules.entry_for(gate.get_name(), names.get(&parent).map(|p| &**p))
+}
+
+/// The rules that reach no gate: a name or parent the workspace does not
+/// have, or a general rule every gate of that name has a more specific one
+/// for. A run used to pass over them without a word, so a mistyped name read
+/// as a rule that simply never moved anything.
+pub fn rules_reaching_nothing(
+    state: &GateState,
+    rules: &RuleStore,
+) -> Vec<crate::gate_rules::rule_store::RuleTarget> {
+    let names = crate::gates::gate_paths::unique_names(state);
+    let reached: Vec<&crate::gate_rules::rule_store::RuleTarget> = state
+        .placements()
+        .filter_map(|(node, _)| entry_at(state, rules, &names, node))
+        .map(|entry| &entry.target)
+        .collect();
+    rules
+        .entries()
+        .iter()
+        .filter(|entry| !reached.contains(&&entry.target))
+        .map(|entry| entry.target.clone())
+        .collect()
+}
+
+/// A linked gate - one gate drawn at several places - that the rules reach at
+/// more than one of them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedConflict {
+    pub gate_id: GateId,
+    pub gate: Arc<str>,
+    /// The rules that reach it, as they are listed.
+    pub rules: Vec<String>,
+    pub nodes: Vec<NodeId>,
+    pub reason: String,
+}
+
+/// Every linked gate the rules would position from more than one place.
+///
+/// A linked gate has one position wherever it is drawn, so two rules reaching
+/// it would fight over that one position, and the one placed last would win
+/// without a word. One rule reaching it at two places is the same fight: each
+/// place is a different population to read. Either is almost certainly a
+/// mistake - a rule meant for the top-level gate that also names the copy
+/// under a subset - so the gate is left alone and the run says why.
+pub fn linked_conflicts(state: &GateState, rules: &RuleStore) -> Vec<LinkedConflict> {
+    let names = crate::gates::gate_paths::unique_names(state);
+    let mut by_gate: FxHashMap<GateId, Vec<(NodeId, crate::gate_rules::rule_store::RuleTarget)>> =
+        FxHashMap::default();
+    for (node, placement) in state.placements() {
+        if let Some(entry) = entry_at(state, rules, &names, node) {
+            by_gate
+                .entry(placement.gate_id.clone())
+                .or_default()
+                .push((node.clone(), entry.target.clone()));
+        }
+    }
+    let mut conflicts: Vec<LinkedConflict> = by_gate
+        .into_iter()
+        .filter(|(_, reached)| reached.len() > 1)
+        .map(|(gate_id, mut reached)| {
+            reached.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+            let gate: Arc<str> = state
+                .registered_gate(&gate_id)
+                .map(|g| Arc::from(g.get_name()))
+                .unwrap_or_else(|| gate_id.clone());
+            let places: Vec<String> = reached
+                .iter()
+                .map(|(node, _)| {
+                    state
+                        .parent_node(node)
+                        .and_then(|p| names.get(&p).map(|n| n.to_string()))
+                        .unwrap_or_else(|| "the top".to_string())
+                })
+                .collect();
+            // In the order the rules are listed, which is the order the user
+            // knows them by.
+            let mut targets: Vec<&crate::gate_rules::rule_store::RuleTarget> =
+                reached.iter().map(|(_, t)| t).collect();
+            targets.sort_by_key(|t| rules.entries().iter().position(|e| e.target == **t));
+            targets.dedup();
+            let targets: Vec<String> = targets.iter().map(|t| t.describe()).collect();
+            let reason = if targets.len() > 1 {
+                format!(
+                    "{gate} is one gate linked under {}, and {} rules set it - {} - so they \
+                     would fight over its one position. Keep the rule for the population that \
+                     should decide it; the linked copies follow.",
+                    places.join(" and "),
+                    targets.len(),
+                    targets.join(" and ")
+                )
+            } else {
+                format!(
+                    "{gate} is one gate linked under {}, and the rule {} reaches it at each - \
+                     each a different population to read for its one position. Name the parent \
+                     whose population should decide it; the linked copies follow.",
+                    places.join(" and "),
+                    targets[0]
+                )
+            };
+            LinkedConflict {
+                gate_id,
+                gate,
+                rules: targets,
+                nodes: reached.into_iter().map(|(node, _)| node).collect(),
+                reason,
+            }
+        })
+        .collect();
+    conflicts.sort_by(|a, b| a.gate.cmp(&b.gate).then_with(|| a.gate_id.cmp(&b.gate_id)));
+    conflicts
+}
+
 /// Write a solve's answers into the store.
 pub fn apply_placements(state: &mut GateState, placements: &[Placement]) {
     for placed in placements {
@@ -1236,8 +1433,9 @@ pub fn apply_placements(state: &mut GateState, placements: &[Placement]) {
 ///
 /// It was true before this signature existed, for a reason worth keeping in
 /// mind if the loop is ever reordered: overrides are keyed per specimen and
-/// `done` stops a specimen being visited twice, so no gate's placement was ever
-/// read by another's solve.
+/// `done` stops a specimen being visited twice, so no gate's placement is read
+/// by another's solve *within one call*. A gate under another ruled gate needs
+/// that gate placed first, which is a second call - see [`rule_levels`].
 pub fn solve_all(
     state: &GateState,
     store: &RuleStore,
@@ -1274,16 +1472,34 @@ pub fn solve_all_reporting(
     let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
 
-    let mut told: FxHashMap<GateId, ()> = FxHashMap::default();
+    // One line per gate and reason, not per file: the same miss on every file
+    // is one problem. But it says which file, and how many shared it - a
+    // reason with no file was a reason nobody could act on.
+    let mut told: Vec<(&Unmeasured, usize)> = Vec::new();
     for miss in unmeasured {
-        if told.insert(miss.gate_id.clone(), ()).is_some() {
-            continue;
+        match told
+            .iter_mut()
+            .find(|(held, _)| held.gate_id == miss.gate_id && held.reason == miss.reason)
+        {
+            Some((_, count)) => *count += 1,
+            None => told.push((miss, 1)),
         }
+    }
+    for (miss, count) in told {
         report.skipped.push(Skipped {
-            file: Arc::from(""),
+            file: miss.file.clone(),
             gate: miss.gate.clone(),
             parent_gate: miss.parent_gate.clone(),
-            reason: miss.reason.clone(),
+            reason: if count > 1 {
+                format!(
+                    "{} - and the same on {} other file{}",
+                    miss.reason,
+                    count - 1,
+                    if count == 2 { "" } else { "s" }
+                )
+            } else {
+                miss.reason.clone()
+            },
         });
     }
 
@@ -1415,7 +1631,7 @@ pub fn solve_all_reporting(
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
-                reason: "no reference sample to measure".to_string(),
+                reason: why_no_reference(store, measured, unmeasured, metadata),
             });
             continue;
         };
@@ -1493,6 +1709,59 @@ fn resolve_reference<'a>(
         .iter()
         .find(|m| m.file == id && m.gate_id == measured.gate_id)?;
     Some(Reference { id, measurement })
+}
+
+/// Why [`resolve_reference`] found nothing, in terms a person can act on.
+///
+/// "No reference sample to measure" was true of four quite different
+/// problems - a file name the workspace does not have, a specimen without the
+/// control, a control that could not be measured, a control never read - and
+/// each needs a different fix.
+fn why_no_reference(
+    store: &RuleStore,
+    measured: &Measurement,
+    unmeasured: &[Unmeasured],
+    metadata: &MetaDataFileMap,
+) -> String {
+    let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
+        return "no rule applies to this gate here".to_string();
+    };
+    let failed_on = |id: &FileId| {
+        unmeasured
+            .iter()
+            .find(|u| u.file == *id && u.gate_id == measured.gate_id)
+            .map(|u| u.reason.clone())
+    };
+    let not_usable = |id: &FileId| match failed_on(id) {
+        Some(reason) => format!("the reference file {id} could not be measured: {reason}"),
+        None => format!(
+            "the reference file {id} was not read in this run - it is in the metadata but not \
+             among the files loaded"
+        ),
+    };
+    match &rule.measured_on {
+        MeasuredOn::File(named) if !metadata.contains_key(named) => format!(
+            "the rule is measured on \"{named}\", which is not one of this workspace's files - \
+             a file is named as it appears in the metadata"
+        ),
+        MeasuredOn::File(named) => not_usable(named),
+        MeasuredOn::Partner(kind) => {
+            match store.reference_file(&measured.file, &rule.measured_on, metadata) {
+                Some(id) => not_usable(&id),
+                None => {
+                    let column = &store.pairing.sample_id_column;
+                    match metadata.get(&measured.file).and_then(|c| c.get(column)) {
+                        Some(specimen) => format!(
+                            "no file with {column} {specimen} has the sample type {kind}, so \
+                             there is no {kind} to measure"
+                        ),
+                        None => format!("this file has no {column}, so its {kind} cannot be found"),
+                    }
+                }
+            }
+        }
+        MeasuredOn::Itself => not_usable(&measured.file),
+    }
 }
 
 enum Outcome {

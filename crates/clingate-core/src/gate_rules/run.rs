@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 
 use rustc_hash::FxBuildHasher;
 
-use crate::gate_rules::autogate::{Report, measure_file};
+use crate::gate_rules::autogate::Report;
 use crate::gate_rules::rule_store::RuleStore;
 use crate::gates::GateState;
 
@@ -173,6 +173,7 @@ pub fn measure_all(
     arcsinh: &[(Arc<str>, f32)],
     metadata: &crate::omiq::metadata::MetaDataFileMap,
     rules: &RuleStore,
+    only: Option<&rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>>,
     cancel: &std::sync::atomic::AtomicBool,
     progress: impl Fn(usize, usize) + Sync,
 ) -> (
@@ -188,6 +189,7 @@ pub fn measure_all(
         arcsinh,
         metadata,
         std::slice::from_ref(rules),
+        only,
         cancel,
         progress,
     );
@@ -214,6 +216,7 @@ pub fn measure_many(
     arcsinh: &[(Arc<str>, f32)],
     metadata: &crate::omiq::metadata::MetaDataFileMap,
     stores: &[RuleStore],
+    only: Option<&rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>>,
     cancel: &std::sync::atomic::AtomicBool,
     progress: impl Fn(usize, usize) + Sync,
 ) -> (Vec<Measured>, Vec<String>) {
@@ -244,7 +247,9 @@ pub fn measure_many(
             match frame {
                 Ok(df) => {
                     for (store, slot) in stores.iter().zip(out.iter_mut()) {
-                        match measure_file(snapshot, id, &df, metadata, store) {
+                        match crate::gate_rules::autogate::measure_file_at(
+                            snapshot, id, &df, metadata, store, only,
+                        ) {
                             Ok((m, u)) => *slot = (m, u),
                             Err(e) => {
                                 let said = format!("{id}: {e}");
@@ -299,50 +304,103 @@ pub fn run_rules(
     progress: impl Fn(Progress) + Sync,
     cancel: &AtomicBool,
 ) -> RunOutcome {
+    use crate::gate_rules::autogate::{
+        Skipped, apply_placements, linked_conflicts, rule_levels, rules_reaching_nothing,
+        solve_all_reporting,
+    };
     use std::sync::atomic::Ordering;
 
-    let (measured, unmeasured, mut problems) = measure_all(
-        gates,
-        &inputs.files,
-        &inputs.compensation,
-        &inputs.names,
-        &inputs.cofactors,
-        &inputs.metadata,
-        &inputs.rules,
-        cancel,
-        |done, total| progress(Progress::Measuring { done, total }),
-    );
+    let stopped = || RunOutcome {
+        report: Report::default(),
+        placements: Vec::new(),
+        cancelled: true,
+        events: Default::default(),
+    };
 
-    if cancel.load(Ordering::Relaxed) {
-        return RunOutcome {
-            report: Report::default(),
-            placements: Vec::new(),
-            cancelled: true,
-            events: Default::default(),
-        };
+    // Level by level, down the tree: each level is measured on the gates as
+    // the levels above it left them. See `rule_levels`.
+    let levels = rule_levels(gates, &inputs.rules);
+    let steps = levels.len().max(1);
+    let mut working = gates.clone();
+    let mut report = Report::default();
+    let mut placements = Vec::new();
+    let mut measured_all = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+
+    for target in rules_reaching_nothing(gates, &inputs.rules) {
+        report.skipped.push(Skipped {
+            file: Arc::from(""),
+            gate: target.gate.clone(),
+            parent_gate: target.parent.clone(),
+            reason: "this rule reaches no gate: no gate of this name is drawn under a parent of \
+                     that name, or every one has a more specific rule"
+                .to_string(),
+        });
+    }
+    for conflict in linked_conflicts(gates, &inputs.rules) {
+        report.skipped.push(Skipped {
+            file: Arc::from(""),
+            gate: conflict.gate.clone(),
+            parent_gate: None,
+            reason: conflict.reason,
+        });
     }
 
-    progress(Progress::Solving { done: 0, total: 0 });
-    let (mut report, placements) = crate::gate_rules::autogate::solve_all_reporting(
-        gates,
-        &inputs.rules,
-        &measured,
-        &unmeasured,
-        &inputs.metadata,
-        |done, total| progress(Progress::Solving { done, total }),
-        cancel,
-    );
-    if cancel.load(Ordering::Relaxed) {
-        return RunOutcome {
-            report: Report::default(),
-            placements: Vec::new(),
-            cancelled: true,
-            events: Default::default(),
-        };
+    for (step, level) in levels.iter().enumerate() {
+        let (measured, unmeasured, trouble) = measure_all(
+            &working,
+            &inputs.files,
+            &inputs.compensation,
+            &inputs.names,
+            &inputs.cofactors,
+            &inputs.metadata,
+            &inputs.rules,
+            Some(level),
+            cancel,
+            |done, total| {
+                progress(Progress::Measuring {
+                    done: step * total + done,
+                    total: steps * total,
+                })
+            },
+        );
+        // Every level reads every file, so a file that cannot be read says so
+        // once, not once a level.
+        for problem in trouble {
+            if !problems.contains(&problem) {
+                problems.push(problem);
+            }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return stopped();
+        }
+
+        progress(Progress::Solving { done: 0, total: 0 });
+        let (level_report, level_placements) = solve_all_reporting(
+            &working,
+            &inputs.rules,
+            &measured,
+            &unmeasured,
+            &inputs.metadata,
+            |done, total| progress(Progress::Solving { done, total }),
+            cancel,
+        );
+        if cancel.load(Ordering::Relaxed) {
+            return stopped();
+        }
+        // The next level reads its populations through these.
+        apply_placements(&mut working, &level_placements);
+
+        report.positioned.extend(level_report.positioned);
+        report.unchanged.extend(level_report.unchanged);
+        report.reference.extend(level_report.reference);
+        report.skipped.extend(level_report.skipped);
+        placements.extend(level_placements);
+        measured_all.extend(measured);
     }
 
-    for problem in problems.drain(..) {
-        report.skipped.push(crate::gate_rules::autogate::Skipped {
+    for problem in problems {
+        report.skipped.push(Skipped {
             file: Arc::from(""),
             gate: Arc::from(""),
             parent_gate: None,
@@ -354,7 +412,7 @@ pub fn run_rules(
         report,
         placements,
         cancelled: false,
-        events: crate::review::events::of_run(&measured, &inputs.metadata),
+        events: crate::review::events::of_run(&measured_all, &inputs.metadata),
     }
 }
 
@@ -1847,6 +1905,7 @@ mod tests {
                 &inputs.cofactors,
                 &inputs.metadata,
                 &stores,
+                None,
                 &AtomicBool::new(false),
                 |_, _| {
                     calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1865,6 +1924,7 @@ mod tests {
                     &inputs.cofactors,
                     &inputs.metadata,
                     store,
+                    None,
                     &AtomicBool::new(false),
                     |_, _| {},
                 );

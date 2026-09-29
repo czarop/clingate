@@ -343,6 +343,11 @@ impl RuleStore {
     /// rule can be written once and then overridden for the population that
     /// needs different treatment.
     pub fn rule_for(&self, gate: &str, parent: Option<&str>) -> Option<&GateRule> {
+        self.entry_for(gate, parent).map(|e| &e.rule)
+    }
+
+    /// The entry [`rule_for`](Self::rule_for) takes its rule from.
+    pub fn entry_for(&self, gate: &str, parent: Option<&str>) -> Option<&RuleEntry> {
         let specific = self.rules.iter().find(|e| {
             &*e.target.gate == gate
                 && e.target
@@ -350,13 +355,11 @@ impl RuleStore {
                     .as_deref()
                     .is_some_and(|p| Some(p) == parent)
         });
-        specific
-            .or_else(|| {
-                self.rules
-                    .iter()
-                    .find(|e| &*e.target.gate == gate && e.target.parent.is_none())
-            })
-            .map(|e| &e.rule)
+        specific.or_else(|| {
+            self.rules
+                .iter()
+                .find(|e| &*e.target.gate == gate && e.target.parent.is_none())
+        })
     }
 
     pub fn get(&self, target: &RuleTarget) -> Option<&GateRule> {
@@ -366,11 +369,43 @@ impl RuleStore {
             .map(|e| &e.rule)
     }
 
-    /// Add a rule, replacing any that targets exactly the same gates.
+    /// Add a rule, replacing any that targets exactly the same gates - in its
+    /// place in the list, so editing a rule never moves it. A new one goes at
+    /// the end.
     pub fn insert(&mut self, target: RuleTarget, rule: GateRule) -> Option<GateRule> {
-        let previous = self.remove(&target);
-        self.rules.push(RuleEntry { target, rule });
-        previous
+        match self.rules.iter_mut().find(|e| e.target == target) {
+            Some(entry) => Some(std::mem::replace(&mut entry.rule, rule)),
+            None => {
+                self.rules.push(RuleEntry { target, rule });
+                None
+            }
+        }
+    }
+
+    /// An edited rule, saved where `was` stood - even when the edit moved it
+    /// to another gate or parent. A rule already there for `target` is
+    /// replaced, not kept beside it.
+    pub fn replace(&mut self, was: &RuleTarget, target: RuleTarget, rule: GateRule) {
+        if *was == target {
+            self.insert(target, rule);
+            return;
+        }
+        let Some(at) = self.rules.iter().position(|e| e.target == *was) else {
+            self.insert(target, rule);
+            return;
+        };
+        self.rules[at] = RuleEntry {
+            target: target.clone(),
+            rule,
+        };
+        if let Some(other) = self
+            .rules
+            .iter()
+            .enumerate()
+            .position(|(i, e)| i != at && e.target == target)
+        {
+            self.rules.remove(other);
+        }
     }
 
     pub fn remove(&mut self, target: &RuleTarget) -> Option<GateRule> {

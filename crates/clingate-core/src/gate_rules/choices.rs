@@ -168,6 +168,47 @@ pub fn marker_label(column: &str, panel: &[Param]) -> String {
         .unwrap_or_else(|| column.to_string())
 }
 
+/// The panel's channels, one each, for the phenotype rule's marker picker.
+///
+/// A rule stores a marker by its channel, so two entries for one channel
+/// would be two boxes ticking the same thing.
+pub fn marker_panel(panel: &[Param]) -> Vec<Param> {
+    let mut seen: Vec<&str> = Vec::new();
+    panel
+        .iter()
+        .filter(|param| {
+            let fresh = !seen.contains(&&*param.fluoro);
+            seen.push(&param.fluoro);
+            fresh
+        })
+        .cloned()
+        .collect()
+}
+
+/// The markers a new phenotype rule starts with ticked: the two its gate is
+/// drawn on, as the channels the rule stores.
+///
+/// A population is nearly always described by at least the two markers it is
+/// plotted on, and nothing adds them behind the scenes - only what is ticked
+/// is read - so they start ticked, in the one list, rather than being implied.
+/// A gate parameter is matched by channel or by marker name, whichever the
+/// gating document used.
+pub fn plot_markers(gate_parameters: &[Arc<str>], panel: &[Param]) -> Vec<String> {
+    let mut chosen: Vec<String> = Vec::new();
+    for parameter in gate_parameters {
+        let column = panel
+            .iter()
+            .find(|p| p.fluoro == *parameter)
+            .or_else(|| panel.iter().find(|p| p.marker == *parameter))
+            .map(|p| p.fluoro.to_string())
+            .unwrap_or_else(|| parameter.to_string());
+        if !chosen.contains(&column) {
+            chosen.push(column);
+        }
+    }
+    chosen
+}
+
 pub fn describe_phenotype(rule: &PhenotypeRule, panel: &[Param]) -> String {
     let named = if rule.markers.is_empty() {
         "every marker".to_string()

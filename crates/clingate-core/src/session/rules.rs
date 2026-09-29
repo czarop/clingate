@@ -56,6 +56,10 @@ pub struct RuleRow {
     /// Which sample the rule reads to decide where the line goes.
     pub measured_on: String,
     pub rule: String,
+    /// Why the rule cannot run as written, if it cannot: a name the run will
+    /// not find, a gate that is not there. Rewrite it with update_rule.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -148,6 +152,7 @@ impl Session {
                         MeasuredOn::File(file) => format!("the file {}", self.sample_name(file)),
                     },
                     rule: entry.rule.rule.describe(),
+                    problems: self.rule_problems(&entry.target, &entry.rule),
                 })
                 .collect(),
             reference_overrides: store.references().len(),
@@ -295,6 +300,16 @@ impl Session {
         let (target, _, _) = self
             .target_of(&node)
             .ok_or_else(|| failed("that population has no gate"))?;
+        let mut resolved = Vec::with_capacity(candidates.len());
+        for (at, candidate) in candidates.iter().enumerate() {
+            let (rule, _) = self
+                .resolve_rule(candidate.clone())
+                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
+            self.check_target(&target, &rule)
+                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
+            resolved.push(rule);
+        }
+        let candidates = resolved.as_slice();
         let rules = self.rules.clone().unwrap_or_default();
         let inputs = RunInputs::assemble(
             Some(&self.files),

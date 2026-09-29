@@ -520,35 +520,35 @@ pub fn GateRulesWindow() -> Element {
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
-        // Moved to another population: the rule leaves where it was rather than
-        // being copied there, which is what Edit means.
-        if let Some(was) = editing.take()
-            && was != target
-        {
-            rules.write().remove(&was);
-        }
-        rules.write().insert(
-            target,
-            GateRule {
-                parameter: Arc::from(param.as_str()),
-                bound: if bound() == "Below" {
-                    Bound::Below
-                } else {
-                    Bound::Above
-                },
-                measured_on: if calibrated {
-                    // This rule calibrates against one named sample - the QC -
-                    // rather than a partner of each specimen.
-                    MeasuredOn::File(Arc::from(calibrate_on().as_str()))
-                } else {
-                    match measured_on().as_str() {
-                        "" | "Itself" => MeasuredOn::Itself,
-                        t => MeasuredOn::Partner(Arc::from(t)),
-                    }
-                },
-                rule,
+        let rule = GateRule {
+            parameter: Arc::from(param.as_str()),
+            bound: if bound() == "Below" {
+                Bound::Below
+            } else {
+                Bound::Above
             },
-        );
+            measured_on: if calibrated {
+                // This rule calibrates against one named sample - the QC -
+                // rather than a partner of each specimen.
+                MeasuredOn::File(Arc::from(calibrate_on().as_str()))
+            } else {
+                match measured_on().as_str() {
+                    "" | "Itself" => MeasuredOn::Itself,
+                    t => MeasuredOn::Partner(Arc::from(t)),
+                }
+            },
+            rule,
+        };
+        // An edit is saved where the rule stood, even when it moved the rule to
+        // another population: the list's order is the user's, and a rule that
+        // jumped to the bottom on every edit was a rule they could lose track
+        // of.
+        match editing.take() {
+            Some(was) => rules.write().replace(&was, target, rule),
+            None => {
+                rules.write().insert(target, rule);
+            }
+        }
         say(&toasts, format!("Rule set for {described}"));
     };
 
@@ -687,7 +687,16 @@ pub fn GateRulesWindow() -> Element {
                 select {
                     value: "{gate}",
                     onchange: move |e| {
-                        gate.set(e.value());
+                        let chosen = e.value();
+                        // A new phenotype rule starts from the markers the gate
+                        // is drawn on; a different gate is drawn on different ones.
+                        if kind() == "MatchThePhenotype" {
+                            markers.set(clingate_core::gate_rules::choices::plot_markers(
+                                choices.read().parameters_of(&chosen),
+                                &panel.read(),
+                            ));
+                        }
+                        gate.set(chosen);
                         parameter.set(String::new());
                     },
                     option { value: "", "choose a gate" }
@@ -729,7 +738,7 @@ pub fn GateRulesWindow() -> Element {
                             option {
                                 value: "{name}",
                                 selected: parameter() == *name,
-                                "{name}"
+                                "{clingate_core::gate_rules::choices::marker_label(&name, &panel.read())}"
                             }
                         }
                     }
@@ -757,7 +766,16 @@ pub fn GateRulesWindow() -> Element {
                 label { "Rule" }
                 select {
                     value: "{kind}",
-                    onchange: move |e| kind.set(e.value()),
+                    onchange: move |e| {
+                        let chosen = e.value();
+                        if chosen == "MatchThePhenotype" && markers().is_empty() {
+                            markers.set(clingate_core::gate_rules::choices::plot_markers(
+                                &selected_parameters.read(),
+                                &panel.read(),
+                            ));
+                        }
+                        kind.set(chosen);
+                    },
                     option { value: "TailFraction", "capture a percentage of the parent" }
                     option { value: "PercentileOffset", "step above a percentile" }
                     option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
@@ -792,7 +810,7 @@ pub fn GateRulesWindow() -> Element {
                                 "No panel loaded yet - open a file on the plots tab first."
                             }
                         }
-                        for param in panel.read().clone() {
+                        for param in clingate_core::gate_rules::choices::marker_panel(&panel.read()) {
                             label { class: "gate_rules-marker",
                                 input {
                                     r#type: "checkbox",
@@ -819,9 +837,9 @@ pub fn GateRulesWindow() -> Element {
                     }
                     p { class: "gate_rules-hint gate_rules-span",
                         if markers().is_empty() {
-                            "Nothing ticked means the whole panel, which is a reasonable place to start. Narrowing it is usually better: a marker that says nothing about this population still contributes noise to the distance, so ticking the four or five that define it beats ticking thirty."
+                            "Nothing ticked means the whole panel. Narrowing it is usually better: a marker that says nothing about this population still contributes noise to the distance, so ticking the four or five that define it beats ticking thirty."
                         } else {
-                            "{markers().len()} ticked. A marker that says nothing about this population still contributes noise to the distance, so fewer and more relevant beats more."
+                            "{markers().len()} ticked, and only these are read - the gate's own two markers are not added behind the scenes, so they start ticked here. A marker that says nothing about this population still contributes noise to the distance, so fewer and more relevant beats more."
                         }
                     }
 
