@@ -99,9 +99,10 @@ reference file by any words that pick out one sample - they are stored as the \
 channel and the metadata row a run reads, and update_rule says what it \
 changed. A rule is refused, with what would work, if its gate is not drawn \
 under the parent named, its parameter is not one the gate is drawn on, or the \
-sample type or file it reads is not in the workspace. A parent is named as \
-list_populations names it - under a subset that can be a path, e.g. \
-'CD161+Va7.2+ / CD4+CD8-'. list_rules shows any rule already written that \
+sample type or file it reads is not in the workspace. list_populations gives \
+each population's rule_target - the gate and parent exactly as a rule names \
+them, e.g. 'IFNy+ of CD161+Va7.2+ / CD4+CD8-' - and, for a linked gate, \
+linked_with: the other places the same gate is drawn. list_rules shows any rule already written that \
 cannot run, under problems; fix those before previewing.
 
 A run places gates down the tree: a gate under another gate a rule moves is \
@@ -339,7 +340,9 @@ pub struct ReplayCase {
 pub struct UpdateRule {
     /// The gate's name, e.g. 'CD69+'.
     pub gate: String,
-    /// The parent gate's name, when the rule is for the gate under that parent only.
+    /// The parent, when the rule is for the gate under that parent only - as the part after
+    /// 'of' in list_populations' rule_target: the shortest path that names only that parent,
+    /// e.g. 'CD4+' or 'CD161+Va7.2+ / CD4+CD8-'.
     pub parent: Option<String>,
     /// The whole rule: {"parameter", "bound", "measured_on", "rule": {"kind", ...}}, as in a
     /// replay's rule_changes.

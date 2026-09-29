@@ -31,6 +31,11 @@ pub struct GateDetails {
     pub parameters: Vec<String>,
     /// Its extent on each of them - `None` for an edge open to that side.
     pub extent: Vec<Extent>,
+    /// How a rule names it - see `PopulationRow::rule_target`.
+    pub rule_target: String,
+    /// The other places this same gate is drawn, when it is linked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub linked_with: Vec<String>,
     /// The shape itself, in the units the plots are drawn in.
     pub geometry: Option<serde_json::Value>,
 }
@@ -139,6 +144,7 @@ impl Session {
             }
             GateSource::Sample(_) => "positioned for this sample alone".to_string(),
         };
+        let (rule_target, linked_with) = self.rule_names_of(&node);
         let (x, y) = gate.get_params();
         let geometry = gate.get_gate_ref(None).map(|g| g.geometry.clone());
         let extent = [x.clone(), y.clone()]
@@ -162,6 +168,8 @@ impl Session {
             parameters: vec![x.to_string(), y.to_string()],
             extent,
             geometry: geometry.and_then(|g| serde_json::to_value(g).ok()),
+            rule_target,
+            linked_with,
         })
     }
 

@@ -2302,3 +2302,64 @@ fn rules_already_fighting_over_a_linked_gate_are_flagged_in_the_list_and_left_al
     );
     assert!(preview.not_positioned[0].reason.contains("would fight"));
 }
+
+#[test]
+fn a_linked_gate_is_listed_with_the_other_places_it_is_drawn() {
+    let session = Session::open(&linked_workspace("session-linked-listing")).unwrap();
+    let rows = session.populations(None).unwrap();
+    let shared: Vec<_> = rows
+        .iter()
+        .filter(|r| r.rule_target.starts_with("Shared"))
+        .collect();
+    assert_eq!(shared.len(), 2, "{rows:?}");
+    let pairs: Vec<(String, Vec<String>)> = shared
+        .iter()
+        .map(|r| (r.rule_target.clone(), r.linked_with.clone()))
+        .collect();
+    assert!(pairs.contains(&(
+        "Shared of Branch A".to_string(),
+        vec!["Shared of Branch B".to_string()]
+    )));
+    assert!(pairs.contains(&(
+        "Shared of Branch B".to_string(),
+        vec!["Shared of Branch A".to_string()]
+    )));
+    let branch = rows
+        .iter()
+        .find(|r| r.rule_target.starts_with("Branch A"))
+        .unwrap();
+    assert!(branch.linked_with.is_empty(), "not linked: {branch:?}");
+
+    let details = session.gate("Branch B > Shared", None).unwrap();
+    assert_eq!(details.rule_target, "Shared of Branch B");
+    assert_eq!(details.linked_with, ["Shared of Branch A"]);
+}
+
+#[test]
+fn every_rule_target_the_listing_gives_is_one_update_rule_takes() {
+    // What Claude is shown is what it can write - checked for every gate in
+    // the fixture, not one example.
+    let folder = marked_workspace("session-rule-targets");
+    let mut session = Session::open(&folder).unwrap();
+    let rows = session.populations(None).unwrap();
+    let mut tried = 0;
+    for row in rows.iter().filter(|r| r.parameters.len() == 2) {
+        let (gate, parent) = match row.rule_target.split_once(" of ") {
+            Some((gate, parent)) => (gate.to_string(), Some(parent.to_string())),
+            None => (row.rule_target.clone(), None),
+        };
+        let written = session.update_rule(change(
+            &gate,
+            parent.as_deref(),
+            &row.parameters[0],
+            clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
+            band((0.01, 0.02)),
+        ));
+        assert!(written.is_ok(), "{}: {:?}", row.rule_target, written.err());
+        tried += 1;
+    }
+    assert!(
+        tried >= 5,
+        "the fixture has gates enough to mean something: {tried}"
+    );
+}

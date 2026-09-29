@@ -416,6 +416,7 @@ impl Session {
                     .gates
                     .gate_for_node(&nodes[i])
                     .and_then(|id| self.gates.registered_gate(id));
+                let (rule_target, linked_with) = self.rule_names_of(&nodes[i]);
                 PopulationRow {
                     name: facts[i].label.clone(),
                     path: facts[i].full_path(),
@@ -425,6 +426,8 @@ impl Session {
                             vec![x.to_string(), y.to_string()]
                         })
                         .unwrap_or_default(),
+                    rule_target,
+                    linked_with,
                 }
             })
             .collect())
@@ -726,6 +729,29 @@ impl Session {
         (nodes, facts)
     }
 
+    /// How a rule names the gate at `node`, and how it names every other
+    /// place the same gate is drawn.
+    pub(crate) fn rule_names_of(&self, node: &NodeId) -> (String, Vec<String>) {
+        let named = |n: &NodeId| {
+            self.target_of(n)
+                .map(|(target, _, _)| target.describe())
+                .unwrap_or_default()
+        };
+        let linked = self
+            .gates
+            .gate_for_node(node)
+            .map(|gate| {
+                self.gates
+                    .nodes_for_gate(gate)
+                    .iter()
+                    .filter(|other| *other != node)
+                    .map(named)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (named(node), linked)
+    }
+
     /// The one population `query` names. `id:` and a node id picks one that
     /// cannot be told from another by name.
     fn one_population(&self, query: &str) -> Result<(NodeId, PopulationFacts), Refusal> {
@@ -884,6 +910,15 @@ pub struct PopulationRow {
     pub path: String,
     /// The two parameters its gate is drawn on.
     pub parameters: Vec<String>,
+    /// How a rule names it: the gate, and its parent as shortly as names only
+    /// that parent - e.g. 'IFNy+ of CD161+Va7.2+ / CD4+CD8-'. What update_rule
+    /// takes as gate and parent.
+    pub rule_target: String,
+    /// The other places this same gate is drawn, as rules name them, when it
+    /// is linked: one gate, one position, wherever it is drawn. A rule sets it
+    /// from one of these places, and the rest follow.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub linked_with: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
