@@ -612,7 +612,7 @@ pub fn measure_population(
         // The form only ever writes `File` for this rule. This is for a
         // sidecar written by hand, where nothing else would catch it.
         let wrong_reference = match &rule.measured_on {
-            MeasuredOn::File(_) | MeasuredOn::FilePerRun(_) => None,
+            MeasuredOn::File(_) => None,
             MeasuredOn::Itself => Some("the sample itself".to_string()),
             MeasuredOn::Partner(kind) => Some(format!(
                 "each specimen's {kind}, which resolves per sample and may be a control \
@@ -1712,8 +1712,8 @@ pub fn solve_all_reporting(
 ) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
-    let mut pooled: FxHashMap<(GateId, Arc<str>), Result<PooledLine, String>> =
-        FxHashMap::default();
+    let mut pooled: FxHashMap<GateId, Result<PooledLine, String>> = FxHashMap::default();
+    let mut pooled_failures: Vec<(Skipped, usize)> = Vec::new();
 
     // One line per gate and reason, not per file: the same miss on every file
     // is one problem. But it says which file, and how many shared it - a
@@ -1837,11 +1837,8 @@ pub fn solve_all_reporting(
         // from the moved gate and the drift would compound every time. Only a
         // rule naming one sample is affected - a partner rule's reference is
         // inside the specimen it is positioning, which is the point of it.
-        if rule
-            .measured_on
-            .named_files()
-            .into_iter()
-            .any(|named| specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen))
+        if let MeasuredOn::File(named) = &rule.measured_on
+            && specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen)
         {
             let holds = state
                 .gate_for_file(&measured.gate_id, &measured.file, metadata)
@@ -1894,12 +1891,23 @@ pub fn solve_all_reporting(
                     placements.push(placed);
                 }
                 Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-                Err(reason) => report.skipped.push(Skipped {
-                    file: measured.file.clone(),
-                    gate: measured.gate.clone(),
-                    parent_gate: measured.parent_gate.clone(),
-                    reason,
-                }),
+                // The run's line failed for every specimen alike: said once,
+                // naming the first and counting the rest.
+                Err(reason) => match pooled_failures
+                    .iter_mut()
+                    .find(|(s, _)| s.gate == measured.gate && s.parent_gate == measured.parent_gate)
+                {
+                    Some((_, count)) => *count += 1,
+                    None => pooled_failures.push((
+                        Skipped {
+                            file: measured.file.clone(),
+                            gate: measured.gate.clone(),
+                            parent_gate: measured.parent_gate.clone(),
+                            reason,
+                        },
+                        1,
+                    )),
+                },
             }
             continue;
         }
@@ -1927,6 +1935,18 @@ pub fn solve_all_reporting(
                 reason,
             }),
         }
+    }
+
+    for (mut skipped, count) in pooled_failures {
+        if count > 1 {
+            skipped.reason = format!(
+                "{} - and the same on {} other specimen{}",
+                skipped.reason,
+                count - 1,
+                if count == 2 { "" } else { "s" }
+            );
+        }
+        report.skipped.push(skipped);
     }
 
     // Every list in the report follows the same specimen order the plots do -
@@ -2029,36 +2049,6 @@ fn why_no_reference(
              a file is named as it appears in the metadata"
         ),
         MeasuredOn::File(named) => not_usable(named),
-        MeasuredOn::FilePerRun(runs) => {
-            let Some(column) = &store.pairing.run_column else {
-                return "the rule names a reference for each run, but no run column is set - \
-                        set the column that says which run each file belongs to"
-                    .to_string();
-            };
-            let Some(run) = metadata
-                .get(&measured.file)
-                .and_then(|c| store.pairing.run_of(c))
-            else {
-                return format!(
-                    "this file has no {column}, so its run's reference cannot be found"
-                );
-            };
-            match runs.iter().find(|r| r.run == run) {
-                None => format!(
-                    "no reference is named for {column} {run} - the rule names one for {}",
-                    runs.iter()
-                        .map(|r| r.run.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                Some(r) if !metadata.contains_key(&r.file) => format!(
-                    "the reference for {column} {run}, \"{}\", is not one of this workspace's \
-                     files",
-                    r.file
-                ),
-                Some(r) => not_usable(&r.file),
-            }
-        }
         MeasuredOn::Partner(kind) => {
             match store.reference_file(&measured.file, &rule.measured_on, metadata) {
                 Some(id) => not_usable(&id),
@@ -2176,19 +2166,11 @@ fn pooled_line(
     measurements: &[Measurement],
     metadata: &MetaDataFileMap,
     state: &GateState,
-    cache: &mut FxHashMap<(GateId, Arc<str>), Result<PooledLine, String>>,
+    cache: &mut FxHashMap<GateId, Result<PooledLine, String>>,
 ) -> Result<PooledLine, String> {
     let pairing = &store.pairing;
-    let column = pairing.run_column.clone().ok_or_else(|| {
-        "the rule reads a whole run's files together, but no run column is set - set the \
-         column that says which run each file belongs to"
-            .to_string()
-    })?;
-    let run_of = |file: &FileId| metadata.get(file).and_then(|c| pairing.run_of(c));
     let type_of = |file: &FileId| metadata.get(file).and_then(|c| pairing.sample_type_of(c));
-    let run = run_of(&measured.file)
-        .ok_or_else(|| format!("this file has no {column}, so its run cannot be read"))?;
-    let key = (measured.gate_id.clone(), run.clone());
+    let key = measured.gate_id.clone();
     if let Some(done) = cache.get(&key) {
         return done.clone();
     }
@@ -2199,7 +2181,7 @@ fn pooled_line(
     };
     let solved = (|| {
         let wanted = wanted.ok_or_else(|| {
-            "a band read across a run reads the run's files of one kind - measured on a \
+            "a band read across the run reads its files of one kind - measured on a \
              partner type or on the sample itself"
                 .to_string()
         })?;
@@ -2208,23 +2190,20 @@ fn pooled_line(
             .filter(|m| {
                 m.gate_id == measured.gate_id
                     && type_of(&m.file).as_deref() == Some(&*wanted)
-                    && run_of(&m.file).as_deref() == Some(&*run)
                     && m.line.is_some()
             })
             .collect();
         pool.sort_by(|a, b| a.file.cmp(&b.file));
-        let first = pool.first().ok_or_else(|| {
-            format!("no {wanted} file in {column} {run} was measured for this gate")
-        })?;
+        let first = pool
+            .first()
+            .ok_or_else(|| format!("no {wanted} file in the run was measured for this gate"))?;
         let first_line = first.line.as_ref().expect("filtered on a line");
         let start = state
             .gate_for_file(&measured.gate_id, &first.file, metadata)
             .ok_or_else(|| "the gate no longer resolves".to_string())?;
         let events: usize = pool.iter().map(|m| m.index.event_index.len()).sum();
         if events == 0 {
-            return Err(format!(
-                "the {wanted} files of {column} {run} hold no events here"
-            ));
+            return Err(format!("the run's {wanted} files hold no events here"));
         }
         // What a position holds of every file in the pool together - counted
         // through each file's own index, as the plot counts it.
@@ -2255,8 +2234,7 @@ fn pooled_line(
             "pooled",
             1.0,
             format!(
-                "one line for {column} {run}, set on its {} {wanted} files together ({events} \
-                 events)",
+                "one line for the run, set on its {} {wanted} files together ({events} events)",
                 pool.len()
             ),
         );

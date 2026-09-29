@@ -150,13 +150,6 @@ impl Session {
                         }
                         MeasuredOn::Itself => "the sample being gated".to_string(),
                         MeasuredOn::File(file) => format!("the file {}", self.sample_name(file)),
-                        MeasuredOn::FilePerRun(runs) => format!(
-                            "the file for each run: {}",
-                            runs.iter()
-                                .map(|r| format!("{} - {}", r.run, self.sample_name(&r.file)))
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ),
                     },
                     rule: entry.rule.rule.describe(),
                     problems: self.rule_problems(&entry.target, &entry.rule),

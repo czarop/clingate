@@ -126,16 +126,13 @@ before writing this rule - its rule written and reviewed, or placed by hand - \
 since this gate copies wherever that one ends up. update_rule refuses a rule \
 that follows itself, a gate that is not there, or a loop.
 
-Runs. A gating guide that says 'per run in the first instance' means one line \
-for the whole run. Ask the user which metadata column says which run a file \
-is in (a plate, a staining batch) and set it with set_run_column, only on \
-their word. Then a band rule can read all of a run's FMX files together - \
-'pool': 'Run' - and put one line on every specimen in the run: for small \
-populations, where 0.2% of one FMX is a couple of events, that is the \
-difference between a line set by stray events and one set by dozens. A rule \
-calibrated on a hand-gated sample can name one for each run: measured_on \
-{\"FilePerRun\": [{\"run\": \"Plate_001\", \"file\": \"<sample>\"}, ...]}, \
-every run needing one.
+Runs. The files analysed together - this workspace - are one run. A gating \
+guide that says 'per run in the first instance' means one line for all of \
+them: a band rule with 'pool': 'Run' reads every FMX file in the workspace \
+together and puts the same line on every specimen. For small populations, \
+where 0.2% of one FMX is a couple of events, that is the difference between \
+a line set by stray events and one set by dozens. Check with gate_profile \
+that the specimens are alike enough to share a line before suggesting it.
 
 To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
@@ -354,13 +351,6 @@ pub struct ReplayCase {
     pub rule_changes: Option<serde_json::Value>,
     /// The same scope given to replay_rules, if any.
     pub scope: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetRunColumn {
-    /// The metadata column that says which run - plate, staining batch - each file belongs to,
-    /// e.g. 'Plate'. Leave out to clear it: the dataset is then one run.
-    pub column: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -888,16 +878,6 @@ impl Clingate {
             s.replay_case(&changes, scope, &args.case)
         })
         .await
-    }
-
-    /// Set the metadata column that says which run each file belongs to, in the workspace's
-    /// rules file: what a band rule reading a whole run's FMX files together (pool: Run) and a
-    /// reference for each run (measured_on FilePerRun) go by. Says the runs it finds and how
-    /// many files are in each. Only when the user has said which column that is.
-    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
-    async fn set_run_column(&self, Parameters(args): Parameters<SetRunColumn>) -> String {
-        self.run(move |s| s.set_run_column(args.column.as_deref()))
-            .await
     }
 
     /// Write one rule into the workspace's rules file, replacing the rule for the same gate

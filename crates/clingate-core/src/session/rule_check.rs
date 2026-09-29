@@ -80,95 +80,22 @@ impl Session {
                     )));
                 }
             }
-            MeasuredOn::FilePerRun(runs) => {
-                let column = self.pairing().run_column.ok_or_else(|| {
-                    failed(
-                        "a reference for each run needs the column that says which run each \
-                         file belongs to - set it with set_run_column first",
-                    )
-                })?;
-                let known = self.runs();
-                let mut resolved = Vec::with_capacity(runs.len());
-                for r in runs {
-                    if !known.contains(&r.run) {
-                        return Err(failed(format!(
-                            "there is no {column} {} - the runs are: {}",
-                            r.run,
-                            list(&known)
-                        )));
-                    }
-                    let id = self.metadata_row_named(&r.file)?;
-                    if *id != *r.file {
-                        notes.push(format!("the reference {} is the file {id}", r.file));
-                    }
-                    let its_run = self
-                        .metadata
-                        .metadata()
-                        .get(&id)
-                        .and_then(|c| self.pairing().run_of(c));
-                    if its_run.as_deref() != Some(&*r.run) {
-                        return Err(failed(format!(
-                            "{id} is not in {column} {} - it is in {}",
-                            r.run,
-                            its_run.as_deref().unwrap_or("no run")
-                        )));
-                    }
-                    resolved.push(crate::gate_rules::rule_store::RunReference {
-                        run: r.run.clone(),
-                        file: id,
-                    });
-                }
-                let missing: Vec<Arc<str>> = known
-                    .iter()
-                    .filter(|k| !resolved.iter().any(|r| r.run == **k))
-                    .cloned()
-                    .collect();
-                if !missing.is_empty() {
-                    return Err(failed(format!(
-                        "no reference is named for {column} {} - every run needs one, or its \
-                         samples cannot be placed",
-                        list(&missing)
-                    )));
-                }
-                rule.measured_on = MeasuredOn::FilePerRun(resolved);
-            }
             MeasuredOn::Itself => {}
         }
         if let Rule::TailFraction(band) = &rule.rule
             && band.pool == crate::gate_rules::rule::Pool::Run
-        {
-            let column = self.pairing().run_column.ok_or_else(|| {
-                failed(
-                    "reading a whole run's files together needs the column that says which run \
-                     each file belongs to - set it with set_run_column first",
-                )
-            })?;
-            if !matches!(
+            && !matches!(
                 rule.measured_on,
                 MeasuredOn::Partner(_) | MeasuredOn::Itself
-            ) {
-                return Err(failed(format!(
-                    "a band read across a run reads every file of one kind in each {column} - \
-                     measured on {{\"Partner\": \"FMX\"}} for the run's FMX files, or \
-                     \"Itself\" for the gated samples - not one named file"
-                )));
-            }
+            )
+        {
+            return Err(failed(
+                "a band counted on the whole run reads every file of one kind together - \
+                 measured on {\"Partner\": \"FMX\"} for all the FMX files, or \"Itself\" for \
+                 the gated samples - not one named file",
+            ));
         }
         Ok((rule, notes))
-    }
-
-    /// Every run in the workspace, by the pairing's run column.
-    pub(crate) fn runs(&self) -> Vec<Arc<str>> {
-        let pairing = self.pairing();
-        let mut runs: Vec<Arc<str>> = self
-            .metadata
-            .metadata()
-            .values()
-            .filter_map(|columns| pairing.run_of(columns))
-            .collect();
-        runs.sort();
-        runs.dedup();
-        runs
     }
 
     /// Refuses a rule for gates that are not there, or that it cannot move.

@@ -250,30 +250,6 @@ pub fn PairingColumns() -> Element {
                     }
                 }
             }
-            // Which run - plate, staining batch - each file belongs to: what a
-            // band read across a run, and a reference for each run, go by.
-            label { "Run" }
-            select {
-                value: "{rules.read().pairing.run_column.clone().unwrap_or_default()}",
-                onchange: move |e| {
-                    let picked = e.value();
-                    rules.write().pairing.run_column = if picked.is_empty() {
-                        None
-                    } else {
-                        Some(Arc::from(picked.as_str()))
-                    };
-                },
-                option { key: "", value: "", "one run" }
-                for name in columns.read().iter() {
-                    option {
-                        key: "{name}",
-                        value: "{name}",
-                        selected: rules.read().pairing.run_column.as_ref() == Some(name),
-                        "{name}"
-                    }
-                }
-            }
-
             {
                 let (matched, total) = reach();
                 let column = rules.read().pairing.sample_id_column.clone();

@@ -1,10 +1,9 @@
-//! Rules that go by run: a band read on all of a run's FMX files together,
-//! and a reference for each run.
+//! A band counted on the whole run: every FMX file analysed together - the
+//! workspace - read at once, and one line for every specimen.
 //!
 //! "Placed on a per-run basis in the first instance, as all samples in a run
-//! will have been stained from the same cocktail preparation." Four donors on
-//! two plates, each with an FMX and a full stain; the second plate's
-//! negative sits higher, so its line has to.
+//! will have been stained from the same cocktail preparation." Four donors,
+//! each with an FMX of 600 events and a full stain.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,9 +16,7 @@ use rustc_hash::FxBuildHasher;
 use crate::file_load_tests::{scratch, write_fcs_rows};
 use crate::gate_rules::autogate::{apply_placements, extent_on};
 use crate::gate_rules::rule::{BandAim, Pool, Rule, TailFractionRule};
-use crate::gate_rules::rule_store::{
-    Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, RunReference, SamplePairing,
-};
+use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::gate_rules::run::{RunInputs, RunOutcome, run_rules};
 use crate::gates::GateState;
 use crate::gates::gate_store::GateSource;
@@ -29,16 +26,16 @@ const X: &str = "FSC-A";
 const Y: &str = "SSC-A";
 const BIG: f32 = 1e16;
 
-/// (file, donor, type, plate)
+/// (file, donor, type, where the donor's negative sits)
 const FILES: [(&str, &str, &str, &str); 8] = [
-    ("d1_fmx", "D1", "FMX", "P1"),
-    ("d1_fs", "D1", "FS", "P1"),
-    ("d2_fmx", "D2", "FMX", "P1"),
-    ("d2_fs", "D2", "FS", "P1"),
-    ("d3_fmx", "D3", "FMX", "P2"),
-    ("d3_fs", "D3", "FS", "P2"),
-    ("d4_fmx", "D4", "FMX", "P2"),
-    ("d4_fs", "D4", "FS", "P2"),
+    ("d1_fmx", "D1", "FMX", "300"),
+    ("d1_fs", "D1", "FS", "300"),
+    ("d2_fmx", "D2", "FMX", "300"),
+    ("d2_fs", "D2", "FS", "300"),
+    ("d3_fmx", "D3", "FMX", "340"),
+    ("d3_fs", "D3", "FS", "340"),
+    ("d4_fmx", "D4", "FMX", "340"),
+    ("d4_fs", "D4", "FS", "340"),
 ];
 
 fn rect(id: &str, name: &str, x0: f32) -> Arc<dyn DrawableGate> {
@@ -94,17 +91,16 @@ fn events(centre: f32, seed: u64, full_stain: bool) -> Vec<Vec<f32>> {
     rows
 }
 
-fn centre_of(plate: &str) -> f32 {
-    if plate == "P1" { 300.0 } else { 450.0 }
+fn centre_of(at: &str) -> f32 {
+    at.parse().unwrap()
 }
 
 fn metadata(files: &[(&str, &str, &str, &str)]) -> crate::omiq::metadata::MetaDataFileMap {
     let mut map = im::HashMap::with_hasher(FxBuildHasher);
-    for (file, donor, kind, plate) in files {
+    for (file, donor, kind, _) in files {
         let mut columns: rustc_hash::FxHashMap<Arc<str>, Arc<str>> = Default::default();
         columns.insert(Arc::from("SampleID"), Arc::from(*donor));
         columns.insert(Arc::from("SampleType"), Arc::from(*kind));
-        columns.insert(Arc::from("Plate"), Arc::from(*plate));
         map.insert(Arc::from(*file) as Arc<str>, columns);
     }
     map
@@ -116,12 +112,12 @@ fn write(name: &str, files: &[(&str, &str, &str, &str)]) -> Vec<(Arc<str>, PathB
     files
         .iter()
         .enumerate()
-        .map(|(seed, (file, _, kind, plate))| {
+        .map(|(seed, (file, _, kind, at))| {
             let path = dir.join(format!("{file}.fcs"));
             write_fcs_rows(
                 &path,
                 &[(X, None), (Y, None)],
-                &events(centre_of(plate), seed as u64 + 1, *kind == "FS"),
+                &events(centre_of(at), seed as u64 + 1, *kind == "FS"),
                 &[],
             );
             (Arc::from(format!("{file}.fcs").as_str()), path)
@@ -129,11 +125,8 @@ fn write(name: &str, files: &[(&str, &str, &str, &str)]) -> Vec<(Arc<str>, PathB
         .collect()
 }
 
-fn store(rule: GateRule, run_column: Option<&str>) -> RuleStore {
-    let mut store = RuleStore::with_pairing(SamplePairing {
-        run_column: run_column.map(Arc::from),
-        ..SamplePairing::default()
-    });
+fn store(rule: GateRule) -> RuleStore {
+    let mut store = RuleStore::default();
     store.insert(RuleTarget::under("CD69+", "Lymph"), rule);
     store
 }
@@ -202,56 +195,65 @@ fn reasons(outcome: &RunOutcome) -> Vec<String> {
         .collect()
 }
 
-// ─── a band read across the run ───────────────────────────────────────────────
+// ─── one line for the run ─────────────────────────────────────────────────────
 
-#[test]
-fn a_band_read_across_the_run_gives_every_specimen_in_it_the_same_line() {
-    let written = write("runs-pooled", &FILES);
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(band(Pool::Run, fmx()), Some("Plate")),
-    );
-    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
-    let after = applied(&gates(), &outcome);
-    let p1 = line(&after, "d1_fs", &FILES);
-    let p2 = line(&after, "d3_fs", &FILES);
-    assert_eq!(line(&after, "d2_fs", &FILES), p1, "one line for plate 1");
-    assert_eq!(line(&after, "d4_fs", &FILES), p2, "one line for plate 2");
-    assert!(
-        p2 - p1 > 100.0,
-        "plate 2's negative is higher, and so is its line: {p1} {p2}"
-    );
-    // The FMX files of a specimen share its line - they are one specimen.
-    assert_eq!(line(&after, "d1_fmx", &FILES), p1);
+fn fmx_of_all() -> Vec<f32> {
+    FILES
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, _, kind, _))| *kind == "FMX")
+        .flat_map(|(seed, (_, _, _, at))| events(centre_of(at), seed as u64 + 1, false))
+        .map(|row| row[0])
+        .collect()
 }
 
 #[test]
-fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
-    // The oracle: one specimen whose FMX holds every event of plate 1's two
-    // FMX files, gated per specimen. Pooling is exactly that, and no more.
-    let written = write("runs-pooled-oracle", &FILES);
-    let pooled = applied(
+fn counted_on_the_run_every_specimen_gets_the_same_line() {
+    let written = write("runs-pooled", &FILES);
+    let outcome = run(&gates(), &written, &FILES, store(band(Pool::Run, fmx())));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    let after = applied(&gates(), &outcome);
+    let one = line(&after, "d1_fs", &FILES);
+    for file in ["d1_fmx", "d2_fs", "d3_fs", "d4_fs", "d4_fmx"] {
+        assert_eq!(line(&after, file, &FILES), one, "{file}");
+    }
+
+    // Per specimen, the donors whose negative sits higher get a higher line -
+    // which is what counting on the run gives up.
+    let alone = applied(
         &gates(),
         &run(
             &gates(),
             &written,
             &FILES,
-            store(band(Pool::Run, fmx()), Some("Plate")),
+            store(band(Pool::Specimen, fmx())),
         ),
+    );
+    assert!(
+        line(&alone, "d3_fs", &FILES) - line(&alone, "d1_fs", &FILES) > 20.0,
+        "the test has to tell the two apart"
+    );
+}
+
+#[test]
+fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
+    // The oracle: one specimen whose FMX holds every event of the run's four
+    // FMX files, gated per specimen. Pooling is exactly that, and no more.
+    let written = write("runs-pooled-oracle", &FILES);
+    let pooled = applied(
+        &gates(),
+        &run(&gates(), &written, &FILES, store(band(Pool::Run, fmx()))),
     );
 
     let one: [(&str, &str, &str, &str); 2] =
-        [("u_fmx", "U", "FMX", "P1"), ("u_fs", "U", "FS", "P1")];
+        [("u_fmx", "U", "FMX", "300"), ("u_fs", "U", "FS", "300")];
     let dir = scratch("runs-pooled-union");
-    let mut union = events(centre_of("P1"), 1, false); // d1_fmx's seed
-    union.extend(events(centre_of("P1"), 3, false)); // d2_fmx's seed
+    let union: Vec<Vec<f32>> = fmx_of_all().into_iter().map(|x| vec![x, 100.0]).collect();
     write_fcs_rows(&dir.join("u_fmx.fcs"), &[(X, None), (Y, None)], &union, &[]);
     write_fcs_rows(
         &dir.join("u_fs.fcs"),
         &[(X, None), (Y, None)],
-        &events(centre_of("P1"), 2, true),
+        &events(300.0, 2, true),
         &[],
     );
     let files_u = vec![
@@ -260,12 +262,7 @@ fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
     ];
     let alone = applied(
         &gates(),
-        &run(
-            &gates(),
-            &files_u,
-            &one,
-            store(band(Pool::Specimen, fmx()), None),
-        ),
+        &run(&gates(), &files_u, &one, store(band(Pool::Specimen, fmx()))),
     );
     assert_eq!(line(&pooled, "d1_fs", &FILES), line(&alone, "u_fs", &one));
 }
@@ -273,40 +270,26 @@ fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
 #[test]
 fn what_the_run_s_line_holds_is_counted_over_all_its_fmx_files() {
     let written = write("runs-pooled-count", &FILES);
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(band(Pool::Run, fmx()), Some("Plate")),
-    );
+    let outcome = run(&gates(), &written, &FILES, store(band(Pool::Run, fmx())));
     let at = line(&applied(&gates(), &outcome), "d1_fs", &FILES);
-    // By hand: events above the line in plate 1's FMX files, over all of them.
-    let fmx: Vec<f32> = events(centre_of("P1"), 1, false)
-        .into_iter()
-        .chain(events(centre_of("P1"), 3, false))
-        .map(|row| row[0])
-        .collect();
+    let fmx = fmx_of_all();
     let by_hand = fmx.iter().filter(|x| **x >= at).count() as f64 / fmx.len() as f64;
-    for p in outcome
-        .report
-        .positioned
-        .iter()
-        .filter(|p| &*p.specimen == "D1" || &*p.specimen == "D2")
-    {
+    assert_eq!(outcome.report.positioned.len(), 4);
+    for p in &outcome.report.positioned {
         // The same events: the plot's percentage is a 32-bit float, so the
         // two are compared as counts.
         assert_eq!(
-            (p.achieved * 1200.0).round(),
-            (by_hand * 1200.0).round(),
+            (p.achieved * 2400.0).round(),
+            (by_hand * 2400.0).round(),
             "{} against {by_hand}",
             p.achieved
         );
         assert!(p.in_band);
-        assert_eq!(p.reference_events, 1200, "both FMX files' events");
+        assert_eq!(p.reference_events, 2400, "all four FMX files' events");
         assert!(
             p.components
                 .iter()
-                .any(|c| c.name == "pooled" && c.detail.contains("its 2 FMX files")),
+                .any(|c| c.name == "pooled" && c.detail.contains("its 4 FMX files")),
             "the report says it was pooled: {:?}",
             p.components
         );
@@ -314,19 +297,14 @@ fn what_the_run_s_line_holds_is_counted_over_all_its_fmx_files() {
 }
 
 #[test]
-fn a_specimen_without_its_own_fmx_still_takes_its_run_s_line() {
+fn a_specimen_without_its_own_fmx_still_takes_the_run_s_line() {
     let files: Vec<(&str, &str, &str, &str)> = FILES
         .iter()
         .copied()
         .filter(|(f, ..)| *f != "d2_fmx")
         .collect();
     let written = write("runs-pooled-missing", &files);
-    let outcome = run(
-        &gates(),
-        &written,
-        &files,
-        store(band(Pool::Run, fmx()), Some("Plate")),
-    );
+    let outcome = run(&gates(), &written, &files, store(band(Pool::Run, fmx())));
     assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
     let after = applied(&gates(), &outcome);
     assert_eq!(line(&after, "d2_fs", &files), line(&after, "d1_fs", &files));
@@ -336,7 +314,7 @@ fn a_specimen_without_its_own_fmx_still_takes_its_run_s_line() {
         &gates(),
         &written,
         &files,
-        store(band(Pool::Specimen, fmx()), Some("Plate")),
+        store(band(Pool::Specimen, fmx())),
     );
     assert!(
         reasons(&alone)
@@ -350,7 +328,7 @@ fn a_specimen_without_its_own_fmx_still_takes_its_run_s_line() {
 #[test]
 fn a_run_already_on_its_line_is_left_where_it_is() {
     let written = write("runs-pooled-kept", &FILES);
-    let rules = store(band(Pool::Run, fmx()), Some("Plate"));
+    let rules = store(band(Pool::Run, fmx()));
     let once = applied(&gates(), &run(&gates(), &written, &FILES, rules.clone()));
     let again = run(&once, &written, &FILES, rules);
     assert!(again.placements.is_empty(), "nothing moves the second time");
@@ -358,133 +336,20 @@ fn a_run_already_on_its_line_is_left_where_it_is() {
 }
 
 #[test]
-fn a_band_read_across_runs_needs_the_run_column_and_says_so() {
-    let written = write("runs-no-column", &FILES);
+fn a_run_with_none_of_the_kind_it_reads_says_so() {
+    let written = write("runs-pooled-none", &FILES);
     let outcome = run(
         &gates(),
         &written,
         &FILES,
-        store(band(Pool::Run, fmx()), None),
+        store(band(Pool::Run, MeasuredOn::Partner(Arc::from("FMO")))),
     );
     assert!(outcome.placements.is_empty());
     let said = reasons(&outcome);
+    assert_eq!(said.len(), 1, "one line, not one per file: {said:?}");
     assert!(
-        said.iter().all(|r| r.contains("no run column is set")),
+        said[0].contains("no FMO file in the run was measured for this gate")
+            && said[0].ends_with("and the same on 3 other specimens"),
         "{said:?}"
-    );
-
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(band(Pool::Run, fmx()), Some("Batch")),
-    );
-    assert!(
-        reasons(&outcome)
-            .iter()
-            .all(|r| r.contains("this file has no Batch")),
-        "{:?}",
-        reasons(&outcome)
-    );
-}
-
-// ─── a reference for each run ─────────────────────────────────────────────────
-
-fn per_run(references: &[(&str, &str)]) -> MeasuredOn {
-    MeasuredOn::FilePerRun(
-        references
-            .iter()
-            .map(|(run, file)| RunReference {
-                run: Arc::from(*run),
-                file: Arc::from(*file),
-            })
-            .collect(),
-    )
-}
-
-#[test]
-fn each_run_reads_the_reference_named_for_it() {
-    let written = write("runs-references", &FILES);
-    let both = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(
-            band(
-                Pool::Specimen,
-                per_run(&[("P1", "d1_fmx"), ("P2", "d3_fmx")]),
-            ),
-            Some("Plate"),
-        ),
-    );
-    assert!(both.report.skipped.is_empty(), "{:?}", reasons(&both));
-    let after = applied(&gates(), &both);
-
-    // The oracle: the plate's reference named outright, one plate at a time.
-    let named = |file: &str| {
-        applied(
-            &gates(),
-            &run(
-                &gates(),
-                &written,
-                &FILES,
-                store(
-                    band(Pool::Specimen, MeasuredOn::File(Arc::from(file))),
-                    Some("Plate"),
-                ),
-            ),
-        )
-    };
-    let p1 = named("d1_fmx");
-    let p2 = named("d3_fmx");
-    assert_eq!(line(&after, "d2_fs", &FILES), line(&p1, "d2_fs", &FILES));
-    assert_eq!(line(&after, "d4_fs", &FILES), line(&p2, "d4_fs", &FILES));
-    assert_ne!(line(&after, "d2_fs", &FILES), line(&after, "d4_fs", &FILES));
-
-    // Each reference is left where a person put it.
-    let references: Vec<&str> = both.report.reference.iter().map(|u| &*u.specimen).collect();
-    assert_eq!(references.len(), 2, "{references:?}");
-    assert!(references.contains(&"D1") && references.contains(&"D3"));
-}
-
-#[test]
-fn a_run_with_no_reference_named_says_which_run() {
-    let written = write("runs-reference-missing", &FILES);
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(
-            band(Pool::Specimen, per_run(&[("P1", "d1_fmx")])),
-            Some("Plate"),
-        ),
-    );
-    let said = reasons(&outcome);
-    assert!(
-        said.iter()
-            .any(|r| r.contains("no reference is named for Plate P2 - the rule names one for P1")),
-        "{said:?}"
-    );
-    // Plate 1 is placed all the same.
-    assert!(
-        outcome
-            .report
-            .positioned
-            .iter()
-            .any(|p| &*p.specimen == "D2")
-    );
-
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(band(Pool::Specimen, per_run(&[("P1", "d1_fmx")])), None),
-    );
-    assert!(
-        reasons(&outcome)
-            .iter()
-            .all(|r| r.contains("no run column is set")),
-        "{:?}",
-        reasons(&outcome)
     );
 }

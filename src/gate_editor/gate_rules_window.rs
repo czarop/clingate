@@ -11,7 +11,7 @@ use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
 use clingate_core::gate_rules::choices::{
     EdgeForm, carry_over, choices, describe_phenotype, every_target, follow_from_form,
-    follow_to_form, marker_label, reference_from_form, runs_and_files,
+    follow_to_form, marker_label,
 };
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
@@ -249,8 +249,6 @@ pub fn GateRulesWindow() -> Element {
 
     let choices = use_memo(move || choices(&gate_store.read()));
     let files = use_memo(move || loaded_files(&metadata_store.file_name_to_gating_id().read()));
-    let runs =
-        use_memo(move || runs_and_files(&metadata_store.metadata().read(), &rules.read().pairing));
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -270,9 +268,6 @@ pub fn GateRulesWindow() -> Element {
     let mut percentile = use_signal(|| "99".to_string());
     let mut offset = use_signal(|| "0.5".to_string());
     let mut calibrate_on = use_signal(String::new);
-    // A reference for each run instead of one: (run, file id) pairs.
-    let mut each_run = use_signal(|| false);
-    let mut run_refs = use_signal(Vec::<(String, String)>::new);
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
@@ -385,19 +380,7 @@ pub fn GateRulesWindow() -> Element {
         match &entry.rule.measured_on {
             MeasuredOn::Itself => measured_on.set("Itself".to_string()),
             MeasuredOn::Partner(t) => measured_on.set(t.to_string()),
-            MeasuredOn::File(f) => {
-                calibrate_on.set(f.to_string());
-                each_run.set(false);
-            }
-            MeasuredOn::FilePerRun(references) => {
-                each_run.set(true);
-                run_refs.set(
-                    references
-                        .iter()
-                        .map(|r| (r.run.to_string(), r.file.to_string()))
-                        .collect(),
-                );
-            }
+            MeasuredOn::File(f) => calibrate_on.set(f.to_string()),
         }
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
@@ -567,17 +550,10 @@ pub fn GateRulesWindow() -> Element {
             kind().as_str(),
             "AboveTheNegative" | "InTheValley" | "MatchThePhenotype"
         );
-        let reference = if calibrated {
-            match reference_from_form(&calibrate_on(), each_run(), &run_refs(), &runs.read()) {
-                Ok(reference) => Some(reference),
-                Err(e) => {
-                    warn(&toasts, e);
-                    return;
-                }
-            }
-        } else {
-            None
-        };
+        if calibrated && calibrate_on().is_empty() {
+            warn(&toasts, "Choose the sample to calibrate against");
+            return;
+        }
         let target = match parent().as_str() {
             "" => RuleTarget::named(name.as_str()),
             p => RuleTarget::under(name.as_str(), p),
@@ -595,10 +571,10 @@ pub fn GateRulesWindow() -> Element {
             },
             measured_on: if follows {
                 MeasuredOn::Itself
-            } else if let Some(reference) = reference {
-                // This rule calibrates against a named sample - the QC, or
-                // one for each run - rather than a partner of each specimen.
-                reference
+            } else if calibrated {
+                // This rule calibrates against one named sample - the QC -
+                // rather than a partner of each specimen.
+                MeasuredOn::File(Arc::from(calibrate_on().as_str()))
             } else {
                 match measured_on().as_str() {
                     "" | "Itself" => MeasuredOn::Itself,
@@ -674,11 +650,6 @@ pub fn GateRulesWindow() -> Element {
                                         MeasuredOn::Itself => "the sample itself".to_string(),
                                         MeasuredOn::Partner(t) => format!("its {t}"),
                                         MeasuredOn::File(f) => name_of(&files.read(), f),
-                                        MeasuredOn::FilePerRun(references) => references
-                                            .iter()
-                                            .map(|r| format!("{}: {}", r.run, name_of(&files.read(), &r.file)))
-                                            .collect::<Vec<_>>()
-                                            .join("; "),
                                     }
                                 }
                                 // A phenotype rule names its markers by the
@@ -967,7 +938,7 @@ pub fn GateRulesWindow() -> Element {
                         "Describes the cells inside the gate on the reference sample by where they sit across the markers below, then finds the same cells in every other sample and fits the gate to wherever they turn out to be. For populations the other rules cannot reach: a smear with no dip, several clusters near each other, anything that moves in both axes at once. Nothing is normalised between samples - each one's markers are read against its own parent - so donor differences are carried rather than flattened."
                     }
 
-                    {calibrate_picker(calibrate_on, each_run, run_refs, files, runs)}
+                    {calibrate_picker(calibrate_on, files)}
 
                     label { "Identified by" }
                     div { class: "gate_rules-markers",
@@ -1063,7 +1034,7 @@ pub fn GateRulesWindow() -> Element {
                 }
 
                 if kind() == "InTheValley" {
-                    {calibrate_picker(calibrate_on, each_run, run_refs, files, runs)}
+                    {calibrate_picker(calibrate_on, files)}
                     p { class: "gate_rules-hint gate_rules-span",
                         "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
                     }
@@ -1085,7 +1056,7 @@ pub fn GateRulesWindow() -> Element {
                 }
 
                 if kind() == "AboveTheNegative" {
-                    {calibrate_picker(calibrate_on, each_run, run_refs, files, runs)}
+                    {calibrate_picker(calibrate_on, files)}
                     p { class: "gate_rules-hint gate_rules-span",
                         "Reads how far above that sample's negative its gate sits, in widths of that negative, and puts every other gate the same number of widths above its own. No FMO needed - the negative is read from the sample being gated."
                     }
@@ -1168,11 +1139,6 @@ pub fn GateRulesWindow() -> Element {
                                 selected: pool() == option_.key(),
                                 "{option_.choice()}"
                             }
-                        }
-                    }
-                    if pool() == clingate_core::gate_rules::rule::Pool::Run.key() && runs.read().is_empty() {
-                        p { class: "gate_rules-hint gate_rules-span gate_rules-warn",
-                            "Counting a whole run needs the run column - set it under Sample pairing below."
                         }
                     }
                 }
@@ -2040,64 +2006,23 @@ mod tests {
     }
 }
 
-/// Where a calibrated rule reads its reference: one sample, or - once the
-/// pairing names a run column - one for each run.
+/// The one sample a calibrated rule reads its reference from.
 fn calibrate_picker(
     mut calibrate_on: Signal<String>,
-    mut each_run: Signal<bool>,
-    mut run_refs: Signal<Vec<(String, String)>>,
     files: Memo<Vec<(Arc<str>, Arc<str>)>>,
-    runs: Memo<Vec<(Arc<str>, Vec<Arc<str>>)>>,
 ) -> Element {
-    let name = move |id: &str| name_of(&files.read(), id);
     rsx! {
-        if !runs.read().is_empty() {
-            label { "Reference" }
-            select {
-                value: if each_run() { "each" } else { "one" },
-                onchange: move |e| each_run.set(e.value() == "each"),
-                option { value: "one", selected: !each_run(), "one sample for every run" }
-                option { value: "each", selected: each_run(), "a sample for each run" }
-            }
-        }
-        if each_run() && !runs.read().is_empty() {
-            for (run , in_run) in runs.read().clone() {
-                label { "Calibrate {run} on" }
-                select {
-                    value: "{run_refs().iter().find(|(r, _)| *r == *run).map(|(_, f)| f.clone()).unwrap_or_default()}",
-                    onchange: {
-                        let run = run.to_string();
-                        move |e: FormEvent| {
-                            let file = e.value();
-                            run_refs.with_mut(|refs| {
-                                refs.retain(|(r, _)| *r != run);
-                                refs.push((run.clone(), file));
-                            });
-                        }
-                    },
-                    option { value: "", "choose {run}'s reference" }
-                    for id in in_run {
-                        option {
-                            value: "{id}",
-                            selected: run_refs().iter().any(|(r, f)| *r == *run && *f == *id),
-                            "{name(&id)}"
-                        }
-                    }
-                }
-            }
-        } else {
-            label { "Calibrate on" }
-            select {
-                value: "{calibrate_on}",
-                onchange: move |e| calibrate_on.set(e.value()),
-                option { value: "", "choose the reference sample" }
-                // Marked, not only valued: see the gate's list.
-                for (name , id) in files.read().clone() {
-                    option {
-                        value: "{id}",
-                        selected: calibrate_on() == *id,
-                        "{name}"
-                    }
+        label { "Calibrate on" }
+        select {
+            value: "{calibrate_on}",
+            onchange: move |e| calibrate_on.set(e.value()),
+            option { value: "", "choose the reference sample" }
+            // Marked, not only valued: see the gate's list.
+            for (name , id) in files.read().clone() {
+                option {
+                    value: "{id}",
+                    selected: calibrate_on() == *id,
+                    "{name}"
                 }
             }
         }

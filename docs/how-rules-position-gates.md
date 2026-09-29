@@ -439,9 +439,8 @@ These are properties of the code as it stands, not settled choices:
 Rule kinds and their fields:
 
 - `{"kind": "TailFraction", "band": [low, high], "aim": "AnywhereInBand" | "Middle", "pool": "Specimen" | "Run"}` -
-  `Run` counts the band on every file of the measured-on kind in the sample's
-  run together and places one line for the whole run (`pooled_line`); the run
-  is the pairing's `run_column`.
+  `Run` counts the band on every file of the measured-on kind in the run - the
+  workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
 - `{"kind": "InTheValley", "smoothing": 1.0}`
@@ -450,10 +449,8 @@ Rule kinds and their fields:
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
   the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.
 
-`measured_on` is `"Itself"`, `{"Partner": "<sample type>"}`,
-`{"File": "<file id>"}`, or `{"FilePerRun": [{"run": "<run>", "file":
-"<file id>"}, ...]}` - a reference for each run, each sample reading the one
-named for its own run (the pairing's `run_column`). Every rule kind except MatchThePhenotype and
+`measured_on` is `"Itself"`, `{"Partner": "<sample type>"}` or
+`{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and
 FromAnotherGate also takes
 `"confidence": {"limits": {"events_full": 10000, "events_floor": 100,
 "swing_half": 1.0, "displacement_limit": 0.5}}`.

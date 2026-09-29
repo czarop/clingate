@@ -71,7 +71,7 @@ pub struct TailFractionRule {
     #[serde(default)]
     pub aim: BandAim,
     /// Which files the band is counted on: each specimen's own, or every one
-    /// of that kind in the sample's run together.
+    /// of that kind in the run - the workspace - together.
     #[serde(default)]
     pub pool: Pool,
     #[serde(default)]
@@ -83,14 +83,15 @@ pub struct TailFractionRule {
 /// A band of 0.2-0.5% of an FMX of 700 events is one to three events: each
 /// specimen's line is then set by where a couple of stray events happen to
 /// fall. A gating guide that says "per run in the first instance" means one
-/// line for the run, set on all of its controls together.
+/// line for the run - every file analysed together, which is the workspace -
+/// set on all of its controls together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Pool {
     /// Each specimen's own file - its own FMX - and a line for each specimen.
     #[default]
     Specimen,
-    /// Every file of that kind in the sample's run, together, and one line for
-    /// every specimen in the run. The run is the pairing's `run_column`.
+    /// Every file of that kind in the run - the workspace - together, and one
+    /// line for every specimen.
     Run,
 }
 
@@ -111,7 +112,7 @@ impl Pool {
     pub fn choice(self) -> &'static str {
         match self {
             Pool::Specimen => "each specimen's own file - a line per specimen",
-            Pool::Run => "every file of that kind in the run together - one line per run",
+            Pool::Run => "every file of that kind in the run together - one line for all",
         }
     }
 }

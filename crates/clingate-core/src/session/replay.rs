@@ -135,17 +135,6 @@ pub struct CaseDetail {
     pub how_to_read: &'static str,
 }
 
-/// The run column set in the workspace's rules file, and the runs it finds.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RunColumnSet {
-    /// The column now read as the run, if any.
-    pub column: Option<String>,
-    /// Each run, and how many files are in it.
-    pub runs: Vec<(String, usize)>,
-    /// Files with nothing in that column - in no run.
-    pub files_with_no_run: usize,
-}
-
 /// A rule changed in the workspace's rules file.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RuleUpdated {
@@ -170,13 +159,6 @@ pub fn describe_rule(rule: &GateRule) -> String {
         MeasuredOn::Partner(kind) => format!("the specimen's {kind}"),
         MeasuredOn::Itself => "the sample itself".to_string(),
         MeasuredOn::File(file) => format!("the file {file}"),
-        MeasuredOn::FilePerRun(runs) => format!(
-            "each run's file: {}",
-            runs.iter()
-                .map(|r| format!("{} {}", r.run, r.file))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
     };
     format!(
         "{} ({side}), read on {on}: {} [{}]",
@@ -529,57 +511,6 @@ impl Session {
                 "this workspace has no rules file: make the rules in the Gate Rules tab first",
             )),
         }
-    }
-
-    /// Set the metadata column that says which run each file belongs to - what
-    /// a band read across a run, and a reference for each run, go by - in the
-    /// rules file. `None` clears it. Only on the user's word.
-    pub fn set_run_column(&mut self, column: Option<&str>) -> Result<RunColumnSet, Refusal> {
-        let file = self.rules_file_to_write()?;
-        let column = column.map(str::trim).filter(|c| !c.is_empty());
-        let mut columns: Vec<String> = self
-            .metadata
-            .metadata()
-            .values()
-            .flat_map(|c| c.keys().map(|k| k.to_string()))
-            .collect();
-        columns.sort();
-        columns.dedup();
-        if let Some(wanted) = column
-            && !columns.iter().any(|c| c == wanted)
-        {
-            return Err(failed(format!(
-                "the metadata has no column {wanted} - its columns are: {}",
-                columns.join(", ")
-            )));
-        }
-        let store = self
-            .rules
-            .as_mut()
-            .ok_or_else(|| failed("this workspace has no rules"))?;
-        let mut changed = store.clone();
-        changed.pairing.run_column = column.map(std::sync::Arc::from);
-        changed.save(&file).map_err(failed)?;
-        *store = changed;
-        self.pending = None;
-        let mut runs: BTreeMap<String, usize> = BTreeMap::new();
-        let mut without = 0;
-        let pairing = self
-            .rules
-            .as_ref()
-            .map(|r| r.pairing.clone())
-            .unwrap_or_default();
-        for columns in self.metadata.metadata().values() {
-            match pairing.run_of(columns) {
-                Some(run) => *runs.entry(run.to_string()).or_default() += 1,
-                None => without += 1,
-            }
-        }
-        Ok(RunColumnSet {
-            column: column.map(str::to_string),
-            runs: runs.into_iter().collect(),
-            files_with_no_run: if column.is_some() { without } else { 0 },
-        })
     }
 
     fn update_rule_in(
