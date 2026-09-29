@@ -291,7 +291,7 @@ pub fn board_in(
         return Ok(None);
     };
     let assessment = super::assess::assess(&run, Some((state, metadata)));
-    let reported: Vec<(String, String)> = super::report::reports_in(folder)
+    let reported: Vec<(String, String)> = super::report::reports_of_run(folder, &run.applied_at)
         .into_iter()
         .map(|(_, r)| (r.gate_id, r.sample.id))
         .collect();

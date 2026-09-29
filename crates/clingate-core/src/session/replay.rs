@@ -14,7 +14,7 @@ use super::{Refusal, Session, failed};
 use crate::gate_rules::autogate::describe;
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore};
 use crate::review::replay::{
-    Case, ReviewedRun, RuleChange, RunSummary, Truth, Verdict, library_runs, replay_run,
+    Case, ReviewedRun, RuleChange, RunSummary, Truth, Verdict, library_runs,
 };
 use crate::review::report::Histogram;
 use crate::review::shape::Shape;
@@ -68,13 +68,13 @@ pub struct CaseLine {
     pub sample_type: Option<String>,
     pub truth: Truth,
     pub verdict: Verdict,
-    /// The fraction of the sample's kept events beyond each line: where the
+    /// The fraction of the sample's kept events the gate holds: where the
     /// review says it belongs, where the run put it, the replay with the
     /// run's rules, and the replay with the changes.
-    pub right_beyond: Option<f64>,
-    pub run_beyond: Option<f64>,
-    pub baseline_beyond: Option<f64>,
-    pub replay_beyond: Option<f64>,
+    pub right_holds: Option<f64>,
+    pub run_holds: Option<f64>,
+    pub baseline_holds: Option<f64>,
+    pub replay_holds: Option<f64>,
     /// Where those lines sit on the rule's parameter.
     pub right_at: Option<f64>,
     pub run_at: Option<f64>,
@@ -82,6 +82,10 @@ pub struct CaseLine {
     pub replay_confidence: Option<f64>,
     pub replay_weakest: Option<String>,
     pub why: Option<String>,
+    /// Earlier runs that made this same placement from the same input, and
+    /// what their reviews said - see replay_case.
+    pub earlier_reviews: usize,
+    pub notes: Vec<String>,
 }
 
 /// A replay, for the tools.
@@ -92,6 +96,9 @@ pub struct ReplayAnswer {
     pub runs: Vec<RunSummary>,
     /// Runs in the library that could not be read, and why.
     pub unreadable: Vec<String>,
+    /// Placements an earlier run made from exactly the same input as a
+    /// later one, counted once with the later.
+    pub repeats_counted_once: usize,
     pub totals: BTreeMap<Verdict, usize>,
     pub by_gate: BTreeMap<String, BTreeMap<Verdict, usize>>,
     pub cases_total: usize,
@@ -174,16 +181,18 @@ fn line_of(c: &Case) -> CaseLine {
         sample_type: c.sample.sample_type.clone(),
         truth: c.truth.clone(),
         verdict: c.verdict,
-        right_beyond: rounded(c.right.beyond),
-        run_beyond: rounded(c.run_decided.line.beyond),
-        baseline_beyond: rounded(c.baseline_decided.as_ref().and_then(|d| d.line.beyond)),
-        replay_beyond: rounded(c.replay_decided.as_ref().and_then(|d| d.line.beyond)),
+        right_holds: rounded(c.right.holds),
+        run_holds: rounded(c.run_decided.line.holds),
+        baseline_holds: rounded(c.baseline_decided.as_ref().and_then(|d| d.line.holds)),
+        replay_holds: rounded(c.replay_decided.as_ref().and_then(|d| d.line.holds)),
         right_at: rounded(c.right.at),
         run_at: rounded(c.run_decided.line.at),
         replay_at: rounded(c.replay_decided.as_ref().and_then(|d| d.line.at)),
         replay_confidence: rounded(c.replay_decided.as_ref().and_then(|d| d.confidence)),
         replay_weakest: c.replay_decided.as_ref().and_then(|d| d.weakest.clone()),
         why: c.why.clone(),
+        earlier_reviews: c.earlier_reviews.len(),
+        notes: c.notes.clone(),
     }
 }
 
@@ -310,6 +319,7 @@ impl Session {
         listed.sort_by_key(|c| rank(c.verdict));
         Ok(ReplayAnswer {
             changes_tried: changes_tried(changes, &runs),
+            repeats_counted_once: replay.runs.iter().map(|r| r.repeated_later).sum(),
             runs: replay.runs,
             unreadable,
             totals,
@@ -350,11 +360,19 @@ impl Session {
                     .join(", ")
             ))
         })?;
-        let (_, cases) = replay_run(run, changes);
-        let found = cases
-            .into_iter()
-            .find(|c| c.gate_id == gate_id && c.sample.id == sample)
+        // Every run, so a placement repeated from the same input is shown
+        // with its earlier reviews - and one named by an earlier run is
+        // shown as the later run that counts it.
+        let replay = crate::review::replay::replay(&runs, changes);
+        let same_placement = |c: &&Case| c.gate_id == gate_id && c.sample.id == sample;
+        let found = replay
+            .cases
+            .iter()
+            .filter(same_placement)
+            .find(|c| c.run == run_name || c.earlier_reviews.iter().any(|e| e.run == run_name))
+            .cloned()
             .ok_or_else(|| failed(format!("{run_name} has no case for {gate_id} on {sample}")))?;
+        let run = runs.iter().find(|r| r.name == found.run).unwrap_or(run);
 
         let replayed_rules = crate::review::replay::with_changes(&run.rules, changes);
         let rule_of = |rules: &RuleStore| {
@@ -431,14 +449,18 @@ impl Session {
             sample: here.map(population),
             read: there.map(population),
             case: found,
-            how_to_read: "Every line is on the rule's parameter, in the plot's units. \
-                          started_at is the gate before the run; case.run_decided where the run \
-                          put it; case.baseline_decided where a replay with the run's own rules \
-                          puts it on the events kept (reproduced says whether that matches the \
-                          run); case.replay_decided where the changed rules put it; case.right \
-                          where the review says it belongs. Each 'beyond' is the fraction of the \
-                          sample's kept events past that line. The histograms share one range, \
-                          split into equal bins from lower to upper.",
+            how_to_read: "Every line is the gate's leading side on the rule's parameter, in the \
+                          plot's units. started_at is the gate before the run; case.run_decided \
+                          where the run put it; case.baseline_decided where a replay with the \
+                          run's own rules puts it on the events kept (reproduced says whether \
+                          that matches the run); case.replay_decided where the changed rules put \
+                          it; case.right where the review says it belongs. Each 'holds' is the \
+                          fraction of the sample's kept events inside the gate - its real shape, \
+                          both axes - with the gate there: what the verdict is judged on. Each \
+                          'beyond' is the fraction past the line on the parameter alone. \
+                          case.earlier_reviews are earlier runs that made this placement from \
+                          exactly the same input. The histograms share one range, split into \
+                          equal bins from lower to upper.",
         })
     }
 

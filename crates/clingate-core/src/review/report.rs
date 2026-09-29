@@ -183,6 +183,11 @@ pub enum Decision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Correction {
     pub gate_at: Vec<ExtentRecord>,
+    /// The gate itself as the reviewer left it - its shape as well as where
+    /// it sits, so a gate the reviewer reshaped is replayed as reshaped.
+    /// Absent in reports corrected before it was kept.
+    #[serde(default)]
+    pub gate: Option<flow_gates::Gate>,
     pub saved_at: String,
 }
 
@@ -555,6 +560,30 @@ impl PlacementReport {
     }
 }
 
+/// The reports that belong to the run applied at `run_applied_at`: made
+/// against it, or against no run at all. A report made against an earlier
+/// run is that run's history - its gate has been placed again since, and the
+/// report says nothing about where the new run put it.
+pub fn reports_of_run(folder: &Path, run_applied_at: &str) -> Vec<(PathBuf, PlacementReport)> {
+    reports_in(folder)
+        .into_iter()
+        .filter(|(_, r)| {
+            r.run_applied_at
+                .as_deref()
+                .is_none_or(|at| at == run_applied_at)
+        })
+        .collect()
+}
+
+/// Whether the run applied at `run_applied_at` has been marked reviewed -
+/// not an earlier run whose review is still in the folder.
+pub fn is_reviewed(folder: &Path, run_applied_at: &str) -> bool {
+    std::fs::read_to_string(folder.join(super::REVIEWS_DIR).join(REVIEW_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<RunReview>(&t).ok())
+        .is_some_and(|r| r.run_applied_at == run_applied_at)
+}
+
 /// The reports kept in a workspace, oldest first. One that cannot be read is
 /// passed over with a warning rather than hiding the rest.
 pub fn reports_in(folder: &Path) -> Vec<(PathBuf, PlacementReport)> {
@@ -592,13 +621,19 @@ pub fn record_corrections(
     metadata: &crate::omiq::metadata::MetaDataFileMap,
 ) -> usize {
     let mut changed = 0;
-    for (path, mut report) in reports_in(folder) {
+    // Only the last run's: an earlier run's report keeps the fix it was
+    // given, however its gate has been placed since.
+    let Ok(Some(run)) = RunRecord::load(folder) else {
+        return 0;
+    };
+    for (path, mut report) in reports_of_run(folder, &run.applied_at) {
         let gate_id: crate::gates::gate_store::GateId = Arc::from(report.gate_id.as_str());
         let sample: FileId = Arc::from(report.sample.id.as_str());
         let Some(gate) = state.gate_for_file(&gate_id, &sample, metadata) else {
             continue;
         };
         let now_at = extent_of(gate.as_ref());
+        let now_gate = gate.get_gate_ref(None).cloned();
         let as_placed = report
             .placed()
             .is_some_and(|p| placement_status(p, state, metadata) == PlacementStatus::AsPlaced);
@@ -608,12 +643,13 @@ pub fn record_corrections(
         } else {
             Some(Correction {
                 gate_at: now_at,
+                gate: now_gate,
                 saved_at: now(),
             })
         };
         let same = match (&report.correction, &correction) {
             (None, None) => true,
-            (Some(a), Some(b)) => a.gate_at == b.gate_at,
+            (Some(a), Some(b)) => a.gate_at == b.gate_at && a.gate == b.gate,
             _ => false,
         };
         if same {
@@ -642,7 +678,13 @@ pub enum Outcome {
     /// Reported as badly placed.
     Reported { reports: Vec<String> },
     /// Moved by the reviewer without a report - a correction, unexplained.
-    MovedUnreported { gate_at: Vec<ExtentRecord> },
+    /// `gate` is the gate as they left it, shape and all; absent in reviews
+    /// made before it was kept.
+    MovedUnreported {
+        gate_at: Vec<ExtentRecord>,
+        #[serde(default)]
+        gate: Option<flow_gates::Gate>,
+    },
     /// Gone from the document.
     Gone,
 }
@@ -774,8 +816,9 @@ pub fn review_as_it_stands(
     let run = RunRecord::load(folder)
         .map_err(|e| e.to_string())?
         .ok_or("no rules run has been applied in this workspace, so there is nothing to review")?;
-    // Corrections as the gates stand now, whether or not saved yet.
-    let reports = reports_in(folder);
+    // Corrections as the gates stand now, whether or not saved yet - of this
+    // run's reports, not an earlier run's.
+    let reports = reports_of_run(folder, &run.applied_at);
     // What the assessment flagged, and which flags the reviewer cleared.
     let assessment = super::assess::assess(&run, Some((state, metadata)));
     let looks = super::board::LooksRight::load(folder, &run);
@@ -815,11 +858,13 @@ pub fn review_as_it_stands(
                         let gate_id: crate::gates::gate_store::GateId =
                             Arc::from(p.gate_id.as_str());
                         let sample: FileId = Arc::from(p.sample.id.as_str());
+                        let now = state.gate_for_file(&gate_id, &sample, metadata);
                         Outcome::MovedUnreported {
-                            gate_at: state
-                                .gate_for_file(&gate_id, &sample, metadata)
+                            gate_at: now
+                                .as_ref()
                                 .map(|g| extent_of(g.as_ref()))
                                 .unwrap_or_default(),
+                            gate: now.and_then(|g| g.get_gate_ref(None).cloned()),
                         }
                     }
                 }
@@ -897,11 +942,14 @@ fn write_review(
                     std::fs::copy(path, into.join(REPORTS_DIR).join(report.file_name()))?;
                 }
                 // And the events behind every placement, the accepted as well
-                // as the reported - what a changed rule is tried against.
-                if super::events::load(folder, &run.applied_at)?.is_some() {
-                    std::fs::copy(
-                        super::events::file_in(folder),
-                        into.join(super::events::EVENTS_FILE),
+                // as the reported - what a changed rule is tried against. Each
+                // population into the library's pool once, however many runs
+                // read it.
+                if let Some(kept) = super::events::load(folder, &run.applied_at)? {
+                    super::events::save_to_library(
+                        &into,
+                        &super::events::Pool::in_library(library),
+                        &kept,
                     )?;
                 }
                 Ok(())

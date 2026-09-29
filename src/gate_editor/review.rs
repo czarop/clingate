@@ -356,11 +356,15 @@ pub fn ReviewPanel() -> Element {
         let _ = changed.read();
         let folder = loaded.read().folder.clone()?;
         let run = RunRecord::load(&folder);
-        let reports = clingate_core::review::report::reports_in(&folder);
-        let reviewed = folder
-            .join(clingate_core::review::REVIEWS_DIR)
-            .join(clingate_core::review::report::REVIEW_FILE)
-            .is_file();
+        // This run's reports, and whether this run - not an earlier one -
+        // has been marked reviewed.
+        let (reports, reviewed) = match &run {
+            Ok(Some(run)) => (
+                clingate_core::review::report::reports_of_run(&folder, &run.applied_at),
+                clingate_core::review::report::is_reviewed(&folder, &run.applied_at),
+            ),
+            _ => (Vec::new(), false),
+        };
         Some((run.map_err(|e| e.to_string()), reports, reviewed))
     });
 

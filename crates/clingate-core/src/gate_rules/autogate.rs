@@ -342,9 +342,10 @@ pub struct Measurement {
     /// gate admits can be asked through the very function that draws the
     /// percentage on screen.
     pub index: EventIndexMapped,
-    /// How many events the parent population holds, and a sample of up to
-    /// [`crate::review::events::KEPT_EVENTS`] of them on the plot's axes -
-    /// kept with the run, so a changed rule can be tried against it later.
+    /// How many events the parent population holds, and a sample of them on
+    /// the plot's axes - as many as [`crate::review::events::kept_for`] says
+    /// the rule needs - kept with the run, so a changed rule can be tried
+    /// against it later.
     pub events: usize,
     pub kept_events: Arc<Vec<(f32, f32)>>,
     /// The gate as it stood on this file when it was measured.
@@ -602,7 +603,10 @@ pub fn measure_population(
             parent_gate,
             index,
             events: points.len(),
-            kept_events: Arc::new(crate::review::events::subsample(&points)),
+            kept_events: Arc::new(crate::review::events::subsample_to(
+                &points,
+                crate::review::events::kept_for(&rule.rule),
+            )),
             drawn: inner.clone(),
             params,
             line: None,
@@ -687,7 +691,10 @@ pub fn measure_population(
         parent_gate,
         index,
         events: points.len(),
-        kept_events: Arc::new(crate::review::events::subsample(&points)),
+        kept_events: Arc::new(crate::review::events::subsample_to(
+            &points,
+            crate::review::events::kept_for(&rule.rule),
+        )),
         drawn: inner.clone(),
         params,
         line: Some(LineReading {

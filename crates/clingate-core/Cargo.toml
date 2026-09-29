@@ -37,6 +37,8 @@ rand = "0.10"
 rand_distr = "0.6"
 # When a rules run was applied, in its kept record. Already built for polars.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Content addresses for the populations a review library keeps once each.
+blake3 = "1"
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

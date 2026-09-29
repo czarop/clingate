@@ -216,21 +216,17 @@ mod tests {
             limits.displacement_limit
         )));
         assert!(doc.contains(&format!(
-            "within {:.0}% of the right\nfraction, or {} absolute",
+            "within {:.0}% of the smaller of the right\nfraction and what it leaves out, or {} of the events kept",
             super::super::replay::TOLERANCE_RELATIVE * 100.0,
-            super::super::replay::TOLERANCE_ABSOLUTE
+            super::super::replay::TOLERANCE_EVENTS
         )));
+        use super::super::events::{KEPT_EVENTS, MOST_KEPT_EVENTS, TAIL_EVENTS};
         assert!(doc.contains(&format!(
-            "up to {} events",
-            super::super::events::KEPT_EVENTS
-                .to_string()
-                .as_bytes()
-                .rchunks(3)
-                .rev()
-                .map(|c| std::str::from_utf8(c).unwrap())
-                .collect::<Vec<_>>()
-                .join(",")
+            "thinner side of the rule holds about {TAIL_EVENTS}"
         )));
+        assert_eq!((KEPT_EVENTS, MOST_KEPT_EVENTS), (5_000, 50_000));
+        assert!(doc.contains("All of them up to 5,000"));
+        assert!(doc.contains("up to 50,000 (`kept_for`)"));
         assert!(doc.contains(&format!(
             "confident (>= {})",
             super::super::assess::CONFIDENT

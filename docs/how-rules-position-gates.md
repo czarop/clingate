@@ -256,28 +256,60 @@ events into the review library when one is set.
 
 ## 6. Replays
 
+### What a run keeps
+
 Every run keeps, per gate per file measured (`review/events.rs`,
-`reviews/run_events.bin`): up to 5,000 events of the parent population on
-the gate's two axes (an even step through the events, plus the extremes of
-each axis), the total count, the gate as it stood before the run, and every
-file's metadata row.
+`reviews/run_events.bin`):
 
-A replay (`review/replay.rs`, `replay_run`) rebuilds those populations and gates and runs
-the **real** solver (`measure_population` + `solve_all`) on them - with the
-run's own rules (the *baseline*) and with proposed rule changes. Each
-placement is judged against where the review says the gate belongs:
+- events of the gate's **parent population** - the events the plot of that
+  gate shows, filtered by every gate above it - on the gate's two axes. Not
+  a sample of the whole file: a rare parent is kept whole or nearly so.
+  All of them up to 5,000; beyond that an even step through them (events
+  are in acquisition order, so this is a fair sample) plus the extremes of
+  each axis. A band or percentile rule reads a thin tail, which 5,000
+  events leave only a handful of, so for those enough are kept that the
+  thinner side of the rule holds about 100 events - 100 / 0.002 = 50,000 for
+  a band starting at 0.2% - up to 50,000 (`kept_for`);
+- the population's total count;
+- the gate as it stood on that file before the run, shape and all;
+- every file's metadata row.
 
-| truth | right line |
+Coordinates are stored as 16 bits across the range the events span.
+
+A review library keeps each population **once**: in `events/` beside the
+reviewed runs, named by a hash of its contents; each reviewed run's
+`run_events.json` lists which gate and file each was read for. Rerunning
+the rules leaves every population whose parent gates did not move exactly
+as it was, so a rerun adds only its lists and the populations that changed.
+
+### Replaying
+
+A replay (`review/replay.rs`, `replay_run`) rebuilds those populations and
+gates and runs the **real** solver (`measure_population` + `solve_all`) on
+them - with the run's own rules (the *baseline*) and with proposed rule
+changes. Each placement is judged against where the review says the gate
+belongs:
+
+| truth | right gate |
 |-------|-----------|
 | accepted as placed | where the rule put it |
 | left alone, accepted | where it was |
-| reported, fix saved | where the fix put it |
-| moved by hand, no report | where it was moved |
+| reported, fix saved | the gate the reviewer left, shape and all |
+| moved by hand, no report | the gate the reviewer left, shape and all |
 | reported, no fix | none known - only what was wrong |
 
-Lines are compared on the fraction of the gated sample's kept events beyond
-the line on the rule's parameter. Close enough: within 20% of the right
-fraction, or 0.002 absolute, whichever is larger.
+Placements are compared on **what the gate holds**: the fraction of the
+sample's kept events inside the gate, with its real shape on both axes,
+counted by the same statistic the plot shows (`admitted_by`). Every rule
+that moves a line slides the whole shape, unchanged, along its parameter,
+so the run's, the baseline's and the replay's gates are the gate before
+the run slid to each one's line. The reviewer's gate is used as they left
+it - reshaped or not (reviews made before the shape was kept are judged as
+the gate slid to the reviewer's line, and the case says so when the extents
+show a reshape). Close enough: within 20% of the smaller of the right
+fraction and what it leaves out, or 3 of the events kept, whichever is
+larger. Each line's fraction past the line on the parameter alone
+(`beyond`) is reported beside it, for reading.
 
 Verdicts: `fixed` (run wrong, replay right), `broken` (run right, replay
 wrong), `still_wrong`, `still_right`; with no right answer, `changed` or
@@ -287,8 +319,36 @@ band rule stopping at the first probe inside its band, near the band's edge,
 is the usual reason); `not_replayed` - the replay could not place it (the
 case says why).
 
+### The same placement twice
+
+Each case carries a fingerprint of its **input**: the run's rule; the
+sample's population, metadata and gate shape; the file the rule read - its
+population, metadata, and its gate with its position, since the rule is
+calibrated on it; and where the gate started on the sample, for the rules
+that read that (a band rule, which searches from it and keeps a gate already
+in its band, and above-the-negative with the finder that refines from the
+gate). A gate's id, label and the files it applies to are not part of it.
+Two runs with the same input for a placement did the same thing on the same
+data: the case is counted once, with the later run and its review, and the
+earlier reviews are listed with it (`earlier_reviews`) - two reviews of one
+placement disagreeing is worth knowing.
+
 Runs applied before events were kept this way cannot be replayed; rerun the
 rules to make them replayable.
+
+### Shapes
+
+Rectangles, polygons and line gates are positioned and replayed; the rule's
+parameter must be one of the gate's two axes. The line is the shape's
+extreme on that parameter (its leftmost vertex, for a positive gate), and
+a rule moves the whole shape rigidly so its line lands where the rule says.
+Where the rule reads the population against the gate - the negative below
+it, the band it holds - it reads each event against the boundary **at that
+event's height** (`boundary_at`), so a slanted polygon is read as slanted.
+Ellipses and gates made of other gates (quadrants) cannot be slid along one
+axis; a rule on one is refused and says so. Phenotype rules reshape the
+gate, but read the whole marker panel, which runs do not keep, so they are
+not replayed.
 
 ## 7. Known behaviours worth discussing
 

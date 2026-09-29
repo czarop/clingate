@@ -250,10 +250,18 @@ fn with_rules(name: &str) -> std::path::PathBuf {
 
 /// The same, with another rule.
 fn with_rule(name: &str, rule: clingate_core::gate_rules::rule::Rule) -> std::path::PathBuf {
+    rule_in(workspace(name), rule)
+}
+
+/// `dir` with one rule for Tmem, on its first parameter, read on each sample
+/// itself.
+fn rule_in(
+    dir: std::path::PathBuf,
+    rule: clingate_core::gate_rules::rule::Rule,
+) -> std::path::PathBuf {
     use clingate_core::gate_rules::rule_store::{
         Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
     };
-    let dir = workspace(name);
     let parameter = Session::open(&dir)
         .unwrap()
         .gate("Tmem", None)
@@ -582,10 +590,18 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
             placed.sample.id
         );
     }
-    assert!(copy.join("run_events.bin").is_file());
+    // In the library as a list of populations in its pool - read back, the
+    // very events the workspace kept.
+    assert!(copy.join("run_events.json").is_file());
+    assert!(!copy.join("run_events.bin").exists());
+    let pool = clingate_core::review::events::Pool::in_library(&library);
+    assert_eq!(pool.len(), here.len());
+    let from_library = clingate_core::review::events::load_from_library(&copy)
+        .unwrap()
+        .expect("in the library");
     assert_eq!(
-        std::fs::read(copy.join("run_events.bin")).unwrap(),
-        std::fs::read(folder.join("reviews").join("run_events.bin")).unwrap()
+        Some(from_library),
+        clingate_core::review::events::load(&folder, &run.applied_at).unwrap()
     );
     assert_eq!(std::fs::read_dir(copy.join("reports")).unwrap().count(), 1);
 
@@ -837,11 +853,13 @@ fn a_run_reviewed_with_no_library_is_kept_in_the_workspace_only() {
 /// saved and marked reviewed into a library: the run a replay reads. Returns
 /// the session, where Tmem's edge sat before the run, and the library.
 ///
-/// The rule puts the line on the median of the parent - in the negatives,
-/// which are two thirds of it; the gate as drawn sits in the gap between the
-/// negatives and the positives, and that is where the reviewer puts it back.
+/// The rule puts the line half a unit below the median of the parent - the
+/// slanted gate's boundary then runs left of the negatives, which are two
+/// thirds of it, and takes them in; the gate as drawn sits in the gap
+/// between the negatives and the positives, holding the positives alone,
+/// and that is where the reviewer puts it back.
 fn reviewed_run(name: &str) -> (Session, f64, std::path::PathBuf) {
-    let folder = with_rule(name, percentile(0.0));
+    let folder = rule_in(tmem_workspace(name), percentile(-0.5));
     let library = scratch(&format!("{name}-library"));
     let mut session = Session::open(&folder).unwrap();
     session.set_review_library(Some(library.clone()));
@@ -855,6 +873,37 @@ fn reviewed_run(name: &str) -> (Session, f64, std::path::PathBuf) {
     session.save().unwrap();
     session.mark_run_reviewed().unwrap();
     (session, before, library)
+}
+
+/// The workspace, with events Tmem's gate reaches. The gate is a slanted
+/// polygon on BUV805-A and BUV563-A, well up BUV563-A; here every event sits
+/// there on BUV563-A, and on BUV805-A a third are positive - inside the gate
+/// as drawn - and the rest negative, to the left of it.
+fn tmem_workspace(name: &str) -> std::path::PathBuf {
+    let dir = workspace(name);
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    let at = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
+    for (seed, file) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let high = Normal::new(400_000.0f32, 40_000.0).unwrap();
+        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut row)| {
+                row[at("BUV563-A")] = high.sample(&mut rng);
+                // Positive a third of the time, as the other channels are.
+                row[at("BUV805-A")] = if i % 3 == 0 {
+                    Normal::new(40_000.0f32, 8_000.0).unwrap().sample(&mut rng)
+                } else {
+                    Normal::new(0.0f32, 300.0).unwrap().sample(&mut rng)
+                };
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+    dir
 }
 
 /// The line `offset` above the median of the parent.
@@ -884,7 +933,7 @@ fn tmem_rule(
 
 #[test]
 fn a_reviewed_run_is_replayed_with_its_rules_and_with_a_change_that_fixes_it() {
-    use clingate_core::review::replay::{Truth, Verdict};
+    use clingate_core::review::replay::{Truth, Verdict, close_enough};
     use clingate_core::session::ReplayScope;
     let (session, before, _) = reviewed_run("session-replay");
 
@@ -921,21 +970,27 @@ fn a_reviewed_run_is_replayed_with_its_rules_and_with_a_change_that_fixes_it() {
     for case in &as_run.cases {
         assert!((case.right_at.unwrap() - before).abs() < 1e-3, "{case:?}");
         assert_eq!(
-            case.baseline_beyond, case.replay_beyond,
+            case.baseline_holds, case.replay_holds,
             "no change, same replay"
         );
+        let kept = 5_000;
         assert!(
-            (case.run_beyond.unwrap() - case.baseline_beyond.unwrap()).abs() < 0.002,
+            close_enough(case.baseline_holds.unwrap(), case.run_holds.unwrap(), kept),
             "reproduced: {case:?}"
         );
-        // The run put the line in the negatives: half the parent beyond it,
-        // against the third that is positive.
+        // The run put the line left of the negatives, so the gate took them in.
         assert!(case.run_at.unwrap() < case.right_at.unwrap(), "{case:?}");
-        assert!((0.45..0.55).contains(&case.run_beyond.unwrap()), "{case:?}");
         assert!(
-            (0.28..0.38).contains(&case.right_beyond.unwrap()),
+            case.run_holds.unwrap() > case.right_holds.unwrap() + 0.05,
             "{case:?}"
         );
+        assert!(!close_enough(
+            case.run_holds.unwrap(),
+            case.right_holds.unwrap(),
+            kept
+        ));
+        assert!(case.notes.is_empty(), "{case:?}");
+        assert_eq!(case.earlier_reviews, 0);
     }
     // By gate, named with its parent.
     assert_eq!(as_run.by_gate.len(), 1, "{:?}", as_run.by_gate);
@@ -953,15 +1008,15 @@ fn a_reviewed_run_is_replayed_with_its_rules_and_with_a_change_that_fixes_it() {
     assert!(
         changed.changes_tried[0].starts_with("Tmem: ")
             && changed.changes_tried[0].contains("50th percentile of the negative by 1 ")
-            && changed.changes_tried[0].contains("by 0 [Percentile offset])"),
+            && changed.changes_tried[0]
+                .contains("below the 50th percentile of the negative by 0.5 [Percentile offset])"),
         "{:?}",
         changed.changes_tried
     );
     assert_eq!(changed.totals.get(&Verdict::Fixed), Some(&2), "{changed:?}");
     for case in &changed.cases {
         assert!(
-            (case.replay_beyond.unwrap() - case.right_beyond.unwrap()).abs()
-                <= 0.2 * case.right_beyond.unwrap(),
+            close_enough(case.replay_holds.unwrap(), case.right_holds.unwrap(), 5_000),
             "{case:?}"
         );
     }
@@ -1048,10 +1103,15 @@ fn one_case_is_shown_in_full_with_the_population_and_every_line() {
             .as_ref()
             .unwrap()
             .line
-            .beyond
+            .holds
             .map(|b| (b * 1e6).round() / 1e6),
-        line.replay_beyond
+        line.replay_holds
     );
+    // The run's line below the negatives: nearly all the population past it
+    // on the parameter alone; the gate's slanted far side holds some back.
+    let past = detail.case.run_decided.line.beyond.unwrap();
+    assert!(past > 0.9, "{past}");
+    assert!(detail.case.run_decided.line.holds.unwrap() < past);
     assert!(
         detail
             .rule_in_run
@@ -1085,7 +1145,7 @@ fn one_case_is_shown_in_full_with_the_population_and_every_line() {
     let sample = detail.sample.as_ref().unwrap();
     // Tmem's parent, every event of it kept.
     assert!(
-        sample.events > 50 && sample.events < 3_000,
+        sample.events > 500 && sample.events < 20_000,
         "{}",
         sample.events
     );
@@ -1281,4 +1341,167 @@ fn a_case_whose_rule_read_the_specimen_s_fmx_shows_that_population_beside_the_sa
         detail.case.run_decided.measured_on.as_deref(),
         Some(read.file.as_str())
     );
+}
+
+#[test]
+fn the_same_rules_run_again_on_the_same_gates_are_stored_once_and_counted_once() {
+    use clingate_core::review::events::Pool;
+    use clingate_core::review::replay::{Truth, Verdict};
+    use clingate_core::session::ReplayScope;
+    // Run, reviewed - the gate on fmx reported and both taken back.
+    let (mut session, _, library) = reviewed_run("session-replay-twice");
+    let pool = Pool::in_library(&library);
+    let stored = pool.len();
+    assert!(stored >= 2, "{stored}");
+
+    // The same rules on the same files from the same gates - a second later,
+    // so it is a run of its own - and this time accepted as placed.
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let reviewed = session.mark_run_reviewed().unwrap();
+    assert_eq!(reviewed.accepted, 2);
+    let runs_in_library = std::fs::read_dir(&library)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().join("review.json").is_file())
+        .count();
+    assert_eq!(runs_in_library, 2, "each review is kept");
+    assert_eq!(pool.len(), stored, "but no population twice");
+
+    let replayed = session
+        .replay_rules(&[], ReplayScope::Both, None, None)
+        .unwrap();
+    assert_eq!(replayed.runs.len(), 2, "{:?}", replayed.runs);
+    assert_eq!(replayed.cases_total, 2, "each placement once");
+    assert_eq!(replayed.repeats_counted_once, 2);
+    let earlier = replayed
+        .runs
+        .iter()
+        .min_by(|a, b| a.run_applied_at.cmp(&b.run_applied_at))
+        .unwrap();
+    assert_eq!(earlier.repeated_later, 2);
+    // Counted with the later review, which accepted them.
+    assert_eq!(
+        replayed.totals.get(&Verdict::StillRight),
+        Some(&2),
+        "{replayed:?}"
+    );
+    for case in &replayed.cases {
+        assert_eq!(case.truth, Truth::AcceptedAsPlaced, "{case:?}");
+        assert_eq!(case.earlier_reviews, 1);
+    }
+    // In full, what the earlier review said - it disagreed.
+    let fmx = replayed
+        .cases
+        .iter()
+        .find(|c| c.sample.contains("FMX"))
+        .unwrap();
+    let detail = session
+        .replay_case(&[], ReplayScope::Both, &fmx.case)
+        .unwrap();
+    assert_eq!(detail.case.earlier_reviews.len(), 1);
+    assert_eq!(
+        detail.case.earlier_reviews[0].run_applied_at,
+        earlier.run_applied_at
+    );
+    assert!(
+        matches!(
+            &detail.case.earlier_reviews[0].truth,
+            Truth::Corrected { note, .. } if note == "the old gate was right"
+        ),
+        "{:?}",
+        detail.case.earlier_reviews
+    );
+
+    // One run alone repeats nothing.
+    let workspace_only = session
+        .replay_rules(&[], ReplayScope::Workspace, None, None)
+        .unwrap();
+    assert_eq!(workspace_only.repeats_counted_once, 0);
+    assert!(workspace_only.cases.iter().all(|c| c.earlier_reviews == 0));
+}
+
+#[test]
+fn a_run_from_moved_gates_is_a_different_input_and_stores_only_what_changed() {
+    use clingate_core::review::events::Pool;
+    use clingate_core::session::ReplayScope;
+    // Reviewed with the run's placements kept this time: the next run starts
+    // from where the first put the gate.
+    let folder = rule_in(tmem_workspace("session-replay-moved"), percentile(-0.5));
+    let library = scratch("session-replay-moved-library");
+    let mut session = Session::open(&folder).unwrap();
+    session.set_review_library(Some(library.clone()));
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    session.mark_run_reviewed().unwrap();
+    let pool = Pool::in_library(&library);
+    let stored = pool.len();
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    session.mark_run_reviewed().unwrap();
+    // Tmem's parent did not move, so its populations are the same ones.
+    assert_eq!(pool.len(), stored);
+
+    // A percentile rule does not read where the gate starts on the sample,
+    // but read on the sample itself it is calibrated there: a different
+    // input, so both runs count.
+    let replayed = session
+        .replay_rules(&[], ReplayScope::Both, None, None)
+        .unwrap();
+    assert_eq!(replayed.cases_total, 4, "{replayed:?}");
+    assert_eq!(replayed.repeats_counted_once, 0);
+}
+
+#[test]
+fn a_report_belongs_to_the_run_it_was_made_against() {
+    use clingate_core::review::board::Pile;
+    use clingate_core::review::report::{is_reviewed, reports_in, reports_of_run};
+    let (mut session, _, _) = reviewed_run("session-report-run");
+    let folder = session.folder().to_path_buf();
+    let first = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .unwrap()
+        .applied_at;
+    assert!(is_reviewed(&folder, &first));
+    let fixed = reports_in(&folder)[0]
+        .1
+        .correction
+        .clone()
+        .expect("taken back and saved");
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    session.save().unwrap();
+    let second = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .unwrap()
+        .applied_at;
+    assert_ne!(first, second);
+
+    // The new run's placements are not reported: the report was about the
+    // first run's.
+    let piles = session.assess_run().unwrap().piles;
+    let count = |pile: Pile| piles.iter().find(|(p, _)| *p == pile).unwrap().1;
+    assert_eq!(count(Pile::Reported), 0, "{piles:?}");
+    assert!(reports_of_run(&folder, &second).is_empty());
+    assert_eq!(reports_of_run(&folder, &first).len(), 1);
+    // Its fix is where the reviewer left the gate, not where the new run put
+    // it - saving after the new run does not rewrite history.
+    assert_eq!(
+        reports_in(&folder)[0]
+            .1
+            .correction
+            .as_ref()
+            .map(|c| &c.gate_at),
+        Some(&fixed.gate_at)
+    );
+    // And the first run's review is not this run's.
+    assert!(!is_reviewed(&folder, &second));
+    let reviewed = session.mark_run_reviewed().unwrap();
+    assert_eq!((reviewed.accepted, reviewed.reported), (2, 0));
+    assert!(is_reviewed(&folder, &second));
 }

@@ -1001,11 +1001,18 @@ mod tests {
                     reports: vec![reported.id.clone()]
                 }
             );
-            let Outcome::MovedUnreported { gate_at } = &outcome_of("fs_b", "CD134+").outcome else {
+            let Outcome::MovedUnreported { gate_at, gate } = &outcome_of("fs_b", "CD134+").outcome
+            else {
                 panic!("{:?}", outcome_of("fs_b", "CD134+").outcome);
             };
             let on_x = gate_at.iter().find(|e| e.parameter == X).unwrap();
             assert_eq!(on_x.lower, Some(900.0));
+            // The gate itself is kept too, shape and all, as the reviewer left it.
+            let left = gate.as_ref().expect("the gate as moved");
+            assert_eq!(
+                crate::gate_rules::autogate::extent_on(&left.geometry, X).map(|e| e.0),
+                Some(900.0)
+            );
             assert_eq!(outcome_of("fs_c", "CD134+").outcome, Outcome::Accepted);
             assert_eq!(outcome_of("fs_c", "lost gate").outcome, Outcome::Gone);
 
@@ -1762,6 +1769,23 @@ mod tests {
             assert!((0.05..=0.15).contains(&achieved), "{achieved}");
             assert_eq!(kept.bound, Some(Bound::Above));
             assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn a_band_rule_keeps_enough_events_for_its_tail() {
+            use crate::gate_rules::rule::TailFractionRule;
+            let mut inputs = three_way_inputs("run-events-tail");
+            let mut rule = inputs.rules.entries()[0].rule.clone();
+            // 0.2% to 0.5% wants 50,000 events; each population has 10,000,
+            // so every one of them is kept.
+            rule.rule = Rule::TailFraction(TailFractionRule::new((0.002, 0.005)));
+            inputs.rules.insert(RuleTarget::named("CD134+"), rule);
+            let (state, _) = positive_gate();
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            assert!(!outcome.events.samples.is_empty());
+            for e in &outcome.events.samples {
+                assert_eq!((e.events, e.points.len()), (10_000, 10_000), "{}", e.file);
+            }
         }
 
         #[test]

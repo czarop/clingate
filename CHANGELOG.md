@@ -34,13 +34,28 @@
   reference sample), a typical peer, both, or nothing. The typical peer is
   chosen from the peers that are not flagged themselves. Filter by gate; the Gate Rules tab's
   Review section gives the counts and a way in.
-- **Every run keeps the events behind its gates.** Up to 5,000 events of
-  the parent population, on the gate's two parameters, for every gate on
-  every file a run measured - placed, left alone, and each FMX or
-  reference sample it read - in `reviews/run_events.bin` (about 20 KB a
-  gate a file), copied into the review library with the run's review. So
-  a changed rule can later be tried against the placements that were
-  right as well as the ones reported wrong.
+- **Every run keeps the events behind its gates.** Events of each gate's
+  parent population - not of the whole file - on the gate's two
+  parameters, for every gate on every file a run measured (placed, left
+  alone, and each FMX or reference sample it read), with the gate as it
+  stood before the run and each file's metadata, in
+  `reviews/run_events.bin`. All of them up to 5,000; a band or percentile
+  rule, which reads a thin tail, keeps enough that its tail holds about
+  100 events, up to 50,000. The review library keeps each population once,
+  in a pool shared by every reviewed run: running the rules again adds only
+  the populations whose parent gates moved.
+- **Replaying reviewed runs, and tools for improving the rules with
+  Claude.** A replay runs the real solver on the events a reviewed run
+  kept - with the run's own rules, and with proposed changes - and judges
+  each placement against where the review says the gate belongs, on what
+  the gate holds with its real shape (a reshaped fix is kept with the
+  review and used as the reviewer left it). A placement repeated from
+  exactly the same input - the same rule on the same populations from the
+  same gates - is counted once, with the latest review, and earlier
+  reviews of it listed. `docs/how-rules-position-gates.md` describes
+  exactly how each rule positions a gate. Tools for Claude:
+  `explain_gate_positioning`, `read_positioning_code`, `replay_rules`,
+  `replay_case` and `update_rule`.
 - **Which placements need a look.** Each sample is compared with its
   peers - the other samples of the same kind that the rule placed
   confidently - on where its gate sits between its own negative and
@@ -360,6 +375,12 @@
   still carry it load as before.
 
 ### Fixed
+
+- A report now belongs to the run it was made against. After the rules
+  were run again, an earlier run's report marked the new run's placement
+  of the same gate as reported, saving rewrote the earlier report's fix
+  as wherever the new run had put the gate, and the Gate Rules tab said
+  the new run was reviewed when an earlier one had been.
 
 - **Opening a file holds its events once, and is faster.** flow_fcs decoded
   every event into one buffer and then copied it out column by column; it now

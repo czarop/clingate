@@ -82,7 +82,7 @@ pub fn use_board(tab: Tab) -> (Memo<Option<Arc<Board>>>, Memo<Option<Arc<HeldRun
         }
         let folder = loaded.read().folder.clone()?;
         let run = RunRecord::load(&folder).ok()??;
-        let reported = clingate_core::review::report::reports_in(&folder)
+        let reported = clingate_core::review::report::reports_of_run(&folder, &run.applied_at)
             .into_iter()
             .map(|(_, r)| (r.gate_id, r.sample.id))
             .collect();
