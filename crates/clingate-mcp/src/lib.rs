@@ -76,7 +76,22 @@ When the user says a gate was placed badly, report_placement records it - with \
 their reason - so the rules' confidence scores can be improved; do not report \
 a gate on your own judgement. mark_run_reviewed records that the user has \
 finished reviewing a run: only when they say so, since every placement they \
-did not report then counts as accepted.";
+did not report then counts as accepted.
+
+To work out with the user how the rules could place gates better: \
+explain_gate_positioning says exactly how every rule decides, and \
+read_positioning_code shows the code itself - read what you need rather than \
+assuming. replay_rules replays reviewed runs - the workspace's last run and \
+those in the review library - on the events each run kept, with the rules they \
+ran with and with changes you propose, and says for each placement whether a \
+change fixed it, broke it or left it wrong, against where the reviewer said \
+the gate belongs. replay_case shows one placement in full. A case that is \
+not_reproduced cannot judge a change: say so rather than counting it. Propose \
+changes, replay them, and discuss what they fix and break with the user; a \
+change that fixes some samples and breaks others is a finding, not a result. \
+update_rule writes a rule to the workspace's rules file - only when the user \
+says to, and after they have seen the replay. Changing the code itself is for \
+the user and their developers: describe the change and the evidence for it.";
 
 /// The server, holding the one open workspace.
 #[derive(Clone)]
@@ -196,6 +211,78 @@ pub struct ReportPlacement {
     /// The user's own words about it, if they gave any.
     #[serde(default)]
     pub note: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReadPositioningCode {
+    /// A file from the list explain_gate_positioning gives, e.g. 'gate_rules/autogate.rs'.
+    /// Leave out, with no search, for the list.
+    pub path: Option<String>,
+    /// The first line to read, from 1.
+    pub from: Option<usize>,
+    /// The last line to read. At most 400 lines come back at once.
+    pub to: Option<usize>,
+    /// Text to find in every readable file, e.g. 'fn slide_to_capture'. Answers with each
+    /// matching line's file and number.
+    pub search: Option<String>,
+}
+
+/// Rule changes, as the tools take them.
+const RULE_CHANGES: &str = "a list of {\"target\": {\"gate\": \"CD69+\", \"parent\": \"CD4+\" or      null}, \"rule\": {\"parameter\": \"CD69\", \"bound\": \"Above\" or \"Below\",      \"measured_on\": \"Itself\" or {\"Partner\": \"FMX\"} or {\"File\": \"<file id>\"},      \"rule\": {\"kind\": \"TailFraction\", \"band\": [0.002, 0.005]}}} - the rule kinds and their      fields are in explain_gate_positioning, section 8";
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReplayRules {
+    /// Rules to try in place of the ones the runs used: a list of {"target": {"gate", "parent"},
+    /// "rule": {"parameter", "bound", "measured_on", "rule": {"kind", ...}}}. Leave out to
+    /// replay the rules as they ran.
+    pub rule_changes: Option<serde_json::Value>,
+    /// Which reviewed runs: 'workspace' (its last run), 'library' (every run in the review
+    /// library) or 'both' (the default).
+    pub scope: Option<String>,
+    /// One gate's cases only, by its name or 'gate of parent', e.g. 'CD69+'.
+    pub gate: Option<String>,
+    /// How many cases to list, most telling first (default 60, at most 500). The totals always
+    /// count every case.
+    pub max_cases: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReplayCase {
+    /// The case, exactly as replay_rules names it.
+    pub case: String,
+    /// The same rule changes given to replay_rules, if any.
+    pub rule_changes: Option<serde_json::Value>,
+    /// The same scope given to replay_rules, if any.
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateRule {
+    /// The gate's name, e.g. 'CD69+'.
+    pub gate: String,
+    /// The parent gate's name, when the rule is for the gate under that parent only.
+    pub parent: Option<String>,
+    /// The whole rule: {"parameter", "bound", "measured_on", "rule": {"kind", ...}}, as in a
+    /// replay's rule_changes.
+    pub rule: serde_json::Value,
+}
+
+fn rule_changes(
+    given: Option<serde_json::Value>,
+) -> Result<Vec<clingate_core::review::replay::RuleChange>, Refusal> {
+    match given {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(value) => serde_json::from_value(value).map_err(|e| Refusal::Failed {
+            reason: format!("the rule changes could not be read ({e}): give {RULE_CHANGES}"),
+        }),
+    }
+}
+
+fn scope(given: Option<String>) -> Result<clingate_core::session::ReplayScope, Refusal> {
+    let key = given.unwrap_or_default();
+    clingate_core::session::ReplayScope::from_key(&key).ok_or_else(|| Refusal::Failed {
+        reason: format!("{key} is not a scope: 'workspace', 'library' or 'both'"),
+    })
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -528,6 +615,102 @@ impl Clingate {
     #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn mark_run_reviewed(&self) -> String {
         self.run(|s| s.mark_run_reviewed()).await
+    }
+
+    /// Exactly how the rules position gates, in words: which file of a specimen is gated and
+    /// which is read, each rule kind step by step with its constants, how confidence is scored,
+    /// how a run is reviewed and replayed, known behaviours worth discussing, and the rules
+    /// file's format. Also lists the source files read_positioning_code can show. Needs no
+    /// workspace.
+    #[tool(annotations(read_only_hint = true))]
+    async fn explain_gate_positioning(&self) -> String {
+        use clingate_core::review::explain;
+        ok(serde_json::json!({
+            "description": explain::HOW_RULES_POSITION_GATES,
+            "readable_source": explain::contents()
+                .into_iter()
+                .map(|(path, holds, lines)| serde_json::json!({
+                    "path": path, "holds": holds, "lines": lines
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    /// The source code that positions gates, scores them and replays them - exactly what the
+    /// program runs. Give a path and a line range to read (400 lines at most at once), or a
+    /// search to find where something is. Needs no workspace.
+    #[tool(annotations(read_only_hint = true))]
+    async fn read_positioning_code(
+        &self,
+        Parameters(args): Parameters<ReadPositioningCode>,
+    ) -> String {
+        use clingate_core::review::explain;
+        if let Some(text) = args.search.filter(|t| !t.trim().is_empty()) {
+            return ok(explain::search(&text, 60));
+        }
+        match args.path {
+            Some(path) => match explain::read(&path, args.from, args.to) {
+                Ok(part) => ok(part),
+                Err(reason) => failed(reason),
+            },
+            None => ok(explain::contents()
+                .into_iter()
+                .map(|(path, holds, lines)| {
+                    serde_json::json!({"path": path, "holds": holds, "lines": lines})
+                })
+                .collect::<Vec<_>>()),
+        }
+    }
+
+    /// Replay reviewed rules runs on the events each kept: with the rules they ran with, and
+    /// with any rule changes given. Says per gate and per placement whether a change fixed,
+    /// broke or left wrong where the gate went, against where the reviewer said it belongs.
+    /// Changes nothing.
+    #[tool(annotations(read_only_hint = true))]
+    async fn replay_rules(&self, Parameters(args): Parameters<ReplayRules>) -> String {
+        self.run(move |s| {
+            let changes = rule_changes(args.rule_changes)?;
+            let scope = scope(args.scope)?;
+            s.replay_rules(&changes, scope, args.gate.as_deref(), args.max_cases)
+        })
+        .await
+    }
+
+    /// One case of a replay in full: the sample's population - and the file the rule read,
+    /// when it read another - as histograms on the rule's parameter, where the gate started,
+    /// where the run, the replay and the reviewer put the line, and every confidence component.
+    #[tool(annotations(read_only_hint = true))]
+    async fn replay_case(&self, Parameters(args): Parameters<ReplayCase>) -> String {
+        self.run(move |s| {
+            let changes = rule_changes(args.rule_changes)?;
+            let scope = scope(args.scope)?;
+            s.replay_case(&changes, scope, &args.case)
+        })
+        .await
+    }
+
+    /// Write one rule into the workspace's rules file, replacing the rule for the same gate
+    /// and parent: the file the Gate Rules tab edits. Only when the user says to, after they
+    /// have seen what replay_rules says it fixes and breaks.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn update_rule(&self, Parameters(args): Parameters<UpdateRule>) -> String {
+        self.run(move |s| {
+            let rule = serde_json::from_value(args.rule).map_err(|e| Refusal::Failed {
+                reason: format!(
+                    "the rule could not be read ({e}): give the rule part of {RULE_CHANGES}"
+                ),
+            })?;
+            let target = clingate_core::gate_rules::rule_store::RuleTarget {
+                gate: args.gate.trim().into(),
+                parent: args
+                    .parent
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .map(Into::into),
+            };
+            s.update_rule(clingate_core::review::replay::RuleChange { target, rule })
+        })
+        .await
     }
 }
 

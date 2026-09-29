@@ -19,11 +19,16 @@
 mod edits;
 mod gates;
 pub mod lookup;
+mod replay;
 mod review;
 mod rules;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
+pub use replay::{
+    CASES_MAX, CASES_SHOWN, CaseDetail, CaseLine, CasePopulation, ReplayAnswer, ReplayScope,
+    RuleUpdated, describe_rule,
+};
 pub use review::{FLAGS_SHOWN, Reported, Reviewed, RunAssessment};
 pub use rules::{RulesPreview, RulesView};
 

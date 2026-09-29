@@ -282,7 +282,11 @@ pub fn node_named(state: &GateState, gate_id: &str, parent_gate: Option<&str>) -
         .cloned()
 }
 
-fn histogram(parameter: &str, values: impl Iterator<Item = f32>, range: (f64, f64)) -> Histogram {
+pub(crate) fn histogram(
+    parameter: &str,
+    values: impl Iterator<Item = f32>,
+    range: (f64, f64),
+) -> Histogram {
     let (lower, upper) = range;
     let width = (upper - lower) / BINS as f64;
     let mut counts = vec![0u32; BINS];

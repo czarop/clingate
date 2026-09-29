@@ -13,6 +13,7 @@
 pub mod assess;
 pub mod board;
 pub mod events;
+pub mod explain;
 pub mod library;
 pub mod replay;
 pub mod report;

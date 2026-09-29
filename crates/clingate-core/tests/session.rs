@@ -240,7 +240,16 @@ fn samples_are_compared_on_a_parameter_against_the_plate() {
 /// The workspace with one rule: Tmem keeps the top 1-2% of its parent on its
 /// first parameter, measured on each sample itself.
 fn with_rules(name: &str) -> std::path::PathBuf {
-    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    with_rule(
+        name,
+        clingate_core::gate_rules::rule::Rule::TailFraction(
+            clingate_core::gate_rules::rule::TailFractionRule::new((0.01, 0.02)),
+        ),
+    )
+}
+
+/// The same, with another rule.
+fn with_rule(name: &str, rule: clingate_core::gate_rules::rule::Rule) -> std::path::PathBuf {
     use clingate_core::gate_rules::rule_store::{
         Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
     };
@@ -261,7 +270,7 @@ fn with_rules(name: &str) -> std::path::PathBuf {
             parameter: parameter.into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
-            rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            rule,
         },
     );
     store
@@ -821,5 +830,455 @@ fn a_run_reviewed_with_no_library_is_kept_in_the_workspace_only() {
     assert_eq!(
         (reviewed.accepted, reviewed.reported, reviewed.left_alone),
         (2, 0, 0)
+    );
+}
+
+/// A rules run applied, the gate on `fmx` reported too high and taken back,
+/// saved and marked reviewed into a library: the run a replay reads. Returns
+/// the session, where Tmem's edge sat before the run, and the library.
+///
+/// The rule puts the line on the median of the parent - in the negatives,
+/// which are two thirds of it; the gate as drawn sits in the gap between the
+/// negatives and the positives, and that is where the reviewer puts it back.
+fn reviewed_run(name: &str) -> (Session, f64, std::path::PathBuf) {
+    let folder = with_rule(name, percentile(0.0));
+    let library = scratch(&format!("{name}-library"));
+    let mut session = Session::open(&folder).unwrap();
+    session.set_review_library(Some(library.clone()));
+    let before = tmem_edge(&session);
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    session
+        .report_placement("Tmem", "fmx", "too_high", "the old gate was right")
+        .unwrap();
+    session.undo().unwrap();
+    session.save().unwrap();
+    session.mark_run_reviewed().unwrap();
+    (session, before, library)
+}
+
+/// The line `offset` above the median of the parent.
+fn percentile(offset: f64) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::PercentileOffset(
+        clingate_core::gate_rules::rule::PercentileOffsetRule::new(50.0, offset),
+    )
+}
+
+fn band(band: (f64, f64)) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::TailFraction(
+        clingate_core::gate_rules::rule::TailFractionRule::new(band),
+    )
+}
+
+/// The Tmem rule, done another way.
+fn tmem_rule(
+    session: &Session,
+    how: clingate_core::gate_rules::rule::Rule,
+) -> clingate_core::review::replay::RuleChange {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    let target = RuleTarget::named("Tmem");
+    let mut rule = session.rules().unwrap().get(&target).unwrap().clone();
+    rule.rule = how;
+    clingate_core::review::replay::RuleChange { target, rule }
+}
+
+#[test]
+fn a_reviewed_run_is_replayed_with_its_rules_and_with_a_change_that_fixes_it() {
+    use clingate_core::review::replay::{Truth, Verdict};
+    use clingate_core::session::ReplayScope;
+    let (session, before, _) = reviewed_run("session-replay");
+
+    // With the rules it ran with: the run is reproduced, and wrong on both
+    // samples - the reviewer took both gates back to where they were.
+    let as_run = session
+        .replay_rules(&[], ReplayScope::Both, None, None)
+        .unwrap();
+    assert_eq!(as_run.runs.len(), 1, "the library copy is the same run");
+    assert!(!as_run.runs[0].provisional);
+    assert!(as_run.unreadable.is_empty(), "{:?}", as_run.unreadable);
+    assert!(as_run.changes_tried.is_empty());
+    assert_eq!(as_run.cases_total, 2);
+    assert_eq!(
+        as_run.totals.get(&Verdict::StillWrong),
+        Some(&2),
+        "{as_run:?}"
+    );
+    let fmx = as_run
+        .cases
+        .iter()
+        .find(|c| c.sample.contains("FMX"))
+        .unwrap();
+    assert!(
+        matches!(&fmx.truth, Truth::Corrected { note, .. } if note == "the old gate was right"),
+        "{fmx:?}"
+    );
+    let fs = as_run
+        .cases
+        .iter()
+        .find(|c| c.sample.contains("FS"))
+        .unwrap();
+    assert_eq!(fs.truth, Truth::MovedByHand);
+    for case in &as_run.cases {
+        assert!((case.right_at.unwrap() - before).abs() < 1e-3, "{case:?}");
+        assert_eq!(
+            case.baseline_beyond, case.replay_beyond,
+            "no change, same replay"
+        );
+        assert!(
+            (case.run_beyond.unwrap() - case.baseline_beyond.unwrap()).abs() < 0.002,
+            "reproduced: {case:?}"
+        );
+        // The run put the line in the negatives: half the parent beyond it,
+        // against the third that is positive.
+        assert!(case.run_at.unwrap() < case.right_at.unwrap(), "{case:?}");
+        assert!((0.45..0.55).contains(&case.run_beyond.unwrap()), "{case:?}");
+        assert!(
+            (0.28..0.38).contains(&case.right_beyond.unwrap()),
+            "{case:?}"
+        );
+    }
+    // By gate, named with its parent.
+    assert_eq!(as_run.by_gate.len(), 1, "{:?}", as_run.by_gate);
+    let (named, counts) = as_run.by_gate.iter().next().unwrap();
+    assert!(named.starts_with("Tmem of "), "{named}");
+    assert_eq!(counts.get(&Verdict::StillWrong), Some(&2));
+
+    // A step up off the median puts the line in the gap - where the reviewer
+    // put it - on both; and the change says what it replaced.
+    let change = tmem_rule(&session, percentile(1.0));
+    let changed = session
+        .replay_rules(std::slice::from_ref(&change), ReplayScope::Both, None, None)
+        .unwrap();
+    assert_eq!(changed.changes_tried.len(), 1);
+    assert!(
+        changed.changes_tried[0].starts_with("Tmem: ")
+            && changed.changes_tried[0].contains("50th percentile of the negative by 1 ")
+            && changed.changes_tried[0].contains("by 0 [Percentile offset])"),
+        "{:?}",
+        changed.changes_tried
+    );
+    assert_eq!(changed.totals.get(&Verdict::Fixed), Some(&2), "{changed:?}");
+    for case in &changed.cases {
+        assert!(
+            (case.replay_beyond.unwrap() - case.right_beyond.unwrap()).abs()
+                <= 0.2 * case.right_beyond.unwrap(),
+            "{case:?}"
+        );
+    }
+}
+
+#[test]
+fn a_replay_is_narrowed_to_a_gate_and_a_number_of_cases_and_read_from_the_library_alone() {
+    use clingate_core::review::replay::Verdict;
+    use clingate_core::session::ReplayScope;
+    let (session, _, _) = reviewed_run("session-replay-narrow");
+
+    let one = session
+        .replay_rules(&[], ReplayScope::Both, Some("tmem"), Some(1))
+        .unwrap();
+    assert_eq!((one.cases.len(), one.cases_total), (1, 2));
+    // Totals count every case, not only those listed.
+    assert_eq!(one.totals.values().sum::<usize>(), 2);
+
+    let refused = format!(
+        "{:?}",
+        session
+            .replay_rules(&[], ReplayScope::Both, Some("CD8+"), None)
+            .unwrap_err()
+    );
+    assert!(refused.contains("the gates are: Tmem"), "{refused}");
+
+    // The library holds the reviewed copy, under its own folder's name.
+    let library = session
+        .replay_rules(&[], ReplayScope::Library, None, None)
+        .unwrap();
+    assert_eq!(library.runs.len(), 1);
+    let folder_name = session
+        .folder()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_ne!(library.runs[0].run, folder_name);
+    assert_eq!(library.totals.get(&Verdict::StillWrong), Some(&2));
+    let workspace = session
+        .replay_rules(&[], ReplayScope::Workspace, None, None)
+        .unwrap();
+    assert_eq!(workspace.runs[0].run, folder_name);
+    assert!(
+        workspace.cases[0]
+            .case
+            .starts_with(&format!("{folder_name}|")),
+        "{:?}",
+        workspace.cases[0]
+    );
+}
+
+#[test]
+fn one_case_is_shown_in_full_with_the_population_and_every_line() {
+    use clingate_core::session::ReplayScope;
+    let (session, before, _) = reviewed_run("session-replay-case");
+    let change = tmem_rule(&session, band((0.05, 0.06)));
+    let listed = session
+        .replay_rules(
+            std::slice::from_ref(&change),
+            ReplayScope::Workspace,
+            None,
+            None,
+        )
+        .unwrap();
+    let line = listed
+        .cases
+        .iter()
+        .find(|c| c.sample.contains("FMX"))
+        .unwrap();
+
+    let detail = session
+        .replay_case(
+            std::slice::from_ref(&change),
+            ReplayScope::Workspace,
+            &line.case,
+        )
+        .unwrap();
+    assert_eq!(detail.case.verdict, line.verdict);
+    assert_eq!(
+        detail
+            .case
+            .replay_decided
+            .as_ref()
+            .unwrap()
+            .line
+            .beyond
+            .map(|b| (b * 1e6).round() / 1e6),
+        line.replay_beyond
+    );
+    assert!(
+        detail
+            .rule_in_run
+            .as_deref()
+            .unwrap()
+            .contains("50th percentile"),
+        "{:?}",
+        detail.rule_in_run
+    );
+    assert!(
+        detail
+            .rule_replayed
+            .as_deref()
+            .unwrap()
+            .contains("capture 5.000% to 6.000%"),
+        "{:?}",
+        detail.rule_replayed
+    );
+    assert!(
+        detail
+            .rule_in_run
+            .as_deref()
+            .unwrap()
+            .contains("read on the sample itself"),
+        "{:?}",
+        detail.rule_in_run
+    );
+    assert!((detail.started_at.unwrap() - before).abs() < 1e-3);
+    // The rule read the sample itself, so there is no second population.
+    assert!(detail.read.is_none());
+    let sample = detail.sample.as_ref().unwrap();
+    // Tmem's parent, every event of it kept.
+    assert!(
+        sample.events > 50 && sample.events < 3_000,
+        "{}",
+        sample.events
+    );
+    assert_eq!(sample.events_kept, sample.events);
+    assert_eq!(
+        sample.metadata.get("SampleType").map(String::as_str),
+        Some("FMX")
+    );
+    assert_eq!(
+        sample.histogram.counts.iter().sum::<u32>() as usize,
+        sample.events_kept
+    );
+    assert!(sample.histogram.lower < before && before < sample.histogram.upper);
+    assert!(sample.shape.is_some());
+
+    // A case is named exactly as listed.
+    for bad in [
+        "nonsense",
+        "no-such-run|x|y",
+        &format!("{}|no-gate|x", listed.runs[0].run),
+    ] {
+        assert!(
+            session
+                .replay_case(&[], ReplayScope::Workspace, bad)
+                .is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_replay_needs_a_run_and_a_library_when_asked_for_one() {
+    use clingate_core::session::ReplayScope;
+    let session = Session::open(&with_rules("session-replay-none")).unwrap();
+    for scope in [ReplayScope::Workspace, ReplayScope::Both] {
+        let refused = format!(
+            "{:?}",
+            session.replay_rules(&[], scope, None, None).unwrap_err()
+        );
+        assert!(refused.contains("no rules run"), "{refused}");
+    }
+    let mut session = session;
+    session.set_review_library(None);
+    let refused = format!(
+        "{:?}",
+        session
+            .replay_rules(&[], ReplayScope::Library, None, None)
+            .unwrap_err()
+    );
+    assert!(refused.contains("no review library"), "{refused}");
+    assert_eq!(ReplayScope::from_key("Library"), Some(ReplayScope::Library));
+    assert_eq!(ReplayScope::from_key(""), Some(ReplayScope::Both));
+    assert_eq!(ReplayScope::from_key("everywhere"), None);
+}
+
+#[test]
+fn a_rule_is_written_to_the_rules_file_and_a_preview_made_before_it_is_dropped() {
+    let folder = with_rules("session-update-rule");
+    let mut session = Session::open(&folder).unwrap();
+    session.preview_rules().unwrap();
+    let change = tmem_rule(&session, band((0.05, 0.06)));
+    let updated = session.update_rule(change.clone()).unwrap();
+    assert_eq!(updated.population, "Tmem");
+    assert!(
+        updated
+            .was
+            .as_deref()
+            .unwrap()
+            .contains("capture 1.000% to 2.000%")
+    );
+    assert!(updated.now.contains("capture 5.000% to 6.000%"));
+    assert_eq!(updated.file, clingate_core::workspace::rules_file(&folder));
+    // The preview was made under the old rule.
+    assert!(session.apply_previewed_rules().is_err());
+    assert!(
+        session.rules_view().unwrap().rules[0]
+            .rule
+            .contains("5.000% to 6.000%")
+    );
+    // Written: a session opened afresh reads it.
+    let again = Session::open(&folder).unwrap();
+    assert_eq!(
+        again.rules().unwrap().get(&change.target),
+        Some(&change.rule)
+    );
+
+    // A rule for a new target is added beside it.
+    let mut other = change.clone();
+    other.target = clingate_core::gate_rules::rule_store::RuleTarget::under("Tmem", "CD4+");
+    let added = session.update_rule(other).unwrap();
+    assert_eq!(added.population, "Tmem of CD4+");
+    assert_eq!(added.was, None);
+    assert_eq!(
+        Session::open(&folder)
+            .unwrap()
+            .rules_view()
+            .unwrap()
+            .rules
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_rule_is_not_written_where_there_is_no_rules_file_or_one_that_did_not_read() {
+    let folder = workspace("session-update-no-rules");
+    let mut session = Session::open(&folder).unwrap();
+    let change = clingate_core::review::replay::RuleChange {
+        target: clingate_core::gate_rules::rule_store::RuleTarget::named("Tmem"),
+        rule: clingate_core::gate_rules::rule_store::GateRule {
+            parameter: "BUV661-A".into(),
+            bound: clingate_core::gate_rules::rule_store::Bound::Above,
+            measured_on: clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
+            rule: clingate_core::gate_rules::rule::Rule::TailFraction(
+                clingate_core::gate_rules::rule::TailFractionRule::new((0.01, 0.02)),
+            ),
+        },
+    };
+    assert!(session.update_rule(change.clone()).is_err());
+    assert!(!clingate_core::workspace::rules_file(&folder).exists());
+
+    let broken = with_rules("session-update-broken-rules");
+    std::fs::write(clingate_core::workspace::rules_file(&broken), "{ not json").unwrap();
+    let mut session = Session::open(&broken).unwrap();
+    let refused = format!("{:?}", session.update_rule(change).unwrap_err());
+    assert!(refused.contains("not written over"), "{refused}");
+    assert_eq!(
+        std::fs::read_to_string(clingate_core::workspace::rules_file(&broken)).unwrap(),
+        "{ not json"
+    );
+}
+
+#[test]
+fn a_case_whose_rule_read_the_specimen_s_fmx_shows_that_population_beside_the_sample() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleStore, RuleTarget};
+    use clingate_core::session::ReplayScope;
+    // One specimen: its FMX and its full stain.
+    let folder = with_rule("session-replay-partner", percentile(0.0));
+    write_metadata(
+        &folder.join("metadata.csv"),
+        &["test", "Type", "SampleType"],
+        &[
+            ("sample1", "sample1_FMX.fcs", &["one", "one", "FMX"]),
+            ("sample2", "sample2_FS.fcs", &["one", "one", "FS"]),
+        ],
+    );
+    let file = clingate_core::workspace::rules_file(&folder);
+    let mut store = RuleStore::load(&file).unwrap();
+    let target = RuleTarget::named("Tmem");
+    let mut rule = store.get(&target).unwrap().clone();
+    rule.measured_on = MeasuredOn::Partner("FMX".into());
+    store.insert(target, rule);
+    store.save(&file).unwrap();
+
+    let mut session = Session::open(&folder).unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    session.mark_run_reviewed().unwrap();
+
+    let listed = session
+        .replay_rules(&[], ReplayScope::Workspace, None, None)
+        .unwrap();
+    // The full stain is the file gated; the FMX is read.
+    assert_eq!(listed.cases_total, 1, "{listed:?}");
+    let line = &listed.cases[0];
+    assert!(line.sample.contains("FS"), "{line:?}");
+    let detail = session
+        .replay_case(&[], ReplayScope::Workspace, &line.case)
+        .unwrap();
+    assert!(
+        detail
+            .rule_in_run
+            .as_deref()
+            .unwrap()
+            .contains("read on the specimen's FMX"),
+        "{:?}",
+        detail.rule_in_run
+    );
+    let sample = detail.sample.as_ref().unwrap();
+    let read = detail.read.as_ref().expect("the FMX the rule read");
+    assert_eq!(sample.metadata["SampleType"], "FS");
+    assert_eq!(read.metadata["SampleType"], "FMX");
+    assert_eq!(
+        read.histogram.counts.iter().sum::<u32>() as usize,
+        read.events_kept
+    );
+    // One range, so a line reads the same on both.
+    assert_eq!(
+        (sample.histogram.lower, sample.histogram.upper),
+        (read.histogram.lower, read.histogram.upper)
+    );
+    assert_eq!(
+        detail.case.run_decided.measured_on.as_deref(),
+        Some(read.file.as_str())
     );
 }

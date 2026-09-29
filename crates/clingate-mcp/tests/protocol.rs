@@ -198,6 +198,11 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "assess_run",
         "compare_to_peers",
         "mark_looks_right",
+        "explain_gate_positioning",
+        "read_positioning_code",
+        "replay_rules",
+        "replay_case",
+        "update_rule",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -426,4 +431,146 @@ fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
             .iter()
             .any(|p| p.placed.sample.id == "sample1" && p.flag.looked_right)
     );
+}
+
+#[test]
+fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protocol() {
+    let folder = workspace_with_rules("replay");
+    let mut server = Server::start();
+
+    // The description and the code need no workspace.
+    let explained = server.call("explain_gate_positioning", json!({}));
+    assert_eq!(explained["outcome"], "ok", "{explained}");
+    assert!(
+        explained["result"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("slide_to_capture")
+    );
+    let listed = explained["result"]["readable_source"].as_array().unwrap();
+    assert!(listed.iter().any(|f| f["path"] == "gate_rules/autogate.rs"));
+    let found = server.call(
+        "read_positioning_code",
+        json!({"search": "fn slide_to_capture"}),
+    );
+    assert_eq!(found["outcome"], "ok", "{found}");
+    let at = found["result"][0]["line"].as_u64().unwrap();
+    let read = server.call(
+        "read_positioning_code",
+        json!({"path": "gate_rules/autogate.rs", "from": at, "to": at + 2}),
+    );
+    assert_eq!(read["outcome"], "ok", "{read}");
+    assert_eq!(read["result"]["lines"].as_array().unwrap().len(), 3);
+    assert!(
+        read["result"]["lines"][0]
+            .as_str()
+            .unwrap()
+            .contains("fn slide_to_capture(")
+    );
+    let refused = server.call("read_positioning_code", json!({"path": "session/mod.rs"}));
+    assert_eq!(refused["outcome"], "failed", "{refused}");
+
+    // A replay needs a run.
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    assert_eq!(server.call("replay_rules", json!({}))["outcome"], "failed");
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+    assert_eq!(server.call("mark_run_reviewed", json!({}))["outcome"], "ok");
+
+    let rule = |low: f64, high: f64| {
+        let parameter = clingate_core::session::Session::open(&folder)
+            .unwrap()
+            .rules()
+            .unwrap()
+            .entries()[0]
+            .rule
+            .parameter
+            .to_string();
+        json!({
+            "parameter": parameter,
+            "bound": "Above",
+            "measured_on": "Itself",
+            "rule": {"kind": "TailFraction", "band": [low, high]}
+        })
+    };
+    let replayed = server.call(
+        "replay_rules",
+        json!({
+            "scope": "workspace",
+            "rule_changes": [{"target": {"gate": "Tmem"}, "rule": rule(0.05, 0.06)}]
+        }),
+    );
+    assert_eq!(replayed["outcome"], "ok", "{replayed}");
+    let result = &replayed["result"];
+    assert_eq!(result["cases_total"], 2, "{result}");
+    assert!(
+        result["changes_tried"][0]
+            .as_str()
+            .unwrap()
+            .contains("capture 5.000% to 6.000%")
+    );
+    let case = result["cases"][0]["case"].as_str().unwrap().to_string();
+
+    let detail = server.call(
+        "replay_case",
+        json!({
+            "case": case,
+            "scope": "workspace",
+            "rule_changes": [{"target": {"gate": "Tmem"}, "rule": rule(0.05, 0.06)}]
+        }),
+    );
+    assert_eq!(detail["outcome"], "ok", "{detail}");
+    assert!(
+        detail["result"]["rule_replayed"]
+            .as_str()
+            .unwrap()
+            .contains("capture 5.000% to 6.000%")
+    );
+    assert_eq!(
+        detail["result"]["sample"]["histogram"]["counts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        64
+    );
+
+    // Changes that do not read are refused with the form they take.
+    let bad = server.call(
+        "replay_rules",
+        json!({"rule_changes": [{"target": "Tmem"}]}),
+    );
+    assert_eq!(bad["outcome"], "failed", "{bad}");
+    assert!(
+        bad["reason"].as_str().unwrap().contains("measured_on"),
+        "{bad}"
+    );
+    let bad_scope = server.call("replay_rules", json!({"scope": "everywhere"}));
+    assert_eq!(bad_scope["outcome"], "failed", "{bad_scope}");
+
+    // Written only when asked, into the rules file.
+    let updated = server.call(
+        "update_rule",
+        json!({"gate": "Tmem", "parent": "", "rule": rule(0.05, 0.06)}),
+    );
+    assert_eq!(updated["outcome"], "ok", "{updated}");
+    let reopened = clingate_core::session::Session::open(&folder).unwrap();
+    let view = reopened.rules_view().unwrap();
+    assert_eq!(view.rules.len(), 1);
+    assert!(
+        view.rules[0].rule.contains("5.000% to 6.000%"),
+        "{:?}",
+        view.rules
+    );
+    let wrong = server.call(
+        "update_rule",
+        json!({"gate": "Tmem", "rule": {"kind": "TailFraction"}}),
+    );
+    assert_eq!(wrong["outcome"], "failed", "{wrong}");
 }
