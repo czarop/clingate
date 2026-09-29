@@ -11,8 +11,8 @@ use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
 use clingate_core::gate_rules::choices::{carry_over, choices, describe_phenotype, marker_label};
 use clingate_core::gate_rules::rule::{
-    AboveTheNegativeRule, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit,
-    TailFractionRule, ValleyRule,
+    AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
+    ShapeFit, TailFractionRule, ValleyRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -256,6 +256,7 @@ pub fn GateRulesWindow() -> Element {
     let mut kind = use_signal(|| "TailFraction".to_string());
     let mut low = use_signal(|| "0.2".to_string());
     let mut high = use_signal(|| "0.5".to_string());
+    let mut aim = use_signal(|| BandAim::default().key().to_string());
     let mut percentile = use_signal(|| "99".to_string());
     let mut offset = use_signal(|| "0.5".to_string());
     let mut calibrate_on = use_signal(String::new);
@@ -373,6 +374,7 @@ pub fn GateRulesWindow() -> Element {
                 kind.set("TailFraction".to_string());
                 low.set(format!("{}", r.band.0 * 100.0));
                 high.set(format!("{}", r.band.1 * 100.0));
+                aim.set(r.aim.key().to_string());
             }
             Rule::PercentileOffset(r) => {
                 kind.set("PercentileOffset".to_string());
@@ -497,7 +499,10 @@ pub fn GateRulesWindow() -> Element {
                     return;
                 }
                 // Typed as percentages, stored as fractions.
-                Rule::TailFraction(TailFractionRule::new((l / 100.0, h / 100.0)))
+                Rule::TailFraction(TailFractionRule::aimed(
+                    (l / 100.0, h / 100.0),
+                    BandAim::from_key(&aim()).unwrap_or_default(),
+                ))
             }
         };
         // All three read a named reference sample rather than a partner of
@@ -983,6 +988,17 @@ pub fn GateRulesWindow() -> Element {
                             value: "{high}",
                             oninput: move |e| high.set(e.value()),
                         }
+                    }
+                    label { "Where in the band" }
+                    select {
+                        value: "{aim}",
+                        onchange: move |e| aim.set(e.value()),
+                        for option_ in BandAim::ALL {
+                            option { value: "{option_.key()}", "{option_.choice()}" }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "The search halves its range each step. Anywhere stops at the first position inside the band, so where it lands depends on the population's most extreme events - two alike samples can land at opposite edges. The middle carries on until the gate holds the band's middle fraction, the same on every sample."
                     }
                 }
 

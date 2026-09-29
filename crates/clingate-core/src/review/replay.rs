@@ -743,7 +743,7 @@ fn input_of(
     let mut h = blake3::Hasher::new();
     h.update(b"clingate placement input 1\0");
     h.update(&serde_json::to_vec(rule).ok()?);
-    let mut one = |s: &EventSample, with_position: bool, h: &mut blake3::Hasher| {
+    let one = |s: &EventSample, with_position: bool, h: &mut blake3::Hasher| {
         h.update(s.gate_id.as_bytes());
         h.update(&[0]);
         h.update(s.parent_gate.as_deref().unwrap_or("").as_bytes());

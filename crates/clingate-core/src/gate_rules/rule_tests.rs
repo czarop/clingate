@@ -51,6 +51,7 @@ fn a_rule_carries_its_own_confidence_parameters() {
     let strict = TailFractionRule::new((0.09, 0.11));
     let lenient = TailFractionRule {
         band: (0.09, 0.11),
+        aim: Default::default(),
         confidence: CountAndSeparation {
             limits: ConfidenceLimits {
                 events_full: 500.0,
@@ -152,6 +153,7 @@ fn the_stored_form_names_its_kind() {
 fn tuned_confidence_limits_survive_the_round_trip() {
     let rule = Rule::TailFraction(TailFractionRule {
         band: (0.002, 0.005),
+        aim: crate::gate_rules::rule::BandAim::Middle,
         confidence: CountAndSeparation {
             limits: ConfidenceLimits {
                 events_floor: 42.0,

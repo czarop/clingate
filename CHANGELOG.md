@@ -4,6 +4,12 @@
 
 ### Added
 
+- **A band rule can aim for the middle of its band.** "Where in the band"
+  on the Gate Rules form: *anywhere* (as before, and the default) stops at
+  the first position inside the band, which depends on the population's
+  most extreme events; *the middle* carries on until the gate holds the
+  band's middle fraction, so alike samples land alike.
+
 - **Above-the-negative placements are checked against the negative's right
   side.** The rule reads the left side and assumes the right mirrors it;
   each placement now also measures how far out the gate landed against the

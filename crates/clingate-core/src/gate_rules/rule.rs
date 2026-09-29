@@ -60,21 +60,91 @@ pub trait PositioningRule {
 /// "The FMO gate should contain 0.2% to 0.5% of events."
 ///
 /// The band is a range of acceptable fractions rather than a target, so the
-/// solver is free to choose within it - see [`tail_fraction`].
+/// solver is free to choose within it - see [`tail_fraction`] - and where in
+/// it the gate lands is [`BandAim`]'s to say.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TailFractionRule {
     /// Acceptable fractions of the parent population, as fractions not
     /// percentages: 0.2% to 0.5% is `(0.002, 0.005)`.
     pub band: (f64, f64),
+    /// Where in the band the gate is put.
+    #[serde(default)]
+    pub aim: BandAim,
     #[serde(default)]
     pub confidence: CountAndSeparation,
+}
+
+/// Where in its band a band rule puts the gate.
+///
+/// The search slides the gate and halves its range each step. Stopping at the
+/// first position inside the band lands anywhere in it - where depends on the
+/// ends of the search range, which are the population's most extreme events -
+/// so two alike samples can land at opposite edges. Carrying on to the middle
+/// lands every sample at the same fraction, as near as its events allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BandAim {
+    /// Stop at the first position inside the band, and leave a gate that is
+    /// already inside it where it is.
+    #[default]
+    AnywhereInBand,
+    /// Carry on to the position nearest the band's middle, and leave a gate
+    /// where it is only if it already holds within a tenth of the band's
+    /// width of the middle.
+    Middle,
+}
+
+impl BandAim {
+    pub const ALL: [BandAim; 2] = [BandAim::AnywhereInBand, BandAim::Middle];
+
+    /// The serialised name, which is also what the menu round-trips on.
+    pub fn key(self) -> &'static str {
+        match self {
+            BandAim::AnywhereInBand => "AnywhereInBand",
+            BandAim::Middle => "Middle",
+        }
+    }
+
+    /// For a menu being chosen from cold.
+    pub fn choice(self) -> &'static str {
+        match self {
+            BandAim::AnywhereInBand => {
+                "anywhere in the band - stop at the first position inside it"
+            }
+            BandAim::Middle => "the middle of the band - the same fraction on every sample",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.key() == key)
+    }
 }
 
 impl TailFractionRule {
     pub fn new(band: (f64, f64)) -> Self {
         Self {
             band,
+            aim: BandAim::default(),
             confidence: CountAndSeparation::default(),
+        }
+    }
+
+    /// The same band, aimed at its middle.
+    pub fn aimed(band: (f64, f64), aim: BandAim) -> Self {
+        Self {
+            aim,
+            ..Self::new(band)
+        }
+    }
+
+    /// The fractions a gate may already hold and be left where it is.
+    pub fn kept_band(&self) -> (f64, f64) {
+        match self.aim {
+            BandAim::AnywhereInBand => self.band,
+            BandAim::Middle => {
+                let middle = (self.band.0 + self.band.1) / 2.0;
+                let slack = (self.band.1 - self.band.0) / 10.0;
+                (middle - slack, middle + slack)
+            }
         }
     }
 }
@@ -91,11 +161,15 @@ impl PositioningRule for TailFractionRule {
     }
 
     fn describe(&self) -> String {
-        format!(
+        let mut said = format!(
             "capture {:.3}% to {:.3}% of the parent population",
             self.band.0 * 100.0,
             self.band.1 * 100.0
-        )
+        );
+        if self.aim == BandAim::Middle {
+            said.push_str(", aiming for the middle");
+        }
+        said
     }
 }
 
@@ -568,6 +642,23 @@ impl Rule {
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_) => None,
+        }
+    }
+
+    /// The fractions a gate may already hold and be left where it is - the
+    /// band itself, or its middle for a band rule aiming there.
+    pub fn kept_band(&self) -> Option<(f64, f64)> {
+        match self {
+            Rule::TailFraction(r) => Some(r.kept_band()),
+            _ => None,
+        }
+    }
+
+    /// Where in the band a band rule aims; `None` for any other rule.
+    pub fn band_aim(&self) -> Option<BandAim> {
+        match self {
+            Rule::TailFraction(r) => Some(r.aim),
+            _ => None,
         }
     }
 

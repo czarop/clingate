@@ -109,8 +109,8 @@ no line is solved and no corner anchored, so slanted shapes work
   the bracket and counts the fraction of the **reference** population it
   admits (`admitted_by`). Too many admitted -> move further along the
   parameter (for `Above`), too few -> back.
-- **It stops at the first probe inside the band.** It does not aim for the
-  middle of the band. Where in the band it stops depends on the bisection
+- **With `aim: AnywhereInBand` (the default) it stops at the first probe
+  inside the band.** It does not aim for the middle of the band. Where in the band it stops depends on the bisection
   path, which is fixed by the search range - from the reference
   population's dimmest event less the population's width to its brightest
   plus the width - so moving the single brightest or dimmest event can move
@@ -118,6 +118,11 @@ no line is solved and no corner anchored, so slanted shapes work
   does not change the path; it matters only in that a gate already in the
   band is kept where it is (3.0). (The band's midpoint is used only to
   choose the best probe when no probe ever lands inside the band.)
+- **With `aim: Middle`** it does not stop there: it carries on bisecting
+  towards the band's middle fraction and keeps the probe nearest it, so
+  every sample lands at the same fraction as near as its events allow,
+  whatever its extreme events. A gate is then left where it is (3.0) only if
+  it already holds within a tenth of the band's width of the middle.
 - No probe could be evaluated -> skipped ("no position along this axis holds
   the band").
 
@@ -372,7 +377,8 @@ These are properties of the code as it stands, not settled choices:
 1. **Band rules stop at the first in-band probe** (3.1), so where in the
    band a gate lands depends on the reference population's two most extreme
    events, and a gate already in the band is kept wherever in it it sits.
-   Two similar samples can land at opposite edges of the band. Aiming for the band's middle would make placements steadier.
+   Two similar samples can land at opposite edges of the band. `aim: Middle`
+   is the steadier choice.
 2. **The band rule's bracket mixes files**: it is built from the
    reference's values and the sample's current line, and the slide is
    applied to the gate on the reference file.
@@ -408,7 +414,7 @@ These are properties of the code as it stands, not settled choices:
 
 Rule kinds and their fields:
 
-- `{"kind": "TailFraction", "band": [low, high]}`
+- `{"kind": "TailFraction", "band": [low, high], "aim": "AnywhereInBand" | "Middle"}`
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
 - `{"kind": "InTheValley", "smoothing": 1.0}`

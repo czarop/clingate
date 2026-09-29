@@ -3300,3 +3300,118 @@ fn a_right_side_widened_by_a_smear_is_noted_but_never_flagged_on_its_own() {
     let score = right_side_score(&placed);
     assert!((0.5..0.9).contains(&score), "{score}");
 }
+
+// ─── where in its band a band rule lands ─────────────────────────────────────
+
+/// The FMX rule aimed as asked, positioned on the full stain and FMX each
+/// measured on `frame`.
+fn band_placed(
+    aim: crate::gate_rules::rule::BandAim,
+    frame: &polars::prelude::DataFrame,
+) -> crate::gate_rules::autogate::Positioned {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+    use crate::gate_rules::rule::{Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::RuleTarget;
+
+    let (mut state, _) = one_positive_gate();
+    let map = fs_and_fmx();
+    let mut store = fmx_rule();
+    let mut entry = store.rule_for("CD134+", None).unwrap().clone();
+    entry.rule = Rule::TailFraction(TailFractionRule::aimed((0.002, 0.005), aim));
+    store.insert(RuleTarget::named("CD134+"), entry);
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for file in ["fs_a", "fmx_a"] {
+        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, &store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let mut report = position_all(&mut state, &store, &measured, &unmeasured, &map);
+    assert_eq!(
+        report.positioned.len(),
+        1,
+        "{:?}",
+        report.skipped.iter().map(|s| &s.reason).collect::<Vec<_>>()
+    );
+    report.positioned.remove(0)
+}
+
+/// A ramp of 1,000 events with its brightest moved to `brightest`.
+fn ramp_reaching(brightest: f32) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    let mut xs: Vec<f32> = (1..=1000).map(|i| i as f32).collect();
+    xs[999] = brightest;
+    df![X => xs, Y => vec![0.0f32; 1000]].unwrap()
+}
+
+#[test]
+fn aimed_at_the_middle_a_band_rule_lands_at_the_middle_whatever_the_extremes() {
+    use crate::gate_rules::rule::BandAim;
+    // 0.2% to 0.5% of 1,000 events: 2 to 5 of them; the middle is 3.5.
+    for brightest in [1000.0, 1_700.0, 5_000.0, 40_000.0] {
+        let placed = band_placed(BandAim::Middle, &ramp_reaching(brightest));
+        assert!(
+            (0.003..=0.004).contains(&placed.achieved),
+            "brightest {brightest}: {}",
+            placed.achieved
+        );
+        assert!(placed.in_band);
+    }
+}
+
+#[test]
+fn anywhere_in_the_band_is_still_the_default_and_still_inside_it() {
+    use crate::gate_rules::rule::{BandAim, TailFractionRule};
+    assert_eq!(
+        TailFractionRule::new((0.002, 0.005)).aim,
+        BandAim::AnywhereInBand
+    );
+    // A rules file written before the setting reads as before.
+    let read: TailFractionRule = serde_json::from_str(r#"{"band":[0.002,0.005]}"#).unwrap();
+    assert_eq!(read.aim, BandAim::AnywhereInBand);
+    let mut landed = Vec::new();
+    for brightest in [1000.0, 1_700.0, 5_000.0, 40_000.0] {
+        let placed = band_placed(BandAim::AnywhereInBand, &ramp_reaching(brightest));
+        assert!(
+            (0.002..=0.005).contains(&placed.achieved),
+            "{}",
+            placed.achieved
+        );
+        landed.push(placed.achieved);
+    }
+    // Which position in the band depends on the brightest event alone.
+    landed.dedup();
+    assert!(landed.len() > 1, "the extremes moved nothing: {landed:?}");
+}
+
+#[test]
+fn aimed_at_the_middle_a_gate_near_the_band_s_edge_is_placed_again() {
+    use crate::gate_rules::rule::{BandAim, Rule, TailFractionRule};
+    let aimed = |aim| Rule::TailFraction(TailFractionRule::aimed((0.002, 0.005), aim));
+    // Anywhere: all of the band. Middle: a tenth of its width either side.
+    assert_eq!(
+        aimed(BandAim::AnywhereInBand).kept_band(),
+        Some((0.002, 0.005))
+    );
+    let (lo, hi) = aimed(BandAim::Middle).kept_band().unwrap();
+    assert!((lo - 0.0032).abs() < 1e-12 && (hi - 0.0038).abs() < 1e-12);
+    assert_eq!(
+        Rule::PercentileOffset(crate::gate_rules::rule::PercentileOffsetRule::new(
+            99.0, 0.1
+        ))
+        .kept_band(),
+        None
+    );
+    // And the description says so.
+    assert!(
+        aimed(BandAim::Middle)
+            .describe()
+            .ends_with("aiming for the middle")
+    );
+    assert!(!aimed(BandAim::AnywhereInBand).describe().contains("middle"));
+    for aim in BandAim::ALL {
+        assert_eq!(BandAim::from_key(aim.key()), Some(aim));
+        assert_eq!(serde_json::to_value(aim).unwrap(), aim.key());
+    }
+    assert_eq!(BandAim::from_key("nowhere"), None);
+}

@@ -879,7 +879,9 @@ fn slide_to_capture(
     index: &EventIndexMapped,
     band: (f64, f64),
     bracket: (f64, f64),
+    aim: crate::gate_rules::rule::BandAim,
 ) -> Option<(f64, f64)> {
+    use crate::gate_rules::rule::BandAim;
     let (lo, hi) = band;
     let target = (lo + hi) / 2.0;
     let at = |delta: f64| -> Option<f64> {
@@ -918,16 +920,40 @@ fn slide_to_capture(
         }
     };
 
+    // Aiming at the middle, every position is judged by its distance from
+    // the middle: any position inside the band is nearer it than any outside.
+    let middle = |delta: f64, got: f64, best: &mut Option<(f64, f64)>| {
+        if best.is_none_or(|(_, prev)| (got - target).abs() < (prev - target).abs()) {
+            *best = Some((delta, got));
+        }
+    };
+
     for _ in 0..48 {
         let mid = (low + high) / 2.0;
         let Some(got) = at(mid) else { return best };
-        consider(mid, got, &mut best);
-        if (lo..=hi).contains(&got) {
-            return best;
+        match aim {
+            BandAim::AnywhereInBand => {
+                consider(mid, got, &mut best);
+                if (lo..=hi).contains(&got) {
+                    return best;
+                }
+            }
+            BandAim::Middle => {
+                middle(mid, got, &mut best);
+                if got == target {
+                    return best;
+                }
+            }
         }
         // Too many admitted means the gate must move further along the
-        // parameter; too few, further back.
-        if (got > hi) == (sign > 0.0) {
+        // parameter; too few, further back. Measured against the band's
+        // edge while looking for any position in it, and against its middle
+        // when aiming there.
+        let aimed_at = match aim {
+            BandAim::AnywhereInBand => hi,
+            BandAim::Middle => target,
+        };
+        if (got > aimed_at) == (sign > 0.0) {
             low = mid;
         } else {
             high = mid;
@@ -951,7 +977,15 @@ pub fn position_by_capture(
     current: f64,
 ) -> Option<(Arc<dyn DrawableGate>, f64, f64)> {
     let bracket = bracket_for(values, current);
-    let (delta, got) = slide_to_capture(gate, parameter, bound, index, band, bracket)?;
+    let (delta, got) = slide_to_capture(
+        gate,
+        parameter,
+        bound,
+        index,
+        band,
+        bracket,
+        crate::gate_rules::rule::BandAim::AnywhereInBand,
+    )?;
     let moved = translate_by(gate, parameter, delta).ok()?;
     Some((moved, current + delta, got))
 }
@@ -1520,7 +1554,7 @@ fn position_one(
         .ok_or_else(|| "the gate no longer resolves".to_string())?;
     let already = admitted_by(&current_gate, &reference.measurement.index);
 
-    if let (Some((lo, hi)), Some(already)) = (rule.rule.accepted_band(), already)
+    if let (Some((lo, hi)), Some(already)) = (rule.rule.kept_band(), already)
         && (lo..=hi).contains(&already)
     {
         return Ok(Outcome::Kept(Unchanged {
@@ -1607,6 +1641,7 @@ fn position_one(
                     population,
                     band,
                     bracket,
+                    rule.rule.band_aim().unwrap_or_default(),
                 )
                 .ok_or_else(|| "no position along this axis holds the band".to_string())?;
                 let moved = translate_by(&current_gate, &line.parameter, delta)
