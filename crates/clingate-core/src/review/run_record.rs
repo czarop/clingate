@@ -414,11 +414,13 @@ impl RunRecord {
     pub fn applied(
         mut self,
         folder: &Path,
-        events: &[super::events::EventSample],
+        events: &super::events::KeptEvents,
     ) -> anyhow::Result<PathBuf> {
         self.applied_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let path = self.save(folder)?;
-        super::events::save(folder, &self.applied_at, events)?;
+        let mut events = events.clone();
+        events.run_applied_at = self.applied_at.clone();
+        super::events::save(folder, &events)?;
         Ok(path)
     }
 
@@ -653,7 +655,7 @@ mod tests {
         first.applied_at = "an old run".into();
         first.save(&folder).unwrap();
         let before = chrono::Utc::now() - chrono::Duration::seconds(1);
-        record().applied(&folder, &[]).unwrap();
+        record().applied(&folder, &Default::default()).unwrap();
         let kept = RunRecord::load(&folder).unwrap().unwrap();
         let stamped = chrono::DateTime::parse_from_rfc3339(&kept.applied_at)
             .expect("an RFC 3339 time")

@@ -347,6 +347,8 @@ pub struct Measurement {
     /// kept with the run, so a changed rule can be tried against it later.
     pub events: usize,
     pub kept_events: Arc<Vec<(f32, f32)>>,
+    /// The gate as it stood on this file when it was measured.
+    pub drawn: flow_gates::Gate,
     /// The plot's axes, in order.
     pub params: (Arc<str>, Arc<str>),
     /// What a rule that moves one edge along one axis reads.
@@ -445,7 +447,8 @@ pub fn measure_file(
             continue;
         };
 
-        let Some(inner) = gate.get_gate_ref(None) else {
+        // Checked before the population is cut out, which is the costly part.
+        if gate.get_gate_ref(None).is_none() {
             unmeasured.push(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
@@ -453,8 +456,7 @@ pub fn measure_file(
                 reason: "this gate has no geometry of its own".to_string(),
             });
             continue;
-        };
-        let params = gate.get_params();
+        }
         let chain = state.gate_chain_for_node(&parent);
         let frame = match parent_frame(df, &chain, &resolver) {
             Ok(frame) => frame,
@@ -468,193 +470,132 @@ pub fn measure_file(
                 continue;
             }
         };
-        let (points, index) = match parent_on_axes(&frame, &params) {
-            Ok(pair) => pair,
-            Err(e) => {
-                unmeasured.push(Unmeasured {
-                    gate_id: gate_id.clone(),
-                    gate: name,
-                    parent_gate: parent_gate.clone(),
-                    reason: e.to_string(),
-                });
-                continue;
-            }
-        };
-        if points.len() < 2 {
-            unmeasured.push(Unmeasured {
+        match measure_population(file, gate_id, name, parent_gate, &gate, rule, &frame) {
+            Ok(m) => out.push(m),
+            Err(u) => unmeasured.push(u),
+        }
+    }
+    Ok((out, unmeasured))
+}
+
+/// One gate's parent population, measured for its rule: the events on the
+/// gate's axes, and what the rule reads - the line and each event's distance
+/// from it, or the marker panel for a phenotype rule.
+///
+/// The half of [`measure_file`] after the population has been cut out of the
+/// file. A replay of a kept run calls it on the events the run kept, so a rule
+/// is tried on exactly what it was measured from - see
+/// [`crate::review::replay`].
+pub fn measure_population(
+    file: &FileId,
+    gate_id: &GateId,
+    name: Arc<str>,
+    parent_gate: Option<Arc<str>>,
+    gate: &Arc<dyn DrawableGate>,
+    rule: &GateRule,
+    frame: &Arc<DataFrame>,
+) -> Result<Measurement, Unmeasured> {
+    let params = gate.get_params();
+    let Some(inner) = gate.get_gate_ref(None) else {
+        return Err(Unmeasured {
+            gate_id: gate_id.clone(),
+            gate: name,
+            parent_gate,
+            reason: "this gate has no geometry of its own".to_string(),
+        });
+    };
+    let (points, index) = match parent_on_axes(&frame, &params) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Err(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
-                reason: format!("its parent population holds {} events", points.len()),
+                reason: e.to_string(),
             });
-            continue;
         }
+    };
+    if points.len() < 2 {
+        return Err(Unmeasured {
+            gate_id: gate_id.clone(),
+            gate: name,
+            parent_gate: parent_gate.clone(),
+            reason: format!("its parent population holds {} events", points.len()),
+        });
+    }
 
-        // A rule that identifies a population reads none of what follows -
-        // there is no parameter it positions along and no leading edge to
-        // measure - so it takes its own path and the checks below never apply
-        // to it.
-        if let Rule::MatchThePhenotype(wanted) = &rule.rule {
-            // The population has to be described from a sample somebody gated
-            // by hand, and only `File` names one.
-            //
-            // `Partner` is the dangerous one. It resolves per specimen, so it
-            // can point at a control - and an FMO has, by definition, no
-            // signal in the channel it drops, which is usually the very marker
-            // the population is defined by. The phenotype would be described
-            // from cells that cannot show it, and the result would look like
-            // an answer. `Itself` is merely circular: it would describe the
-            // population from the gate it is about to move.
-            //
-            // The form only ever writes `File` for this rule. This is for a
-            // sidecar written by hand, where nothing else would catch it.
-            let wrong_reference = match &rule.measured_on {
-                MeasuredOn::File(_) => None,
-                MeasuredOn::Itself => Some("the sample itself".to_string()),
-                MeasuredOn::Partner(kind) => Some(format!(
-                    "each specimen's {kind}, which resolves per sample and may be a control \
+    // A rule that identifies a population reads none of what follows -
+    // there is no parameter it positions along and no leading edge to
+    // measure - so it takes its own path and the checks below never apply
+    // to it.
+    if let Rule::MatchThePhenotype(wanted) = &rule.rule {
+        // The population has to be described from a sample somebody gated
+        // by hand, and only `File` names one.
+        //
+        // `Partner` is the dangerous one. It resolves per specimen, so it
+        // can point at a control - and an FMO has, by definition, no
+        // signal in the channel it drops, which is usually the very marker
+        // the population is defined by. The phenotype would be described
+        // from cells that cannot show it, and the result would look like
+        // an answer. `Itself` is merely circular: it would describe the
+        // population from the gate it is about to move.
+        //
+        // The form only ever writes `File` for this rule. This is for a
+        // sidecar written by hand, where nothing else would catch it.
+        let wrong_reference = match &rule.measured_on {
+            MeasuredOn::File(_) => None,
+            MeasuredOn::Itself => Some("the sample itself".to_string()),
+            MeasuredOn::Partner(kind) => Some(format!(
+                "each specimen's {kind}, which resolves per sample and may be a control \
                      with no signal in the markers it is matching on"
-                )),
-            };
-            if let Some(wrong) = wrong_reference {
-                unmeasured.push(Unmeasured {
-                    gate_id: gate_id.clone(),
-                    gate: name,
-                    parent_gate: parent_gate.clone(),
-                    reason: format!(
-                        "this rule identifies a population by its phenotype, which has to be \
-                         described from one named sample gated by hand - but it is measured on \
-                         {wrong}. Name the reference sample instead."
-                    ),
-                });
-                continue;
-            }
-            let markers = markers_for(&frame, &wanted.markers);
-            if markers.is_empty() {
-                unmeasured.push(Unmeasured {
-                    gate_id: gate_id.clone(),
-                    gate: name,
-                    parent_gate: parent_gate.clone(),
-                    reason: if wanted.markers.is_empty() {
-                        "this file has no measurement channels to describe a population with"
-                            .to_string()
-                    } else {
-                        format!(
-                            "none of the markers this rule names are in this file: {}",
-                            wanted
-                                .markers
-                                .iter()
-                                .map(|marker| marker.to_string())
-                                .collect::<Vec<String>>()
-                                .join(", ")
-                        )
-                    },
-                });
-                continue;
-            }
-            let rows = match parent_panel(&frame, &markers) {
-                Ok(rows) => rows,
-                Err(e) => {
-                    unmeasured.push(Unmeasured {
-                        gate_id: gate_id.clone(),
-                        gate: name,
-                        parent_gate: parent_gate.clone(),
-                        reason: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-            out.push(Measurement {
-                file: file.clone(),
-                gate_id: gate_id.clone(),
-                gate: name,
-                parent_gate,
-                index,
-                events: points.len(),
-                kept_events: Arc::new(crate::review::events::subsample(&points)),
-                params,
-                line: None,
-                phenotype: Some(PhenotypeReading {
-                    markers,
-                    rows,
-                    points: points.iter().map(|(x, y)| (*x as f64, *y as f64)).collect(),
-                }),
-            });
-            continue;
-        }
-
-        if *rule.parameter != *params.0 && *rule.parameter != *params.1 {
-            unmeasured.push(Unmeasured {
+            )),
+        };
+        if let Some(wrong) = wrong_reference {
+            return Err(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
                 reason: format!(
-                    "the rule positions {} but this gate is drawn on {} and {}",
-                    rule.parameter, params.0, params.1
+                    "this rule identifies a population by its phenotype, which has to be \
+                         described from one named sample gated by hand - but it is measured on \
+                         {wrong}. Name the reference sample instead."
                 ),
             });
-            continue;
         }
-        let Some((low, high)) = extent_on(&inner.geometry, &rule.parameter) else {
-            unmeasured.push(Unmeasured {
+        let markers = markers_for(&frame, &wanted.markers);
+        if markers.is_empty() {
+            return Err(Unmeasured {
                 gate_id: gate_id.clone(),
                 gate: name,
                 parent_gate: parent_gate.clone(),
-                reason: "this gate is drawn as a shape a rule cannot slide along one axis"
-                    .to_string(),
+                reason: if wanted.markers.is_empty() {
+                    "this file has no measurement channels to describe a population with"
+                        .to_string()
+                } else {
+                    format!(
+                        "none of the markers this rule names are in this file: {}",
+                        wanted
+                            .markers
+                            .iter()
+                            .map(|marker| marker.to_string())
+                            .collect::<Vec<String>>()
+                            .join(", ")
+                    )
+                },
             });
-            continue;
-        };
-        let current = match rule.bound {
-            Bound::Above => low,
-            Bound::Below => high,
-        } as f64;
-        if !current.is_finite() || current.abs() > UNBOUNDED as f64 {
-            unmeasured.push(Unmeasured {
-                gate_id: gate_id.clone(),
-                gate: name,
-                parent_gate: parent_gate.clone(),
-                reason: "the side of this gate the rule positions is unbounded".to_string(),
-            });
-            continue;
         }
-
-        let values = match parent_values(&frame, &rule.parameter) {
-            Ok(values) => values,
+        let rows = match parent_panel(&frame, &markers) {
+            Ok(rows) => rows,
             Err(e) => {
-                unmeasured.push(Unmeasured {
+                return Err(Unmeasured {
                     gate_id: gate_id.clone(),
                     gate: name,
                     parent_gate: parent_gate.clone(),
                     reason: e.to_string(),
                 });
-                continue;
             }
         };
-
-        // Each event's distance from the gate's boundary at its own height.
-        let other_parameter = if *rule.parameter == *params.0 {
-            params.1.clone()
-        } else {
-            params.0.clone()
-        };
-        let on_x = *rule.parameter == *params.0;
-        let shadow: Vec<(f64, f64)> = points
-            .iter()
-            .filter_map(|(x, y)| {
-                let (value, other) = if on_x { (*x, *y) } else { (*y, *x) };
-                let edge = boundary_at(
-                    &inner.geometry,
-                    &rule.parameter,
-                    &other_parameter,
-                    rule.bound,
-                    other,
-                )?;
-                Some((value as f64, (value - edge) as f64))
-            })
-            .collect();
-
-        out.push(Measurement {
+        return Ok(Measurement {
             file: file.clone(),
             gate_id: gate_id.clone(),
             gate: name,
@@ -662,18 +603,102 @@ pub fn measure_file(
             index,
             events: points.len(),
             kept_events: Arc::new(crate::review::events::subsample(&points)),
+            drawn: inner.clone(),
             params,
-            line: Some(LineReading {
-                parameter: rule.parameter.clone(),
-                bound: rule.bound,
-                current,
-                values,
-                shadow,
+            line: None,
+            phenotype: Some(PhenotypeReading {
+                markers,
+                rows,
+                points: points.iter().map(|(x, y)| (*x as f64, *y as f64)).collect(),
             }),
-            phenotype: None,
         });
     }
-    Ok((out, unmeasured))
+
+    if *rule.parameter != *params.0 && *rule.parameter != *params.1 {
+        return Err(Unmeasured {
+            gate_id: gate_id.clone(),
+            gate: name,
+            parent_gate: parent_gate.clone(),
+            reason: format!(
+                "the rule positions {} but this gate is drawn on {} and {}",
+                rule.parameter, params.0, params.1
+            ),
+        });
+    }
+    let Some((low, high)) = extent_on(&inner.geometry, &rule.parameter) else {
+        return Err(Unmeasured {
+            gate_id: gate_id.clone(),
+            gate: name,
+            parent_gate: parent_gate.clone(),
+            reason: "this gate is drawn as a shape a rule cannot slide along one axis".to_string(),
+        });
+    };
+    let current = match rule.bound {
+        Bound::Above => low,
+        Bound::Below => high,
+    } as f64;
+    if !current.is_finite() || current.abs() > UNBOUNDED as f64 {
+        return Err(Unmeasured {
+            gate_id: gate_id.clone(),
+            gate: name,
+            parent_gate: parent_gate.clone(),
+            reason: "the side of this gate the rule positions is unbounded".to_string(),
+        });
+    }
+
+    let values = match parent_values(&frame, &rule.parameter) {
+        Ok(values) => values,
+        Err(e) => {
+            return Err(Unmeasured {
+                gate_id: gate_id.clone(),
+                gate: name,
+                parent_gate: parent_gate.clone(),
+                reason: e.to_string(),
+            });
+        }
+    };
+
+    // Each event's distance from the gate's boundary at its own height.
+    let other_parameter = if *rule.parameter == *params.0 {
+        params.1.clone()
+    } else {
+        params.0.clone()
+    };
+    let on_x = *rule.parameter == *params.0;
+    let shadow: Vec<(f64, f64)> = points
+        .iter()
+        .filter_map(|(x, y)| {
+            let (value, other) = if on_x { (*x, *y) } else { (*y, *x) };
+            let edge = boundary_at(
+                &inner.geometry,
+                &rule.parameter,
+                &other_parameter,
+                rule.bound,
+                other,
+            )?;
+            Some((value as f64, (value - edge) as f64))
+        })
+        .collect();
+
+    Ok(Measurement {
+        file: file.clone(),
+        gate_id: gate_id.clone(),
+        gate: name,
+        parent_gate,
+        index,
+        events: points.len(),
+        kept_events: Arc::new(crate::review::events::subsample(&points)),
+        drawn: inner.clone(),
+        params,
+        line: Some(LineReading {
+            parameter: rule.parameter.clone(),
+            bound: rule.bound,
+            current,
+            values,
+            shadow,
+        }),
+        phenotype: None,
+    })
 }
 
 /// The parent population, filtered and indexed exactly as the plot does it.

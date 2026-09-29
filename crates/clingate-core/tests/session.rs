@@ -556,7 +556,8 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
         .unwrap();
     let here = clingate_core::review::events::load(&folder, &run.applied_at)
         .unwrap()
-        .expect("kept on apply");
+        .expect("kept on apply")
+        .samples;
     assert!(
         here.len() >= run.placed.len(),
         "{} for {}",

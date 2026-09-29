@@ -329,7 +329,8 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
             .unwrap();
         let mut e = clingate_core::review::events::load(folder, &run.applied_at)
             .unwrap()
-            .expect("events kept with the run");
+            .expect("events kept with the run")
+            .samples;
         e.sort_by(|a, b| (&a.gate_id, &a.file).cmp(&(&b.gate_id, &b.file)));
         e
     };

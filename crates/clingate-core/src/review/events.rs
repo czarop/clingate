@@ -17,6 +17,7 @@
 //! gate a file. The file is stamped with the run it belongs to, so a stale
 //! one is never read as a newer run's.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +28,9 @@ pub const EVENTS_FILE: &str = "run_events.bin";
 pub const KEPT_EVENTS: usize = 5_000;
 
 const MAGIC: &[u8; 4] = b"CGEV";
-const VERSION: u32 = 1;
+/// 2 added each file's metadata and each gate as it stood before the run -
+/// what a replay starts from. A file of version 1 still reads, without them.
+const VERSION: u32 = 2;
 
 /// Every `n`th event, so what is kept runs evenly through the file rather
 /// than stopping at its first few thousand.
@@ -54,6 +57,20 @@ pub struct EventSample {
     /// How many events the population held; `points` is a sample of them.
     pub events: usize,
     pub points: Vec<(f32, f32)>,
+    /// The gate as it stood on this file when the run measured it - before
+    /// the run moved anything. What a replay starts the rule from.
+    pub gate: Option<flow_gates::Gate>,
+}
+
+/// What a run keeps of what it read: every population it measured, and the
+/// metadata of every file it measured them on, so a replay can tell
+/// specimens and sample types apart exactly as the run did.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct KeptEvents {
+    /// The run they belong to; stamped when the run is applied.
+    pub run_applied_at: String,
+    pub metadata: BTreeMap<String, BTreeMap<String, String>>,
+    pub samples: Vec<EventSample>,
 }
 
 impl EventSample {
@@ -67,6 +84,7 @@ impl EventSample {
             y: m.params.1.to_string(),
             events: m.events,
             points: m.kept_events.to_vec(),
+            gate: Some(m.drawn.clone()),
         }
     }
 }
@@ -83,6 +101,8 @@ struct Head {
     kept: usize,
     x_range: (f32, f32),
     y_range: (f32, f32),
+    #[serde(default)]
+    gate: Option<flow_gates::Gate>,
 }
 
 /// The span of `values`; nothing for none, so an empty population writes
@@ -109,15 +129,18 @@ fn restore(q: u16, (lo, hi): (f32, f32)) -> f32 {
 }
 
 /// The run's events as bytes, stamped with the run they belong to.
-pub fn encode(run_applied_at: &str, samples: &[EventSample]) -> Vec<u8> {
+pub fn encode(kept: &KeptEvents) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
-    let stamp = run_applied_at.as_bytes();
+    let stamp = kept.run_applied_at.as_bytes();
     out.extend_from_slice(&(stamp.len() as u32).to_le_bytes());
     out.extend_from_slice(stamp);
-    out.extend_from_slice(&(samples.len() as u32).to_le_bytes());
-    for s in samples {
+    let metadata = serde_json::to_vec(&kept.metadata).expect("metadata always serialises");
+    out.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
+    out.extend_from_slice(&metadata);
+    out.extend_from_slice(&(kept.samples.len() as u32).to_le_bytes());
+    for s in &kept.samples {
         // Events a file cannot place on the plot are not events of it.
         let points: Vec<(f32, f32)> = s
             .points
@@ -135,6 +158,7 @@ pub fn encode(run_applied_at: &str, samples: &[EventSample]) -> Vec<u8> {
             kept: points.len(),
             x_range: range(points.iter().map(|p| p.0)),
             y_range: range(points.iter().map(|p| p.1)),
+            gate: s.gate.clone(),
         };
         let json = serde_json::to_vec(&head).expect("a head always serialises");
         out.extend_from_slice(&(json.len() as u32).to_le_bytes());
@@ -173,8 +197,8 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// The run a file of events belongs to, and its samples.
-pub fn decode(bytes: &[u8]) -> anyhow::Result<(String, Vec<EventSample>)> {
+/// A file of events, read back.
+pub fn decode(bytes: &[u8]) -> anyhow::Result<KeptEvents> {
     let mut r = Reader { bytes, at: 0 };
     if r.take(4)? != MAGIC {
         anyhow::bail!("not a clingate events file");
@@ -187,6 +211,12 @@ pub fn decode(bytes: &[u8]) -> anyhow::Result<(String, Vec<EventSample>)> {
     }
     let stamp_len = r.u32()? as usize;
     let stamp = String::from_utf8(r.take(stamp_len)?.to_vec())?;
+    let metadata = if version >= 2 {
+        let len = r.u32()? as usize;
+        serde_json::from_slice(r.take(len)?)?
+    } else {
+        BTreeMap::new()
+    };
     let count = r.u32()? as usize;
     let mut samples = Vec::with_capacity(count.min(100_000));
     for _ in 0..count {
@@ -206,12 +236,17 @@ pub fn decode(bytes: &[u8]) -> anyhow::Result<(String, Vec<EventSample>)> {
             y: head.y,
             events: head.events,
             points,
+            gate: head.gate,
         });
     }
     if r.at != bytes.len() {
         anyhow::bail!("the events file has more in it than it says");
     }
-    Ok((stamp, samples))
+    Ok(KeptEvents {
+        run_applied_at: stamp,
+        metadata,
+        samples,
+    })
 }
 
 /// Where a workspace keeps its last run's events.
@@ -219,39 +254,55 @@ pub fn file_in(folder: &Path) -> PathBuf {
     folder.join(super::REVIEWS_DIR).join(EVENTS_FILE)
 }
 
-/// Keep the events of the run applied at `run_applied_at`, replacing the
-/// last run's.
-pub fn save(
-    folder: &Path,
-    run_applied_at: &str,
-    samples: &[EventSample],
-) -> anyhow::Result<PathBuf> {
+/// Keep a run's events, replacing the last run's.
+pub fn save(folder: &Path, kept: &KeptEvents) -> anyhow::Result<PathBuf> {
     let path = file_in(folder);
     crate::workspace::make_parent(&path)?;
-    std::fs::write(&path, encode(run_applied_at, samples))?;
+    std::fs::write(&path, encode(kept))?;
     Ok(path)
 }
 
-/// The events kept for the run applied at `run_applied_at`: `None` where
-/// none were kept, or those kept belong to another run.
-pub fn load(folder: &Path, run_applied_at: &str) -> anyhow::Result<Option<Vec<EventSample>>> {
+/// The events kept in `folder` for the run applied at `run_applied_at`:
+/// `None` where none were kept, or those kept belong to another run.
+pub fn load(folder: &Path, run_applied_at: &str) -> anyhow::Result<Option<KeptEvents>> {
     let path = file_in(folder);
     if !path.is_file() {
         return Ok(None);
     }
-    let (stamp, samples) =
+    let kept =
         decode(&std::fs::read(&path)?).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    Ok((stamp == run_applied_at).then_some(samples))
+    Ok((kept.run_applied_at == run_applied_at).then_some(kept))
 }
 
-/// Every gate on every file the run measured, one each.
-pub fn of_run(measured: &[crate::gate_rules::autogate::Measurement]) -> Vec<EventSample> {
+/// Every gate on every file the run measured, one each, with the metadata of
+/// each file measured.
+pub fn of_run(
+    measured: &[crate::gate_rules::autogate::Measurement],
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+) -> KeptEvents {
     let mut seen = std::collections::HashSet::new();
-    measured
+    let samples: Vec<EventSample> = measured
         .iter()
         .filter(|m| seen.insert((m.gate_id.clone(), m.parent_gate.clone(), m.file.clone())))
         .map(EventSample::of)
-        .collect()
+        .collect();
+    let metadata = samples
+        .iter()
+        .filter_map(|s| {
+            let row = metadata.get(s.file.as_str())?;
+            Some((
+                s.file.clone(),
+                row.iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ))
+        })
+        .collect();
+    KeptEvents {
+        run_applied_at: String::new(),
+        metadata,
+        samples,
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +318,41 @@ mod tests {
             y: "BV421-A".into(),
             events: points.len() * 3,
             points,
+            gate: Some(a_gate(gate)),
+        }
+    }
+
+    fn a_gate(id: &str) -> flow_gates::Gate {
+        flow_gates::Gate {
+            id: std::sync::Arc::from(id),
+            name: "CD69+".into(),
+            geometry: flow_gates::create_rectangle_geometry(
+                vec![(0.5, -1e16), (1e16, -1e16), (1e16, 1e16), (0.5, 1e16)],
+                "BV605-A",
+                "BV421-A",
+            )
+            .unwrap(),
+            mode: flow_gates::GateMode::Global,
+            parameters: (
+                std::sync::Arc::from("BV605-A"),
+                std::sync::Arc::from("BV421-A"),
+            ),
+            label_position: None,
+        }
+    }
+
+    fn kept(stamp: &str, samples: Vec<EventSample>) -> KeptEvents {
+        let mut metadata = BTreeMap::new();
+        for s in &samples {
+            metadata.insert(
+                s.file.clone(),
+                BTreeMap::from([("SampleID".to_string(), format!("donor of {}", s.file))]),
+            );
+        }
+        KeptEvents {
+            run_applied_at: stamp.into(),
+            metadata,
+            samples,
         }
     }
 
@@ -280,14 +366,16 @@ mod tests {
     }
 
     #[test]
-    fn events_come_back_to_within_a_65536th_of_their_range() {
+    fn events_come_back_to_within_a_65536th_of_their_range_with_their_gates_and_metadata() {
         let wide = sample("g1", "f1", spread(5_000, -0.33, 4.2));
         let linear = sample("g2", "f2", spread(3_000, 0.0, 4.2e6));
-        let bytes = encode("2026-09-28T22:18:00Z", &[wide.clone(), linear.clone()]);
-        let (stamp, back) = decode(&bytes).unwrap();
-        assert_eq!(stamp, "2026-09-28T22:18:00Z");
-        assert_eq!(back.len(), 2);
-        for (was, now) in [(&wide, &back[0]), (&linear, &back[1])] {
+        let written = kept("2026-09-28T22:18:00Z", vec![wide.clone(), linear.clone()]);
+        let bytes = encode(&written);
+        let back = decode(&bytes).unwrap();
+        assert_eq!(back.run_applied_at, "2026-09-28T22:18:00Z");
+        assert_eq!(back.metadata, written.metadata);
+        assert_eq!(back.samples.len(), 2);
+        for (was, now) in [(&wide, &back.samples[0]), (&linear, &back.samples[1])] {
             assert_eq!(
                 (
                     &now.gate_id,
@@ -306,6 +394,8 @@ mod tests {
                     was.events
                 )
             );
+            // The gate exactly.
+            assert_eq!(now.gate, was.gate);
             assert_eq!(now.points.len(), was.points.len());
             let (xr, yr) = (
                 range(was.points.iter().map(|p| p.0)),
@@ -315,11 +405,31 @@ mod tests {
                 assert!((a.0 - b.0).abs() <= (xr.1 - xr.0) / 65_535.0, "{a:?} {b:?}");
                 assert!((a.1 - b.1).abs() <= (yr.1 - yr.0) / 65_535.0, "{a:?} {b:?}");
             }
-            // The ends exactly.
             assert_eq!(now.points[0].0, was.points[0].0);
         }
         // Four bytes an event, and a little for each head.
-        assert!(bytes.len() < 8_000 * 4 + 1_000, "{}", bytes.len());
+        assert!(bytes.len() < 8_000 * 4 + 3_000, "{}", bytes.len());
+    }
+
+    #[test]
+    fn a_version_1_file_still_reads_without_metadata_or_gates() {
+        // As the first version wrote it: stamp, count, heads without gates.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"t");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        let head = r#"{"gate_id":"g","parent_gate":null,"file":"f","x":"a","y":"b","events":1,"kept":1,"x_range":[0.0,1.0],"y_range":[0.0,1.0]}"#;
+        bytes.extend_from_slice(&(head.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(head.as_bytes());
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        let back = decode(&bytes).unwrap();
+        assert_eq!(back.run_applied_at, "t");
+        assert!(back.metadata.is_empty());
+        assert_eq!(back.samples[0].gate, None);
+        assert_eq!(back.samples[0].points, vec![(1.0, 0.0)]);
     }
 
     #[test]
@@ -327,25 +437,25 @@ mod tests {
         let mut points = vec![(1.5, 2.0); 10];
         points.push((f32::NAN, 1.0));
         points.push((1.0, f32::INFINITY));
-        let (_, back) = decode(&encode("t", &[sample("g", "f", points)])).unwrap();
-        assert_eq!(back[0].points, vec![(1.5, 2.0); 10]);
+        let back = decode(&encode(&kept("t", vec![sample("g", "f", points)]))).unwrap();
+        assert_eq!(back.samples[0].points, vec![(1.5, 2.0); 10]);
     }
 
     #[test]
     fn a_run_with_nothing_measured_keeps_an_empty_file() {
-        let (stamp, back) = decode(&encode("t", &[])).unwrap();
-        assert_eq!((stamp.as_str(), back.len()), ("t", 0));
+        let back = decode(&encode(&kept("t", Vec::new()))).unwrap();
+        assert_eq!((back.run_applied_at.as_str(), back.samples.len()), ("t", 0));
         let empty = sample("g", "f", Vec::new());
-        let (_, back) = decode(&encode("t", &[empty.clone()])).unwrap();
-        assert_eq!(back, vec![empty]);
+        let back = decode(&encode(&kept("t", vec![empty.clone()]))).unwrap();
+        assert_eq!(back.samples, vec![empty]);
     }
 
     #[test]
     fn a_damaged_or_foreign_file_is_an_error_not_a_panic() {
-        let good = encode("t", &[sample("g", "f", spread(100, 0.0, 1.0))]);
+        let good = encode(&kept("t", vec![sample("g", "f", spread(100, 0.0, 1.0))]));
         assert!(decode(b"PNG....").is_err());
         assert!(decode(&[]).is_err());
-        for cut in [3, 9, 20, good.len() - 1] {
+        for cut in [3, 9, 20, 40, good.len() - 1] {
             assert!(decode(&good[..cut]).is_err(), "cut at {cut}");
         }
         let mut longer = good.clone();
@@ -355,7 +465,7 @@ mod tests {
         newer[4..8].copy_from_slice(&(VERSION + 1).to_le_bytes());
         assert!(decode(&newer).unwrap_err().to_string().contains("newer"));
         // A count far past what the file holds.
-        let mut lying = encode("t", &[]);
+        let mut lying = encode(&kept("t", Vec::new()));
         let at = lying.len() - 4;
         lying[at..].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(decode(&lying).is_err());
@@ -365,11 +475,14 @@ mod tests {
     fn events_are_kept_for_their_own_run_only() {
         let folder = crate::file_load_tests::scratch("run-events");
         assert_eq!(load(&folder, "t1").unwrap(), None);
-        let s = sample("g", "f", spread(50, 0.0, 1.0));
-        let path = save(&folder, "t1", &[s.clone()]).unwrap();
+        let path = save(
+            &folder,
+            &kept("t1", vec![sample("g", "f", spread(50, 0.0, 1.0))]),
+        )
+        .unwrap();
         assert_eq!(path, folder.join("reviews").join("run_events.bin"));
         let back = load(&folder, "t1").unwrap().expect("this run's");
-        assert_eq!(back[0].points.len(), 50);
+        assert_eq!(back.samples[0].points.len(), 50);
         assert_eq!(load(&folder, "t2").unwrap(), None, "another run's");
         std::fs::write(&path, b"junk").unwrap();
         assert!(load(&folder, "t1").is_err());

@@ -31,7 +31,7 @@ pub(crate) struct Pending {
     /// What the run decided, kept in the workspace once applied.
     record: crate::review::RunRecord,
     /// The events it read, kept with it.
-    events: Vec<crate::review::events::EventSample>,
+    events: crate::review::events::KeptEvents,
 }
 
 #[derive(Debug, Clone, Serialize)]
