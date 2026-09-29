@@ -1232,7 +1232,7 @@ pub fn GateRulesWindow() -> Element {
                             onclick: move |_| {
                                 if let Some(flag) = cancel() {
                                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                                    note(&toasts, "Stopping after this file...");
+                                    note(&toasts, "Stopping...");
                                 }
                             },
                             "Stop"

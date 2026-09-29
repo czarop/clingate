@@ -111,6 +111,7 @@ pub const STABILITY: &str = "stability of the gate's contents";
 pub const BAND: &str = "rule satisfied";
 pub const DISPLACEMENT: &str = "distance moved from the reference";
 pub const VALLEY: &str = "depth of the valley it sat in";
+pub const RIGHT_SIDE: &str = "the negative's right side against the reference";
 pub const MATCHED: &str = "events matching the phenotype";
 pub const PURITY: &str = "how much else the gate holds";
 pub const CAUGHT: &str = "how much of the population the gate holds";
@@ -329,6 +330,81 @@ fn displacement_detail(t: &Threshold, reference: f64) -> String {
         reference,
         (t.x - reference).abs() / t.parent_spread
     )
+}
+
+// ─── The side of the negative above-the-negative does not read ───────────────
+
+/// Where the gate sits against the negative's right side, here and on the
+/// reference - the check above-the-negative cannot make for itself.
+///
+/// That rule reads the negative's left side and paces the gate out as if the
+/// right were its mirror. When a negative changes shape - its median shifts
+/// up the arcsinh scale, where the right side is squeezed more than the left;
+/// its tail shortens - the mirror no longer fits, and the gate lands further
+/// out from where the negative actually ends than on the reference. This
+/// measures that directly: how many right-side widths above the peak the gate
+/// sits (`k`), against the same on the reference (`k_ref`).
+///
+/// Scored by direction, because the two directions mean different things:
+///
+/// - **Further out** (`k / k_ref` above 1): positives cannot cause it - they
+///   only ever widen the right side, which pulls `k` down. So this is the
+///   negative's own shape, and the gate is likely too high. 1.25 times the
+///   reference's is still fine; twice it scores 0.
+/// - **Closer in** (below 1): the right side has widened, which is what a
+///   positive smear running into the negative does. That is often the sample
+///   being stimulated, not wrong, so it never scores below 0.5: noted, and
+///   ranked lower, but not flagged on its own.
+///
+/// `None` where nothing can be compared - the reference's gate at or below its
+/// own peak, or its right side unreadable.
+pub fn right_side(
+    reference_at: f64,
+    reference: crate::gate_rules::threshold::PeakSides,
+    at: f64,
+    here: crate::gate_rules::threshold::PeakSides,
+) -> Option<Component> {
+    let reference_right = reference.right.filter(|w| *w > 0.0)?;
+    let k_ref = (reference_at - reference.peak) / reference_right;
+    if !k_ref.is_finite() || k_ref <= 0.0 {
+        return None;
+    }
+    let Some(right) = here.right.filter(|w| *w > 0.0) else {
+        return Some(Component::new(
+            RIGHT_SIDE,
+            0.5,
+            format!(
+                "the negative's right side never falls to {:.0}% of its peak - it runs into what \
+                 is above it, so where it ends cannot be read",
+                crate::gate_rules::threshold::SIDE_HEIGHT * 100.0
+            ),
+        ));
+    };
+    let k = (at - here.peak) / right;
+    let ratio = k / k_ref;
+    let score = if ratio >= 1.0 {
+        // 1 up to 1.25, 0 by 2.
+        1.0 - ((ratio - 1.25) / 0.75).clamp(0.0, 1.0)
+    } else {
+        // 1 down to 0.7, 0.5 by 0.4 and below.
+        1.0 - 0.5 * ((0.7 - ratio) / 0.3).clamp(0.0, 1.0)
+    };
+    let sides = |s: &crate::gate_rules::threshold::PeakSides, right: f64| match s.left {
+        Some(left) if left > 0.0 => format!("right side {:.2} times the left", right / left),
+        _ => "left side unreadable".to_string(),
+    };
+    Some(Component::new(
+        RIGHT_SIDE,
+        score,
+        format!(
+            "the gate sits {k:.2} right-side widths above the negative's peak against {k_ref:.2} \
+             on the reference ({:.0}% as far out; {} here, {} on the reference) - the rule reads \
+             only the left side",
+            ratio * 100.0,
+            sides(&here, right),
+            sides(&reference, reference_right),
+        ),
+    ))
 }
 
 // ─── The model a phenotype rule is judged on ─────────────────────────────────

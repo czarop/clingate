@@ -520,6 +520,104 @@ fn leftmost_prominent_mode(xs: &[f64], density: &[f64]) -> Option<f64> {
     Some(crate::gate_move::kde::kde_peak(xs, density))
 }
 
+// ─── the negative's two sides ────────────────────────────────────────────────
+
+/// How far down its peak the negative's sides are measured: a quarter of the
+/// way up. Nearer the tail than half the height, which is where a gate is set;
+/// high enough that a handful of stray events or the far tail's noise do not
+/// decide it.
+pub const SIDE_HEIGHT: f64 = 0.25;
+
+/// The negative's peak, and how far it spreads either side of it down to
+/// [`SIDE_HEIGHT`] of its height, in the axis's display space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeakSides {
+    pub peak: f64,
+    /// Distance from the peak down to that height on the left.
+    pub left: Option<f64>,
+    /// And on the right - `None` where the density never falls that far
+    /// before the data ends, which is a negative merged with what is above it.
+    pub right: Option<f64>,
+}
+
+/// Read both sides of the negative - the same peak the peak finder takes as
+/// the negative, the leftmost one tall enough to count.
+///
+/// Above-the-negative reads only the left side and assumes the right is its
+/// mirror. This reads the right side as well, so a placement can say when that
+/// assumption has stopped holding - a negative whose right side has pulled in
+/// or spread out against the reference's.
+pub fn peak_sides(values: &[f64]) -> Option<PeakSides> {
+    if values.len() < 2 {
+        return None;
+    }
+    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values);
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !bandwidth.is_finite() || bandwidth <= 0.0 || !lo.is_finite() || !hi.is_finite() || hi <= lo
+    {
+        return None;
+    }
+    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    let n = xs.len().min(density.len());
+    if n < 3 {
+        return None;
+    }
+    let tallest = density[..n]
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    if !tallest.is_finite() || tallest <= 0.0 {
+        return None;
+    }
+    // The same bar the peak finder uses, so both name the same peak.
+    const PROMINENCE: f64 = 0.25;
+    let at = (1..n - 1)
+        .find(|&i| {
+            density[i] >= tallest * PROMINENCE
+                && density[i] >= density[i - 1]
+                && density[i] > density[i + 1]
+        })
+        .unwrap_or_else(|| {
+            (0..n)
+                .max_by(|a, b| density[*a].total_cmp(&density[*b]))
+                .unwrap_or(0)
+        });
+    let floor = density[at] * SIDE_HEIGHT;
+    // Where the density first falls to the floor walking one way, found
+    // between grid points so the answer does not jump a whole step.
+    let crossing = |step: isize| -> Option<f64> {
+        let mut i = at as isize;
+        loop {
+            let next = i + step;
+            if next < 0 || next >= n as isize {
+                return None;
+            }
+            let (a, b) = (i as usize, next as usize);
+            if density[b] <= floor {
+                let t = (density[a] - floor) / (density[a] - density[b]).max(f64::EPSILON);
+                let x = xs[a] + t * (xs[b] - xs[a]);
+                // A density always falls away over the last couple of
+                // bandwidths of the data, whatever the population does there:
+                // there is nothing beyond to smooth in. Falling only there is
+                // not the negative ending - it is the data ending.
+                let at_the_end = if step > 0 {
+                    x > hi - 2.0 * bandwidth
+                } else {
+                    x < lo + 2.0 * bandwidth
+                };
+                return (!at_the_end).then(|| (x - xs[at]).abs());
+            }
+            i = next;
+        }
+    };
+    Some(PeakSides {
+        peak: xs[at],
+        left: crossing(-1),
+        right: crossing(1),
+    })
+}
+
 // ─── the valley between two populations ──────────────────────────────────────
 
 /// The dip between the negative and whatever sits above it.

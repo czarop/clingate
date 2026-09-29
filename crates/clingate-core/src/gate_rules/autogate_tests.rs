@@ -3171,3 +3171,132 @@ fn a_phenotype_placement_is_not_replayed_and_says_why() {
         cases[0].why
     );
 }
+
+// ─── the side of the negative the rule does not read ─────────────────────────
+
+/// A negative at `centre` whose left and right sides spread by `left` and
+/// `right`, with a tenth of the events positive well above it.
+fn lopsided_negative(centre: f32, left: f32, right: f32) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, StandardNormal, Uniform};
+
+    let mut rng = StdRng::seed_from_u64(11);
+    let pos = Uniform::new(centre + 400.0, centre + 600.0).unwrap();
+    // Each side's share in proportion to its width: one population whose
+    // density is continuous at its peak.
+    let mut xs: Vec<f32> = (0..18_000)
+        .map(|i| {
+            let z: f32 = StandardNormal.sample(&mut rng);
+            if (i as f32 + 0.5) / 18_000.0 <= left / (left + right) {
+                centre - z.abs() * left
+            } else {
+                centre + z.abs() * right
+            }
+        })
+        .collect();
+    xs.extend((0..2_000).map(|_| pos.sample(&mut rng)));
+    let n = xs.len();
+    df![X => xs, Y => vec![0.0f32; n]].unwrap()
+}
+
+/// The QC (a symmetric negative at 300, gated at 500 as drawn) and a donor,
+/// positioned by above-the-negative reading each one's own peak.
+fn right_side_of(donor: polars::prelude::DataFrame) -> crate::gate_rules::autogate::Positioned {
+    use crate::gate_rules::autogate::{measure_file, position_all};
+    use crate::gate_rules::rule::{AboveTheNegativeRule, NegativeFinder, Rule};
+    use crate::gate_rules::rule_store::RuleTarget;
+
+    let (mut state, _) = one_positive_gate();
+    let map = two_specimens();
+    let mut store = above_the_negative_rule("fs_qc");
+    let mut entry = store.rule_for("CD134+", None).unwrap().clone();
+    entry.rule = Rule::AboveTheNegative(AboveTheNegativeRule {
+        find: NegativeFinder::NegativePeak,
+        ..AboveTheNegativeRule::default()
+    });
+    store.insert(RuleTarget::named("CD134+"), entry);
+    let qc = lopsided_negative(300.0, 40.0, 40.0);
+    let mut measured = Vec::new();
+    let mut unmeasured = Vec::new();
+    for (file, frame) in [("fs_qc", &qc), ("fs_b", &donor)] {
+        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, &store).unwrap();
+        measured.extend(m);
+        unmeasured.extend(u);
+    }
+    let mut report = position_all(&mut state, &store, &measured, &unmeasured, &map);
+    let at = report
+        .positioned
+        .iter()
+        .position(|p| &*p.specimen == "DONOR-B")
+        .expect("positioned");
+    report.positioned.swap_remove(at)
+}
+
+fn right_side_score(placed: &crate::gate_rules::autogate::Positioned) -> f64 {
+    placed
+        .components
+        .iter()
+        .find(|c| c.name == crate::gate_rules::confidence::RIGHT_SIDE)
+        .expect("an above-the-negative placement is checked against its right side")
+        .score
+}
+
+#[test]
+fn a_negative_that_keeps_its_shape_passes_the_right_side_check_wherever_it_moves() {
+    let placed = right_side_of(lopsided_negative(450.0, 40.0, 40.0));
+    assert!(
+        (placed.to - 650.0).abs() < 15.0,
+        "followed the negative: {}",
+        placed.to
+    );
+    assert!(right_side_score(&placed) > 0.95, "{:?}", placed.components);
+    assert_ne!(
+        placed.weakest,
+        Some(crate::gate_rules::confidence::RIGHT_SIDE)
+    );
+}
+
+#[test]
+fn a_negative_whose_left_side_spread_is_flagged_for_a_gate_paced_out_too_far() {
+    // The rule reads the left side, twice as wide as the right here, and
+    // puts the gate twice as far out as the right side warrants - the shape
+    // of the too-high placement on a plate whose negative changed.
+    let placed = right_side_of(lopsided_negative(300.0, 80.0, 40.0));
+    assert!(
+        placed.to > 620.0,
+        "paced out from the wide side: {}",
+        placed.to
+    );
+    assert!(
+        right_side_score(&placed) < crate::review::assess::REVIEW_FLOOR,
+        "{:?}",
+        placed.components
+    );
+    assert_eq!(
+        placed.weakest,
+        Some(crate::gate_rules::confidence::RIGHT_SIDE)
+    );
+    assert!(
+        placed.confidence < crate::review::assess::REVIEW_FLOOR,
+        "{}",
+        placed.confidence
+    );
+    let said = &placed
+        .components
+        .iter()
+        .find(|c| c.name == crate::gate_rules::confidence::RIGHT_SIDE)
+        .unwrap()
+        .detail;
+    assert!(said.contains("reads only the left side"), "{said}");
+}
+
+#[test]
+fn a_right_side_widened_by_a_smear_is_noted_but_never_flagged_on_its_own() {
+    // What a positive smear running into the negative does - often a
+    // stimulated sample, not a wrong one.
+    let placed = right_side_of(lopsided_negative(300.0, 40.0, 100.0));
+    let score = right_side_score(&placed);
+    assert!((0.5..0.9).contains(&score), "{score}");
+}

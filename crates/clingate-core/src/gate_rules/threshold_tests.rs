@@ -765,3 +765,67 @@ fn an_edge_in_a_dense_cloud_swings() {
     let t = tail_fraction(&ramp(1000), (0.4, 0.6)).unwrap();
     assert!(t.count_swing > 0.1, "{}", t.count_swing);
 }
+
+// ─── the negative's two sides ────────────────────────────────────────────────
+
+fn split_normal(n: usize, centre: f64, left: f64, right: f64) -> Vec<f64> {
+    use rand::SeedableRng;
+    use rand_distr::{Distribution, StandardNormal};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+    // Each side's share of the events in proportion to its width, so the
+    // density is continuous at the peak - one population, lopsided.
+    (0..n)
+        .map(|i| {
+            let z: f64 = StandardNormal.sample(&mut rng);
+            let on_left = (i as f64 + 0.5) / n as f64 <= left / (left + right);
+            if on_left {
+                centre - z.abs() * left
+            } else {
+                centre + z.abs() * right
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn both_sides_of_a_negative_are_read_at_a_quarter_of_its_height() {
+    use crate::gate_rules::threshold::{SIDE_HEIGHT, peak_sides};
+    // A Gaussian falls to a quarter of its height sqrt(2 ln 4) sigmas out;
+    // the kernel's smoothing widens that a little.
+    let expected = (2.0 * (1.0 / SIDE_HEIGHT).ln()).sqrt();
+    let even = peak_sides(&split_normal(20_000, 100.0, 10.0, 10.0)).unwrap();
+    assert!((even.peak - 100.0).abs() < 2.0, "{even:?}");
+    for side in [even.left.unwrap(), even.right.unwrap()] {
+        assert!((side / 10.0 - expected).abs() < 0.2 * expected, "{even:?}");
+    }
+    // Lopsided: each side read as it is, not mirrored.
+    let lopsided = peak_sides(&split_normal(20_000, 100.0, 20.0, 5.0)).unwrap();
+    let ratio = lopsided.right.unwrap() / lopsided.left.unwrap();
+    assert!((0.2..0.4).contains(&ratio), "{lopsided:?}");
+}
+
+#[test]
+fn the_negative_is_the_leftmost_peak_whichever_is_taller() {
+    use crate::gate_rules::threshold::peak_sides;
+    let mut values = split_normal(4_000, 100.0, 10.0, 10.0);
+    values.extend(split_normal(12_000, 300.0, 10.0, 10.0));
+    let sides = peak_sides(&values).unwrap();
+    assert!((sides.peak - 100.0).abs() < 5.0, "{sides:?}");
+    // It falls away between the two, so its right side is read.
+    assert!(sides.right.unwrap() < 40.0, "{sides:?}");
+}
+
+#[test]
+fn a_negative_running_into_a_smear_has_no_right_side_to_read() {
+    use crate::gate_rules::threshold::peak_sides;
+    let mut values = split_normal(10_000, 100.0, 10.0, 10.0);
+    // Dense enough to hold the density above a quarter of the peak all the
+    // way to the end of the data.
+    values.extend((0..40_000).map(|i| 100.0 + 200.0 * i as f64 / 40_000.0));
+    let sides = peak_sides(&values).unwrap();
+    assert_eq!(sides.right, None, "{sides:?}");
+    assert!(sides.left.is_some());
+    // Nothing to read at all.
+    assert_eq!(peak_sides(&[1.0]), None);
+    assert_eq!(peak_sides(&[2.0, 2.0, 2.0]), None);
+}

@@ -81,34 +81,38 @@ impl RunInputs {
 /// What a run is doing, for the progress line.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Progress {
-    /// Reading and measuring go together: one file is read, measured, and
-    /// dropped before the next is opened.
+    /// Step 1: reading the files. Reading and measuring go together: one
+    /// file is read, measured, and dropped before the next is opened.
     Measuring { done: usize, total: usize },
-    /// Every file is in; the rules are being solved.
+    /// Step 2: every file is in; each gate on each file is being positioned.
     Solving { done: usize, total: usize },
 }
 
 impl Progress {
+    /// How far through its own step the run is. Each step fills the bar from
+    /// empty: how long positioning takes against reading depends on how many
+    /// rules there are - a few rules, and reading is nearly all of it; fifteen
+    /// hundred, and positioning is - so no fixed share of one bar is right.
     pub fn fraction(self) -> f64 {
         match self {
-            // Solving is the tail after the reading, so the bar carries on
-            // through it rather than stopping dead on one message.
-            Progress::Measuring { done, total } if total > 0 => 0.95 * (done as f64 / total as f64),
-            Progress::Measuring { .. } => 0.0,
-            Progress::Solving { done, total } if total > 0 => {
-                0.95 + 0.05 * (done as f64 / total as f64)
+            Progress::Measuring { done, total } | Progress::Solving { done, total }
+                if total > 0 =>
+            {
+                done as f64 / total as f64
             }
-            Progress::Solving { .. } => 0.95,
+            _ => 0.0,
         }
     }
 
     pub fn describe(self) -> String {
         match self {
-            Progress::Measuring { done, total } => format!("Measuring file {done} of {total}"),
-            Progress::Solving { done, total } if total > 0 => {
-                format!("Solving rule {done} of {total}")
+            Progress::Measuring { done, total } => {
+                format!("Step 1 of 2 - reading file {done} of {total}")
             }
-            Progress::Solving { .. } => "Solving the rules...".to_string(),
+            Progress::Solving { done, total } if total > 0 => {
+                format!("Step 2 of 2 - positioning gate {done} of {total}")
+            }
+            Progress::Solving { .. } => "Step 2 of 2 - positioning the gates...".to_string(),
         }
     }
 }
@@ -245,7 +249,7 @@ pub struct RunOutcome {
 /// It works against `gates` as given - a snapshot, for a caller that keeps
 /// editing - and returns the placements rather than writing them, so a gate
 /// moved while this runs is not silently overwritten. `cancel` stops it at the
-/// next file.
+/// next file while reading, and at the next gate while positioning.
 pub fn run_rules(
     gates: &GateState,
     inputs: &RunInputs,
@@ -283,7 +287,16 @@ pub fn run_rules(
         &unmeasured,
         &inputs.metadata,
         |done, total| progress(Progress::Solving { done, total }),
+        cancel,
     );
+    if cancel.load(Ordering::Relaxed) {
+        return RunOutcome {
+            report: Report::default(),
+            placements: Vec::new(),
+            cancelled: true,
+            events: Default::default(),
+        };
+    }
 
     for problem in problems.drain(..) {
         report.skipped.push(crate::gate_rules::autogate::Skipped {
@@ -1769,6 +1782,72 @@ mod tests {
             assert!((0.05..=0.15).contains(&achieved), "{achieved}");
             assert_eq!(kept.bound, Some(Bound::Above));
             assert_eq!(kept.shape.as_ref().map(|s| s.events), Some(10_000));
+        }
+
+        #[test]
+        fn stop_is_heard_while_the_gates_are_being_positioned() {
+            let inputs = three_way_inputs("run-stop-solving");
+            let (state, _) = positive_gate();
+            let flag = Arc::new(AtomicBool::new(false));
+            let seen = std::sync::Mutex::new(Vec::new());
+            // Stop pressed once every file has been read.
+            let outcome = run_rules(
+                &state,
+                &inputs,
+                |step| {
+                    seen.lock().unwrap().push(step);
+                    if matches!(step, Progress::Solving { .. }) {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                },
+                &flag,
+            );
+            assert!(outcome.cancelled);
+            assert!(outcome.placements.is_empty());
+            assert!(outcome.report.positioned.is_empty());
+            let seen = seen.into_inner().unwrap();
+            // Every file was read; positioning stopped at the first gate.
+            assert_eq!(
+                seen.iter()
+                    .filter(|s| matches!(s, Progress::Measuring { .. }))
+                    .count(),
+                3
+            );
+            assert!(
+                seen.iter()
+                    .filter(|s| matches!(s, Progress::Solving { done, .. } if *done > 1))
+                    .count()
+                    == 0,
+                "{seen:?}"
+            );
+
+            // Unstopped, the same run places the donor.
+            let flag = AtomicBool::new(false);
+            let outcome = run_rules(&state, &inputs, |_| {}, &flag);
+            assert!(!outcome.cancelled);
+            assert_eq!(outcome.placements.len(), 1);
+        }
+
+        #[test]
+        fn each_step_fills_the_bar_from_empty_and_says_which_step_it_is() {
+            let reading = |done| Progress::Measuring { done, total: 4 };
+            let placing = |done| Progress::Solving { done, total: 1_500 };
+            assert_eq!(reading(0).fraction(), 0.0);
+            assert_eq!(reading(2).fraction(), 0.5);
+            assert_eq!(reading(4).fraction(), 1.0);
+            assert_eq!(placing(0).fraction(), 0.0);
+            assert_eq!(placing(750).fraction(), 0.5);
+            assert_eq!(placing(1_500).fraction(), 1.0);
+            assert_eq!(Progress::Solving { done: 0, total: 0 }.fraction(), 0.0);
+            assert_eq!(reading(2).describe(), "Step 1 of 2 - reading file 2 of 4");
+            assert_eq!(
+                placing(750).describe(),
+                "Step 2 of 2 - positioning gate 750 of 1500"
+            );
+            assert_eq!(
+                Progress::Solving { done: 0, total: 0 }.describe(),
+                "Step 2 of 2 - positioning the gates..."
+            );
         }
 
         #[test]

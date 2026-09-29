@@ -176,6 +176,16 @@ Consequences worth knowing:
   or a scale/nudge.
 - The placed gate is judged on the **sample's** own population (not the
   reference), and its "distance moved" is not scored - moving is the point.
+- The right side of the negative is never read to place the gate, but it is
+  checked afterwards (`threshold::peak_sides`, `confidence::right_side`): how
+  many right-side widths above the peak the gate landed - each side measured
+  on a smoothed density, from the peak down to a quarter of its height -
+  against the same on the reference. A gate much further out than on the
+  reference means the negative's shape has changed (its right side pulled in,
+  or its left side spread) and the mirror assumption no longer holds: likely
+  too high. A gate closer in usually means positives smearing into the
+  negative, which is often a stimulated sample rather than a wrong one, so
+  that direction is only noted. See the table in section 4.
 
 ### 3.4 InTheValley - "in the dip, where it sits on the reference"
 
@@ -224,6 +234,7 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
 | distance moved from the reference | band and percentile rules only: `1 - (abs(to - from) / IQR) / 0.5`, where `from` is the sample's line **before the run** (not the reference file's line) |
 | depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
+| the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
 
 The Gate Rules tab and the Review tab flag a placement below 0.30.

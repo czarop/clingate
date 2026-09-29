@@ -557,3 +557,78 @@ fn nothing_matched_on_either_side_leaves_nothing_to_compare() {
     });
     assert_eq!(part(&no_parent, ABUNDANCE), 0.0);
 }
+
+// ─── the negative's right side against the reference ────────────────────────
+
+fn sides(
+    peak: f64,
+    left: Option<f64>,
+    right: Option<f64>,
+) -> crate::gate_rules::threshold::PeakSides {
+    crate::gate_rules::threshold::PeakSides { peak, left, right }
+}
+
+#[test]
+fn a_gate_as_far_out_by_the_right_side_as_on_the_reference_scores_full() {
+    use crate::gate_rules::confidence::{RIGHT_SIDE, right_side};
+    // Reference: gate 3 right-side widths above its peak.
+    let reference = sides(0.0, Some(1.0), Some(1.0));
+    let same = right_side(3.0, reference, 13.0, sides(10.0, Some(2.0), Some(1.0))).unwrap();
+    assert_eq!(same.name, RIGHT_SIDE);
+    assert_eq!(same.score, 1.0);
+    assert!(same.detail.contains("100% as far out"), "{}", same.detail);
+    assert!(
+        same.detail.contains("right side 0.50 times the left here"),
+        "{}",
+        same.detail
+    );
+    // A quarter further out is still fine.
+    assert_eq!(
+        right_side(3.0, reference, 3.75, sides(0.0, None, Some(1.0)))
+            .unwrap()
+            .score,
+        1.0
+    );
+}
+
+#[test]
+fn a_gate_further_out_than_the_right_side_warrants_scores_down_to_nothing() {
+    use crate::gate_rules::confidence::right_side;
+    let reference = sides(0.0, Some(1.0), Some(1.0));
+    let at = |k: f64| {
+        right_side(3.0, reference, k * 3.0, sides(0.0, Some(1.0), Some(1.0)))
+            .unwrap()
+            .score
+    };
+    assert!((at(1.5) - (1.0 - 0.25 / 0.75)).abs() < 1e-12);
+    assert_eq!(at(2.0), 0.0);
+    assert_eq!(at(5.0), 0.0);
+}
+
+#[test]
+fn a_gate_closer_in_than_on_the_reference_never_scores_below_a_half() {
+    use crate::gate_rules::confidence::right_side;
+    let reference = sides(0.0, Some(1.0), Some(1.0));
+    let at = |k: f64| {
+        right_side(3.0, reference, k * 3.0, sides(0.0, Some(1.0), Some(1.0)))
+            .unwrap()
+            .score
+    };
+    assert!((at(0.7) - 1.0).abs() < 1e-9);
+    assert!((at(0.55) - 0.75).abs() < 1e-12);
+    assert!((at(0.4) - 0.5).abs() < 1e-9);
+    assert_eq!(at(0.0), 0.5);
+}
+
+#[test]
+fn a_right_side_that_never_ends_is_said_and_nothing_is_compared_without_a_reference() {
+    use crate::gate_rules::confidence::right_side;
+    let reference = sides(0.0, Some(1.0), Some(1.0));
+    let merged = right_side(3.0, reference, 3.0, sides(0.0, Some(1.0), None)).unwrap();
+    assert_eq!(merged.score, 0.5);
+    assert!(merged.detail.contains("never falls"), "{}", merged.detail);
+    // The reference's own right side unreadable, or its gate at its peak.
+    assert!(right_side(3.0, sides(0.0, Some(1.0), None), 3.0, reference).is_none());
+    assert!(right_side(0.0, reference, 3.0, reference).is_none());
+    assert!(right_side(-1.0, reference, 3.0, reference).is_none());
+}

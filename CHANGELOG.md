@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Above-the-negative placements are checked against the negative's right
+  side.** The rule reads the left side and assumes the right mirrors it;
+  each placement now also measures how far out the gate landed against the
+  right side, against the same on the reference. A gate much further out
+  than on the reference - the negative's shape has changed - scores low and
+  comes up for review; a right side widened by a positive smear is noted
+  but not flagged on its own.
+
 - **Reviewing a rules run.** Every applied run is kept in the workspace
   (`reviews/rules_run.json`): each gate it moved, where from and to, every
   measure its confidence was taken from, what it read on the reference and
@@ -375,6 +383,12 @@
   still carry it load as before.
 
 ### Fixed
+
+- **Stop** on the Gate Rules tab now stops a run while it positions the
+  gates, not only while it reads the files - which, with many rules, was
+  the part that took longest. And the progress bar fills once for reading
+  the files and again for positioning the gates, saying which step it is
+  on, instead of giving reading 95% of one bar whatever the number of rules.
 
 - A report now belongs to the run it was made against. After the rules
   were run again, an earlier run's report marked the new run's placement

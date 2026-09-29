@@ -1211,7 +1211,16 @@ pub fn solve_all(
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
 ) -> (Report, Vec<Placement>) {
-    solve_all_reporting(state, store, measurements, unmeasured, metadata, |_, _| {})
+    let keep_going = std::sync::atomic::AtomicBool::new(false);
+    solve_all_reporting(
+        state,
+        store,
+        measurements,
+        unmeasured,
+        metadata,
+        |_, _| {},
+        &keep_going,
+    )
 }
 
 /// [`solve_all`], calling `progress(done, total)` as it goes.
@@ -1226,6 +1235,7 @@ pub fn solve_all_reporting(
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
     progress: impl Fn(usize, usize),
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
@@ -1302,6 +1312,11 @@ pub fn solve_all_reporting(
     }
 
     for (seen, measured) in measurements.iter().enumerate() {
+        // Stopped: nothing half-done is handed back. The caller sees the flag
+        // and writes nothing.
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return (Report::default(), Vec::new());
+        }
         progress(seen + 1, measurements.len());
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
             continue;
@@ -1671,6 +1686,27 @@ fn position_one(
         .rule
         .assess(&threshold, judge_displacement.then_some(line.current))
         .ok_or_else(|| "this rule is not judged on a threshold".to_string())?;
+
+    // Where the gate sits against the negative's right side, which the rule
+    // itself never reads, against the same on the reference: a negative
+    // whose shape has changed from the reference's is placed on an
+    // assumption that no longer holds, and is said to be.
+    if let (Rule::AboveTheNegative(_), Bound::Above) = (&rule.rule, line.bound)
+        && let (Some(reference_sides), Some(here_sides)) = (
+            crate::gate_rules::threshold::peak_sides(&reference_line.values),
+            crate::gate_rules::threshold::peak_sides(&line.values),
+        )
+        && let Some(component) = crate::gate_rules::confidence::right_side(
+            reference_line.current,
+            reference_sides,
+            to,
+            here_sides,
+        )
+    {
+        confidence.components.push(component);
+        confidence =
+            crate::gate_rules::confidence::Confidence::from_components(confidence.components);
+    }
 
     // How deep the dip it sat in was, against the reference's. A gate placed in
     // a dip a twentieth as deep is a best guess, not a measurement - so it is
