@@ -1787,7 +1787,13 @@ mod tests {
                 );
                 assert_eq!((e.x.as_str(), e.y.as_str()), (X, Y));
                 assert_eq!(e.events, 10_000);
-                assert_eq!(e.points.len(), KEPT_EVENTS);
+                // The even sample and the extremes, less any extreme that
+                // was on the even step already.
+                assert!(
+                    (KEPT_EVENTS - 4..=KEPT_EVENTS).contains(&e.points.len()),
+                    "{}",
+                    e.points.len()
+                );
             }
             // The events are the file's: the donor's negative sits at 600,
             // the QC's at 300.
