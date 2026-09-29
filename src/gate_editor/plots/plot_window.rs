@@ -1,24 +1,38 @@
-use crate::file_load::FcsSampleStub;
-use crate::gate_editor::gates::gate_store::{
-    ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
-};
 use crate::gate_editor::plots::data_helpers::{
-    get_event_mask_from_scaled_df, get_filtered_dataframe, get_flow_data, zip_cols_from_filtered_df,
+    get_filtered_dataframe, get_flow_data, zip_cols_from_filtered_df,
 };
 use crate::gate_editor::plots::draw_plot::PseudoColourPlot;
-use crate::omiq::metadata::MetaDataStoreStoreExt;
-
-use crate::gate_editor::plots::plot_store::{EventIndexMapped, PlotStore, PlotStoreStoreExt};
-use crate::gate_editor::{
-    AxisInfo,
-    gates::{GateState, gate_store::GateStateImplExt},
-    plots::axis_store::{AxisStore, AxisStoreImplExt, AxisStoreStoreExt, Param},
+use clingate_core::file_load::FcsSampleStub;
+use clingate_core::gates::gate_store::{
+    ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
 };
-use crate::omiq::metadata::MetaDataStore;
+use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+
+use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
+use clingate_core::AxisInfo;
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::events::EventIndexMapped;
+use clingate_core::gates::{GateState, gate_store::GateStateImplExt};
+use clingate_core::omiq::metadata::MetaDataStore;
 use dioxus::{CapturedError, prelude::*};
 use polars::frame::DataFrame;
 
 use std::sync::Arc;
+
+/// The plot's side, in pixels.
+///
+/// Every state this component can be in occupies exactly this square - the
+/// drawn plot, the spinner while it loads, and the message when it fails.
+/// Letting a placeholder collapse to its content shortens the page by 600
+/// pixels each time the sample changes, and a browser clamps the scroll
+/// position to fit the shorter page: you were reading half way down, and the
+/// view jumps back to the top. Reserving the space is what holds it still.
+pub const PLOT_SIZE: u32 = 540;
+
+/// The square a plot occupies whatever it is currently showing.
+fn plot_box() -> String {
+    format!("width: {PLOT_SIZE}px; height: {PLOT_SIZE}px;")
+}
 
 #[component]
 pub fn PlotWindow(
@@ -37,36 +51,55 @@ pub fn PlotWindow(
     let metadata_store =
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
 
-    let mut axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+
+    // Whether the metadata has a row for this file under its name in the
+    // program. Without one nothing below can load - the file is never read -
+    // and the plot would sit as an empty square that looks like it is still
+    // working. Said instead, since a file from a sub-folder whose metadata was
+    // written without the folder in its name is exactly this.
+    let unmatched = use_memo(move || {
+        let name = sample_stub.read().name.clone();
+        (!metadata_store
+            .file_name_to_gating_id()
+            .read()
+            .contains_key(&name))
+        .then_some(name)
+    });
 
     // RESOURCE 1: Load FCS File
     let mut fcs_file: SyncSignal<Option<flow_fcs::Fcs>> = use_signal_sync(|| None);
+    // Why the file could not be read, shown where the plot would be. It used
+    // to go to the console, and the plot sat on its spinner.
+    let mut load_error: Signal<Option<String>> = use_signal(|| None);
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
     let _ = use_resource(move || async move {
-        let sample_path = sample_stub.read().get_filepath().to_owned();
-
-        let Some(file_name) = sample_path.file_name() else {
-            return;
+        let (sample_path, file_name) = {
+            let stub = sample_stub.read();
+            (stub.get_filepath().to_owned(), stub.name.clone())
         };
-        let Some(file_name) = file_name.to_str() else {
-            return;
-        };
+        // Read here, so a change of compensation reloads the file.
+        let choice = compensation.read().matrix_for(&sample_path);
+        // Looked up by the file's name in the program, not the name on disk -
+        // for a file from a sub-folder the two differ.
         let Some(id) = metadata_store
             .file_name_to_gating_id()
             .read()
-            .get(file_name)
+            .get(&file_name)
             .cloned()
         else {
             return;
         };
 
-        match get_flow_data(sample_path).await {
+        match get_flow_data(sample_path, choice).await {
             Ok(f) => {
                 *plot_store.current_file_id().write() = id.clone();
+                load_error.set(None);
                 fcs_file.set(Some(f))
             }
             Err(e) => {
                 fcs_file.set(None);
-                println!("error generating fcs file {}", e);
+                load_error.set(Some(format!("This file could not be read: {e}")));
             }
         }
     });
@@ -109,16 +142,19 @@ pub fn PlotWindow(
             }
         }
 
-        if fcs_file.read().is_none() {return Err(anyhow::anyhow!("No data to scale"))};
+        if fcs_file.read().is_none() {
+            return Err(anyhow::anyhow!("No data to scale"));
+        };
 
         let result =
             tokio::task::spawn_blocking(move || -> Result<Arc<DataFrame>, anyhow::Error> {
-                let param_refs: Vec<(&str, f32)> =
-                    params.iter().map(|(k, v)| (k.as_ref(), *v)).collect();
-                let scaled_df = &*fcs_file.read().as_ref().unwrap().apply_arcsinh_transforms(param_refs.as_slice())?;
-                let df_with_index = scaled_df.with_row_index("original_index".into(), None)?;
-
-                Ok(Arc::new(df_with_index))
+                let held = fcs_file.read();
+                let fcs = held
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("No data to scale"))?;
+                // Scaled as every other reader scales it - only the channels
+                // this file carries; see [`clingate_core::events::cofactors_carried_by`].
+                Ok(Arc::new(clingate_core::events::scaled(fcs, &params)?))
             })
             .await;
 
@@ -126,7 +162,6 @@ pub fn PlotWindow(
             Ok(d) => d,
             Err(_) => Err(anyhow::anyhow!("error scaling data")),
         }
-        
     });
 
     // fetch the axis limits from the settings dict when axis changed
@@ -159,7 +194,7 @@ pub fn PlotWindow(
                 gate_resolver_store.set(Some(Arc::new(resolver.clone())));
                 Ok(resolver)
             }
-            Err(e) => Err(e),
+            Err(e) => Err(CapturedError::from_display(e)),
         }
     });
 
@@ -217,6 +252,15 @@ pub fn PlotWindow(
             // it here would put every gate edit back on the critical path.
             chain_gates.read();
             let current_resolver = resolver.peek().clone();
+            // `parental` is a tree position, not a gate. Resolving the chain
+            // through the node is what makes a linked gate's statistics right:
+            // the same gate at two points in the tree sits under different
+            // ancestors, so a chain taken from the gate alone was whichever
+            // placement won the import. Peeked: `chain_gates` above holds the
+            // dependency on the hierarchy.
+            let chain = parental
+                .map(|parent| gate_store.peek().gate_chain_for_node(&NodeId::from(parent)))
+                .unwrap_or_default();
             // Read here rather than in the async block below, for the reason
             // given above: a read inside the async block registers no
             // dependency. Reading it there meant this never re-ran when the FCS
@@ -234,27 +278,24 @@ pub fn PlotWindow(
                     return Err(anyhow::anyhow!("No resolver"));
                 };
 
-                let Some(d) = current_data else { 
+                let Some(d) = current_data else {
                     plot_data_signal.set(vec![]);
-                    return Err(anyhow::anyhow!("No data yet"))
+                    return Err(anyhow::anyhow!("No data yet"));
                 };
-                    let filtered_data =
-                        match get_filtered_dataframe(d.clone(), parental, resolver).await {
-                            Ok(d) => d.clone(),
-                            Err(e) => {
-                                plot_data_signal.set(vec![]);
-                                return Err(anyhow::anyhow!("No data to display {}", e));
-                            }
-                        };
+                let filtered_data = match get_filtered_dataframe(d.clone(), chain, resolver).await {
+                    Ok(d) => d.clone(),
+                    Err(e) => {
+                        plot_data_signal.set(vec![]);
+                        return Err(anyhow::anyhow!("No data to display {}", e));
+                    }
+                };
 
-                    match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await
-                    {
-                        Ok(d) => plot_data_signal.set(d),
-                        Err(_) => plot_data_signal.set(vec![]),
-                    };
+                match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await {
+                    Ok(d) => plot_data_signal.set(d),
+                    Err(_) => plot_data_signal.set(vec![]),
+                };
 
-                    Ok(filtered_data)
-                
+                Ok(filtered_data)
             }
         });
 
@@ -276,22 +317,8 @@ pub fn PlotWindow(
 
             let join_result =
                 tokio::task::spawn_blocking(move || -> anyhow::Result<EventIndexMapped> {
-                    // std::thread::sleep(std::time::Duration::from_secs(3));
-                    // Build the R-Tree
-                    let ei = get_event_mask_from_scaled_df(df.clone(), x_name, y_name)
-                        .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))?;
-                    // Extract the mapping
-                    let map: Vec<usize> = df
-                        .column("original_index")?
-                        .u32()?
-                        .into_iter()
-                        .flatten()
-                        .map(|v| v as usize)
-                        .collect();
-                    Ok(EventIndexMapped {
-                        event_index: ei,
-                        index_map: Arc::new(map),
-                    })
+                    clingate_core::events::index_mapped(&df, &x_name, &y_name)
+                        .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))
                 })
                 .await;
 
@@ -321,16 +348,30 @@ pub fn PlotWindow(
         *plot_store.event_index_map().write() = data;
     });
 
+    if let Some(name) = unmatched() {
+        return rsx! {
+            div { class: "spinner-container", style: plot_box(),
+                "The metadata has no file called {name}, so this file cannot be matched to a sample and is not drawn. For a file in a sub-folder, the metadata has to use the folder in the name as well."
+            }
+        };
+    }
+
+    if let Some(why) = load_error() {
+        return rsx! {
+            div { class: "spinner-container", style: plot_box(), "{why}" }
+        };
+    }
+
     match &*event_index.read() {
         Some(Ok(_)) => {}
         Some(Err(e)) => {
             return rsx! {
-                div { class: "spinner-container", "{e}" }
+                div { class: "spinner-container", style: plot_box(), "{e}" }
             };
         }
         None => {
             return rsx! {
-                div { class: "spinner-container",
+                div { class: "spinner-container", style: plot_box(),
                     div { class: "spinner" }
                 }
             };
@@ -339,7 +380,7 @@ pub fn PlotWindow(
 
     rsx! {
 
-        div { style: "position: relative; width: 100%; height: 100%;",
+        div { style: "position: relative; {plot_box()}",
 
             {
                 match event_index.state().cloned() {
@@ -356,7 +397,7 @@ pub fn PlotWindow(
                 if show_plot {
                     rsx! {
                         PseudoColourPlot {
-                            size: (600, 600),
+                            size: (PLOT_SIZE, PLOT_SIZE),
                             data: plot_data_signal,
                             x_axis_info: x_axis_limits.read().clone(),
                             y_axis_info: y_axis_limits.read().clone(),
@@ -364,11 +405,15 @@ pub fn PlotWindow(
                         }
                     }
                 } else {
-                    rsx! {}
+                    // Still the same square: a plot whose resolver has not
+                    // arrived must hold its place rather than let the page
+                    // shrink under the scroll position.
+                    rsx! {
+                        div { class: "spinner-container", style: plot_box() }
+                    }
                 }
             }
-        
+
         }
     }
-
 }

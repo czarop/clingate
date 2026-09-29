@@ -5,3 +5,5 @@ Cargo.lock
 file_paths.txt
 justfile
 .cargo/config.toml
+gate_rules.json
+gating_export.omiqgt

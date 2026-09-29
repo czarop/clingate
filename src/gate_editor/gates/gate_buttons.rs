@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 
-use crate::gate_editor::gates::gate_types::PrimaryGateType;
+use clingate_core::gates::gate_types::PrimaryGateType;
 
 const GATE_CONFIG: &[(PrimaryGateType, &str)] = &[
     (PrimaryGateType::Polygon, "P"),

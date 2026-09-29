@@ -1,9 +1,7 @@
 use crate::components::context_menu::*;
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{
-    GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE,
-};
-use crate::gate_editor::plots::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 use rustc_hash::FxHashSet;
@@ -40,6 +38,7 @@ pub fn GateSidebar(
 ) -> Element {
     // let gate_store: Store<GateState> = use_context::<Store<GateState>>();
     let gate_store = use_context::<SyncStore<GateState>>();
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
     let hierarchy = gate_store.hierarchy();
     let roots = hierarchy.read().get_roots();
     // Which gates carry a per-specimen or per-file position, worked out once
@@ -95,6 +94,7 @@ pub fn GateSidebar(
                                     button {
                                         class: "link-go",
                                         onclick: move |_| {
+                                            let before = edits.before();
                                             let result = store_for_link.write().link_node_to_gate(
                                                 &NodeId::from(s2.clone()),
                                                 &NodeId::from(t2.clone()),
@@ -103,6 +103,7 @@ pub fn GateSidebar(
                                                 Ok(()) => error.set(None),
                                                 Err(e) => error.set(Some(e.to_string())),
                                             }
+                                            edits.after(before);
                                             picking.set(None);
                                         },
                                         "Link"
@@ -185,6 +186,7 @@ fn GateNode(
     y_axis_param: Signal<Param>,
 ) -> Element {
     let mut gate_store = use_context::<SyncStore<GateState>>();
+    let edits = use_context::<crate::gate_editor::edits::Edits>();
     let overrides = use_context::<Overrides>().0;
     let mut picking = use_context::<LinkPick>().0;
     let mut link_error = use_context::<LinkError>().0;
@@ -316,7 +318,11 @@ fn GateNode(
                                 x_axis_param.set(new_x);
                                 y_axis_param.set(new_y);
                                 selected.set(Some(parent.clone()));
-                                *gate_store.selected_gate().write() = Some(gate_id_clone.clone());
+                                // Showing a gate's plot is not choosing a gate
+                                // on it: whatever was selected on the plot
+                                // before is cleared, and nothing is selected
+                                // until a gate on the plot is clicked.
+                                *gate_store.selected_gate().write() = None;
                             }
 
                         },
@@ -358,6 +364,7 @@ fn GateNode(
                                         // below shows the population *this* node
                                         // sees.
                                         selected.set(Some(node_id.clone()));
+                                        *gate_store.selected_gate().write() = None;
                                     }
                                 },
                                 "🎯"
@@ -442,7 +449,10 @@ fn GateNode(
                     value: "delete".to_string(),
                     index: 0usize,
                     on_select: move |_| {
-                        match gate_store.remove_gate(gate_id_delete_clone.clone()) {
+                        let before = edits.before();
+                        let removed = gate_store.remove_gate(gate_id_delete_clone.clone());
+                        edits.after(before);
+                        match removed {
                             Ok(_) => {
                                 println!("deleted gate");
                                 if is_root {
@@ -468,9 +478,11 @@ fn GateNode(
                         value: "delete-instance".to_string(),
                         index: 6usize,
                         on_select: move |_| {
+                            let before = edits.before();
                             let result = gate_store
                                 .write()
                                 .delete_placement(&NodeId::from(node_id_for_instance.clone()));
+                            edits.after(before);
                             match result {
                                 Ok(()) => selected.set(Some(parent_for_instance.clone())),
                                 Err(err) => link_error.set(Some(err.to_string())),
@@ -482,10 +494,12 @@ fn GateNode(
                         value: "unlink".to_string(),
                         index: 7usize,
                         on_select: move |_| {
-                            if let Err(err) = gate_store
+                            let before = edits.before();
+                            let unlinked = gate_store
                                 .write()
-                                .unlink_node(&NodeId::from(node_id_for_unlink.clone()))
-                            {
+                                .unlink_node(&NodeId::from(node_id_for_unlink.clone()));
+                            edits.after(before);
+                            if let Err(err) = unlinked {
                                 link_error.set(Some(err.to_string()));
                             }
                         },

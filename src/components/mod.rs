@@ -5,4 +5,5 @@ pub mod context_menu;
 pub mod menubar;
 pub mod separator;
 pub mod sheet;
+pub mod toast;
 pub mod tooltip;

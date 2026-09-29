@@ -85,3 +85,15 @@ html[data-theme="light"] {
     background: transparent;
   }
 }
+
+/* The browse button beside a path field. In the shared sheet rather than in
+   each tab's, because it appears on all three and there is no reason for them
+   to look different. */
+.path-picker {
+  flex: none;
+  padding: 1px 7px;
+  border: none;
+  border-radius: 3px;
+  line-height: 1.2;
+  cursor: pointer;
+}

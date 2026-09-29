@@ -1,109 +1,49 @@
+//! The editor's plot reads its events through [`clingate_core::events`]; these are
+//! the async wrappers that put the blocking steps on a worker.
+
 use std::sync::Arc;
 
-use crate::gate_editor::gates::GateState;
-use crate::gate_editor::gates::gate_store::{GateOverrideResolver, NodeId};
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver};
 
-use dioxus::prelude::*;
-use dioxus::stores::SyncStore;
 use flow_fcs::Fcs;
-use flow_gates::EventIndex;
-
 use polars::prelude::*;
 use tokio::task;
 
-pub async fn get_flow_data(path: std::path::PathBuf) -> Result<Fcs, Arc<anyhow::Error>> {
+/// Open a file, compensated as `compensation` says - see
+/// [`clingate_core::compensation::open_compensated`].
+pub async fn get_flow_data(
+    path: std::path::PathBuf,
+    compensation: clingate_core::compensation::Choice,
+) -> Result<Fcs, Arc<anyhow::Error>> {
     task::spawn_blocking(move || {
-        let fcs_file = Fcs::open(path.to_str().unwrap_or_default())?;
-        Ok(fcs_file)
+        clingate_core::compensation::open_compensated(&path, &compensation).map_err(Arc::new)
     })
     .await
     .map_err(|e| Arc::new(e.into()))?
 }
 
+/// The events under `chain` - see [`clingate_core::events::under_chain`].
 pub async fn get_filtered_dataframe(
     df: Arc<DataFrame>,
-    parental_gate_id: Option<Arc<str>>,
+    chain: Vec<GateId>,
     resolver: GateOverrideResolver,
 ) -> Result<Arc<DataFrame>, anyhow::Error> {
-    let df_clone = df.clone();
-    let gate_store = use_context::<SyncStore<GateState>>();
-
+    if chain.is_empty() {
+        return Ok(df);
+    }
     task::spawn_blocking(move || -> Result<Arc<DataFrame>, anyhow::Error> {
-        // `parental_gate_id` is a tree position, not a gate. Resolving the chain
-        // through the node is what makes a linked gate's statistics right: the
-        // same gate at two points in the tree sits under different ancestors, so
-        // a chain taken from the gate alone was whichever placement won the
-        // import.
-        let gate_chain: Option<Vec<Arc<str>>> = if let Some(parent) = parental_gate_id {
-            let arcs = gate_store
-                .peek()
-                .gate_chain_for_node(&NodeId::from(parent));
-
-            if arcs.is_empty() { None } else { Some(arcs) }
-        } else {
-            None
-        };
-
-        if let Some(chain) = gate_chain {
-            println!("{:#?}", chain);
-
-            // 1. Get the final narrowed mask for the whole hierarchy
-            let mask = super::super::gates::gate_filtering::filter_events_by_hierarchy_to_mask(
-                &df, &chain, &resolver,
-            )?;
-            // 2. Filter the dataframe
-            Ok(df.filter(&mask)?.into())
-        } else {
-            Ok(df_clone)
-        }
+        Ok(Arc::new(clingate_core::events::under_chain(
+            &df, &chain, &resolver,
+        )?))
     })
     .await?
 }
 
+/// Every event's value on two columns - see [`clingate_core::events::points`].
 pub async fn zip_cols_from_filtered_df(
     df: Arc<DataFrame>,
     col1_name: Arc<str>,
     col2_name: Arc<str>,
 ) -> Result<Vec<(f32, f32)>, anyhow::Error> {
-    let df_clone = df.clone();
-
-    task::spawn_blocking(move || -> Result<Vec<(f32, f32)>, anyhow::Error> {
-        let x_series = df_clone.column(&col1_name)?.f32()?;
-        let y_series = df_clone.column(&col2_name)?.f32()?;
-
-        let zipped_cols: Vec<(f32, f32)> = x_series
-            .into_iter()
-            .zip(y_series.into_iter())
-            .filter_map(|(x, y)| match (x, y) {
-                (Some(vx), Some(vy)) => Some((vx, vy)),
-                _ => None,
-            })
-            .collect();
-
-        Ok(zipped_cols)
-    })
-    .await?
-}
-
-pub fn get_event_mask_from_scaled_df(
-    scaled_df: Arc<DataFrame>,
-    col1_name: Arc<str>,
-    col2_name: Arc<str>,
-) -> anyhow::Result<Arc<EventIndex>> {
-    let col1_name = col1_name.clone();
-    let col2_name = col2_name.clone();
-
-    let x_rechunked = scaled_df.column(&col1_name)?.f32()?.rechunk();
-    let y_rechunked = scaled_df.column(&col2_name)?.f32()?.rechunk();
-    let x_slice = x_rechunked
-        .cont_slice()
-        .map_err(|_| anyhow::anyhow!("Failed to get contiguous slice for X"))?;
-    let y_slice = y_rechunked
-        .cont_slice()
-        .map_err(|_| anyhow::anyhow!("Failed to get contiguous slice for Y"))?;
-
-    match EventIndex::build(x_slice, y_slice) {
-        Ok(index) => Ok(Arc::new(index)),
-        Err(e) => Err(anyhow::anyhow!("{e}")),
-    }
+    task::spawn_blocking(move || clingate_core::events::points(&df, &col1_name, &col2_name)).await?
 }

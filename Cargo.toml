@@ -4,15 +4,30 @@ version = "0.1.0"
 edition = "2024"
 resolver = "2"
 
+[workspace]
+members = ["crates/clingate-core", "crates/clingate-mcp"]
+
 [dependencies]
-dioxus = { version = "0.7.7", features = ["router"] }
+clingate-core = { path = "crates/clingate-core" }
+dioxus = { version = "0.7.10", features = ["router"] }
+# The reactive core alone - stores and signals, no renderer, webview or GTK.
+# All the modules that compute use only these, so they can run without a
+# window: see TODO.md, "Tools for Claude over MCP".
+dioxus-stores = "0.7.10"
+dioxus-signals = "0.7.10"
 thiserror = "2.0.12"
-tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread"] }
+tokio = { version = "1", default-features = false, features = ["macros", "sync", "rt-multi-thread", "time"] }
 anyhow = "1"
-flow-fcs = { git = "https://github.com/czarop/flow" }
-flow-plots = { git = "https://github.com/czarop/flow", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow" }
-base64 = "0.22.1"
+# Diagnostics. Never printed to stdout: a tool server speaks its protocol
+# there, and a stray line would corrupt it.
+tracing = "0.1"
+# Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch, which holds
+# the fixes and changes listed in docs/flow-review.md. Back to the default
+# branch once it is merged there.
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
+base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"
 indexmap = "2.1"
@@ -22,11 +37,42 @@ im = "15"
 uuid = { version = "1.0", features = ["v4"] }
 serde = {version = "1"}
 serde_json = "1"
-itertools = "0.14.0"
+# Where the last workspace is remembered. Already in the tree - wry and
+# tray-icon depend on it - and pinned to the same version, so this adds nothing
+# to compile.
+dirs = "6.0.0"
+itertools = "0.15.0"
 rustfft = "^6.4"
 rand = "0.10"
 rand_distr = "0.6"
+# The native file dialogs. Already in the tree, since dioxus-desktop depends on
+# it; pinned to its version and features so there is only ever one copy.
+#
+# The features are not a choice. rfd's build script refuses `gtk3` and
+# `xdg-portal` together, and dioxus-desktop requires `xdg-portal`, so that is
+# the backend whether or not it suits - and it is a separate D-Bus service that
+# a machine may not be running. `PickPath` handles that: see the note there
+# about a dialog that closes faster than a person could have closed it.
+arboard = { version = "3", default-features = false }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# When a run was applied, shown in the reviewer's local time.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+# The core's FCS writers and scratch folders, for the tests here.
+clingate-core = { path = "crates/clingate-core", features = ["test-support"] }
+# Only to decode the plots the renderer draws, so tests can look at them.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [features]
 default = ["desktop"]
 desktop = ["dioxus/desktop"]
+
+# The application is a desktop window and cannot be built without one. Saying
+# so lets `cargo test --no-default-features` build the library and every test
+# target without GTK; without it, cargo builds the binary for the integration
+# tests and fails on `dioxus::desktop`.
+[[bin]]
+name = "clingate"
+path = "src/main.rs"
+required-features = ["desktop"]

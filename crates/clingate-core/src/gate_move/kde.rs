@@ -1,0 +1,935 @@
+use polars::prelude::*;
+
+// ─── 1D KDE ──────────────────────────────────────────────────────────────────
+// this module examines the negative peak to determine shifts and or widening/narrowing
+
+/// Evaluates a 1D KDE over `points` at `n_points` evenly spaced positions
+/// across `range`, using a Gaussian kernel with the given bandwidth.
+/// Returns (grid of x positions, grid of density values).
+pub fn kde_1d(
+    points: &[f64],
+    range: (f64, f64),
+    n_points: usize,
+    bandwidth: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    // n_points of 0 would underflow the step divisor, and 1 would make it infinite.
+    let n_points = n_points.max(2);
+    let step = (range.1 - range.0) / (n_points - 1) as f64;
+    let xs: Vec<f64> = (0..n_points).map(|i| range.0 + i as f64 * step).collect();
+
+    // A degenerate bandwidth - a constant population, or a caller-supplied zero -
+    // divides by zero and fills the grid with NaN, which then propagates silently
+    // into every peak, shift and drift classification downstream. An empty input
+    // does the same via the sum/len at the end.
+    if points.is_empty() || !bandwidth.is_finite() || bandwidth <= 0.0 {
+        return (xs, vec![0.0; n_points]);
+    }
+
+    let norm = 1.0 / (bandwidth * (2.0 * std::f64::consts::PI).sqrt());
+
+    let density: Vec<f64> = xs
+        .iter()
+        .map(|&x| {
+            let sum: f64 = points
+                .iter()
+                .map(|&p| {
+                    let z = (x - p) / bandwidth;
+                    norm * (-0.5 * z * z).exp()
+                })
+                .sum();
+            sum / points.len() as f64
+        })
+        .collect();
+
+    (xs, density)
+}
+
+/// Finds the x position of the highest density peak in a KDE output.
+///
+/// Returns `NaN` for an empty grid. Non-finite densities are ignored rather than
+/// compared - `partial_cmp().unwrap()` panics on NaN, and the midpoint fallback
+/// indexed an empty slice because `unwrap_or` evaluates its argument eagerly.
+pub fn kde_peak(xs: &[f64], density: &[f64]) -> f64 {
+    if xs.is_empty() {
+        return f64::NAN;
+    }
+
+    density
+        .iter()
+        .take(xs.len())
+        .enumerate()
+        .filter(|(_, d)| d.is_finite())
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(i, _)| xs[i])
+        .unwrap_or_else(|| xs[xs.len() / 2])
+}
+
+/// Silverman's rule of thumb for bandwidth selection.
+/// A reasonable automatic choice for unimodal roughly-normal distributions.
+pub fn silverman_bandwidth(values: &[f64]) -> f64 {
+    let n = values.len() as f64;
+    if n < 2.0 {
+        return 1.0;
+    }
+
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    let std = variance.sqrt();
+
+    // IQR-based robust std estimate (avoids inflation from outliers/tail)
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let q1 = sorted[(n * 0.25) as usize];
+    let q3 = sorted[(n * 0.75) as usize];
+    let iqr_std = (q3 - q1) / 1.34;
+
+    let s = std.min(iqr_std);
+    let bandwidth = 0.9 * s * n.powf(-0.2);
+    if bandwidth.is_finite() && bandwidth > 0.0 {
+        return bandwidth;
+    }
+
+    // A population whose middle 50% is identical gives an IQR of 0 and so a
+    // bandwidth of 0, which would make kde_1d degenerate. Fall back to the
+    // non-robust estimate, then to a small positive width.
+    let unrobust = 0.9 * std * n.powf(-0.2);
+    if unrobust.is_finite() && unrobust > 0.0 {
+        return unrobust;
+    }
+
+    f64::EPSILON.sqrt()
+}
+
+// ─── Result types ─────────────────────────────────────────────────────────────
+
+pub struct NegativePopulationShift {
+    /// How far the negative peak moved on each axis (data-space units).
+    pub dx: f64,
+    pub dy: f64,
+    /// Width (std dev) of the negative population in the QC, in data-space units.
+    pub qc_width_x: f64,
+    pub qc_width_y: f64,
+    /// Width in the test sample — compare against qc_width to detect spread changes.
+    pub test_width_x: f64,
+    pub test_width_y: f64,
+    /// Ratio of test/qc width. >1.5 on either axis is worth flagging to the user.
+    pub width_ratio_x: f64,
+    pub width_ratio_y: f64,
+}
+
+impl NegativePopulationShift {
+    pub fn width_warning_x(&self, threshold: f64) -> bool {
+        self.width_ratio_x > threshold
+    }
+    pub fn width_warning_y(&self, threshold: f64) -> bool {
+        self.width_ratio_y > threshold
+    }
+}
+
+// ─── Main function ────────────────────────────────────────────────────────────
+
+/// Extracts events from the negative (lower-left) quadrant and uses 1D KDE
+/// peak-finding on each axis independently to measure how far the negative
+/// population has shifted between QC and test.
+///
+/// Separate from `compute_negative_shift` (cross-correlation) — that function
+/// remains useful for full 2D gate alignment. This function is specifically
+/// for characterising the negative population.
+pub fn kde_negative_shift(
+    qc_events: (&Column, &Column),
+    test_events: (&Column, &Column),
+    axis_x_range: (f64, f64),
+    axis_y_range: (f64, f64),
+    n_kde_points: usize, // resolution of KDE grid — 512 is plenty
+    min_events: usize,   // minimum events in negative quadrant to proceed
+) -> Result<NegativePopulationShift, String> {
+    let x_mid = axis_x_range.0 + (axis_x_range.1 - axis_x_range.0) / 2.0;
+    let y_mid = axis_y_range.0 + (axis_y_range.1 - axis_y_range.0) / 2.0;
+
+    let (qc_neg_x, qc_neg_y) = extract_negative_quadrant(qc_events, x_mid, y_mid)?;
+    let (test_neg_x, test_neg_y) = extract_negative_quadrant(test_events, x_mid, y_mid)?;
+
+    if qc_neg_x.len() < min_events {
+        return Err(format!(
+            "QC negative quadrant has only {} events (min {})",
+            qc_neg_x.len(),
+            min_events
+        ));
+    }
+    if test_neg_x.len() < min_events {
+        return Err(format!(
+            "Test negative quadrant has only {} events (min {})",
+            test_neg_x.len(),
+            min_events
+        ));
+    }
+
+    // ── Bandwidths ────────────────────────────────────────────────────────────
+    // Computed from the QC — test uses the same bandwidth so peaks are comparable.
+    let bw_x = silverman_bandwidth(&qc_neg_x);
+    let bw_y = silverman_bandwidth(&qc_neg_y);
+
+    // ── KDE on X axis ─────────────────────────────────────────────────────────
+    let (xs_grid, qc_density_x) = kde_1d(&qc_neg_x, axis_x_range, n_kde_points, bw_x);
+    let (_, test_density_x) = kde_1d(&test_neg_x, axis_x_range, n_kde_points, bw_x);
+
+    let qc_peak_x = kde_peak(&xs_grid, &qc_density_x);
+    let test_peak_x = kde_peak(&xs_grid, &test_density_x);
+
+    // ── KDE on Y axis ─────────────────────────────────────────────────────────
+    let (ys_grid, qc_density_y) = kde_1d(&qc_neg_y, axis_y_range, n_kde_points, bw_y);
+    let (_, test_density_y) = kde_1d(&test_neg_y, axis_y_range, n_kde_points, bw_y);
+
+    let qc_peak_y = kde_peak(&ys_grid, &qc_density_y);
+    let test_peak_y = kde_peak(&ys_grid, &test_density_y);
+
+    // ── Width of the negative's own peak ──────────────────────────────────────
+    // Read off the peak rather than the whole quadrant: the std-dev of every
+    // event below the midpoint counted positives smeared down into the
+    // quadrant as negative width, and read an unchanged negative as twice as
+    // wide (B-KDE-1).
+    let qc_width_x = peak_width(&xs_grid, &qc_density_x, bw_x);
+    let qc_width_y = peak_width(&ys_grid, &qc_density_y, bw_y);
+    let test_width_x = peak_width(&xs_grid, &test_density_x, bw_x);
+    let test_width_y = peak_width(&ys_grid, &test_density_y, bw_y);
+
+    Ok(NegativePopulationShift {
+        dx: test_peak_x - qc_peak_x,
+        dy: test_peak_y - qc_peak_y,
+        qc_width_x,
+        qc_width_y,
+        test_width_x,
+        test_width_y,
+        width_ratio_x: test_width_x / qc_width_x,
+        width_ratio_y: test_width_y / qc_width_y,
+    })
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// The width of the tallest peak of a density, as the standard deviation of
+/// a normal peak of the same shape: its full width at half its height, over
+/// `2 sqrt(2 ln 2)`.
+///
+/// Anything below half the peak's height - a smeared positive running into
+/// the negative's quadrant, a tail - does not widen it, which is the point:
+/// it measures the population, not the quadrant.
+///
+/// The density is a kernel estimate with a Gaussian kernel of width
+/// `bandwidth`, which adds the kernel's variance to the peak's own; it is
+/// taken back out, so a narrow peak is not read as the width of the kernel.
+/// Where the peak runs off either end of the grid before falling to half its
+/// height, the end is used, and the width is a lower bound. A lightly smoothed
+/// peak is noisy at the top, which reads it a little narrow - 0.92 to 0.99 of
+/// the true spread on 4,000 events.
+fn peak_width(xs: &[f64], density: &[f64], bandwidth: f64) -> f64 {
+    let Some((peak, &top)) = density
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.is_finite())
+        .max_by(|a, b| a.1.total_cmp(b.1))
+    else {
+        return f64::NAN;
+    };
+    if top <= 0.0 {
+        return f64::NAN;
+    }
+    let half = top / 2.0;
+    // Where the density crosses half height between two grid points,
+    // linearly interpolated.
+    let crossing = |inside: usize, outside: usize| {
+        let (d_in, d_out) = (density[inside], density[outside]);
+        let t = if d_in == d_out {
+            0.0
+        } else {
+            (d_in - half) / (d_in - d_out)
+        };
+        xs[inside] + t * (xs[outside] - xs[inside])
+    };
+    let left = (0..peak)
+        .rev()
+        .find(|&i| density[i] < half)
+        .map_or(xs[0], |i| crossing(i + 1, i));
+    let right = (peak + 1..density.len())
+        .find(|&i| density[i] < half)
+        .map_or(xs[density.len() - 1], |i| crossing(i - 1, i));
+    let observed = (right - left) / (2.0 * (2.0 * std::f64::consts::LN_2).sqrt());
+    let bandwidth = if bandwidth.is_finite() {
+        bandwidth
+    } else {
+        0.0
+    };
+    (observed * observed - bandwidth * bandwidth)
+        .max(0.0)
+        .sqrt()
+}
+
+fn extract_negative_quadrant(
+    events: (&Column, &Column),
+    x_mid: f64,
+    y_mid: f64,
+) -> Result<(Vec<f64>, Vec<f64>), String> {
+    let xs = events.0.f64().map_err(|e| e.to_string())?;
+    let ys = events.1.f64().map_err(|e| e.to_string())?;
+
+    let (neg_x, neg_y): (Vec<f64>, Vec<f64>) = xs
+        .into_iter()
+        .zip(ys.into_iter())
+        .filter_map(|(x, y)| match (x, y) {
+            (Some(x), Some(y)) if x < x_mid && y < y_mid => Some((x, y)),
+            _ => None,
+        })
+        .unzip();
+
+    Ok((neg_x, neg_y))
+}
+
+pub fn std_dev(values: &[f64]) -> f64 {
+    let n = values.len() as f64;
+    if n < 2.0 {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    variance.sqrt()
+}
+
+//cargo test -- --nocapture
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+
+    use rand::prelude::*;
+    use rand_distr::Normal;
+
+    // ─── Core sampler ────────────────────────────────────────────────────────────
+
+    struct Cluster {
+        cx: f64,
+        cy: f64,
+        sx: f64,
+        sy: f64,
+        n: usize,
+    }
+
+    fn sample_clusters(clusters: &[Cluster], rng: &mut StdRng) -> (Vec<f64>, Vec<f64>) {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for c in clusters {
+            let dx = Normal::new(c.cx, c.sx).unwrap();
+            let dy = Normal::new(c.cy, c.sy).unwrap();
+            for _ in 0..c.n {
+                xs.push(dx.sample(rng));
+                ys.push(dy.sample(rng));
+            }
+        }
+        (xs, ys)
+    }
+
+    /// Smeared positive: uniform scatter across a rectangle rather than a tight cluster
+    fn sample_smear(
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+        n: usize,
+        rng: &mut StdRng,
+    ) -> (Vec<f64>, Vec<f64>) {
+        let xs: Vec<f64> = (0..n)
+            .map(|_| rng.random_range(x_range.0..x_range.1))
+            .collect();
+        let ys: Vec<f64> = (0..n)
+            .map(|_| rng.random_range(y_range.0..y_range.1))
+            .collect();
+        (xs, ys)
+    }
+
+    fn make_df(xs: Vec<f64>, ys: Vec<f64>) -> DataFrame {
+        df!["x" => xs, "y" => ys].unwrap()
+    }
+
+    fn concat_events(a: (Vec<f64>, Vec<f64>), b: (Vec<f64>, Vec<f64>)) -> (Vec<f64>, Vec<f64>) {
+        let mut xs = a.0;
+        xs.extend(b.0);
+        let mut ys = a.1;
+        ys.extend(b.1);
+        (xs, ys)
+    }
+
+    // // ─── Shared baseline negative ─────────────────────────────────────────────────
+    // // Reused by most tests: a clean double-negative at (0.4, 0.4)
+
+    // fn baseline_negative(rng: &mut StdRng) -> (Vec<f64>, Vec<f64>) {
+    //     sample_clusters(&[Cluster { cx: 0.4, cy: 0.4, sx: 0.12, sy: 0.12, n: 3000 }], rng)
+    // }
+
+    // ─── Test scenarios ───────────────────────────────────────────────────────────
+
+    /// Negative is wider on X axis in the test sample.
+    /// Expect: negative peak positions similar, but test spread is larger on x.
+    pub fn wider_negative_x(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.35,
+                    sy: 0.12,
+                    n: 3000,
+                }, // wider x
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// Negative is wider on Y axis in the test sample.
+    pub fn wider_negative_y(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.35,
+                    n: 3000,
+                }, // wider y
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// Negative shifted right (+0.3 on x only).
+    /// Expect: dx ≈ +0.3, dy ≈ 0.0
+    pub fn negative_shifted_x(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.7,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // +0.3 x
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// Negative shifted up (+0.3 on y only).
+    /// Expect: dx ≈ 0.0, dy ≈ +0.3
+    pub fn negative_shifted_y(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.7,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // +0.3 y
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.8,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 800,
+                },
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// QC has a distinct tight positive population; test sample does not (antigen-negative sample).
+    /// Expect: alignment still works on the negative; positive simply absent in test.
+    pub fn positive_only_in_qc(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.8,
+                    sx: 0.18,
+                    sy: 0.18,
+                    n: 900,
+                }, // distinct positive
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                }, // negative only
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// Test sample has a distinct positive; QC does not.
+    pub fn positive_only_in_test(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.8,
+                    cy: 2.8,
+                    sx: 0.18,
+                    sy: 0.18,
+                    n: 900,
+                },
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// QC has a smeared positive (dim, diffuse expression); test does not.
+    /// Smear sits in the intermediate region — not a tight cluster.
+    pub fn smeared_positive_only_in_qc(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let neg = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+        let smear = sample_smear((0.8, 2.5), (0.8, 2.5), 600, &mut rng);
+        let (qc_x, qc_y) = concat_events(neg, smear);
+
+        let test = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+        (make_df(qc_x, qc_y), make_df(test.0, test.1))
+    }
+
+    /// Test sample has a smeared positive; QC does not.
+    pub fn smeared_positive_only_in_test(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+
+        let neg = sample_clusters(
+            &[Cluster {
+                cx: 0.4,
+                cy: 0.4,
+                sx: 0.12,
+                sy: 0.12,
+                n: 3000,
+            }],
+            &mut rng,
+        );
+        let smear = sample_smear((0.8, 2.5), (0.8, 2.5), 600, &mut rng);
+        let (test_x, test_y) = concat_events(neg, smear);
+
+        (make_df(qc.0, qc.1), make_df(test_x, test_y))
+    }
+
+    /// Both samples have a distinct positive, but it is shifted in the test (+0.4 on both axes).
+    /// The negative is identical — so alignment should be driven by the negative,
+    /// and the positive shift should be visible as a residual after alignment.
+    pub fn positive_shifted_in_test(seed: u64) -> (DataFrame, DataFrame) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let qc = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.5,
+                    cy: 2.5,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 900,
+                },
+            ],
+            &mut rng,
+        );
+        let test = sample_clusters(
+            &[
+                Cluster {
+                    cx: 0.4,
+                    cy: 0.4,
+                    sx: 0.12,
+                    sy: 0.12,
+                    n: 3000,
+                },
+                Cluster {
+                    cx: 2.9,
+                    cy: 2.9,
+                    sx: 0.20,
+                    sy: 0.20,
+                    n: 900,
+                }, // positive shifted +0.4
+            ],
+            &mut rng,
+        );
+        (make_df(qc.0, qc.1), make_df(test.0, test.1))
+    }
+
+    /// What a scenario should report: the peak shift, how closely, and
+    /// which axes should be flagged as widened (at the 1.5 ratio the
+    /// module suggests).
+    struct Expect {
+        dx: f64,
+        dy: f64,
+        within: f64,
+        widened: (bool, bool),
+    }
+
+    /// The KDE grid is 512 points over 5.5 units, about 0.011 apart; a
+    /// shift is expected to within a few of those.
+    const PEAK: f64 = 0.05;
+
+    fn run(label: &str, qc: &DataFrame, test: &DataFrame, expect: Expect) {
+        let axis = ((-1.0f64, 4.5f64), (-1.0f64, 4.5f64));
+
+        let s = kde_negative_shift(
+            (qc.column("x").unwrap(), qc.column("y").unwrap()),
+            (test.column("x").unwrap(), test.column("y").unwrap()),
+            axis.0,
+            axis.1,
+            512, // kde resolution
+            50,  // min events
+        )
+        .unwrap_or_else(|e| panic!("[{label}] Err: {e}"));
+
+        assert!(
+            (s.dx - expect.dx).abs() <= expect.within && (s.dy - expect.dy).abs() <= expect.within,
+            "[{label}] shift ({:.4}, {:.4}); expected ({:.4}, {:.4}) to within {}",
+            s.dx,
+            s.dy,
+            expect.dx,
+            expect.dy,
+            expect.within,
+        );
+        assert_eq!(
+            (s.width_warning_x(1.5), s.width_warning_y(1.5)),
+            expect.widened,
+            "[{label}] width ratios ({:.2}, {:.2})",
+            s.width_ratio_x,
+            s.width_ratio_y,
+        );
+    }
+
+    fn still(widened: (bool, bool)) -> Expect {
+        Expect {
+            dx: 0.0,
+            dy: 0.0,
+            within: PEAK,
+            widened,
+        }
+    }
+
+    #[test]
+    fn test_wider_negative_x() {
+        // Negative is in same position — expect near-zero shift.
+        // The wider spread is a diagnostic signal, not a translation.
+        let (qc, test) = wider_negative_x(42);
+        // Widening leaves the peak where it was, but estimating it from a
+        // wider cloud with the QC's narrower bandwidth is noisier: allow
+        // half the widened spread (0.35).
+        run(
+            "wider_negative_x",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.0,
+                within: 0.175,
+                widened: (true, false),
+            },
+        );
+    }
+
+    #[test]
+    fn test_wider_negative_y() {
+        let (qc, test) = wider_negative_y(42);
+        run(
+            "wider_negative_y",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.0,
+                within: 0.175,
+                widened: (false, true),
+            },
+        );
+    }
+
+    #[test]
+    fn test_negative_shifted_x() {
+        let (qc, test) = negative_shifted_x(42);
+        run(
+            "negative_shifted_x",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.3,
+                dy: 0.0,
+                within: PEAK,
+                widened: (false, false),
+            },
+        );
+    }
+
+    #[test]
+    fn test_negative_shifted_y() {
+        let (qc, test) = negative_shifted_y(42);
+        run(
+            "negative_shifted_y",
+            &qc,
+            &test,
+            Expect {
+                dx: 0.0,
+                dy: 0.3,
+                within: PEAK,
+                widened: (false, false),
+            },
+        );
+    }
+
+    #[test]
+    fn test_positive_only_in_qc() {
+        // Negative identical — expect near-zero shift, no crash from missing positive.
+        let (qc, test) = positive_only_in_qc(42);
+        run("positive_only_in_qc", &qc, &test, still((false, false)));
+    }
+
+    #[test]
+    fn test_positive_only_in_test() {
+        let (qc, test) = positive_only_in_test(42);
+        run("positive_only_in_test", &qc, &test, still((false, false)));
+    }
+
+    #[test]
+    fn test_smeared_positive_only_in_qc() {
+        let (qc, test) = smeared_positive_only_in_qc(42);
+        run(
+            "smeared_positive_only_in_qc",
+            &qc,
+            &test,
+            still((false, false)),
+        );
+    }
+
+    /// The width read off a peak is the population's own standard deviation,
+    /// the kernel's share taken out, whatever the bandwidth - and a smear
+    /// below half the peak's height does not change it.
+    #[test]
+    fn a_peak_width_is_the_population_s_own_spread() {
+        let mut rng = StdRng::seed_from_u64(9);
+        for sd in [0.05, 0.2, 0.5] {
+            let values: Vec<f64> = (0..4000)
+                .map(|_| Normal::new(1.0, sd).unwrap().sample(&mut rng))
+                .collect();
+            // Measured at 0.92-0.99 of the true spread: a lightly smoothed
+            // peak is a little noisy at the top, which reads it narrow.
+            for bandwidth in [silverman_bandwidth(&values), sd * 0.5] {
+                let (xs, d) = kde_1d(&values, (-2.0, 4.0), 1024, bandwidth);
+                let w = peak_width(&xs, &d, bandwidth);
+                assert!(
+                    (w / sd - 1.0).abs() < 0.1,
+                    "sd {sd}, bandwidth {bandwidth}: {w}"
+                );
+            }
+            // A smear running from the peak out to the right: the quadrant's
+            // spread balloons, the peak's does not.
+            let mut smeared = values.clone();
+            smeared.extend((0..1500).map(|i| 1.0 + 2.5 * i as f64 / 1500.0));
+            let bw = silverman_bandwidth(&values);
+            let (xs, d) = kde_1d(&smeared, (-2.0, 4.0), 1024, bw);
+            let w = peak_width(&xs, &d, bw);
+            assert!((w / sd - 1.0).abs() < 0.1, "sd {sd} smeared: {w}");
+            assert!(
+                std_dev(&smeared) > 1.5 * sd,
+                "the smear does widen the quadrant"
+            );
+        }
+    }
+
+    /// Was B-KDE-1: the width was the std-dev of every event below the axis
+    /// midpoint, so positives smeared down into that quadrant read as a
+    /// widened negative - ratios of about 2.15 on both axes here, where the
+    /// negative is identical.
+    #[test]
+    fn test_smeared_positive_only_in_test() {
+        let (qc, test) = smeared_positive_only_in_test(42);
+        run(
+            "smeared_positive_only_in_test",
+            &qc,
+            &test,
+            still((false, false)),
+        );
+    }
+
+    #[test]
+    fn test_positive_shifted_in_test() {
+        // Negative identical — alignment should report near-zero shift.
+        // Positive shift is biological and should NOT influence the result.
+        let (qc, test) = positive_shifted_in_test(42);
+        run(
+            "positive_shifted_in_test",
+            &qc,
+            &test,
+            still((false, false)),
+        );
+    }
+}
