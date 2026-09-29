@@ -713,8 +713,8 @@ impl Session {
                     .gates
                     .gate_chain_for_node(node)
                     .iter()
-                    .filter_map(|id| self.gates.registered_gate(id))
-                    .map(|g| g.get_name().to_string())
+                    .filter_map(|id| self.gates.population_name(id))
+                    .map(|name| name.to_string())
                     .collect();
                 (node.clone(), path)
             })

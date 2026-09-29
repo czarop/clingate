@@ -57,6 +57,13 @@ pub const GUIDES: &[Guide] = &[
                   fit the gate to them - populations no line separates",
         text: include_str!("../../../../docs/rules/match-the-phenotype.md"),
     },
+    Guide {
+        key: "FromAnotherGate",
+        name: "From another gate",
+        summary: "take another gate's shape, or set an edge against another gate's edge, on the \
+                  same sample - gates a guide places by other gates",
+        text: include_str!("../../../../docs/rules/from-another-gate.md"),
+    },
 ];
 
 /// A rule's guide by its kind or its name, however written: "TailFraction",
@@ -78,8 +85,8 @@ pub fn find(asked: &str) -> Option<&'static Guide> {
 mod tests {
     use super::*;
     use crate::gate_rules::rule::{
-        AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
-        ShapeFit, TailFractionRule, ValleyRule,
+        AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, NegativeFinder,
+        PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
     };
 
     fn every_rule() -> Vec<Rule> {
@@ -89,6 +96,16 @@ mod tests {
             Rule::AboveTheNegative(AboveTheNegativeRule::default()),
             Rule::InTheValley(ValleyRule::default()),
             Rule::MatchThePhenotype(PhenotypeRule::default()),
+            Rule::FromAnotherGate(FromGateRule {
+                same_shape_as: Some(crate::gate_rules::rule_store::RuleTarget::named("CD4+")),
+                edges: vec![EdgeFrom {
+                    anchor: crate::gate_rules::rule_store::RuleTarget::named("CD19+"),
+                    parameter: "CD19".into(),
+                    side: Side::Upper,
+                    anchor_side: Side::Lower,
+                    gap: 0.0,
+                }],
+            }),
         ]
     }
 
@@ -142,6 +159,25 @@ mod tests {
         }
         for fit in ShapeFit::ALL {
             assert!(text("MatchThePhenotype").contains(&format!("`{}`", fit.key())));
+        }
+        // An edge's own settings, and both sides, which the check on a rule's
+        // top-level settings does not reach.
+        let edge = serde_json::to_value(EdgeFrom {
+            anchor: crate::gate_rules::rule_store::RuleTarget::named("CD19+"),
+            parameter: "CD19".into(),
+            side: Side::Upper,
+            anchor_side: Side::Lower,
+            gap: 0.0,
+        })
+        .unwrap();
+        for field in edge.as_object().unwrap().keys() {
+            assert!(
+                text("FromAnotherGate").contains(&format!("`{field}`")),
+                "the edge setting `{field}` is not explained"
+            );
+        }
+        for side in ["Lower", "Upper"] {
+            assert!(text("FromAnotherGate").contains(&format!("`{side}`")));
         }
         // The settings every rule shares.
         for shared in [

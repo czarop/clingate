@@ -32,6 +32,11 @@ pub struct QuadrantGate {
 }
 
 impl QuadrantGate {
+    /// Its centre and arms, in data units.
+    pub fn points(&self) -> &DataPoints {
+        &self.points
+    }
+
     pub fn try_new_from_raw_coord(
         plot_map: &PlotMapper,
         id: Arc<str>,
@@ -203,6 +208,20 @@ impl QuadrantGate {
 }
 
 impl DrawableGate for QuadrantGate {
+    fn with_lines_of(
+        &self,
+        other: &dyn DrawableGate,
+    ) -> Option<anyhow::Result<Box<dyn DrawableGate>>> {
+        Some((|| {
+            let other = other
+                .as_any()
+                .downcast_ref::<Self>()
+                .ok_or_else(|| anyhow::anyhow!("only a quadrant can take a quadrant's lines"))?;
+            let points = super::lines_from(&self.parameters, &other.parameters, &other.points)?;
+            Ok(Box::new(self.clone_with_point(points, None)?) as Box<dyn DrawableGate>)
+        })())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

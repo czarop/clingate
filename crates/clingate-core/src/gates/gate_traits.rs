@@ -151,6 +151,20 @@ pub trait DrawableGate: Send + Sync {
         None
     }
 
+    /// This composite with its lines where `other`'s are - the same centre and
+    /// arms - keeping its own ids and names: "the same position as that
+    /// quadrant". `other` drawn with its axes the other way round is turned to
+    /// match.
+    ///
+    /// `None` for anything that is not a composite. An error for a composite
+    /// of another kind, or one drawn on other parameters.
+    fn with_lines_of(
+        &self,
+        _other: &dyn DrawableGate,
+    ) -> Option<anyhow::Result<Box<dyn DrawableGate>>> {
+        None
+    }
+
     /// A copy of a composite under a new id, with a fresh id for every corner.
     ///
     /// Separate from [`with_new_id`](Self::with_new_id) because a composite is

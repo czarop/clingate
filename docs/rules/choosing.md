@@ -17,6 +17,7 @@ rule will read (the FMX, the QC, the sample itself), across the dataset:
 | A negative with positives smearing out of it, no dip, no FMX - but a hand-gated QC or template | **Above the negative**, peak finder - "as far above the negative as on the QC" |
 | A negative only (FMX, unstimulated), and you want the line a fixed step above its top | **Percentile offset** |
 | A population that does not separate on either axis alone, several clusters close together, or one that moves in both axes | **Match the phenotype** |
+| A gate the guide places by another gate: "the same position as", "aligned to the edge of", "adjacent to" | **From another gate** - settle the other gate first |
 
 Then check the harder questions:
 
@@ -69,6 +70,8 @@ for the whole specimen, so its FMX shows the same gate.
   positive, as far from its bottom as on the reference.
 - **Match the phenotype** - find the cells that look like the reference
   gate's across chosen markers, and fit the gate to them.
+- **From another gate** - take another gate's shape, or set an edge against
+  another gate's edge, on the same sample, once that gate is placed.
 
 ## Settings every rule shares
 

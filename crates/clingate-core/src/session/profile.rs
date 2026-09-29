@@ -67,7 +67,10 @@ impl Session {
             .parent_node(node)
             .and_then(|p| names.get(&p).cloned());
         let target = RuleTarget {
-            gate: Arc::from(gate.get_name()),
+            gate: self
+                .gates
+                .population_name(&gate_id)
+                .unwrap_or_else(|| Arc::from(gate.get_name())),
             parent,
         };
         let (x, y) = gate.get_params();

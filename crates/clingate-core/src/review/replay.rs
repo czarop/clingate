@@ -510,6 +510,15 @@ pub(crate) fn solve(events: &KeptEvents, rules: &RuleStore) -> Solved {
             );
             continue;
         }
+        if matches!(rule.rule, Rule::FromAnotherGate(_)) {
+            skipped.insert(
+                key,
+                "this gate follows another gate's position, which a replay does not place - \
+                 replay the gate it follows"
+                    .into(),
+            );
+            continue;
+        }
         let file: Arc<str> = Arc::from(sample.file.as_str());
         state.place_gate(
             &[id.clone()],
@@ -726,6 +735,8 @@ fn starting_position_matters(rule: &GateRule) -> bool {
         Rule::TailFraction(_) => true,
         Rule::AboveTheNegative(r) => r.find == NegativeFinder::BelowTheGate,
         Rule::PercentileOffset(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => false,
+        // Where it goes is read from another gate, not from where it began.
+        Rule::FromAnotherGate(_) => false,
     }
 }
 

@@ -117,6 +117,15 @@ change what the gates under it are replayed on. A linked gate (one gate drawn at
 rule at one place, the population that should decide it; the copies follow. \
 Two rules for it, or one rule that reaches it at two parents, is refused.
 
+A gate the guide places by another gate - 'the same position as the main \
+CD4-CD8+ gate', 'aligned to the left edge of CD19+CD14-' - takes the rule \
+kind FromAnotherGate (rule_guide 'From another gate'): same_shape_as copies \
+a gate's whole shape, edges sets an edge against another gate's edge. A run \
+places the gate it follows first, on each sample. Settle the gate it follows \
+before writing this rule - its rule written and reviewed, or placed by hand - \
+since this gate copies wherever that one ends up. update_rule refuses a rule \
+that follows itself, a gate that is not there, or a loop.
+
 To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
 decides, and \
@@ -308,7 +317,7 @@ pub struct ReadPositioningCode {
 }
 
 /// Rule changes, as the tools take them.
-const RULE_CHANGES: &str = "a list of {\"target\": {\"gate\": \"CD69+\", \"parent\": \"CD4+\" or      null}, \"rule\": {\"parameter\": \"CD69\", \"bound\": \"Above\" or \"Below\",      \"measured_on\": \"Itself\" or {\"Partner\": \"FMX\"} or {\"File\": \"<file id>\"},      \"rule\": {\"kind\": \"TailFraction\", \"band\": [0.002, 0.005]}}} - the rule kinds and their      fields are in explain_gate_positioning, section 8";
+const RULE_CHANGES: &str = "a list of {\"target\": {\"gate\": \"CD69+\", \"parent\": \"CD4+\" or      null}, \"rule\": {\"parameter\": \"CD69\", \"bound\": \"Above\" or \"Below\",      \"measured_on\": \"Itself\" or {\"Partner\": \"FMX\"} or {\"File\": \"<file id>\"},      \"rule\": {\"kind\": \"TailFraction\", \"band\": [0.002, 0.005]}}} - the rule kinds and their      fields are in explain_gate_positioning, section 8, and rule_guide";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReplayRules {

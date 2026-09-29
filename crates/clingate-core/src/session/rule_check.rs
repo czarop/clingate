@@ -23,6 +23,23 @@ impl Session {
         mut rule: GateRule,
     ) -> Result<(GateRule, Vec<String>), Refusal> {
         let mut notes = Vec::new();
+        // A gate that follows another has no parameter of its own and reads
+        // its own sample: whatever was given there means nothing, so it is
+        // not kept to confuse the list.
+        if let Rule::FromAnotherGate(from) = &mut rule.rule {
+            rule.parameter = Arc::from("");
+            rule.measured_on = MeasuredOn::Itself;
+            for edge in &mut from.edges {
+                let channel = self.channel_named(&edge.parameter)?;
+                if *channel != *edge.parameter {
+                    notes.push(format!(
+                        "parameter {} is the channel {channel}",
+                        edge.parameter
+                    ));
+                }
+                edge.parameter = channel;
+            }
+        }
         if !rule.parameter.trim().is_empty() {
             let channel = self.channel_named(&rule.parameter)?;
             if *channel != *rule.parameter {
@@ -106,6 +123,9 @@ impl Session {
                 )
             )));
         }
+        if let Rule::FromAnotherGate(from) = &rule.rule {
+            return self.check_follow(target, from);
+        }
         if let Rule::MatchThePhenotype(_) = &rule.rule {
             if !matches!(rule.measured_on, MeasuredOn::File(_)) {
                 return Err(failed(
@@ -123,6 +143,109 @@ impl Session {
                     here.describe(),
                     rule.parameter
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuses a rule from another gate that could never place its gate: an
+    /// anchor that is not one gate, the gate itself, a shape it cannot take,
+    /// or an edge on a parameter one of the two is not drawn on.
+    fn check_follow(
+        &self,
+        target: &RuleTarget,
+        from: &crate::gate_rules::rule::FromGateRule,
+    ) -> Result<(), Refusal> {
+        use crate::gate_rules::autogate::anchor_gate;
+        if let Some(problem) = from.problem() {
+            return Err(failed(problem));
+        }
+        let (nodes, _) = self.population_facts();
+        let mine: Vec<(crate::gates::gate_store::GateId, (String, String))> = nodes
+            .iter()
+            .filter_map(|node| self.target_of(node))
+            .filter(|(here, _, _)| {
+                here.gate == target.gate
+                    && (target.parent.is_none() || target.parent == here.parent)
+            })
+            .map(|(_, id, params)| (id, params))
+            .collect();
+        let anchor = |named: &RuleTarget| {
+            let id = anchor_gate(&self.gates, named).map_err(failed)?;
+            // Compared as gates: a quadrant's corners are one gate.
+            let identity = |id: &crate::gates::gate_store::GateId| {
+                self.gates
+                    .registered_gate(id)
+                    .map(|g| g.get_id())
+                    .unwrap_or_else(|| id.clone())
+            };
+            if mine.iter().any(|(own, _)| identity(own) == identity(&id)) {
+                return Err(failed(format!(
+                    "{} cannot follow itself - name the gate it takes its position from",
+                    target.describe()
+                )));
+            }
+            self.gates
+                .registered_gate(&id)
+                .map(|gate| (id, gate))
+                .ok_or_else(|| failed(format!("{} has no gate", named.describe())))
+        };
+        let same_axes = |a: &(String, String), b: (&str, &str)| {
+            (a.0 == b.0 && a.1 == b.1) || (a.0 == b.1 && a.1 == b.0)
+        };
+        if let Some(named) = &from.same_shape_as {
+            let (_, theirs) = anchor(named)?;
+            let (tx, ty) = theirs.get_params();
+            for (id, params) in &mine {
+                if !same_axes(params, (&tx, &ty)) {
+                    return Err(failed(format!(
+                        "{} is drawn on {tx} and {ty}, and {} on {} and {}, so it cannot take                          that shape",
+                        named.describe(),
+                        target.describe(),
+                        params.0,
+                        params.1
+                    )));
+                }
+                let here = self.gates.registered_gate(id);
+                if here.is_some_and(|g| g.is_composite() != theirs.is_composite()) {
+                    return Err(failed(format!(
+                        "one of {} and {} is a quadrant and the other is not, so one cannot                          take the other's shape",
+                        target.describe(),
+                        named.describe()
+                    )));
+                }
+            }
+        }
+        for edge in &from.edges {
+            let (_, theirs) = anchor(&edge.anchor)?;
+            let (tx, ty) = theirs.get_params();
+            if *edge.parameter != *tx && *edge.parameter != *ty {
+                return Err(failed(format!(
+                    "{} is drawn on {tx} and {ty}, so it has no edge on {}",
+                    edge.anchor.describe(),
+                    edge.parameter
+                )));
+            }
+            for (own, params) in &mine {
+                if *edge.parameter != *params.0 && *edge.parameter != *params.1 {
+                    return Err(failed(format!(
+                        "{} is drawn on {} and {}, so it has no edge on {} to set",
+                        target.describe(),
+                        params.0,
+                        params.1,
+                        edge.parameter
+                    )));
+                }
+                if self
+                    .gates
+                    .registered_gate(own)
+                    .is_some_and(|g| g.is_composite())
+                {
+                    return Err(failed(format!(
+                        "{} is a quadrant, whose edges are its lines - it follows another                          quadrant with same_shape_as",
+                        target.describe()
+                    )));
+                }
             }
         }
         Ok(())
@@ -150,6 +273,12 @@ impl Session {
                     .into_iter()
                     .filter(|c| c.rules.contains(&described))
                     .map(|c| c.reason),
+            );
+            problems.extend(
+                crate::gate_rules::autogate::anchor_problems(&self.gates, store)
+                    .into_iter()
+                    .filter(|p| p.target == *target)
+                    .map(|p| p.reason),
             );
             if crate::gate_rules::autogate::rules_reaching_nothing(&self.gates, store)
                 .contains(target)

@@ -308,3 +308,140 @@ fn a_parameter_is_shown_with_its_marker_and_channel() {
     assert_eq!(marker_label("FSC-A", &panel()), "FSC-A");
     assert_eq!(marker_label("Time", &panel()), "Time", "unknown: as stored");
 }
+
+// ─── the form for a rule from another gate ────────────────────────────────────
+
+mod following {
+    use crate::gate_rules::choices::{
+        EdgeForm, GateChoices, every_target, follow_from_form, follow_to_form,
+    };
+    use crate::gate_rules::rule::{FromGateRule, Side};
+    use crate::gate_rules::rule_store::RuleTarget;
+    use std::sync::Arc;
+
+    fn offered() -> GateChoices {
+        GateChoices {
+            parents: vec![Arc::from("CD45+"), Arc::from("Lymph")],
+            children: vec![
+                (
+                    Arc::from("CD45+"),
+                    vec![Arc::from("CD19+CD14-"), Arc::from("CD19-")],
+                ),
+                (Arc::from("Lymph"), vec![Arc::from("CD19-")]),
+            ],
+            parameters: Vec::new(),
+        }
+    }
+
+    fn edge(anchor: &str, parameter: &str, side: &str, anchor_side: &str, gap: &str) -> EdgeForm {
+        EdgeForm {
+            anchor: anchor.into(),
+            parameter: parameter.into(),
+            side: side.into(),
+            anchor_side: anchor_side.into(),
+            gap: gap.into(),
+        }
+    }
+
+    #[test]
+    fn every_gate_is_offered_as_a_rule_names_it_under_each_parent() {
+        let named: Vec<String> = every_target(&offered())
+            .iter()
+            .map(|t| t.describe())
+            .collect();
+        assert_eq!(
+            named,
+            ["CD19+CD14- of CD45+", "CD19- of CD45+", "CD19- of Lymph"],
+            "a gate under two parents is two choices"
+        );
+    }
+
+    #[test]
+    fn the_same_shape_is_the_gate_chosen() {
+        let rule =
+            follow_from_form(Some("CD19- of Lymph"), &[], &every_target(&offered())).unwrap();
+        assert_eq!(
+            rule.same_shape_as,
+            Some(RuleTarget::under("CD19-", "Lymph"))
+        );
+        assert!(
+            rule.edges.is_empty(),
+            "edges on the form are not carried along"
+        );
+    }
+
+    #[test]
+    fn edges_are_read_off_the_form_with_an_empty_gap_as_none() {
+        let rule = follow_from_form(
+            None,
+            &[
+                edge("CD19+CD14- of CD45+", "BUV395-A", "Upper", "Lower", ""),
+                edge("CD19- of Lymph", "BV421-A", "Lower", "Upper", "-0.5"),
+            ],
+            &every_target(&offered()),
+        )
+        .unwrap();
+        assert_eq!(rule.same_shape_as, None);
+        assert_eq!(rule.edges.len(), 2);
+        assert_eq!(
+            rule.edges[0].anchor,
+            RuleTarget::under("CD19+CD14-", "CD45+")
+        );
+        assert_eq!(&*rule.edges[0].parameter, "BUV395-A");
+        assert_eq!(
+            (rule.edges[0].side, rule.edges[0].anchor_side),
+            (Side::Upper, Side::Lower)
+        );
+        assert_eq!(rule.edges[0].gap, 0.0);
+        assert_eq!(rule.edges[1].gap, -0.5);
+    }
+
+    #[test]
+    fn what_the_form_cannot_make_a_rule_of_is_said() {
+        let targets = every_target(&offered());
+        let said = |same: Option<&str>, edges: &[EdgeForm]| {
+            follow_from_form(same, edges, &targets).unwrap_err()
+        };
+        assert_eq!(said(Some(""), &[]), "Choose the gate it follows");
+        assert!(said(Some("CD3+ of CD45+"), &[]).contains("no gate CD3+ of CD45+"));
+        assert_eq!(said(None, &[]), "Add an edge to set");
+        assert!(
+            said(None, &[edge("CD19- of Lymph", "", "Upper", "Lower", "")]).contains("parameter")
+        );
+        assert!(
+            said(
+                None,
+                &[edge("CD19- of Lymph", "X", "Upper", "Lower", "a bit")]
+            )
+            .contains("not a number")
+        );
+        assert!(
+            said(None, &[edge("CD19- of Lymph", "X", "", "Lower", "")]).contains("not an edge")
+        );
+    }
+
+    #[test]
+    fn a_saved_rule_opens_in_the_form_as_it_was_written() {
+        let targets = every_target(&offered());
+        for (same, edges) in [
+            (Some("CD19- of Lymph"), Vec::new()),
+            (
+                None,
+                vec![
+                    edge("CD19+CD14- of CD45+", "BUV395-A", "Upper", "Lower", ""),
+                    edge("CD19- of Lymph", "BV421-A", "Lower", "Upper", "-0.5"),
+                ],
+            ),
+        ] {
+            let rule: FromGateRule = follow_from_form(same, &edges, &targets).unwrap();
+            let (same_back, edges_back) = follow_to_form(&rule);
+            assert_eq!(same_back.as_deref(), same);
+            assert_eq!(edges_back, edges);
+            assert_eq!(
+                follow_from_form(same_back.as_deref(), &edges_back, &targets).unwrap(),
+                rule,
+                "and saves back unchanged"
+            );
+        }
+    }
+}

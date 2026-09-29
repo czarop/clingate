@@ -337,6 +337,14 @@ pub fn run_rules(
                 .to_string(),
         });
     }
+    for problem in crate::gate_rules::autogate::anchor_problems(gates, &inputs.rules) {
+        report.skipped.push(Skipped {
+            file: Arc::from(""),
+            gate: problem.target.gate.clone(),
+            parent_gate: problem.target.parent.clone(),
+            reason: problem.reason,
+        });
+    }
     for conflict in linked_conflicts(gates, &inputs.rules) {
         report.skipped.push(Skipped {
             file: Arc::from(""),

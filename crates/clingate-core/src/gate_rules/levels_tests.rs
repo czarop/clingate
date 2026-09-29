@@ -650,3 +650,709 @@ fn an_unlinked_gate_of_the_same_name_under_two_parents_is_no_conflict() {
     assert!(linked_conflicts(&state, &rules).is_empty());
     assert_eq!(level_names(&state, &rules), [["Shared", "Shared"]]);
 }
+
+// ─── a gate that follows another ──────────────────────────────────────────────
+//
+// "In the same position as the main CD4-CD8+ gate", "aligned to the left edge
+// of CD19+CD14-". The anchor is placed first, on each sample, and this gate
+// takes its position from it there.
+
+use crate::gate_rules::autogate::anchor_problems;
+use crate::gate_rules::rule::{EdgeFrom, FromGateRule, Side};
+
+/// A rectangle with all four edges given.
+fn boxed(id: &str, name: &str, x: (f32, f32), y: (f32, f32)) -> Arc<dyn DrawableGate> {
+    let geometry = flow_gates::create_rectangle_geometry(
+        vec![(x.0, y.0), (x.1, y.0), (x.1, y.1), (x.0, y.1)],
+        X,
+        Y,
+    )
+    .unwrap();
+    Arc::new(
+        crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+            flow_gates::Gate {
+                id: Arc::from(id),
+                name: name.into(),
+                geometry,
+                mode: flow_gates::GateMode::Global,
+                parameters: (Arc::from(X), Arc::from(Y)),
+                label_position: None,
+            },
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+fn follows(same_shape_as: Option<RuleTarget>, edges: Vec<EdgeFrom>) -> GateRule {
+    GateRule {
+        // Ignored for this rule; given anyway, as a hand-written file might.
+        parameter: Arc::from("anything"),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Partner(Arc::from("FMX")),
+        rule: Rule::FromAnotherGate(FromGateRule {
+            same_shape_as,
+            edges,
+        }),
+    }
+}
+
+fn edge_from(
+    anchor: RuleTarget,
+    parameter: &str,
+    side: Side,
+    anchor_side: Side,
+    gap: f64,
+) -> EdgeFrom {
+    EdgeFrom {
+        anchor,
+        parameter: Arc::from(parameter),
+        side,
+        anchor_side,
+        gap,
+    }
+}
+
+fn extent(state: &GateState, gate: &str, parameter: &str, file: &str) -> (f32, f32) {
+    let g = state
+        .gate_for_file(&Arc::from(gate), &Arc::from(file), &specimens())
+        .unwrap();
+    extent_on(
+        &g.get_gate_ref(Some(gate))
+            .or_else(|| g.get_gate_ref(None))
+            .unwrap()
+            .geometry,
+        parameter,
+    )
+    .unwrap()
+}
+
+/// Give `gate` its own position for one donor, as a person placing it by hand
+/// for that specimen would.
+fn place_by_hand(state: &mut GateState, gate: &str, donor: &str, moved: Arc<dyn DrawableGate>) {
+    crate::gate_rules::autogate::place_for_specimen(
+        state,
+        &Arc::from(gate),
+        &crate::omiq::metadata::MetaDataKey {
+            parameter: Arc::from("SampleID"),
+            group: Arc::from(donor),
+        },
+        &moved,
+    );
+}
+
+/// [`three_deep`], with "CD69 copy" under Lymph beside CD69+, drawn wide open
+/// so any placement moves it.
+fn with_a_copy() -> GateState {
+    let mut state = three_deep();
+    add(
+        &mut state,
+        rect("copy", "CD69 copy", -BIG, -500.0),
+        Some("lymph"),
+    );
+    state
+}
+
+fn copy_rule() -> (RuleTarget, GateRule) {
+    (
+        RuleTarget::under("CD69 copy", "Lymph"),
+        follows(Some(RuleTarget::under("CD69+", "Lymph")), Vec::new()),
+    )
+}
+
+#[test]
+fn a_copy_takes_the_anchor_s_position_on_each_sample_after_the_anchor_s_rule() {
+    let files = files("follow-copy");
+    let state = with_a_copy();
+    // Listed before the rule it depends on.
+    let outcome = run(&state, &files, store(&[copy_rule(), cd69_rule()]));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    let after = applied(&state, &outcome);
+    for file in ["fs_a", "fs_b"] {
+        let anchor = extent(&after, "cd69", Y, file);
+        assert_eq!(extent(&after, "copy", Y, file), anchor, "{file}");
+        assert_eq!(
+            extent(&after, "copy", X, file),
+            extent(&after, "cd69", X, file)
+        );
+        assert!(
+            anchor.0 > 0.0,
+            "{file}: the anchor moved, from -1 to {}",
+            anchor.0
+        );
+    }
+    // And by hand: the anchor's rule, applied, then the copy's.
+    let first = applied(&state, &run(&state, &files, store(&[cd69_rule()])));
+    let by_hand = applied(&first, &run(&first, &files, store(&[copy_rule()])));
+    for file in ["fs_a", "fs_b"] {
+        assert_eq!(
+            extent(&after, "copy", Y, file),
+            extent(&by_hand, "copy", Y, file)
+        );
+    }
+    // The two donors' anchors differ, so the copies do: it is per sample.
+    assert_ne!(
+        extent(&after, "copy", Y, "fs_a"),
+        extent(&after, "copy", Y, "fs_b")
+    );
+}
+
+#[test]
+fn a_copy_of_a_gate_placed_by_hand_takes_each_donor_s_own_position() {
+    let files = files("follow-hand");
+    let mut state = with_a_copy();
+    for (donor, at) in [("DONOR-A", 300.0), ("DONOR-B", 600.0)] {
+        let cd69 = state.registered_gate(&Arc::from("cd69")).unwrap();
+        let moved =
+            crate::gate_rules::autogate::translate_edge_to(&cd69, Y, Bound::Above, at).unwrap();
+        place_by_hand(&mut state, "cd69", donor, moved);
+    }
+    let outcome = run(&state, &files, store(&[copy_rule()]));
+    let after = applied(&state, &outcome);
+    assert_eq!(extent(&after, "copy", Y, "fs_a").0, 300.0);
+    assert_eq!(extent(&after, "copy", Y, "fs_b").0, 600.0);
+    // What the copy holds is reported, before and after.
+    let placed = &outcome.report.positioned;
+    assert_eq!(placed.len(), 2);
+    for p in placed {
+        assert!(
+            p.to.is_finite() && p.from.is_finite(),
+            "{} {}",
+            p.from,
+            p.to
+        );
+        assert!(p.to < p.from, "moved up from -500, it holds less");
+        assert_eq!(p.confidence, 1.0, "copied, not estimated");
+    }
+}
+
+#[test]
+fn a_copy_already_where_the_anchor_is_is_left_in_place() {
+    let files = files("follow-kept");
+    let state = with_a_copy();
+    let rules = store(&[copy_rule(), cd69_rule()]);
+    let once = applied(&state, &run(&state, &files, rules.clone()));
+    let again = run(&once, &files, rules);
+    let kept: Vec<&str> = again
+        .report
+        .unchanged
+        .iter()
+        .filter(|u| &*u.gate == "CD69 copy")
+        .map(|u| &*u.file)
+        .collect();
+    assert_eq!(kept.len(), 2, "both samples: {kept:?}");
+    assert!(
+        !again.placements.iter().any(|p| &*p.gate_id == "copy"),
+        "nothing to write for the copy"
+    );
+}
+
+#[test]
+fn a_gate_waits_for_every_gate_it_follows_whatever_its_place_in_the_tree() {
+    // The copy sits under Lymph (level 1 once Lymph has a rule), but its
+    // anchor CD69+ is level 1 too - so the copy is level 2.
+    let state = with_a_copy();
+    let rules = store(&[copy_rule(), lymph_rule(), cd69_rule()]);
+    assert_eq!(
+        level_names(&state, &rules),
+        [vec!["Lymph"], vec!["CD69+"], vec!["CD69 copy"]]
+    );
+    // An anchor with no rule is read as it stands: no wait for it.
+    let rules = store(&[copy_rule(), lymph_rule()]);
+    assert_eq!(
+        level_names(&state, &rules),
+        [vec!["Lymph"], vec!["CD69 copy"]]
+    );
+}
+
+#[test]
+fn an_edge_is_set_against_the_anchor_s_edge_and_a_rectangle_s_other_edges_stay() {
+    // "The CD19- gate aligned to the left edge of the CD19+CD14- gate."
+    let files = files("follow-edge");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(&mut state, rect("pos", "CD19+", 0.0, -BIG), Some("lymph"));
+    add(
+        &mut state,
+        boxed("neg", "CD19-", (-100.0, 900.0), (-50.0, 950.0)),
+        Some("lymph"),
+    );
+    let pos_rule = (RuleTarget::under("CD19+", "Lymph"), top(X, (0.49, 0.51)));
+    let neg_rule = (
+        RuleTarget::under("CD19-", "Lymph"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::under("CD19+", "Lymph"),
+                X,
+                Side::Upper,
+                Side::Lower,
+                0.0,
+            )],
+        ),
+    );
+    let outcome = run(&state, &files, store(&[neg_rule, pos_rule]));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    let after = applied(&state, &outcome);
+    for file in ["fs_a", "fs_b"] {
+        let pos_left = extent(&after, "pos", X, file).0;
+        assert!(
+            (400.0..600.0).contains(&pos_left),
+            "{file}: CD19+ moved to {pos_left}"
+        );
+        assert_eq!(
+            extent(&after, "neg", X, file),
+            (-100.0, pos_left),
+            "{file}: its right edge against CD19+'s left; its left edge where it was"
+        );
+        assert_eq!(
+            extent(&after, "neg", Y, file),
+            (-50.0, 950.0),
+            "{file}: y untouched"
+        );
+    }
+}
+
+#[test]
+fn a_gap_is_added_to_the_anchor_s_edge() {
+    let files = files("follow-gap");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("pos", "Pos", (400.0, 900.0), (-BIG, BIG)),
+        Some("lymph"),
+    );
+    add(
+        &mut state,
+        boxed("neg", "Neg", (-100.0, 900.0), (-50.0, 950.0)),
+        Some("lymph"),
+    );
+    let rule = (
+        RuleTarget::named("Neg"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::named("Pos"),
+                X,
+                Side::Upper,
+                Side::Lower,
+                -10.0,
+            )],
+        ),
+    );
+    let after = applied(&state, &run(&state, &files, store(&[rule])));
+    assert_eq!(extent(&after, "neg", X, "fs_a"), (-100.0, 390.0));
+}
+
+#[test]
+fn two_edges_can_each_follow_their_own_gate() {
+    // "The MAIT CD4-CD8- gate adjacent to the left edge of the CD4+CD8- gate
+    // and the bottom of the CD4-CD8+ gate."
+    let files = files("follow-two-edges");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("cd4", "CD4+CD8-", (300.0, BIG), (-BIG, 500.0)),
+        Some("lymph"),
+    );
+    add(
+        &mut state,
+        boxed("cd8", "CD4-CD8+", (-BIG, 300.0), (600.0, BIG)),
+        Some("lymph"),
+    );
+    add(
+        &mut state,
+        boxed("dn", "CD4-CD8-", (-100.0, 800.0), (-100.0, 800.0)),
+        Some("lymph"),
+    );
+    let rule = (
+        RuleTarget::named("CD4-CD8-"),
+        follows(
+            None,
+            vec![
+                edge_from(
+                    RuleTarget::named("CD4+CD8-"),
+                    X,
+                    Side::Upper,
+                    Side::Lower,
+                    0.0,
+                ),
+                edge_from(
+                    RuleTarget::named("CD4-CD8+"),
+                    Y,
+                    Side::Upper,
+                    Side::Lower,
+                    0.0,
+                ),
+            ],
+        ),
+    );
+    let after = applied(&state, &run(&state, &files, store(&[rule])));
+    assert_eq!(extent(&after, "dn", X, "fs_a"), (-100.0, 300.0));
+    assert_eq!(extent(&after, "dn", Y, "fs_a"), (-100.0, 600.0));
+}
+
+#[test]
+fn a_polygon_slides_whole_until_its_edge_is_there() {
+    let files = files("follow-polygon");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("pos", "Pos", (450.0, 900.0), (-BIG, BIG)),
+        Some("lymph"),
+    );
+    let polygon: Arc<dyn DrawableGate> = Arc::new(
+        crate::gates::gate_single::polygon_gate::PolygonGate::try_new(
+            flow_gates::Gate {
+                id: Arc::from("poly"),
+                name: "Poly".into(),
+                geometry: flow_gates::create_polygon_geometry(
+                    vec![(100.0, 100.0), (300.0, 100.0), (200.0, 400.0)],
+                    X,
+                    Y,
+                )
+                .unwrap(),
+                mode: flow_gates::GateMode::Global,
+                parameters: (Arc::from(X), Arc::from(Y)),
+                label_position: None,
+            },
+            true,
+        )
+        .unwrap(),
+    );
+    add(&mut state, polygon, Some("lymph"));
+    let rule = (
+        RuleTarget::named("Poly"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::named("Pos"),
+                X,
+                Side::Lower,
+                Side::Lower,
+                0.0,
+            )],
+        ),
+    );
+    let after = applied(&state, &run(&state, &files, store(&[rule])));
+    assert_eq!(
+        extent(&after, "poly", X, "fs_a"),
+        (450.0, 650.0),
+        "slid 350, width kept"
+    );
+    assert_eq!(extent(&after, "poly", Y, "fs_a"), (100.0, 400.0));
+}
+
+#[test]
+fn a_gate_drawn_the_other_way_round_is_copied_turned() {
+    let files = files("follow-turned");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    // The anchor is drawn with SSC-A across and FSC-A up.
+    let turned: Arc<dyn DrawableGate> = Arc::new(
+        crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+            flow_gates::Gate {
+                id: Arc::from("anchor"),
+                name: "Anchor".into(),
+                geometry: flow_gates::create_rectangle_geometry(
+                    vec![
+                        (100.0, 500.0),
+                        (200.0, 500.0),
+                        (200.0, 700.0),
+                        (100.0, 700.0),
+                    ],
+                    Y,
+                    X,
+                )
+                .unwrap(),
+                mode: flow_gates::GateMode::Global,
+                parameters: (Arc::from(Y), Arc::from(X)),
+                label_position: None,
+            },
+            true,
+        )
+        .unwrap(),
+    );
+    add(&mut state, turned, Some("lymph"));
+    add(
+        &mut state,
+        boxed("mine", "Mine", (0.0, 10.0), (0.0, 10.0)),
+        Some("lymph"),
+    );
+    let rule = (
+        RuleTarget::named("Mine"),
+        follows(Some(RuleTarget::named("Anchor")), Vec::new()),
+    );
+    let outcome = run(&state, &files, store(&[rule]));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    let after = applied(&state, &outcome);
+    assert_eq!(extent(&after, "mine", X, "fs_a"), (500.0, 700.0));
+    assert_eq!(extent(&after, "mine", Y, "fs_a"), (100.0, 200.0));
+    assert_eq!(
+        after
+            .gate_for_file(&Arc::from("mine"), &Arc::from("fs_a"), &specimens())
+            .unwrap()
+            .get_params(),
+        (Arc::from(X), Arc::from(Y)),
+        "still drawn its own way round"
+    );
+}
+
+#[test]
+fn a_quadrant_follows_another_quadrant_on_each_sample() {
+    // "Position gate 47 according to the position of the same gates on the
+    // CD4-CD8+ population."
+    use crate::gates::gate_composite::quadrant_gate::QuadrantGate;
+    use crate::gates::gate_types::PrimaryGateType;
+    let files = files("follow-quadrant");
+    let mapper = crate::axis_store::PlotMapper::new(
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        flow_fcs::TransformType::Linear,
+        flow_fcs::TransformType::Linear,
+    );
+    let mut state = GateState::default();
+    add(&mut state, rect("cd8", "CD8", -1.0, -BIG), None);
+    add(&mut state, rect("gd", "TCRgd", -1.0, -BIG), None);
+    let mut quadrant = |name: &str, parent: &str, at: (f32, f32)| -> Arc<str> {
+        let before: Vec<_> = state.placements().map(|(n, _)| n.clone()).collect();
+        state
+            .add_gate(
+                &mapper,
+                at.0,
+                at.1,
+                Arc::from(X),
+                Arc::from(Y),
+                None,
+                Some(Arc::from(parent)),
+                PrimaryGateType::Quadrant,
+                Some(name.to_string()),
+            )
+            .unwrap();
+        let corner = state
+            .placements()
+            .find(|(n, _)| !before.contains(n))
+            .map(|(_, p)| p.gate_id.clone())
+            .unwrap();
+        corner
+    };
+    let anchor_corner = quadrant("Memory", "cd8", (300.0, 300.0));
+    let mine_corner = quadrant("Memory gd", "gd", (100.0, 500.0));
+    // The CD8 quadrant placed by hand, differently for each donor.
+    for (donor, pixel) in [("DONOR-A", (200.0, 250.0)), ("DONOR-B", (400.0, 350.0))] {
+        let q = state.registered_gate(&anchor_corner).unwrap();
+        let moved: Arc<dyn DrawableGate> =
+            Arc::from(q.replace_point(pixel, 0, None, &mapper).unwrap());
+        place_by_hand(&mut state, &anchor_corner, donor, moved);
+    }
+    // Named by one corner each, as the tree names them.
+    let anchor_name = state.population_name(&anchor_corner).unwrap();
+    let mine_name = state.population_name(&mine_corner).unwrap();
+    assert_ne!(&*anchor_name, "Memory", "a corner, not the quadrant");
+    let rule = (
+        RuleTarget::under(mine_name.as_ref(), "TCRgd"),
+        follows(
+            Some(RuleTarget::under(anchor_name.as_ref(), "CD8")),
+            Vec::new(),
+        ),
+    );
+    let outcome = run(&state, &files, store(&[rule]));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    assert_eq!(
+        outcome.placements.len(),
+        2,
+        "one per donor - not one per corner"
+    );
+    let after = applied(&state, &outcome);
+    let centre = |state: &GateState, corner: &Arc<str>, file: &str| {
+        let q = state
+            .gate_for_file(corner, &Arc::from(file), &specimens())
+            .unwrap();
+        q.as_any()
+            .downcast_ref::<QuadrantGate>()
+            .unwrap()
+            .points()
+            .center
+    };
+    for file in ["fs_a", "fs_b"] {
+        assert_eq!(
+            centre(&after, &mine_corner, file),
+            centre(&after, &anchor_corner, file),
+            "{file}"
+        );
+    }
+    assert_ne!(
+        centre(&after, &mine_corner, "fs_a"),
+        centre(&after, &mine_corner, "fs_b")
+    );
+    // Every corner of the moved quadrant, and the quadrant itself, read the
+    // same new position - not the corner the rule named alone.
+    let mine = after.registered_gate(&mine_corner).unwrap();
+    let mut ids = mine.get_inner_gate_ids();
+    ids.push(mine.get_id());
+    for id in ids {
+        let q = after
+            .gate_for_file(&id, &Arc::from("fs_a"), &specimens())
+            .unwrap();
+        assert_eq!(
+            q.as_any()
+                .downcast_ref::<QuadrantGate>()
+                .unwrap()
+                .points()
+                .center,
+            centre(&after, &anchor_corner, "fs_a"),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_that_cannot_follow_says_why_once_and_places_nothing() {
+    let files = files("follow-refused");
+    let mut state = with_a_copy();
+    // Two unrelated gates called "Twin" under different parents.
+    add(&mut state, rect("twin1", "Twin", -BIG, -1.0), Some("lymph"));
+    add(&mut state, rect("twin2", "Twin", -BIG, -1.0), Some("cd69"));
+    let cases: Vec<(GateRule, &str)> = vec![
+        (
+            follows(Some(RuleTarget::named("Nowhere")), Vec::new()),
+            "the gate it follows, Nowhere, is not in the gating",
+        ),
+        (
+            follows(Some(RuleTarget::under("CD69+", "CD3")), Vec::new()),
+            "is not drawn under that parent - it is drawn under Lymph",
+        ),
+        (
+            follows(Some(RuleTarget::named("Twin")), Vec::new()),
+            "names 2 different gates - name its parent",
+        ),
+        (
+            follows(Some(RuleTarget::named("CD69 copy")), Vec::new()),
+            "it names itself",
+        ),
+        (
+            follows(None, Vec::new()),
+            "needs same_shape_as, or at least one edge",
+        ),
+        (
+            follows(
+                Some(RuleTarget::named("CD69+")),
+                vec![edge_from(
+                    RuleTarget::named("CD69+"),
+                    Y,
+                    Side::Lower,
+                    Side::Lower,
+                    0.0,
+                )],
+            ),
+            "not both",
+        ),
+    ];
+    for (rule, expected) in cases {
+        let rules = store(&[(RuleTarget::under("CD69 copy", "Lymph"), rule.clone())]);
+        let problems = anchor_problems(&state, &rules);
+        assert_eq!(problems.len(), 1, "{expected}: {problems:?}");
+        assert!(
+            problems[0].reason.contains(expected),
+            "{}",
+            problems[0].reason
+        );
+        let outcome = run(&state, &files, rules);
+        assert!(outcome.placements.is_empty(), "{expected}");
+        let said = reasons(&outcome);
+        assert_eq!(said.len(), 1, "once, not per sample: {said:?}");
+        assert!(said[0].contains(expected), "{said:?}");
+    }
+}
+
+#[test]
+fn gates_that_follow_each_other_round_a_loop_are_left_alone() {
+    let files = files("follow-loop");
+    let mut state = with_a_copy();
+    add(
+        &mut state,
+        rect("other", "Other", -BIG, -1.0),
+        Some("lymph"),
+    );
+    let rules = store(&[
+        (
+            RuleTarget::named("CD69 copy"),
+            follows(Some(RuleTarget::named("Other")), Vec::new()),
+        ),
+        (
+            RuleTarget::named("Other"),
+            follows(Some(RuleTarget::named("CD69 copy")), Vec::new()),
+        ),
+    ]);
+    let problems = anchor_problems(&state, &rules);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems
+            .iter()
+            .all(|p| p.reason.contains("lead back to it"))
+    );
+    assert!(rule_levels(&state, &rules).is_empty());
+    let outcome = run(&state, &files, rules);
+    assert!(outcome.placements.is_empty());
+}
+
+#[test]
+fn an_edge_that_cannot_be_set_is_refused_on_that_sample_with_the_reason() {
+    let files = files("follow-bad-edge");
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    // Pos is open to the right: it has no upper edge on X.
+    add(&mut state, rect("pos", "Pos", 400.0, -BIG), Some("lymph"));
+    add(
+        &mut state,
+        boxed("neg", "Neg", (500.0, 900.0), (-50.0, 950.0)),
+        Some("lymph"),
+    );
+    let open = (
+        RuleTarget::named("Neg"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::named("Pos"),
+                X,
+                Side::Lower,
+                Side::Upper,
+                0.0,
+            )],
+        ),
+    );
+    let said = reasons(&run(&state, &files, store(&[open])));
+    assert!(
+        said.iter()
+            .any(|r| r.contains("the upper edge of Pos on FSC-A is open")),
+        "{said:?}"
+    );
+    // Setting Neg's upper edge to Pos's lower (400) would cross its own lower
+    // edge (500).
+    let crossing = (
+        RuleTarget::named("Neg"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::named("Pos"),
+                X,
+                Side::Upper,
+                Side::Lower,
+                0.0,
+            )],
+        ),
+    );
+    let said = reasons(&run(&state, &files, store(&[crossing])));
+    assert!(
+        said.iter()
+            .any(|r| r.contains("would put it past its other edge")),
+        "{said:?}"
+    );
+}

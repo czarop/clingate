@@ -108,9 +108,10 @@ fn entry<'a>(map: &'a mut Vec<(Arc<str>, Vec<Arc<str>>)>, key: &Arc<str>) -> &'a
 /// place, and a rule naming one should fail out loud when it runs rather than
 /// vanish from a list with no explanation.
 fn positionable(state: &GateState, gate_id: &GateId, gate: &Arc<dyn DrawableGate>) -> bool {
-    !state.is_ghost(gate_id)
-        && !gate.is_composite()
-        && gate.as_any().downcast_ref::<BooleanGate>().is_none()
+    // A corner is registered under its quadrant, so it is told from the
+    // container by whether the quadrant has a shape under that id.
+    let container = gate.is_composite() && gate.get_gate_ref(Some(gate_id.as_ref())).is_none();
+    !state.is_ghost(gate_id) && !container && gate.as_any().downcast_ref::<BooleanGate>().is_none()
 }
 
 /// Walk the tree once for everything the form needs to offer.
@@ -125,7 +126,9 @@ pub fn choices(state: &GateState) -> GateChoices {
         if !positionable(state, &placement.gate_id, &gate) {
             continue;
         }
-        let name: Arc<str> = Arc::from(gate.get_name());
+        let name: Arc<str> = state
+            .population_name(&placement.gate_id)
+            .unwrap_or_else(|| Arc::from(gate.get_name()));
 
         let (x, y) = gate.get_params();
         let params = entry(&mut out.parameters, &name);
@@ -222,5 +225,135 @@ pub fn describe_phenotype(rule: &PhenotypeRule, panel: &[Param]) -> String {
     format!(
         "find the cells that match on {named}, then {}",
         rule.fit.label()
+    )
+}
+
+// ── the form for a rule from another gate ─────────────────────────────────
+
+/// Every gate a rule can name, as it names them: the gate and its parent.
+/// What a rule from another gate picks its anchor from.
+pub fn every_target(choices: &GateChoices) -> Vec<crate::gate_rules::rule_store::RuleTarget> {
+    use crate::gate_rules::rule_store::RuleTarget;
+    let mut out: Vec<RuleTarget> = choices
+        .children
+        .iter()
+        .flat_map(|(parent, children)| {
+            children
+                .iter()
+                .map(move |child| RuleTarget::under(child.clone(), parent.clone()))
+        })
+        .collect();
+    out.sort_by_key(|t| t.describe());
+    out
+}
+
+/// One edge as the form holds it: text, until it is saved.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EdgeForm {
+    /// The anchor, as [`RuleTarget::describe`](crate::gate_rules::rule_store::RuleTarget::describe) writes it.
+    pub anchor: String,
+    pub parameter: String,
+    /// "Lower" or "Upper".
+    pub side: String,
+    pub anchor_side: String,
+    /// A number, or empty for 0.
+    pub gap: String,
+}
+
+fn side_from(text: &str) -> Result<crate::gate_rules::rule::Side, String> {
+    use crate::gate_rules::rule::Side;
+    match text {
+        "Lower" => Ok(Side::Lower),
+        "Upper" => Ok(Side::Upper),
+        other => Err(format!(
+            "\"{other}\" is not an edge - choose lower or upper"
+        )),
+    }
+}
+
+fn side_to(side: crate::gate_rules::rule::Side) -> String {
+    match side {
+        crate::gate_rules::rule::Side::Lower => "Lower".into(),
+        crate::gate_rules::rule::Side::Upper => "Upper".into(),
+    }
+}
+
+/// The rule the form describes: the whole shape of `same_shape_as` when it
+/// names a gate, otherwise the edges.
+pub fn follow_from_form(
+    same_shape_as: Option<&str>,
+    edges: &[EdgeForm],
+    targets: &[crate::gate_rules::rule_store::RuleTarget],
+) -> Result<crate::gate_rules::rule::FromGateRule, String> {
+    use crate::gate_rules::rule::{EdgeFrom, FromGateRule};
+    let target = |named: &str| {
+        targets
+            .iter()
+            .find(|t| t.describe() == named)
+            .cloned()
+            .ok_or_else(|| {
+                if named.is_empty() {
+                    "Choose the gate it follows".to_string()
+                } else {
+                    format!("There is no gate {named} to follow")
+                }
+            })
+    };
+    if let Some(named) = same_shape_as {
+        return Ok(FromGateRule {
+            same_shape_as: Some(target(named)?),
+            edges: Vec::new(),
+        });
+    }
+    if edges.is_empty() {
+        return Err("Add an edge to set".to_string());
+    }
+    let edges = edges
+        .iter()
+        .map(|e| {
+            if e.parameter.is_empty() {
+                return Err("Choose the parameter each edge is on".to_string());
+            }
+            let gap = match e.gap.trim() {
+                "" => 0.0,
+                text => text
+                    .parse::<f64>()
+                    .map_err(|_| format!("The gap \"{text}\" is not a number"))?,
+            };
+            Ok(EdgeFrom {
+                anchor: target(&e.anchor)?,
+                parameter: Arc::from(e.parameter.as_str()),
+                side: side_from(&e.side)?,
+                anchor_side: side_from(&e.anchor_side)?,
+                gap,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(FromGateRule {
+        same_shape_as: None,
+        edges,
+    })
+}
+
+/// A saved rule back into the form, for Edit.
+pub fn follow_to_form(
+    rule: &crate::gate_rules::rule::FromGateRule,
+) -> (Option<String>, Vec<EdgeForm>) {
+    (
+        rule.same_shape_as.as_ref().map(|t| t.describe()),
+        rule.edges
+            .iter()
+            .map(|e| EdgeForm {
+                anchor: e.anchor.describe(),
+                parameter: e.parameter.to_string(),
+                side: side_to(e.side),
+                anchor_side: side_to(e.anchor_side),
+                gap: if e.gap == 0.0 {
+                    String::new()
+                } else {
+                    format!("{}", e.gap)
+                },
+            })
+            .collect(),
     )
 }

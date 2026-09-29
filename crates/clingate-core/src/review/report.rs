@@ -240,8 +240,8 @@ fn gate_path(state: &GateState, node: &NodeId) -> Vec<String> {
     state
         .gate_chain_for_node(node)
         .iter()
-        .filter_map(|id| state.registered_gate(id))
-        .map(|g| g.get_name().to_string())
+        .filter_map(|id| state.population_name(id))
+        .map(|name| name.to_string())
         .collect()
 }
 

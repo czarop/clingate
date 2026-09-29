@@ -527,6 +527,12 @@ impl Session {
         {
             return Err(failed(conflict.reason));
         }
+        if let Some(problem) = crate::gate_rules::autogate::anchor_problems(&self.gates, &changed)
+            .into_iter()
+            .find(|p| p.target == change.target)
+        {
+            return Err(failed(problem.reason));
+        }
         changed.save(&file).map_err(failed)?;
         *store = changed;
         // A preview made under the old rule would apply placements the rules

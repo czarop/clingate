@@ -2363,3 +2363,216 @@ fn every_rule_target_the_listing_gives_is_one_update_rule_takes() {
         "the fixture has gates enough to mean something: {tried}"
     );
 }
+
+// ─── a rule from another gate, as Claude writes one ───────────────────────────
+
+fn from_gate(
+    same_shape_as: Option<clingate_core::gate_rules::rule_store::RuleTarget>,
+    edges: Vec<clingate_core::gate_rules::rule::EdgeFrom>,
+) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::FromAnotherGate(
+        clingate_core::gate_rules::rule::FromGateRule {
+            same_shape_as,
+            edges,
+        },
+    )
+}
+
+fn edge_from(
+    anchor: &str,
+    parameter: &str,
+    side: clingate_core::gate_rules::rule::Side,
+    anchor_side: clingate_core::gate_rules::rule::Side,
+) -> clingate_core::gate_rules::rule::EdgeFrom {
+    clingate_core::gate_rules::rule::EdgeFrom {
+        anchor: clingate_core::gate_rules::rule_store::RuleTarget::named(anchor),
+        parameter: parameter.into(),
+        side,
+        anchor_side,
+        gap: 0.0,
+    }
+}
+
+#[test]
+fn a_rule_from_another_gate_is_stored_with_what_a_run_reads_and_runs() {
+    use clingate_core::gate_rules::rule::Side;
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = linked_workspace("session-follow-written");
+    let mut session = Session::open(&folder).unwrap();
+    // Given a parameter and a partner, as Claude might out of habit: neither
+    // means anything to this rule, and neither is kept.
+    let written = session
+        .update_rule(change(
+            "Branch B",
+            None,
+            "SSC-A",
+            MeasuredOn::Partner("FMX".into()),
+            from_gate(
+                None,
+                vec![edge_from("Branch A", "fsc-a", Side::Upper, Side::Upper)],
+            ),
+        ))
+        .unwrap();
+    assert_eq!(written.resolved, ["parameter fsc-a is the channel FSC-A"]);
+    assert!(
+        written
+            .now
+            .contains("upper edge on FSC-A at the upper edge of Branch A")
+    );
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Branch B"))
+        .unwrap()
+        .clone();
+    assert_eq!(&*stored.parameter, "");
+    assert_eq!(stored.measured_on, MeasuredOn::Itself);
+
+    // It runs: the two branches are drawn alike, so Branch B is already where
+    // Branch A puts it, on both samples - and nothing is refused.
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.not_positioned.is_empty(),
+        "{:?}",
+        preview.not_positioned
+    );
+    let kept: Vec<&str> = preview
+        .already_in_place
+        .iter()
+        .filter(|k| k.gate.starts_with("Branch B"))
+        .map(|k| k.specimen.as_str())
+        .collect();
+    assert_eq!(kept.len(), 2, "{:?}", preview.already_in_place);
+}
+
+#[test]
+fn a_rule_from_another_gate_that_could_never_place_it_is_refused() {
+    use clingate_core::gate_rules::rule::Side;
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = linked_workspace("session-follow-refused");
+    let rules_file = clingate_core::workspace::rules_file(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let before = std::fs::read_to_string(&rules_file).unwrap();
+    let cases = [
+        (
+            from_gate(Some(RuleTarget::named("Branch B")), Vec::new()),
+            "cannot follow itself",
+        ),
+        (
+            from_gate(Some(RuleTarget::named("Branch C")), Vec::new()),
+            "Branch C, is not in the gating",
+        ),
+        (
+            from_gate(
+                None,
+                vec![edge_from("Branch A", "BUV661-A", Side::Lower, Side::Lower)],
+            ),
+            "Branch A is drawn on FSC-A and SSC-A, so it has no edge on BUV661-A",
+        ),
+        (from_gate(None, Vec::new()), "at least one edge"),
+    ];
+    for (rule, expected) in cases {
+        let said = session
+            .update_rule(change("Branch B", None, "", MeasuredOn::Itself, rule))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(expected), "{expected}\nsaid: {said}");
+    }
+    assert_eq!(std::fs::read_to_string(&rules_file).unwrap(), before);
+
+    // A loop: B follows A, then A following B is refused - and B's rule kept.
+    session
+        .update_rule(change(
+            "Branch B",
+            None,
+            "",
+            MeasuredOn::Itself,
+            from_gate(Some(RuleTarget::named("Branch A")), Vec::new()),
+        ))
+        .unwrap();
+    let after_first = std::fs::read_to_string(&rules_file).unwrap();
+    let said = session
+        .update_rule(change(
+            "Branch A",
+            None,
+            "",
+            MeasuredOn::Itself,
+            from_gate(Some(RuleTarget::named("Branch B")), Vec::new()),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("lead back to it"), "{said}");
+    assert_eq!(std::fs::read_to_string(&rules_file).unwrap(), after_first);
+}
+
+#[test]
+fn a_loop_already_in_the_rules_file_is_flagged_on_both_rules() {
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let folder = linked_workspace("session-follow-loop-listed");
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    for (gate, anchor) in [("Branch A", "Branch B"), ("Branch B", "Branch A")] {
+        store.insert(
+            RuleTarget::named(gate),
+            GateRule {
+                parameter: "".into(),
+                bound: Bound::Above,
+                measured_on: MeasuredOn::Itself,
+                rule: from_gate(Some(RuleTarget::named(anchor)), Vec::new()),
+            },
+        );
+    }
+    store
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let mut session = Session::open(&folder).unwrap();
+    for row in session.rules_view().unwrap().rules {
+        assert!(
+            row.problems.iter().any(|p| p.contains("lead back to it")),
+            "{}: {:?}",
+            row.population,
+            row.problems
+        );
+    }
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.would_move.is_empty() && preview.already_in_place.is_empty());
+    assert_eq!(
+        preview.not_positioned.len(),
+        2,
+        "{:?}",
+        preview.not_positioned
+    );
+}
+
+#[test]
+fn a_quadrant_s_corners_are_named_by_their_own_names() {
+    // A quadrant from Omiq is registered under its group id, and its corners
+    // used to be named by it - four populations called "IinB", and the gates
+    // under one corner named as if they were under all four.
+    let session = Session::open(&workspace("session-corner-names")).unwrap();
+    let rows = session.populations(None).unwrap();
+    let targets: Vec<&str> = rows.iter().map(|r| r.rule_target.as_str()).collect();
+    for corner in [
+        "Q1 IL-22- / IL-17A+ of teff_naive",
+        "Q2 IL-22+ / IL-17A+ of teff_naive",
+        "Q3 IL-22+ / IL-17A- of teff_naive",
+        "Q4 IL-22- / IL-17A- of teff_naive",
+        "IFny+ of Q4 IL-22- / IL-17A-",
+    ] {
+        assert!(targets.contains(&corner), "{corner}: {targets:?}");
+    }
+    assert!(
+        !targets.iter().any(|t| t.contains("IinB")),
+        "the group id names nothing: {targets:?}"
+    );
+    let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+    assert!(
+        paths.contains(&"1 > teff_naive > Q4 IL-22- / IL-17A- > IFny+"),
+        "{paths:?}"
+    );
+}

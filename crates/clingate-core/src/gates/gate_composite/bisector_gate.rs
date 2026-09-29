@@ -28,6 +28,11 @@ pub struct BisectorGate {
 }
 
 impl BisectorGate {
+    /// Where its line crosses x, and the height its label sits at.
+    pub fn point(&self) -> (f32, f32) {
+        self.points
+    }
+
     pub fn try_new(
         plot_map: &PlotMapper,
         id: Arc<str>,
@@ -240,6 +245,33 @@ impl BisectorGate {
 }
 
 impl super::super::gate_traits::DrawableGate for BisectorGate {
+    fn with_lines_of(
+        &self,
+        other: &dyn DrawableGate,
+    ) -> Option<anyhow::Result<Box<dyn DrawableGate>>> {
+        Some((|| {
+            let other = other
+                .as_any()
+                .downcast_ref::<Self>()
+                .ok_or_else(|| anyhow::anyhow!("only a bisector can take a bisector's line"))?;
+            // A bisector splits x; turned round it would split y, which is
+            // not a bisector drawn this way.
+            if other.parameters != self.parameters {
+                anyhow::bail!(
+                    "the bisector it follows is drawn on {} and {}, this one on {} and {}",
+                    other.parameters.0,
+                    other.parameters.1,
+                    self.parameters.0,
+                    self.parameters.1
+                );
+            }
+            Ok(
+                Box::new(self.clone_with_point(other.points.0, other.points.1)?)
+                    as Box<dyn DrawableGate>,
+            )
+        })())
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

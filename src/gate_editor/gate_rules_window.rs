@@ -9,7 +9,10 @@ use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
-use clingate_core::gate_rules::choices::{carry_over, choices, describe_phenotype, marker_label};
+use clingate_core::gate_rules::choices::{
+    EdgeForm, carry_over, choices, describe_phenotype, every_target, follow_from_form,
+    follow_to_form, marker_label,
+};
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
     ShapeFit, TailFractionRule, ValleyRule,
@@ -274,6 +277,11 @@ pub fn GateRulesWindow() -> Element {
     let mut keep = use_signal(|| "95".to_string());
     let mut outline_smoothing = use_signal(|| "1.0".to_string());
     let mut vertices = use_signal(|| "24".to_string());
+    // A rule from another gate: the whole shape of one gate ("shape"), or
+    // edges set against others ("edges").
+    let mut follow_mode = use_signal(|| "shape".to_string());
+    let mut follow_anchor = use_signal(String::new);
+    let mut follow_edges = use_signal(Vec::<EdgeForm>::new);
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
@@ -395,6 +403,13 @@ pub fn GateRulesWindow() -> Element {
                 outline_smoothing.set(format!("{}", r.smoothing));
                 vertices.set(format!("{}", r.vertices));
             }
+            Rule::FromAnotherGate(r) => {
+                kind.set("FromAnotherGate".to_string());
+                let (same, edges) = follow_to_form(r);
+                follow_mode.set(if same.is_some() { "shape" } else { "edges" }.to_string());
+                follow_anchor.set(same.unwrap_or_default());
+                follow_edges.set(edges);
+            }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
@@ -420,7 +435,10 @@ pub fn GateRulesWindow() -> Element {
         let param = parameter();
         // A phenotype rule positions nothing along an axis, so there is no
         // parameter to name. Every other rule needs one.
-        if param.is_empty() && kind() != "MatchThePhenotype" {
+        // Neither does a rule from another gate: its position is the other
+        // gate's.
+        let positions = !matches!(kind().as_str(), "MatchThePhenotype" | "FromAnotherGate");
+        if param.is_empty() && positions {
             warn(&toasts, "Choose the parameter the rule positions");
             return;
         }
@@ -456,6 +474,17 @@ pub fn GateRulesWindow() -> Element {
                     smoothing: sm,
                     vertices: v,
                 })
+            }
+            "FromAnotherGate" => {
+                let targets = every_target(&choices.read());
+                let same = (follow_mode() == "shape").then(|| follow_anchor());
+                match follow_from_form(same.as_deref(), &follow_edges(), &targets) {
+                    Ok(rule) => Rule::FromAnotherGate(rule),
+                    Err(e) => {
+                        warn(&toasts, e);
+                        return;
+                    }
+                }
             }
             "InTheValley" => {
                 let Ok(sm) = smoothing().parse::<f64>() else {
@@ -520,14 +549,19 @@ pub fn GateRulesWindow() -> Element {
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
+        let follows = kind() == "FromAnotherGate";
         let rule = GateRule {
-            parameter: Arc::from(param.as_str()),
+            // A rule from another gate reads its own sample, and positions
+            // along no parameter of its own.
+            parameter: Arc::from(if follows { "" } else { param.as_str() }),
             bound: if bound() == "Below" {
                 Bound::Below
             } else {
                 Bound::Above
             },
-            measured_on: if calibrated {
+            measured_on: if follows {
+                MeasuredOn::Itself
+            } else if calibrated {
                 // This rule calibrates against one named sample - the QC -
                 // rather than a partner of each specimen.
                 MeasuredOn::File(Arc::from(calibrate_on().as_str()))
@@ -588,6 +622,9 @@ pub fn GateRulesWindow() -> Element {
                                 // not read.
                                 if matches!(entry.rule.rule, Rule::MatchThePhenotype(_)) {
                                     td { class: "gate_rules-hint", "the whole shape" }
+                                    td { }
+                                } else if matches!(entry.rule.rule, Rule::FromAnotherGate(_)) {
+                                    td { class: "gate_rules-hint", "from another gate" }
                                     td { }
                                 } else {
                                     td { "{entry.rule.parameter}" }
@@ -726,7 +763,7 @@ pub fn GateRulesWindow() -> Element {
                 // has no parameter it positions along and no leading side.
                 // Leaving the fields on screen would invite a person to set
                 // something the rule then ignores.
-                if kind() != "MatchThePhenotype" {
+                if !matches!(kind().as_str(), "MatchThePhenotype" | "FromAnotherGate") {
                     label { "Positions on" }
                     select {
                         value: "{parameter}",
@@ -754,7 +791,7 @@ pub fn GateRulesWindow() -> Element {
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -781,6 +818,109 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
                     option { value: "InTheValley", "in the valley between the negative and the positive" }
                     option { value: "MatchThePhenotype", "find the cells that match the reference population" }
+                    option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
+                }
+
+                if kind() == "FromAnotherGate" {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Puts this gate where another is on the same sample - its whole shape, or one edge against another gate's edge. A run places the gate it follows first, so settle that gate before relying on this one."
+                    }
+                    label { "Follows" }
+                    select {
+                        value: "{follow_mode}",
+                        onchange: move |e| follow_mode.set(e.value()),
+                        option { value: "shape", "the same shape as" }
+                        option { value: "edges", "edges set against other gates" }
+                    }
+                    if follow_mode() == "shape" {
+                        label { "Gate" }
+                        select {
+                            value: "{follow_anchor}",
+                            onchange: move |e| follow_anchor.set(e.value()),
+                            option { value: "", "choose the gate it follows" }
+                            for target in every_target(&choices.read()) {
+                                option {
+                                    value: "{target.describe()}",
+                                    selected: follow_anchor() == target.describe(),
+                                    "{target.describe()}"
+                                }
+                            }
+                        }
+                    } else {
+                        for (at , row) in follow_edges().into_iter().enumerate() {
+                            label { "Edge {at + 1}" }
+                            div { class: "gate_rules-edge",
+                                select {
+                                    value: "{row.side}",
+                                    onchange: move |e| follow_edges.with_mut(|v| v[at].side = e.value()),
+                                    option { value: "Lower", "its lower edge" }
+                                    option { value: "Upper", "its upper edge" }
+                                }
+                                " on "
+                                select {
+                                    value: "{row.parameter}",
+                                    onchange: move |e| follow_edges.with_mut(|v| v[at].parameter = e.value()),
+                                    option { value: "", "parameter" }
+                                    for name in selected_parameters.read().clone() {
+                                        option {
+                                            value: "{name}",
+                                            selected: row.parameter == *name,
+                                            "{marker_label(&name, &panel.read())}"
+                                        }
+                                    }
+                                }
+                                " at the "
+                                select {
+                                    value: "{row.anchor_side}",
+                                    onchange: move |e| follow_edges.with_mut(|v| v[at].anchor_side = e.value()),
+                                    option { value: "Lower", "lower edge" }
+                                    option { value: "Upper", "upper edge" }
+                                }
+                                " of "
+                                select {
+                                    value: "{row.anchor}",
+                                    onchange: move |e| follow_edges.with_mut(|v| v[at].anchor = e.value()),
+                                    option { value: "", "choose a gate" }
+                                    for target in every_target(&choices.read()) {
+                                        option {
+                                            value: "{target.describe()}",
+                                            selected: row.anchor == target.describe(),
+                                            "{target.describe()}"
+                                        }
+                                    }
+                                }
+                                " plus "
+                                input {
+                                    value: "{row.gap}",
+                                    placeholder: "0",
+                                    oninput: move |e| follow_edges.with_mut(|v| v[at].gap = e.value()),
+                                }
+                                button {
+                                    class: "gate_rules-secondary",
+                                    onclick: move |_| {
+                                        follow_edges.with_mut(|v| {
+                                            v.remove(at);
+                                        })
+                                    },
+                                    "remove"
+                                }
+                            }
+                        }
+                        button {
+                            class: "gate_rules-secondary gate_rules-span",
+                            onclick: move |_| {
+                                follow_edges
+                                    .with_mut(|v| {
+                                        v.push(EdgeForm {
+                                            side: "Upper".into(),
+                                            anchor_side: "Lower".into(),
+                                            ..EdgeForm::default()
+                                        })
+                                    })
+                            },
+                            "add an edge"
+                        }
+                    }
                 }
 
                 if kind() == "MatchThePhenotype" {

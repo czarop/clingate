@@ -46,8 +46,11 @@ show, not raw channel values.
    gate is placed. The ruled gates are put in levels by the tree: level 0 has
    no ruled gate above it, level 1 has one, and so on. Steps 1-6 run once per
    level, each measuring on the gates as the levels above left them, and the
-   next level reads through those placements. The order the rules are listed
-   in plays no part. A run with no ruled gate under another is one level,
+   next level reads through those placements. A gate whose rule is from
+   another gate also waits for every gate it follows that a rule places. The
+   order the rules are listed in plays no part. A rule from another gate
+   whose anchor is not one gate, is itself, or leads round in a loop back to
+   it is reported and left alone (`anchor_problems`). A run with no ruled gate under another is one level,
    and reads each file once; each further level reads every file again.
    Before any level: a rule that reaches no gate is reported
    (`rules_reaching_nothing`), and a linked gate the rules reach at more than
@@ -440,8 +443,12 @@ Rule kinds and their fields:
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
 - `{"kind": "InTheValley", "smoothing": 1.0}`
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
+- `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
+  `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
+  the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.
 
 `measured_on` is `"Itself"`, `{"Partner": "<sample type>"}` or
-`{"File": "<file id>"}`. Every rule kind except MatchThePhenotype also takes
+`{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and
+FromAnotherGate also takes
 `"confidence": {"limits": {"events_full": 10000, "events_floor": 100,
 "swing_half": 1.0, "displacement_limit": 0.5}}`.

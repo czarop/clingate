@@ -226,6 +226,7 @@ pub enum Rule {
     AboveTheNegative(AboveTheNegativeRule),
     InTheValley(ValleyRule),
     MatchThePhenotype(PhenotypeRule),
+    FromAnotherGate(FromGateRule),
 }
 
 /// "Where I put it on the QC, relative to that sample's negative."
@@ -571,9 +572,10 @@ impl Rule {
             // rule is not a threshold at all: it does not move an edge along
             // one parameter, it replaces a geometry, so there is nothing here
             // for it to return.
-            Rule::AboveTheNegative(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => {
-                Err(SolveError::BadBand { band: (0.0, 0.0) })
-            }
+            Rule::AboveTheNegative(_)
+            | Rule::InTheValley(_)
+            | Rule::MatchThePhenotype(_)
+            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -597,7 +599,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
-            Rule::MatchThePhenotype(_) => return None,
+            Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) => return None,
         })
     }
 
@@ -605,9 +607,10 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => r.solve(values),
             Rule::PercentileOffset(r) => r.solve(values),
-            Rule::AboveTheNegative(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => {
-                Err(SolveError::BadBand { band: (0.0, 0.0) })
-            }
+            Rule::AboveTheNegative(_)
+            | Rule::InTheValley(_)
+            | Rule::MatchThePhenotype(_)
+            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -618,6 +621,7 @@ impl Rule {
             Rule::AboveTheNegative(r) => r.describe(),
             Rule::InTheValley(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
+            Rule::FromAnotherGate(r) => r.describe(),
         }
     }
 
@@ -641,7 +645,8 @@ impl Rule {
             Rule::PercentileOffset(_)
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
-            | Rule::MatchThePhenotype(_) => None,
+            | Rule::MatchThePhenotype(_)
+            | Rule::FromAnotherGate(_) => None,
         }
     }
 
@@ -670,6 +675,7 @@ impl Rule {
             Rule::AboveTheNegative(_) => "Above the negative",
             Rule::InTheValley(_) => "In the valley",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
+            Rule::FromAnotherGate(_) => "From another gate",
         }
     }
 }
@@ -814,6 +820,115 @@ impl Default for PhenotypeRule {
             keep: ninety_five(),
             smoothing: one(),
             vertices: two_dozen(),
+        }
+    }
+}
+
+// ── following another gate ────────────────────────────────────────────────
+
+/// Which edge of a gate, on one parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Side {
+    /// The low end - the left edge on x, the bottom on y.
+    Lower,
+    /// The high end - the right edge on x, the top on y.
+    Upper,
+}
+
+impl Side {
+    pub fn label(self) -> &'static str {
+        match self {
+            Side::Lower => "lower",
+            Side::Upper => "upper",
+        }
+    }
+}
+
+/// One edge of this gate set from one edge of another.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EdgeFrom {
+    /// The gate whose edge this one takes, named as a rule names a gate.
+    pub anchor: crate::gate_rules::rule_store::RuleTarget,
+    /// The parameter both gates are drawn on, whose edge is set.
+    pub parameter: Arc<str>,
+    /// Which edge of this gate moves.
+    pub side: Side,
+    /// Which edge of the anchor it is set to.
+    pub anchor_side: Side,
+    /// Added to the anchor's edge, in the units the plot is drawn in. 0 puts
+    /// the two edges together.
+    #[serde(default)]
+    pub gap: f64,
+}
+
+/// "In the same position as that gate", or "adjacent to that gate's edge".
+///
+/// A gating guide says this of a good many gates: the MAIT CD4-CD8+ gate goes
+/// where the main one is, CD154 on MAIT cells where it is on CD4 T cells, the
+/// CD19- gate against the left edge of CD19+CD14-. None of that is read from
+/// the data - it is read from another gate, on the same sample, after that
+/// gate has been placed. So a run places the anchor first (see
+/// `autogate::rule_levels`) and this gate follows it, sample by sample.
+///
+/// Exactly one of the two is given.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FromGateRule {
+    /// Take this gate's whole shape - for a gate drawn on the same two
+    /// parameters. A quadrant takes another quadrant's lines.
+    #[serde(default)]
+    pub same_shape_as: Option<crate::gate_rules::rule_store::RuleTarget>,
+    /// Set these edges, each from its own anchor. A rectangle's edge moves on
+    /// its own, the others staying where they are; any other shape slides
+    /// whole until that edge is there.
+    #[serde(default)]
+    pub edges: Vec<EdgeFrom>,
+}
+
+impl FromGateRule {
+    /// Every gate this one reads.
+    pub fn anchors(&self) -> Vec<&crate::gate_rules::rule_store::RuleTarget> {
+        self.same_shape_as
+            .iter()
+            .chain(self.edges.iter().map(|e| &e.anchor))
+            .collect()
+    }
+
+    /// What is wrong with it as written, before any gate is looked at.
+    pub fn problem(&self) -> Option<&'static str> {
+        match (&self.same_shape_as, self.edges.is_empty()) {
+            (Some(_), false) => Some(
+                "a rule from another gate takes the whole shape or sets edges, not both - \
+                 give same_shape_as or edges",
+            ),
+            (None, true) => {
+                Some("a rule from another gate needs same_shape_as, or at least one edge to set")
+            }
+            _ => None,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match &self.same_shape_as {
+            Some(anchor) => format!("the same shape as {}", anchor.describe()),
+            None => self
+                .edges
+                .iter()
+                .map(|e| {
+                    let gap = if e.gap == 0.0 {
+                        String::new()
+                    } else {
+                        format!(" {} {}", if e.gap < 0.0 { "-" } else { "+" }, e.gap.abs())
+                    };
+                    format!(
+                        "{} edge on {} at the {} edge of {}{gap}",
+                        e.side.label(),
+                        e.parameter,
+                        e.anchor_side.label(),
+                        e.anchor.describe()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
         }
     }
 }

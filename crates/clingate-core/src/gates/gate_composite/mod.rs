@@ -69,3 +69,26 @@ pub fn drawn_centre(centre: (f32, f32), x: (f32, f32), y: (f32, f32)) -> (f32, f
 
 #[cfg(test)]
 mod gate_composite_tests;
+
+/// Another composite's centre and arms, as this one draws them: as they are
+/// when the two are drawn on the same axes, turned when the axes are the other
+/// way round, and refused on any other parameters.
+pub fn lines_from(
+    here: &(std::sync::Arc<str>, std::sync::Arc<str>),
+    there: &(std::sync::Arc<str>, std::sync::Arc<str>),
+    points: &skewed_quadrant_gate::DataPoints,
+) -> anyhow::Result<skewed_quadrant_gate::DataPoints> {
+    if here == there {
+        return Ok(points.clone());
+    }
+    if here.0 == there.1 && here.1 == there.0 {
+        return Ok(points.clone_for_swap_axis());
+    }
+    anyhow::bail!(
+        "the gate it follows is drawn on {} and {}, this one on {} and {}",
+        there.0,
+        there.1,
+        here.0,
+        here.1
+    )
+}

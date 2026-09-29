@@ -30,8 +30,7 @@ pub fn unique_names(state: &GateState) -> FxHashMap<NodeId, Arc<str>> {
         let names: Vec<Arc<str>> = state
             .gate_chain_for_node(node)
             .iter()
-            .filter_map(|id| state.registered_gate(id))
-            .map(|g| Arc::from(g.get_name()) as Arc<str>)
+            .filter_map(|id| state.population_name(id))
             .collect();
         // `gate_chain_for_node` already reads root-first, which is the order a
         // path is spoken in - so the last few entries are a path ending here.

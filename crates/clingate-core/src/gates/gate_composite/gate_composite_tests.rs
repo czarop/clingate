@@ -487,3 +487,125 @@ fn matching_a_composite_to_swapped_axes_produces_a_swapped_gate() {
     assert_eq!(swapped.get_params(), (Arc::from(Y), Arc::from(X)));
     assert_eq!(swapped.get_inner_gate_ids().len(), 4);
 }
+
+// ─── Taking another composite's lines ─────────────────────────────────────────
+//
+// "Position gate 47 according to the position of the same gates on the
+// CD4-CD8+ population": one quadrant set where another is.
+
+fn quadrant_at(id: &str, pixel: (f32, f32), x: &str, y: &str) -> QuadrantGate {
+    QuadrantGate::try_new_from_raw_coord(
+        &mapper(),
+        Arc::from(id),
+        format!("{id} name"),
+        pixel,
+        Arc::from(x),
+        Arc::from(y),
+    )
+    .unwrap()
+}
+
+fn as_quadrant(gate: &dyn DrawableGate) -> &QuadrantGate {
+    gate.as_any().downcast_ref::<QuadrantGate>().unwrap()
+}
+
+#[test]
+fn a_quadrant_takes_another_s_lines_and_keeps_its_own_corners() {
+    let mine = quadrant_at("mine", (300.0, 300.0), X, Y);
+    let theirs = quadrant_at("theirs", (150.0, 420.0), X, Y);
+    assert_ne!(mine.points().center, theirs.points().center, "start apart");
+
+    let moved = mine.with_lines_of(&theirs).unwrap().unwrap();
+    let moved = as_quadrant(moved.as_ref());
+    assert_eq!(moved.points(), theirs.points(), "centre and arms");
+    assert_eq!(&*moved.get_id(), "mine");
+    assert_eq!(moved.get_inner_gate_ids(), mine.get_inner_gate_ids());
+    let names = |q: &QuadrantGate| -> Vec<String> {
+        q.get_inner_gate_ids()
+            .iter()
+            .map(|id| q.get_gate_ref(Some(id)).unwrap().name.clone())
+            .collect()
+    };
+    assert_eq!(names(moved), names(&mine), "its corners keep their names");
+}
+
+#[test]
+fn a_quadrant_drawn_the_other_way_round_is_turned_to_match() {
+    let mine = quadrant_at("mine", (300.0, 300.0), X, Y);
+    let theirs = quadrant_at("theirs", (150.0, 420.0), Y, X);
+    let moved = mine.with_lines_of(&theirs).unwrap().unwrap();
+    let c = as_quadrant(moved.as_ref()).points().center;
+    let t = theirs.points().center;
+    assert_eq!(c, (t.1, t.0), "its x is their y");
+}
+
+#[test]
+fn a_quadrant_on_other_markers_or_of_another_kind_cannot_be_followed() {
+    let mine = quadrant_at("mine", (300.0, 300.0), X, Y);
+    let elsewhere = quadrant_at("theirs", (150.0, 420.0), X, "CD8");
+    let said = mine
+        .with_lines_of(&elsewhere)
+        .unwrap()
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(said.contains("drawn on CD3 and CD8"), "{said}");
+
+    let said = mine
+        .with_lines_of(&skewed("s"))
+        .unwrap()
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(said.contains("only a quadrant"), "{said}");
+}
+
+#[test]
+fn a_skewed_quadrant_and_a_bisector_take_their_own_kind_s_lines() {
+    let mine = skewed("mine");
+    let theirs = skewed("theirs")
+        .replace_point((500.0, 500.0), 0, None, &mapper())
+        .unwrap();
+    let moved = mine.with_lines_of(theirs.as_ref()).unwrap().unwrap();
+    let moved = moved.as_any().downcast_ref::<SkewedQuadrantGate>().unwrap();
+    let theirs = theirs
+        .as_any()
+        .downcast_ref::<SkewedQuadrantGate>()
+        .unwrap();
+    assert_eq!(moved.points().center, theirs.points().center);
+    assert_ne!(moved.points().center, mine.points().center, "it moved");
+    assert_eq!(moved.get_inner_gate_ids(), mine.get_inner_gate_ids());
+
+    let mine = bisector("mine");
+    let theirs = bisector("theirs")
+        .replace_point((450.0, 300.0), 0, None, &mapper())
+        .unwrap();
+    let moved = mine.with_lines_of(theirs.as_ref()).unwrap().unwrap();
+    let moved = moved.as_any().downcast_ref::<BisectorGate>().unwrap();
+    let theirs = theirs.as_any().downcast_ref::<BisectorGate>().unwrap();
+    assert_eq!(moved.point(), theirs.point());
+    assert_ne!(moved.point(), mine.point(), "it moved");
+    assert_eq!(moved.get_inner_gate_ids(), mine.get_inner_gate_ids());
+}
+
+#[test]
+fn a_plain_gate_has_no_lines_to_take() {
+    let rect = crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+        flow_gates::Gate {
+            id: Arc::from("r"),
+            name: "r".into(),
+            geometry: flow_gates::create_rectangle_geometry(
+                vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)],
+                X,
+                Y,
+            )
+            .unwrap(),
+            mode: flow_gates::GateMode::Global,
+            parameters: (Arc::from(X), Arc::from(Y)),
+            label_position: None,
+        },
+        true,
+    )
+    .unwrap();
+    assert!(rect.with_lines_of(&quadrant("q")).is_none());
+}

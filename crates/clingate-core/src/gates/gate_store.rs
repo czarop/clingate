@@ -1626,6 +1626,24 @@ impl GateState {
         self.gate_store.insert_for_source(ids, gate, source);
     }
 
+    /// The name of the population a placement of `gate_id` draws.
+    ///
+    /// A quadrant's corners are registered under the quadrant, so asking the
+    /// registered gate its name gave the quadrant's - in a file from Omiq, its
+    /// group id - for all four corners alike: four populations with one name,
+    /// and every population under a corner named as if it were under all of
+    /// them. A corner is named by its own name; everything else, including a
+    /// quadrant's own id, by the gate's.
+    pub fn population_name(&self, gate_id: &GateId) -> Option<Arc<str>> {
+        let gate = self.registered_gate(gate_id)?;
+        let own = gate
+            .is_composite()
+            .then(|| gate.get_gate_ref(Some(gate_id.as_ref())))
+            .flatten()
+            .map(|corner| Arc::from(corner.name.as_str()));
+        Some(own.unwrap_or_else(|| Arc::from(gate.get_name())))
+    }
+
     /// The gate registered under an id, if any.
     pub fn registered_gate(&self, gate_id: &GateId) -> Option<Arc<dyn DrawableGate>> {
         self.gate_store
