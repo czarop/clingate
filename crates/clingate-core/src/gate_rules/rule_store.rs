@@ -44,6 +44,29 @@ pub enum MeasuredOn {
     /// One named file, whichever sample is being gated - a QC or template run
     /// that every sample is positioned against.
     File(FileId),
+    /// One named file for each run: the sample being gated reads the file named
+    /// for its own run - the value of the pairing's `run_column` - so each
+    /// plate is calibrated on a sample gated by hand on that plate.
+    FilePerRun(Vec<RunReference>),
+}
+
+/// The file a run's samples are calibrated on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunReference {
+    /// The run, as the pairing's `run_column` holds it.
+    pub run: Arc<str>,
+    pub file: FileId,
+}
+
+impl MeasuredOn {
+    /// Every file this names outright - the reference, or each run's.
+    pub fn named_files(&self) -> Vec<&FileId> {
+        match self {
+            MeasuredOn::File(file) => vec![file],
+            MeasuredOn::FilePerRun(runs) => runs.iter().map(|r| &r.file).collect(),
+            MeasuredOn::Itself | MeasuredOn::Partner(_) => Vec::new(),
+        }
+    }
 }
 
 /// A reference file chosen by hand, overriding what the pairing would find.
@@ -113,6 +136,12 @@ pub struct SamplePairing {
     /// specimens and disagreeing about their order is worse than either order.
     #[serde(default)]
     pub sort_column: Option<Arc<str>>,
+    /// The metadata column that says which run - which plate, which day's
+    /// staining - each file belongs to. What a rule reading a whole run's
+    /// controls together, or a reference for each run, goes by. Empty means
+    /// the dataset is one run.
+    #[serde(default)]
+    pub run_column: Option<Arc<str>>,
 }
 
 fn default_display_order() -> Vec<Arc<str>> {
@@ -127,6 +156,7 @@ impl Default for SamplePairing {
             derive_type: None,
             display_order: default_display_order(),
             sort_column: None,
+            run_column: None,
         }
     }
 }
@@ -194,6 +224,11 @@ impl SamplePairing {
     ///
     /// A file the column says nothing about sorts last rather than first, so a
     /// gap in the metadata does not push those files to the top of every list.
+    /// The run a file belongs to, when the pairing names a run column.
+    pub fn run_of(&self, columns: &FxHashMap<Arc<str>, Arc<str>>) -> Option<Arc<str>> {
+        columns.get(self.run_column.as_ref()?).cloned()
+    }
+
     pub fn sort_key(&self, columns: &FxHashMap<Arc<str>, Arc<str>>) -> Option<Arc<str>> {
         let column = self.sort_column.as_ref()?;
         columns.get(column).cloned()
@@ -467,6 +502,10 @@ impl RuleStore {
         let wanted = match measured_on {
             MeasuredOn::Itself => return Some(file.clone()),
             MeasuredOn::File(named) => return Some(named.clone()),
+            MeasuredOn::FilePerRun(runs) => {
+                let run = self.pairing.run_of(metadata.get(file)?)?;
+                return runs.iter().find(|r| r.run == run).map(|r| r.file.clone());
+            }
             MeasuredOn::Partner(t) => t,
         };
         if let Some(chosen) = self

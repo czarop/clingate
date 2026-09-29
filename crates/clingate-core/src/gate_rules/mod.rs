@@ -45,5 +45,7 @@ mod phenotype_tests;
 mod rule_store_tests;
 mod rule_tests;
 #[cfg(test)]
+mod runs_tests;
+#[cfg(test)]
 mod shape_fit_tests;
 mod threshold_tests;

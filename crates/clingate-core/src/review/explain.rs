@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_search_finds_lines_by_any_case_and_stops_at_the_limit() {
-        let found = search("FN SLIDE_TO_CAPTURE", 10);
+        let found = search("FN SLIDE_TO_CAPTURE(", 10);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].path, "gate_rules/autogate.rs");
         let line = read(found[0].path, Some(found[0].line), Some(found[0].line)).unwrap();

@@ -2576,3 +2576,198 @@ fn a_quadrant_s_corners_are_named_by_their_own_names() {
         "{paths:?}"
     );
 }
+
+// ─── runs ─────────────────────────────────────────────────────────────────────
+
+fn pooled_band(
+    pool: clingate_core::gate_rules::rule::Pool,
+) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::TailFraction(
+        clingate_core::gate_rules::rule::TailFractionRule {
+            pool,
+            ..clingate_core::gate_rules::rule::TailFractionRule::new((0.01, 0.02))
+        },
+    )
+}
+
+fn per_run(pairs: &[(&str, &str)]) -> clingate_core::gate_rules::rule_store::MeasuredOn {
+    clingate_core::gate_rules::rule_store::MeasuredOn::FilePerRun(
+        pairs
+            .iter()
+            .map(
+                |(run, file)| clingate_core::gate_rules::rule_store::RunReference {
+                    run: (*run).into(),
+                    file: (*file).into(),
+                },
+            )
+            .collect(),
+    )
+}
+
+#[test]
+fn the_run_column_is_set_in_the_rules_file_and_says_what_runs_it_finds() {
+    let folder = marked_workspace("session-run-column");
+    let mut session = Session::open(&folder).unwrap();
+    let said = session
+        .set_run_column(Some("Plate"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        said.contains("no column Plate") && said.contains("SampleType, Type, test"),
+        "{said}"
+    );
+
+    let set = session.set_run_column(Some("Type")).unwrap();
+    assert_eq!(set.column.as_deref(), Some("Type"));
+    assert_eq!(set.runs, [("one".to_string(), 1), ("two".to_string(), 1)]);
+    assert_eq!(set.files_with_no_run, 0);
+    let again = Session::open(&folder).unwrap();
+    assert_eq!(
+        again.rules().unwrap().pairing.run_column.as_deref(),
+        Some("Type"),
+        "written to the rules file"
+    );
+    // The rules in the file are kept.
+    assert_eq!(again.rules().unwrap().len(), 1);
+
+    let cleared = session.set_run_column(None).unwrap();
+    assert_eq!(cleared.column, None);
+    assert!(
+        Session::open(&folder)
+            .unwrap()
+            .rules()
+            .unwrap()
+            .pairing
+            .run_column
+            .is_none()
+    );
+}
+
+#[test]
+fn a_band_read_across_a_run_needs_the_run_column_and_a_kind_of_file_to_pool() {
+    use clingate_core::gate_rules::rule::Pool;
+    use clingate_core::gate_rules::rule_store::MeasuredOn;
+    let folder = marked_workspace("session-pooled-checked");
+    let mut session = Session::open(&folder).unwrap();
+    let fmx = || MeasuredOn::Partner("FMX".into());
+    let said = session
+        .update_rule(change("Tmem", None, "CD69", fmx(), pooled_band(Pool::Run)))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("set it with set_run_column first"), "{said}");
+
+    session.set_run_column(Some("Type")).unwrap();
+    session
+        .update_rule(change("Tmem", None, "CD69", fmx(), pooled_band(Pool::Run)))
+        .expect("with the run column set, the run's FMX files can be pooled");
+    let said = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "CD69",
+            file("sample1"),
+            pooled_band(Pool::Run),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("not one named file"), "{said}");
+    // And it runs.
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview
+            .not_positioned
+            .iter()
+            .all(|n| !n.reason.contains("run column")),
+        "{:?}",
+        preview.not_positioned
+    );
+}
+
+#[test]
+fn a_reference_for_each_run_is_resolved_and_every_run_needs_one_of_its_own() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget, RunReference};
+    let folder = marked_workspace("session-per-run");
+    let mut session = Session::open(&folder).unwrap();
+    let percentile_rule = percentile(0.0);
+    let said = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "CD69",
+            per_run(&[("one", "sample1")]),
+            percentile_rule.clone(),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(said.contains("set it with set_run_column first"), "{said}");
+
+    session.set_run_column(Some("Type")).unwrap();
+    for (pairs, expected) in [
+        (
+            vec![("one", "sample1")],
+            "no reference is named for Type two",
+        ),
+        (
+            vec![("one", "sample2"), ("two", "sample2")],
+            "sample2 is not in Type one - it is in two",
+        ),
+        (
+            vec![("one", "sample1"), ("three", "sample2")],
+            "there is no Type three - the runs are: one, two",
+        ),
+    ] {
+        let said = session
+            .update_rule(change(
+                "Tmem",
+                None,
+                "CD69",
+                per_run(&pairs),
+                percentile_rule.clone(),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(expected), "{pairs:?}: {said}");
+    }
+
+    // Named by file name, as the tools show them.
+    let written = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "CD69",
+            per_run(&[("one", "sample1_FMX.fcs"), ("two", "sample2_FS.fcs")]),
+            percentile_rule,
+        ))
+        .unwrap();
+    assert!(
+        written
+            .resolved
+            .contains(&"the reference sample1_FMX.fcs is the file sample1".to_string())
+    );
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Tmem"))
+        .unwrap()
+        .measured_on
+        .clone();
+    assert_eq!(
+        stored,
+        MeasuredOn::FilePerRun(vec![
+            RunReference {
+                run: "one".into(),
+                file: "sample1".into()
+            },
+            RunReference {
+                run: "two".into(),
+                file: "sample2".into()
+            },
+        ])
+    );
+    // Each specimen is its own run's reference here, so both are kept as
+    // references and neither is moved.
+    let preview = session.preview_rules().unwrap();
+    assert_eq!(preview.references.len(), 2, "{:?}", preview.not_positioned);
+    assert!(preview.would_move.is_empty());
+}

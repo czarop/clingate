@@ -32,7 +32,7 @@ pub use profile::{
 };
 pub use replay::{
     CASES_MAX, CASES_SHOWN, CaseDetail, CaseLine, CasePopulation, ReplayAnswer, ReplayScope,
-    RuleUpdated, describe_rule,
+    RuleUpdated, RunColumnSet, describe_rule,
 };
 pub use review::{FLAGS_SHOWN, Reported, Reviewed, RunAssessment};
 pub use rules::{

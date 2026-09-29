@@ -612,7 +612,7 @@ pub fn measure_population(
         // The form only ever writes `File` for this rule. This is for a
         // sidecar written by hand, where nothing else would catch it.
         let wrong_reference = match &rule.measured_on {
-            MeasuredOn::File(_) => None,
+            MeasuredOn::File(_) | MeasuredOn::FilePerRun(_) => None,
             MeasuredOn::Itself => Some("the sample itself".to_string()),
             MeasuredOn::Partner(kind) => Some(format!(
                 "each specimen's {kind}, which resolves per sample and may be a control \
@@ -956,12 +956,34 @@ fn slide_to_capture(
     bracket: (f64, f64),
     aim: crate::gate_rules::rule::BandAim,
 ) -> Option<(f64, f64)> {
+    slide_to_capture_by(
+        gate,
+        parameter,
+        bound,
+        &|moved| admitted_by(moved, index),
+        band,
+        bracket,
+        aim,
+    )
+}
+
+/// [`slide_to_capture`], counting what a position holds with `hold` - over
+/// several files at once, for a band read across a run.
+fn slide_to_capture_by(
+    gate: &Arc<dyn DrawableGate>,
+    parameter: &str,
+    bound: Bound,
+    hold: &dyn Fn(&Arc<dyn DrawableGate>) -> Option<f64>,
+    band: (f64, f64),
+    bracket: (f64, f64),
+    aim: crate::gate_rules::rule::BandAim,
+) -> Option<(f64, f64)> {
     use crate::gate_rules::rule::BandAim;
     let (lo, hi) = band;
     let target = (lo + hi) / 2.0;
     let at = |delta: f64| -> Option<f64> {
         let moved = translate_by(gate, parameter, delta).ok()?;
-        admitted_by(&moved, index)
+        hold(&moved)
     };
 
     // Sliding up the parameter admits fewer for an `Above` gate and more for a
@@ -1690,6 +1712,8 @@ pub fn solve_all_reporting(
 ) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
     let mut report = Report::default();
+    let mut pooled: FxHashMap<(GateId, Arc<str>), Result<PooledLine, String>> =
+        FxHashMap::default();
 
     // One line per gate and reason, not per file: the same miss on every file
     // is one problem. But it says which file, and how many shared it - a
@@ -1813,8 +1837,11 @@ pub fn solve_all_reporting(
         // from the moved gate and the drift would compound every time. Only a
         // rule naming one sample is affected - a partner rule's reference is
         // inside the specimen it is positioning, which is the point of it.
-        if let MeasuredOn::File(named) = &rule.measured_on
-            && specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen)
+        if rule
+            .measured_on
+            .named_files()
+            .into_iter()
+            .any(|named| specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen))
         {
             let holds = state
                 .gate_for_file(&measured.gate_id, &measured.file, metadata)
@@ -1842,6 +1869,38 @@ pub fn solve_all_reporting(
                     .map(|line| beyond_the_line(&line.values, line.bound, line.current))
                     .unwrap_or(f64::NAN),
             });
+            continue;
+        }
+
+        // A band read across the run: one line for every specimen in it, set
+        // on all of the run's files of that kind together - solved once.
+        if let Rule::TailFraction(band) = &rule.rule
+            && band.pool == crate::gate_rules::rule::Pool::Run
+        {
+            let outcome = pooled_line(
+                store,
+                rule,
+                band,
+                measured,
+                measurements,
+                metadata,
+                state,
+                &mut pooled,
+            )
+            .and_then(|line| line.for_specimen(state, measured, &specimen, metadata));
+            match outcome {
+                Ok(Outcome::Moved(p, placed)) => {
+                    report.positioned.push(p);
+                    placements.push(placed);
+                }
+                Ok(Outcome::Kept(u)) => report.unchanged.push(u),
+                Err(reason) => report.skipped.push(Skipped {
+                    file: measured.file.clone(),
+                    gate: measured.gate.clone(),
+                    parent_gate: measured.parent_gate.clone(),
+                    reason,
+                }),
+            }
             continue;
         }
 
@@ -1970,6 +2029,36 @@ fn why_no_reference(
              a file is named as it appears in the metadata"
         ),
         MeasuredOn::File(named) => not_usable(named),
+        MeasuredOn::FilePerRun(runs) => {
+            let Some(column) = &store.pairing.run_column else {
+                return "the rule names a reference for each run, but no run column is set - \
+                        set the column that says which run each file belongs to"
+                    .to_string();
+            };
+            let Some(run) = metadata
+                .get(&measured.file)
+                .and_then(|c| store.pairing.run_of(c))
+            else {
+                return format!(
+                    "this file has no {column}, so its run's reference cannot be found"
+                );
+            };
+            match runs.iter().find(|r| r.run == run) {
+                None => format!(
+                    "no reference is named for {column} {run} - the rule names one for {}",
+                    runs.iter()
+                        .map(|r| r.run.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                Some(r) if !metadata.contains_key(&r.file) => format!(
+                    "the reference for {column} {run}, \"{}\", is not one of this workspace's \
+                     files",
+                    r.file
+                ),
+                Some(r) => not_usable(&r.file),
+            }
+        }
         MeasuredOn::Partner(kind) => {
             match store.reference_file(&measured.file, &rule.measured_on, metadata) {
                 Some(id) => not_usable(&id),
@@ -1987,6 +2076,273 @@ fn why_no_reference(
         }
         MeasuredOn::Itself => not_usable(&measured.file),
     }
+}
+
+/// One line for a whole run, set on every file of one kind in it together.
+#[derive(Clone)]
+struct PooledLine {
+    /// The gate, moved: placed for every specimen in the run.
+    gate: Arc<dyn DrawableGate>,
+    to: f64,
+    achieved: f64,
+    in_band: bool,
+    first: FileId,
+    events: usize,
+    components: Vec<crate::gate_rules::confidence::Component>,
+    score: f64,
+    values: Vec<f64>,
+    bound: Bound,
+}
+
+impl PooledLine {
+    /// What the run's line means for one specimen: left where it is if its
+    /// gate is already the run's, otherwise placed there.
+    fn for_specimen(
+        &self,
+        state: &GateState,
+        measured: &Measurement,
+        specimen: &MetaDataKey,
+        metadata: &MetaDataFileMap,
+    ) -> Result<Outcome, String> {
+        let line = measured
+            .line
+            .as_ref()
+            .ok_or_else(|| "this gate was not measured along an axis".to_string())?;
+        let current = state
+            .gate_for_file(&measured.gate_id, &measured.file, metadata)
+            .ok_or_else(|| "the gate no longer resolves".to_string())?;
+        let same = current.get_gate_ref(None).map(|g| &g.geometry)
+            == self.gate.get_gate_ref(None).map(|g| &g.geometry);
+        if same {
+            return Ok(Outcome::Kept(Unchanged {
+                gate_id: measured.gate_id.clone(),
+                file: measured.file.clone(),
+                measured_on: Some(self.first.clone()),
+                line: Some(line.current),
+                shape: crate::review::shape::summarise(&line.values),
+                bound: Some(line.bound),
+                gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
+                specimen: specimen.group.clone(),
+                achieved: self.achieved,
+                above_the_line: beyond_the_line(&self.values, self.bound, self.to),
+            }));
+        }
+        Ok(Outcome::Moved(
+            Positioned {
+                gate_id: measured.gate_id.clone(),
+                file: measured.file.clone(),
+                gate: measured.gate.clone(),
+                parent_gate: measured.parent_gate.clone(),
+                specimen: specimen.group.clone(),
+                measured_on: self.first.clone(),
+                from: line.current,
+                to: self.to,
+                confidence: self.score,
+                weakest: crate::gate_rules::confidence::Confidence::from_components(
+                    self.components.clone(),
+                )
+                .weakest()
+                .map(|c| c.name),
+                components: self.components.clone(),
+                shape: crate::review::shape::summarise(&line.values),
+                bound: Some(line.bound),
+                achieved: self.achieved,
+                captured_on: self.first.clone(),
+                above_the_line: beyond_the_line(&self.values, self.bound, self.to),
+                reference_events: self.events,
+                in_band: self.in_band,
+                negative: None,
+                valley: None,
+                phenotype: None,
+            },
+            Placement {
+                gate_id: measured.gate_id.clone(),
+                specimen: specimen.clone(),
+                gate: self.gate.clone(),
+            },
+        ))
+    }
+}
+
+/// The run's line for `measured`'s gate, solved the first time any specimen of
+/// the run asks and kept in `cache` for the rest.
+#[allow(clippy::too_many_arguments)]
+fn pooled_line(
+    store: &RuleStore,
+    rule: &GateRule,
+    band: &crate::gate_rules::rule::TailFractionRule,
+    measured: &Measurement,
+    measurements: &[Measurement],
+    metadata: &MetaDataFileMap,
+    state: &GateState,
+    cache: &mut FxHashMap<(GateId, Arc<str>), Result<PooledLine, String>>,
+) -> Result<PooledLine, String> {
+    let pairing = &store.pairing;
+    let column = pairing.run_column.clone().ok_or_else(|| {
+        "the rule reads a whole run's files together, but no run column is set - set the \
+         column that says which run each file belongs to"
+            .to_string()
+    })?;
+    let run_of = |file: &FileId| metadata.get(file).and_then(|c| pairing.run_of(c));
+    let type_of = |file: &FileId| metadata.get(file).and_then(|c| pairing.sample_type_of(c));
+    let run = run_of(&measured.file)
+        .ok_or_else(|| format!("this file has no {column}, so its run cannot be read"))?;
+    let key = (measured.gate_id.clone(), run.clone());
+    if let Some(done) = cache.get(&key) {
+        return done.clone();
+    }
+    let wanted = match &rule.measured_on {
+        MeasuredOn::Partner(kind) => Some(kind.clone()),
+        MeasuredOn::Itself => type_of(&measured.file),
+        _ => None,
+    };
+    let solved = (|| {
+        let wanted = wanted.ok_or_else(|| {
+            "a band read across a run reads the run's files of one kind - measured on a \
+             partner type or on the sample itself"
+                .to_string()
+        })?;
+        let mut pool: Vec<&Measurement> = measurements
+            .iter()
+            .filter(|m| {
+                m.gate_id == measured.gate_id
+                    && type_of(&m.file).as_deref() == Some(&*wanted)
+                    && run_of(&m.file).as_deref() == Some(&*run)
+                    && m.line.is_some()
+            })
+            .collect();
+        pool.sort_by(|a, b| a.file.cmp(&b.file));
+        let first = pool.first().ok_or_else(|| {
+            format!("no {wanted} file in {column} {run} was measured for this gate")
+        })?;
+        let first_line = first.line.as_ref().expect("filtered on a line");
+        let start = state
+            .gate_for_file(&measured.gate_id, &first.file, metadata)
+            .ok_or_else(|| "the gate no longer resolves".to_string())?;
+        let events: usize = pool.iter().map(|m| m.index.event_index.len()).sum();
+        if events == 0 {
+            return Err(format!(
+                "the {wanted} files of {column} {run} hold no events here"
+            ));
+        }
+        // What a position holds of every file in the pool together - counted
+        // through each file's own index, as the plot counts it.
+        let hold = |gate: &Arc<dyn DrawableGate>| -> Option<f64> {
+            let mut inside = 0.0;
+            for m in &pool {
+                let n = m.index.event_index.len();
+                if n > 0 {
+                    inside += admitted_by(gate, &m.index)? * n as f64;
+                }
+            }
+            Some(inside / events as f64)
+        };
+        let values: Vec<f64> = pool
+            .iter()
+            .flat_map(|m| {
+                m.line
+                    .as_ref()
+                    .expect("filtered on a line")
+                    .values
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        let parameter = first_line.parameter.clone();
+        let bound = first_line.bound;
+        let pooled = crate::gate_rules::confidence::Component::new(
+            "pooled",
+            1.0,
+            format!(
+                "one line for {column} {run}, set on its {} {wanted} files together ({events} \
+                 events)",
+                pool.len()
+            ),
+        );
+
+        if let Some(already) = hold(&start)
+            && {
+                let (lo, hi) = band.kept_band();
+                (lo..=hi).contains(&already)
+            }
+        {
+            return Ok(PooledLine {
+                gate: start,
+                to: first_line.current,
+                achieved: already,
+                in_band: true,
+                first: first.file.clone(),
+                events,
+                components: vec![pooled],
+                score: 1.0,
+                values,
+                bound,
+            });
+        }
+
+        let (delta, got) = slide_to_capture_by(
+            &start,
+            &parameter,
+            bound,
+            &hold,
+            band.band,
+            bracket_for(&values, first_line.current),
+            band.aim,
+        )
+        .ok_or_else(|| "no position along this axis holds the band".to_string())?;
+        let moved = translate_by(&start, &parameter, delta).map_err(|e| e.to_string())?;
+        let to = first_line.current + delta;
+        let in_band = (band.band.0..=band.band.1).contains(&got);
+
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| b.total_cmp(a));
+        let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
+        let nudge = (spread * crate::gate_rules::threshold::STABILITY_WINDOW).max(f64::EPSILON);
+        let at = |d: f64| {
+            translate_by(&moved, &parameter, d)
+                .ok()
+                .and_then(|g| hold(&g))
+        };
+        let swing = match (at(-nudge), at(nudge)) {
+            (Some(back), Some(forward)) if got > 0.0 => (back - forward).abs() / got,
+            _ => 0.0,
+        };
+        let threshold = crate::gate_rules::threshold::Threshold {
+            x: to,
+            events_admitted: (got * events as f64).round() as usize,
+            fraction_admitted: got,
+            parent_events: events,
+            count_swing: swing,
+            parent_spread: spread,
+            status: if in_band {
+                crate::gate_rules::threshold::Status::InBand
+            } else {
+                crate::gate_rules::threshold::Status::OutOfBand { band: band.band }
+            },
+        };
+        let mut confidence = rule
+            .rule
+            .assess(&threshold, Some(first_line.current))
+            .ok_or_else(|| "this rule is not judged on a threshold".to_string())?;
+        confidence.components.push(pooled);
+        let confidence =
+            crate::gate_rules::confidence::Confidence::from_components(confidence.components);
+        Ok(PooledLine {
+            gate: moved,
+            to,
+            achieved: got,
+            in_band,
+            first: first.file.clone(),
+            events,
+            components: confidence.components.clone(),
+            score: confidence.score,
+            values,
+            bound,
+        })
+    })();
+    cache.insert(key, solved.clone());
+    solved
 }
 
 enum Outcome {

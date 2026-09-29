@@ -154,6 +154,13 @@ mod tests {
                 aim.key()
             );
         }
+        for pool in crate::gate_rules::rule::Pool::ALL {
+            assert!(
+                text("TailFraction").contains(&format!("`{}`", pool.key())),
+                "{}",
+                pool.key()
+            );
+        }
         for finder in NegativeFinder::ALL {
             assert!(text("AboveTheNegative").contains(&format!("`{}`", finder.key())));
         }

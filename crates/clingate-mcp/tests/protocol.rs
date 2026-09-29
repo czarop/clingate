@@ -454,7 +454,12 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
     assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 6);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
-    assert!(follow["result"]["guide"].as_str().unwrap().contains("`same_shape_as`"));
+    assert!(
+        follow["result"]["guide"]
+            .as_str()
+            .unwrap()
+            .contains("`same_shape_as`")
+    );
     let one = server.call("rule_guide", json!({"rule": "tail fraction"}));
     assert_eq!(one["outcome"], "ok", "{one}");
     assert_eq!(one["result"]["kind"], "TailFraction");
