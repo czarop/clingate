@@ -19,12 +19,16 @@
 mod edits;
 mod gates;
 pub mod lookup;
+mod profile;
 mod replay;
 mod review;
 mod rules;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
+pub use profile::{
+    PICTURE_TILES, PROFILE_SPECIMENS, PROFILE_SPECIMENS_MAX, Picture, ProfileAnswer,
+};
 pub use replay::{
     CASES_MAX, CASES_SHOWN, CaseDetail, CaseLine, CasePopulation, ReplayAnswer, ReplayScope,
     RuleUpdated, describe_rule,

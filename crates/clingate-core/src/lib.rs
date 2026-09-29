@@ -24,6 +24,7 @@ pub mod gates;
 pub mod history;
 pub mod macros;
 pub mod omiq;
+pub mod picture;
 pub mod review;
 pub mod sample_pairs;
 #[cfg(test)]

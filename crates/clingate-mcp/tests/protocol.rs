@@ -201,6 +201,8 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "explain_gate_positioning",
         "rule_guide",
         "try_rules",
+        "gate_profile",
+        "gate_picture",
         "read_positioning_code",
         "replay_rules",
         "replay_case",
@@ -593,6 +595,48 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
         json!({"population": "Tmem", "candidates": [{"kind": "TailFraction"}]}),
     );
     assert_eq!(bad_candidates["outcome"], "failed", "{bad_candidates}");
+
+    // What the gate's populations look like, and a picture of it.
+    let profiled = server.call("gate_profile", json!({"population": "Tmem"}));
+    assert_eq!(profiled["outcome"], "ok", "{profiled}");
+    assert!(
+        profiled["result"]["profile"]["gate"]
+            .as_str()
+            .unwrap()
+            .starts_with("Tmem of ")
+    );
+    assert!(!profiled["result"]["lines"].as_array().unwrap().is_empty());
+    let every = server.call("gate_profile", json!({"specimens": 1}));
+    assert_eq!(every["outcome"], "ok", "{every}");
+    assert!(every["result"]["profile"].is_null());
+    assert_eq!(every["result"]["specimens_read"], 1);
+    let drawn = server.request(
+        "tools/call",
+        json!({"name": "gate_picture", "arguments": {"population": "Tmem", "tiles": 2}}),
+    );
+    let content = drawn["result"]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "image", "{drawn}");
+    assert_eq!(content[0]["mimeType"], "image/png");
+    // A PNG, base64: its signature.
+    assert!(
+        content[0]["data"]
+            .as_str()
+            .unwrap()
+            .starts_with("iVBORw0KGgo")
+    );
+    let said: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(said["outcome"], "ok", "{said}");
+    let plots = said["result"]["plots_left_to_right_top_to_bottom"]
+        .as_array()
+        .unwrap();
+    assert!((1..=2).contains(&plots.len()), "{said}");
+    let asked = server.request(
+        "tools/call",
+        json!({"name": "gate_picture", "arguments": {"population": "Tme"}}),
+    );
+    let said: Value =
+        serde_json::from_str(asked["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(said["outcome"], "needs_clarification", "{said}");
 
     // Written only when asked, into the rules file.
     let updated = server.call(

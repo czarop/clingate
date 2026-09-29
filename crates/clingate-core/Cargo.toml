@@ -39,6 +39,8 @@ rand_distr = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Content addresses for the populations a review library keeps once each.
 blake3 = "1"
+# Pictures of gates for Claude: plots tiled into one PNG, outlines drawn in.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

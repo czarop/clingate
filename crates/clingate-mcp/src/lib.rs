@@ -78,12 +78,23 @@ a gate on your own judgement. mark_run_reviewed records that the user has \
 finished reviewing a run: only when they say so, since every placement they \
 did not report then counts as accepted.
 
-To choose a rule for a gate, or to see why one misplaced a gate, start with \
-rule_guide: how to choose by what the data looks like, and each rule's \
-workings, settings and traps. Then try_rules tries up to four candidates on \
-the files as they are, moving nothing - shortlist from what the data looks \
-like, try, and let the results decide, discussing them with the user. Keep \
-it lean: a few candidates, not every setting. To work out with the user how the rules could \
+To build rules for a panel with the user - done once per panel, so be \
+thorough but lean: \
+1. gate_profile with no population: every gate in a line - what its \
+populations look like by sample type. Agree with the user which gates need \
+rules. \
+2. For each of those: rule_guide (once, and a rule's full guide when you \
+need it), gate_picture on that gate (one picture, not one per sample), and \
+gate_profile on that gate for the numbers. \
+3. Shortlist two or three candidate rules from the shape of the data and \
+the guides, and try_rules them together - the results decide, not the \
+shortlist. Show the user what each would do, especially where they disagree \
+and what they flag. \
+4. update_rule only on the user's word. \
+Do not picture every gate or try every setting: a few well-chosen \
+candidates per gate is the point.
+
+To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
 decides, and \
 read_positioning_code shows the code itself - read what you need rather than \
@@ -229,6 +240,27 @@ pub struct TryRules {
     /// How many samples to list, most telling first (default 30, at most 300). The summaries
     /// always count every sample.
     pub max_rows: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GateProfileArgs {
+    /// The population whose gate to profile, by its gate names. Leave out for every gate, a
+    /// line each.
+    pub population: Option<String>,
+    /// How many specimens to read, spread evenly through the dataset (default 12, at most 60).
+    pub specimens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GatePictureArgs {
+    /// The population whose gate to draw, by its gate names.
+    pub population: String,
+    /// Samples to draw, by words of their file names or metadata. Leave out to draw the ones
+    /// most worth seeing: the reference the gate's rule reads, and for each sample type where
+    /// the gate holds least, most and most typically.
+    pub samples: Option<String>,
+    /// How many plots at most (default 6, at most 9).
+    pub tiles: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -708,6 +740,49 @@ impl Clingate {
             s.try_rules(&args.population, &candidates, args.max_rows)
         })
         .await
+    }
+
+    /// What a gate's populations look like across the dataset, on each of its two markers, by
+    /// sample type: each sample's shape class (separate, shoulder, smear, merged, negative
+    /// only, several peaks), how the negative shifts and changes shape, where the gate sits now
+    /// against the negative and what it holds, and on the full stain how much lies above its
+    /// FMX's top. Reads a spread of specimens; moves nothing. For choosing a rule.
+    #[tool(annotations(read_only_hint = true))]
+    async fn gate_profile(&self, Parameters(args): Parameters<GateProfileArgs>) -> String {
+        self.run(move |s| s.gate_profile(args.population.as_deref(), args.specimens))
+            .await
+    }
+
+    /// A picture of a gate drawn on several samples, as the app draws them, with the gate's
+    /// outline in: the samples named, or the most telling ones. Read the plots as a person
+    /// would - where the negative ends, whether the positive separates or smears, whether the
+    /// gate sits alike on every sample. The captions say which plot is which, left to right,
+    /// top to bottom, and what the gate holds on each.
+    #[tool(annotations(read_only_hint = true))]
+    async fn gate_picture(
+        &self,
+        Parameters(args): Parameters<GatePictureArgs>,
+    ) -> rmcp::model::CallToolResult {
+        use base64::Engine as _;
+        use rmcp::model::{CallToolResult, ContentBlock};
+        let drawn = self
+            .with_session(move |s| {
+                s.gate_picture(&args.population, args.samples.as_deref(), args.tiles)
+            })
+            .await;
+        match drawn {
+            Ok(Ok(picture)) => CallToolResult::success(vec![
+                ContentBlock::image(
+                    base64::engine::general_purpose::STANDARD.encode(&picture.png),
+                    "image/png",
+                ),
+                ContentBlock::text(ok(serde_json::json!({
+                    "plots_left_to_right_top_to_bottom": picture.tiles,
+                }))),
+            ]),
+            Ok(Err(refusal)) => CallToolResult::success(vec![ContentBlock::text(refused(refusal))]),
+            Err(reason) => CallToolResult::success(vec![ContentBlock::text(failed(reason))]),
+        }
     }
 
     /// The source code that positions gates, scores them and replays them - exactly what the

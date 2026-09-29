@@ -1625,3 +1625,144 @@ fn a_trial_needs_one_to_four_candidates_and_a_population_that_is_there() {
         "{summary:?}"
     );
 }
+
+#[test]
+fn a_gate_is_profiled_on_both_its_markers_by_sample_type() {
+    use clingate_core::gate_rules::profile::ShapeClass;
+    let folder = rule_in(tmem_workspace("session-profile"), percentile(0.0));
+    let session = Session::open(&folder).unwrap();
+    let answer = session.gate_profile(Some("Tmem"), None).unwrap();
+    assert_eq!((answer.specimens_read, answer.specimens), (2, 2));
+    assert!(answer.problems.is_empty(), "{:?}", answer.problems);
+    assert!(answer.classes.contains("smear (no dip"));
+    let profile = answer.profile.as_ref().expect("one gate, in full");
+    assert!(profile.gate.starts_with("Tmem of "));
+    let markers: Vec<&str> = profile
+        .markers
+        .iter()
+        .map(|m| m.parameter.as_str())
+        .collect();
+    assert_eq!(markers, ["BUV805-A", "BUV563-A"]);
+
+    // On its marker: a negative and a separate positive on both kinds of
+    // sample, the gate in the gap holding the positives.
+    let on_x = &profile.markers[0];
+    let kinds: Vec<&str> = on_x
+        .by_type
+        .iter()
+        .map(|t| t.sample_type.as_str())
+        .collect();
+    assert_eq!(kinds, ["FMX", "FS"]);
+    for t in &on_x.by_type {
+        assert_eq!(t.samples, 1);
+        assert_eq!(t.classes.get(&ShapeClass::Separate), Some(&1), "{t:?}");
+        let held = t.holds.as_ref().unwrap().median;
+        assert!((0.25..0.45).contains(&held), "{held}");
+        assert!(t.gate_in_right_widths.as_ref().unwrap().median > 1.0);
+        assert!(t.parent_events_median > 500);
+    }
+    // The FMX and the full stain are different specimens here, so no full
+    // stain has a control to be read against.
+    assert!(on_x.signal_over_control.is_none());
+    // In a line each.
+    assert_eq!(answer.lines.len(), 2);
+    assert!(
+        answer.lines[0].contains("| BUV805-A: FMX x1 [separate 1]"),
+        "{}",
+        answer.lines[0]
+    );
+
+    // One specimen's FMX and full stain: the full stain read against its
+    // FMX's top. The FMX here carries the same positives as the full stain,
+    // so almost nothing lies above it - no signal the FMX lacks.
+    write_metadata(
+        &folder.join("metadata.csv"),
+        &["test", "Type", "SampleType"],
+        &[
+            ("sample1", "sample1_FMX.fcs", &["one", "one", "FMX"]),
+            ("sample2", "sample2_FS.fcs", &["one", "one", "FS"]),
+        ],
+    );
+    let paired = Session::open(&folder)
+        .unwrap()
+        .gate_profile(Some("Tmem"), None)
+        .unwrap();
+    let on_x = &paired.profile.as_ref().unwrap().markers[0];
+    let (control, signal) = on_x.signal_over_control.as_ref().unwrap();
+    assert_eq!(control, "FMX");
+    assert!(signal.median < 0.02, "{signal:?}");
+    assert!(
+        paired.lines[0].contains("above the FMX's top"),
+        "{}",
+        paired.lines[0]
+    );
+
+    // Fewer specimens on request, the total still said.
+    let one = session.gate_profile(Some("Tmem"), Some(1)).unwrap();
+    assert_eq!((one.specimens_read, one.specimens), (1, 2));
+}
+
+#[test]
+fn every_gate_is_profiled_in_a_line_and_nothing_moves() {
+    let folder = rule_in(tmem_workspace("session-profile-all"), percentile(0.0));
+    let session = Session::open(&folder).unwrap();
+    let before = tmem_edge(&session);
+    let answer = session.gate_profile(None, None).unwrap();
+    assert!(answer.profile.is_none(), "many gates: lines only");
+    assert!(answer.lines.len() >= 2, "{:?}", answer.lines);
+    assert!(answer.lines.iter().any(|l| l.starts_with("Tmem of ")));
+    assert_eq!(tmem_edge(&session), before);
+    assert!(!folder.join("reviews").exists());
+    assert!(matches!(
+        session.gate_profile(Some("Tme"), None),
+        Err(Refusal::NeedsClarification(_))
+    ));
+}
+
+#[test]
+fn a_gate_is_pictured_on_the_samples_worth_seeing_with_its_outline_drawn_in() {
+    let folder = rule_in(tmem_workspace("session-picture"), percentile(0.0));
+    let session = Session::open(&folder).unwrap();
+    let picture = session.gate_picture("Tmem", None, None).unwrap();
+    let image = image::load_from_memory(&picture.png).unwrap().to_rgba8();
+    // Both samples, each the typical one of its kind, side by side.
+    assert_eq!(picture.tiles.len(), 2, "{:?}", picture.tiles);
+    assert_eq!((image.width(), image.height()), (600, 300));
+    assert!(
+        picture.tiles.iter().any(|t| t.contains("(FS) - typical")),
+        "{:?}",
+        picture.tiles
+    );
+    assert!(
+        picture.tiles.iter().any(|t| t.contains("(FMX) - typical")),
+        "{:?}",
+        picture.tiles
+    );
+    for tile in &picture.tiles {
+        let held: f64 = tile
+            .split("the gate holds ")
+            .nth(1)
+            .and_then(|s| s.split('%').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| panic!("{tile}"));
+        assert!((25.0..45.0).contains(&held), "{tile}");
+    }
+    // The outline is drawn into the picture: black inside the plotting area,
+    // where only the gate is black - the axes' text is outside it.
+    let ink = (70..280)
+        .flat_map(|x| (15..230).map(move |y| (x, y)))
+        .filter(|(x, y)| image.get_pixel(*x, *y).0 == [0, 0, 0, 255])
+        .count();
+    assert!(ink > 100, "{ink} black pixels in the plot");
+
+    // Named samples; one tile.
+    let one = session.gate_picture("Tmem", Some("fmx"), None).unwrap();
+    assert_eq!(one.tiles.len(), 1);
+    let image = image::load_from_memory(&one.png).unwrap();
+    assert_eq!((image.width(), image.height()), (300, 300));
+    assert!(
+        session
+            .gate_picture("Tmem", Some("nothing like it"), None)
+            .is_err()
+    );
+}

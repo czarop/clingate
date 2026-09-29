@@ -268,7 +268,7 @@ impl Session {
     }
 
     /// A file's name in the program, from its gating id.
-    fn sample_name(&self, file: &Arc<str>) -> String {
+    pub(crate) fn sample_name(&self, file: &Arc<str>) -> String {
         let names: HashMap<&Arc<str>, &Arc<str>> = self
             .metadata
             .file_name_to_gating_id()
@@ -291,17 +291,10 @@ impl Session {
         candidates: &[crate::gate_rules::rule_store::GateRule],
         max_rows: Option<usize>,
     ) -> Result<TrialAnswer, Refusal> {
-        use crate::gate_rules::rule_store::RuleTarget;
-        let (_, facts) = self.one_population(population)?;
-        let gate = facts
-            .path
-            .last()
-            .cloned()
+        let (node, _) = self.one_population(population)?;
+        let (target, _, _) = self
+            .target_of(&node)
             .ok_or_else(|| failed("that population has no gate"))?;
-        let target = match facts.path.len() {
-            0 | 1 => RuleTarget::named(gate),
-            n => RuleTarget::under(gate, facts.path[n - 2].clone()),
-        };
         let rules = self.rules.clone().unwrap_or_default();
         let inputs = RunInputs::assemble(
             Some(&self.files),

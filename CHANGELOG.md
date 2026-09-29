@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Gate profiles and pictures for choosing rules with Claude.**
+  `gate_profile` classes each sample's population on each of a gate's
+  markers - separate, shoulder, smear, merged, negative only, several
+  peaks - by the same measurements the rules make, and sums them up by
+  sample type: how the negative shifts and changes shape, where the gate
+  sits against it, what it holds, and how much of each full stain lies
+  above its FMX. `gate_picture` draws the gate on the most telling samples
+  as one picture, outline included. With the rule guides and `try_rules`,
+  the tools' instructions lay out building a panel's rules step by step.
+
 - **Trying candidate rules without applying them** (`try_rules` in the
   tools for Claude): up to four rules for one gate, run on the files as
   they are - each file read once for all of them - with what the gate

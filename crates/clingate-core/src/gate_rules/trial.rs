@@ -33,7 +33,7 @@ pub struct Spread {
 }
 
 impl Spread {
-    fn of(mut values: Vec<f64>) -> Option<Self> {
+    pub fn of(mut values: Vec<f64>) -> Option<Self> {
         values.retain(|v| v.is_finite());
         if values.is_empty() {
             return None;

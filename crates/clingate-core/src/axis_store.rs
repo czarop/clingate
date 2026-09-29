@@ -162,6 +162,11 @@ impl PlotMapper {
     pub fn width(&self) -> f32 {
         self.view_width
     }
+
+    /// The pixels the data is drawn in: the plot less its margins and axes.
+    pub fn plotting_area(&self) -> (std::ops::Range<u32>, std::ops::Range<u32>) {
+        (self.x_pix_range.clone(), self.y_pix_range.clone())
+    }
     pub fn height(&self) -> f32 {
         self.view_height
     }

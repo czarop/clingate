@@ -21,6 +21,7 @@ pub mod confidence;
 pub mod guide;
 pub mod phenotype;
 pub mod phenotype_gate;
+pub mod profile;
 pub mod rule;
 pub mod rule_store;
 pub mod run;
