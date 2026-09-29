@@ -199,6 +199,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "compare_to_peers",
         "mark_looks_right",
         "explain_gate_positioning",
+        "rule_guide",
         "read_positioning_code",
         "replay_rules",
         "replay_case",
@@ -437,6 +438,29 @@ fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
 fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protocol() {
     let folder = workspace_with_rules("replay");
     let mut server = Server::start();
+
+    // The guides need no workspace: how to choose, then one rule in full.
+    let choosing = server.call("rule_guide", json!({}));
+    assert_eq!(choosing["outcome"], "ok", "{choosing}");
+    assert!(
+        choosing["result"]["choosing"]
+            .as_str()
+            .unwrap()
+            .starts_with("# Choosing a rule")
+    );
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 5);
+    let one = server.call("rule_guide", json!({"rule": "tail fraction"}));
+    assert_eq!(one["outcome"], "ok", "{one}");
+    assert_eq!(one["result"]["kind"], "TailFraction");
+    assert!(one["result"]["guide"].as_str().unwrap().contains("`aim`"));
+    let unknown = server.call("rule_guide", json!({"rule": "wobble"}));
+    assert_eq!(unknown["outcome"], "failed", "{unknown}");
+    assert!(
+        unknown["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Above the negative")
+    );
 
     // The description and the code need no workspace.
     let explained = server.call("explain_gate_positioning", json!({}));

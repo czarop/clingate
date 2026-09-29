@@ -18,6 +18,7 @@
 pub mod autogate;
 pub mod choices;
 pub mod confidence;
+pub mod guide;
 pub mod phenotype;
 pub mod phenotype_gate;
 pub mod rule;

@@ -172,6 +172,7 @@ Privacy & Security, Files and Folders (or Full Disk Access).
 | `mark_looks_right` | Clears a placement's flag - the user judged it right - or takes that back, as the Review tab's Looks right does. Only on the user's word. |
 | `report_placement` | Reports a gate the rules placed badly on one sample, with the user's reason - as the app's Report... button does. Only on the user's word. |
 | `mark_run_reviewed` | Marks the last applied rules run reviewed: placements not reported count as accepted, and the review is copied into the review library. Only on the user's word. |
+| `rule_guide` | A guide to the gate rules: how to choose one by what the data looks like, and for each rule what it suits, how it works step by step, every setting, its traps and what its confidence says (`docs/rules`). Needs no workspace. |
 | `explain_gate_positioning` | Exactly how the rules position gates, in words: which file is gated and which read, each rule step by step with its constants, confidence, review, replays, and the rules file's format. Needs no workspace. |
 | `read_positioning_code` | The source that positions, judges and replays gates - by file and line range, or found by a search. Needs no workspace. |
 | `replay_rules` | Replays reviewed runs (the workspace's and the review library's) on the events each kept, with the rules they ran with and with proposed changes: what each change fixes, breaks or leaves wrong, per gate and per placement. Changes nothing. |

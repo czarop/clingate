@@ -78,8 +78,11 @@ a gate on your own judgement. mark_run_reviewed records that the user has \
 finished reviewing a run: only when they say so, since every placement they \
 did not report then counts as accepted.
 
-To work out with the user how the rules could place gates better: \
-explain_gate_positioning says exactly how every rule decides, and \
+To choose a rule for a gate, or to see why one misplaced a gate, start with \
+rule_guide: how to choose by what the data looks like, and each rule's \
+workings, settings and traps. To work out with the user how the rules could \
+place gates better: explain_gate_positioning says exactly how every rule \
+decides, and \
 read_positioning_code shows the code itself - read what you need rather than \
 assuming. replay_rules replays reviewed runs - the workspace's last run and \
 those in the review library - on the events each run kept, with the rules they \
@@ -211,6 +214,13 @@ pub struct ReportPlacement {
     /// The user's own words about it, if they gave any.
     #[serde(default)]
     pub note: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RuleGuide {
+    /// One rule, by its kind or name, e.g. 'TailFraction' or 'above the negative'. Leave out
+    /// for how to choose between them and each in a line.
+    pub rule: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -634,6 +644,36 @@ impl Clingate {
                 }))
                 .collect::<Vec<_>>(),
         }))
+    }
+
+    /// A guide to the gate rules, for choosing one for a gate or working out why one misplaced
+    /// a gate. With no rule: how to choose between them by what the data looks like, which
+    /// file a rule reads, the settings they share, and each rule in a line. With a rule: what
+    /// it is for and not for, how it works step by step, every setting, its traps, and what
+    /// its confidence says. Needs no workspace.
+    #[tool(annotations(read_only_hint = true))]
+    async fn rule_guide(&self, Parameters(args): Parameters<RuleGuide>) -> String {
+        use clingate_core::gate_rules::guide;
+        match args.rule.filter(|r| !r.trim().is_empty()) {
+            None => ok(serde_json::json!({
+                "choosing": guide::CHOOSING,
+                "rules": guide::GUIDES
+                    .iter()
+                    .map(|g| serde_json::json!({"kind": g.key, "name": g.name, "in_a_line": g.summary}))
+                    .collect::<Vec<_>>(),
+            })),
+            Some(asked) => match guide::find(&asked) {
+                Some(g) => ok(serde_json::json!({"kind": g.key, "name": g.name, "guide": g.text})),
+                None => failed(format!(
+                    "{asked} is not a rule; the rules are: {}",
+                    guide::GUIDES
+                        .iter()
+                        .map(|g| format!("{} ({})", g.name, g.key))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            },
+        }
     }
 
     /// The source code that positions gates, scores them and replays them - exactly what the

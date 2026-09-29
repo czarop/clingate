@@ -4,6 +4,12 @@
 
 ### Added
 
+- **A guide to every rule** (`docs/rules`, and `rule_guide` in the tools
+  for Claude): how to choose a rule by what the data looks like, and for
+  each rule what it suits and does not, how it works step by step, every
+  setting, its traps and what its confidence says. Tested against the code,
+  so every setting is covered and every number quoted is the code's.
+
 - **A band rule can aim for the middle of its band.** "Where in the band"
   on the Gate Rules form: *anywhere* (as before, and the default) stops at
   the first position inside the band, which depends on the population's
