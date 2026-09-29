@@ -1215,6 +1215,296 @@ mod tests {
             assert_eq!(a.reports, 1);
         }
 
+        /// Run, apply and keep the run with its events, as the app and the
+        /// tools do; then mark it reviewed, with a library if given.
+        fn applied_and_kept(inputs: &RunInputs) -> (GateState, Arc<str>, crate::review::RunRecord) {
+            let (mut state, id) = positive_gate();
+            let outcome = run_rules(&state, inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            let samples = crate::review::run_record::Samples::new(
+                &inputs.names,
+                &inputs.metadata,
+                &inputs.rules.pairing,
+            );
+            let record = crate::review::RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            );
+            record.applied(&folder_of(inputs), &outcome.events).unwrap();
+            (
+                state,
+                id,
+                crate::review::RunRecord::load(&folder_of(inputs))
+                    .unwrap()
+                    .unwrap(),
+            )
+        }
+
+        #[test]
+        fn a_replay_with_the_run_s_own_rules_puts_the_gates_where_the_run_did() {
+            use crate::review::replay::{ReviewedRun, Verdict, replay_run};
+            for inputs in [
+                three_donor_inputs("replay-fidelity-tail"),
+                three_way_inputs("replay-fidelity-negative"),
+            ] {
+                let (state, _, record) = applied_and_kept(&inputs);
+                let run =
+                    ReviewedRun::from_workspace(&folder_of(&inputs), &state, &inputs.metadata)
+                        .unwrap();
+                assert!(run.provisional, "not marked reviewed yet");
+                let (summary, cases) = replay_run(&run, &[]);
+                assert_eq!(summary.not_replayed, None);
+                assert_eq!(
+                    cases.len(),
+                    record.placed.len() + record.kept.iter().filter(|k| k.met_rule).count()
+                );
+                let mut reproduced = 0;
+                for c in &cases {
+                    let base = c.baseline_decided.as_ref().expect("replayed");
+                    // With no change tried, the replay is the baseline.
+                    assert_eq!(c.replay_decided.as_ref(), Some(base));
+                    assert_eq!(base.moved, c.run_decided.moved);
+                    assert_eq!(base.measured_on, c.run_decided.measured_on);
+                    assert!(c.provisional);
+                    // Accepted, as nobody has moved anything: reproduced and
+                    // still right, or honestly not reproduced - never judged
+                    // fixed or broken by a replay that changed nothing.
+                    match c.verdict {
+                        Verdict::StillRight => {
+                            assert!(c.reproduced);
+                            reproduced += 1;
+                        }
+                        Verdict::NotReproduced => assert!(!c.reproduced),
+                        other => panic!("{other:?}: {c:#?}"),
+                    }
+                }
+                assert!(
+                    reproduced * 3 >= cases.len() * 2,
+                    "{reproduced} of {}",
+                    cases.len()
+                );
+            }
+            // The two tail placements away from the band's edge come back
+            // exactly: the kept events hold the extremes the search starts from.
+            let inputs = three_donor_inputs("replay-fidelity-exact");
+            let (state, _, _) = applied_and_kept(&inputs);
+            let run =
+                ReviewedRun::from_workspace(&folder_of(&inputs), &state, &inputs.metadata).unwrap();
+            let (_, cases) = replay_run(&run, &[]);
+            for id in ["fs_a", "fs_b"] {
+                let c = cases.iter().find(|c| c.sample.id == id).unwrap();
+                let (was, now) = (
+                    c.run_decided.line.at.unwrap(),
+                    c.baseline_decided.as_ref().unwrap().line.at.unwrap(),
+                );
+                // To the 16-bit storage of the events: a hundred-thousandth
+                // of the axis they span.
+                assert!((was - now).abs() < 0.01, "{id}: {was} {now}");
+            }
+        }
+
+        #[test]
+        fn a_changed_band_breaks_the_accepted_gates_and_fixes_the_one_moved_by_hand() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::replay::{ReviewedRun, RuleChange, Truth, Verdict, replay_run};
+            let inputs = three_donor_inputs("replay-change");
+            let (mut state, id, record) = applied_and_kept(&inputs);
+            // The reviewer wanted fs_b holding about a quarter: moved by hand.
+            let b = record
+                .placed
+                .iter()
+                .find(|p| p.sample.id == "fs_b")
+                .unwrap();
+            let events = crate::review::events::load(&folder_of(&inputs), &record.applied_at)
+                .unwrap()
+                .unwrap();
+            let mut xs: Vec<f32> = events
+                .samples
+                .iter()
+                .find(|e| e.file == "fs_b")
+                .unwrap()
+                .points
+                .iter()
+                .map(|p| p.0)
+                .collect();
+            xs.sort_by(f32::total_cmp);
+            let quarter = xs[(xs.len() as f64 * 0.75) as usize];
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, quarter),
+                &GateSource::Sample((id.clone(), Arc::from("fs_b"))),
+            );
+            let run =
+                ReviewedRun::from_workspace(&folder_of(&inputs), &state, &inputs.metadata).unwrap();
+
+            let change = RuleChange {
+                target: RuleTarget::named("CD134+"),
+                rule: GateRule {
+                    parameter: Arc::from(X),
+                    bound: Bound::Above,
+                    measured_on: MeasuredOn::Itself,
+                    rule: Rule::TailFraction(TailFractionRule::new((0.2, 0.3))),
+                },
+            };
+            let (_, before) = replay_run(&run, &[]);
+            let (_, after) = replay_run(&run, &[change]);
+            let find = |cases: &[crate::review::replay::Case], id: &str| {
+                cases.iter().find(|c| c.sample.id == id).unwrap().clone()
+            };
+            let moved = find(&after, "fs_b");
+            assert!(
+                matches!(moved.truth, Truth::MovedByHand),
+                "{:?}",
+                moved.truth
+            );
+            assert!(
+                (moved.right.beyond.unwrap() - 0.25).abs() < 0.01,
+                "{:?}",
+                moved.right
+            );
+            assert_eq!(find(&before, "fs_b").verdict, Verdict::StillWrong);
+            assert_eq!(moved.verdict, Verdict::Fixed, "{moved:#?}");
+            let now = moved.replay_decided.as_ref().unwrap().line.beyond.unwrap();
+            assert!((0.2..=0.3).contains(&now), "{now}");
+            // The ones accepted where the old band put them are broken by it.
+            for id in ["fs_a", "fs_c"] {
+                let c = find(&after, id);
+                assert!(matches!(c.truth, Truth::AcceptedAsPlaced));
+                assert!(
+                    matches!(c.verdict, Verdict::Broken | Verdict::NotReproduced),
+                    "{id}: {c:#?}"
+                );
+            }
+            assert!(after.iter().any(|c| c.verdict == Verdict::Broken));
+            let _ = b;
+        }
+
+        #[test]
+        fn a_saved_fix_is_the_right_answer_and_a_report_without_one_only_says_what_was_wrong() {
+            use crate::review::replay::{ReviewedRun, Truth, Verdict, replay_run};
+            use crate::review::report::{gather, record_corrections};
+            let inputs = three_donor_inputs("replay-reports");
+            let (mut state, id, record) = applied_and_kept(&inputs);
+            let folder = folder_of(&inputs);
+            for sample in ["fs_a", "fs_c"] {
+                gather(
+                    &folder,
+                    &request(&state, &id, sample),
+                    &state,
+                    &inputs,
+                    &Default::default(),
+                )
+                .unwrap()
+                .save(&folder)
+                .unwrap();
+            }
+            // fs_a's fix, saved; fs_c's never made.
+            let a_to = record
+                .placed
+                .iter()
+                .find(|p| p.sample.id == "fs_a")
+                .unwrap()
+                .to
+                .unwrap();
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, a_to as f32 + 30.0),
+                &GateSource::Sample((id.clone(), Arc::from("fs_a"))),
+            );
+            record_corrections(&folder, &state, &inputs.metadata);
+            let run = ReviewedRun::from_workspace(&folder, &state, &inputs.metadata).unwrap();
+            let (_, cases) = replay_run(&run, &[]);
+            let a = cases.iter().find(|c| c.sample.id == "fs_a").unwrap();
+            assert!(matches!(a.truth, Truth::Corrected { .. }), "{:?}", a.truth);
+            assert!((a.right.at.unwrap() - (a_to + 30.0)).abs() < 1e-3);
+            assert_eq!(
+                a.verdict,
+                Verdict::StillWrong,
+                "the rule still puts it where it did"
+            );
+            let c = cases.iter().find(|c| c.sample.id == "fs_c").unwrap();
+            let Truth::ReportedWithoutFix { problem, note } = &c.truth else {
+                panic!("{:?}", c.truth);
+            };
+            assert_eq!(*problem, crate::review::Problem::TooLoose);
+            assert_eq!(note, "lets in the negatives");
+            assert_eq!(c.right.at, None);
+            assert!(
+                matches!(c.verdict, Verdict::Unchanged | Verdict::NotReproduced),
+                "{c:#?}"
+            );
+        }
+
+        #[test]
+        fn a_run_without_what_a_replay_needs_says_why_and_judges_nothing() {
+            use crate::review::replay::{ReviewedRun, Verdict, replay_run};
+            let inputs = three_donor_inputs("replay-not-possible");
+            let (state, _, record) = applied_and_kept(&inputs);
+            let folder = folder_of(&inputs);
+            // No events at all.
+            std::fs::remove_file(crate::review::events::file_in(&folder)).unwrap();
+            let run = ReviewedRun::from_workspace(&folder, &state, &inputs.metadata).unwrap();
+            let (summary, cases) = replay_run(&run, &[]);
+            assert!(
+                summary
+                    .not_replayed
+                    .as_deref()
+                    .unwrap()
+                    .contains("no events")
+            );
+            assert!(cases.iter().all(|c| c.verdict == Verdict::NotReplayed));
+            assert!(cases.iter().all(|c| c.why.is_some()));
+            // Events from before gates and metadata were kept.
+            let mut old = crate::review::events::of_run(&[], &Default::default());
+            old.run_applied_at = record.applied_at.clone();
+            crate::review::events::save(&folder, &old).unwrap();
+            let run = ReviewedRun::from_workspace(&folder, &state, &inputs.metadata).unwrap();
+            let (summary, _) = replay_run(&run, &[]);
+            assert!(
+                summary
+                    .not_replayed
+                    .as_deref()
+                    .unwrap()
+                    .contains("run the rules again")
+            );
+        }
+
+        #[test]
+        fn a_run_in_the_library_replays_as_it_did_in_its_workspace() {
+            use crate::review::replay::{ReviewedRun, library_runs, replay};
+            let inputs = three_donor_inputs("replay-library");
+            let (state, _, _) = applied_and_kept(&inputs);
+            let folder = folder_of(&inputs);
+            let library = scratch("replay-library-lib");
+            crate::review::report::mark_reviewed(&folder, &state, &inputs.metadata, Some(&library))
+                .unwrap();
+            let here = ReviewedRun::from_workspace(&folder, &state, &inputs.metadata).unwrap();
+            assert!(!here.provisional, "marked reviewed");
+            let (runs, problems) = library_runs(&library);
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(runs.len(), 1);
+            let from_library = replay(&runs, &[]);
+            let from_workspace = replay(std::slice::from_ref(&here), &[]);
+            let strip = |r: &crate::review::replay::Replay| {
+                r.cases
+                    .iter()
+                    .map(|c| (c.sample.id.clone(), c.verdict, c.replay_decided.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(strip(&from_library), strip(&from_workspace));
+            let total: usize = from_library
+                .by_gate()
+                .values()
+                .flat_map(|v| v.values())
+                .sum();
+            assert_eq!(total, from_library.cases.len());
+            // A folder that is not a library says so.
+            let (runs, problems) = library_runs(&library.join("nothing here"));
+            assert!(runs.is_empty() && problems.len() == 1);
+        }
+
         fn outcome_of_in(
             review: &crate::review::RunReview,
             sample: &str,

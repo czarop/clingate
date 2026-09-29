@@ -3121,3 +3121,53 @@ fn a_phenotype_placement_is_kept_with_what_it_matched_and_no_line() {
         PlacementStatus::AsPlaced
     );
 }
+
+#[test]
+fn a_phenotype_placement_is_not_replayed_and_says_why() {
+    use crate::gate_rules::autogate::{measure_file, solve_all};
+    use crate::gate_rules::rule::ShapeFit;
+    use crate::review::replay::{ReviewedRun, Verdict, replay_run};
+    use crate::review::report::Outcome;
+    let (state, _) = gate_around(700.0, 700.0, 80.0);
+    let map = two_specimens();
+    let store = phenotype_rule(ShapeFit::KeepShape, &["CD161"]);
+    let reference = panel(1, 1800, 200, (700.0, 700.0, 800.0));
+    let sample = panel(2, 1800, 200, (300.0, 650.0, 800.0));
+    let mut measured = Vec::new();
+    for (file, frame) in [("fs_qc", &reference), ("fs_b", &sample)] {
+        measured.extend(
+            measure_file(&state, &Arc::from(file), frame, &map, &store)
+                .unwrap()
+                .0,
+        );
+    }
+    let (report, placements) = solve_all(&state, &store, &measured, &[], &map);
+    let names: std::collections::HashMap<Arc<str>, Arc<str>, rustc_hash::FxBuildHasher> =
+        Default::default();
+    let samples = crate::review::run_record::Samples::new(&names, &map, &store.pairing);
+    let record = crate::review::RunRecord::from_run(&report, &placements, &store, &samples);
+    assert_eq!(record.placed.len(), 1);
+    let run = ReviewedRun {
+        name: "phenotype".into(),
+        applied_at: "t".into(),
+        rules: store.clone(),
+        placed: record
+            .placed
+            .iter()
+            .map(|p| (p.clone(), Outcome::Accepted))
+            .collect(),
+        kept: Vec::new(),
+        reports: Vec::new(),
+        events: Some(crate::review::events::of_run(&measured, &map)),
+        provisional: true,
+    };
+    let (summary, cases) = replay_run(&run, &[]);
+    assert_eq!(summary.not_replayed, None, "the run itself is replayable");
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].verdict, Verdict::NotReplayed);
+    assert!(
+        cases[0].why.as_deref().unwrap().contains("phenotype"),
+        "{:?}",
+        cases[0].why
+    );
+}

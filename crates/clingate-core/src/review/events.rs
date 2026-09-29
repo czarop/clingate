@@ -33,15 +33,47 @@ const MAGIC: &[u8; 4] = b"CGEV";
 const VERSION: u32 = 2;
 
 /// Every `n`th event, so what is kept runs evenly through the file rather
-/// than stopping at its first few thousand.
+/// than stopping at its first few thousand - and always the events at the
+/// population's extremes on each axis.
+///
+/// The extremes are kept because a rule's search starts from them: a band
+/// rule slides the gate between the population's lowest and highest events
+/// and stops at the first position inside the band, so a sample missing
+/// either end starts the search elsewhere and can stop somewhere else.
 pub fn subsample(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     if points.len() <= KEPT_EVENTS {
         return points.to_vec();
     }
-    let step = points.len() as f64 / KEPT_EVENTS as f64;
-    (0..KEPT_EVENTS)
-        .map(|i| points[(i as f64 * step) as usize])
-        .collect()
+    // The events at each end of each axis, by position in the file.
+    let extreme = |key: fn(&(f32, f32)) -> f32, most: bool| -> Option<usize> {
+        points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.0.is_finite() && p.1.is_finite())
+            .max_by(|a, b| {
+                let o = key(a.1).total_cmp(&key(b.1));
+                if most { o } else { o.reverse() }
+            })
+            .map(|(i, _)| i)
+    };
+    let mut ends: Vec<usize> = [
+        extreme(|p| p.0, true),
+        extreme(|p| p.0, false),
+        extreme(|p| p.1, true),
+        extreme(|p| p.1, false),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    ends.sort_unstable();
+    ends.dedup();
+    let even = KEPT_EVENTS - ends.len();
+    let step = points.len() as f64 / even as f64;
+    let mut chosen: Vec<usize> = (0..even).map(|i| (i as f64 * step) as usize).collect();
+    chosen.extend(ends);
+    chosen.sort_unstable();
+    chosen.dedup();
+    chosen.into_iter().map(|i| points[i]).collect()
 }
 
 /// One gate's parent population on one file, as the run read it.
@@ -489,14 +521,47 @@ mod tests {
     }
 
     #[test]
+    fn a_subsample_always_keeps_the_extremes_of_each_axis() {
+        let mut points: Vec<(f32, f32)> = (0..20_000)
+            .map(|i| ((i % 997) as f32, (i % 991) as f32))
+            .collect();
+        // Extremes placed where an even step would miss them.
+        points[12_345] = (5_000.0, 0.5);
+        points[7_777] = (-3_000.0, 0.5);
+        points[1_001] = (1.0, 9_999.0);
+        points[19_999] = (1.0, -9_999.0);
+        let kept = subsample(&points);
+        assert!(kept.len() <= KEPT_EVENTS);
+        for must in [
+            (5_000.0, 0.5),
+            (-3_000.0, 0.5),
+            (1.0, 9_999.0),
+            (1.0, -9_999.0),
+        ] {
+            assert!(kept.contains(&must), "{must:?} was dropped");
+        }
+        // Still in the file's order.
+        let at = |p: (f32, f32)| points.iter().position(|q| *q == p).unwrap();
+        assert!(at((1.0, 9_999.0)) < at((-3_000.0, 0.5)));
+        assert_eq!(subsample(&points), kept, "the same every time");
+    }
+
+    #[test]
     fn a_subsample_keeps_a_small_population_whole_and_spreads_through_a_large_one() {
         let small: Vec<(f32, f32)> = (0..4_000).map(|i| (i as f32, 0.0)).collect();
         assert_eq!(subsample(&small), small);
         let large: Vec<(f32, f32)> = (0..12_000).map(|i| (i as f32, 0.0)).collect();
         let kept = subsample(&large);
-        assert_eq!(kept.len(), KEPT_EVENTS);
+        // The extremes among them - one fewer where an extreme is also on
+        // the even step.
+        assert!(
+            (KEPT_EVENTS - 4..=KEPT_EVENTS).contains(&kept.len()),
+            "{}",
+            kept.len()
+        );
+        assert!(kept.contains(&(11_999.0, 0.0)), "the far end");
         assert_eq!(kept[0].0, 0.0);
-        assert!(kept[KEPT_EVENTS - 1].0 > 11_990.0);
+        assert!(kept.last().unwrap().0 > 11_990.0);
         assert!(kept.windows(2).all(|w| w[1].0 > w[0].0));
     }
 }

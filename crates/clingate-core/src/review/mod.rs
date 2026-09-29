@@ -14,6 +14,7 @@ pub mod assess;
 pub mod board;
 pub mod events;
 pub mod library;
+pub mod replay;
 pub mod report;
 pub mod run_record;
 pub mod shape;

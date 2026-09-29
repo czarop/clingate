@@ -755,6 +755,18 @@ pub fn mark_reviewed(
     metadata: &crate::omiq::metadata::MetaDataFileMap,
     library: Option<&Path>,
 ) -> Result<(RunReview, Option<PathBuf>), String> {
+    let (review, run, reports) = review_as_it_stands(folder, state, metadata)?;
+    write_review(folder, &review, &run, &reports, library)
+}
+
+/// The review of the workspace's last applied run as the gates stand now -
+/// what marking it reviewed would record - without recording anything. What
+/// a replay of a run not yet marked reviewed is measured against.
+pub fn review_as_it_stands(
+    folder: &Path,
+    state: &GateState,
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+) -> Result<(RunReview, RunRecord, Vec<(PathBuf, PlacementReport)>), String> {
     let run = RunRecord::load(folder)
         .map_err(|e| e.to_string())?
         .ok_or("no rules run has been applied in this workspace, so there is nothing to review")?;
@@ -854,8 +866,19 @@ pub fn mark_reviewed(
             .map(|(_, r)| r.id.clone())
             .collect(),
     };
+    Ok((review, run, reports))
+}
 
-    let text = serde_json::to_string_pretty(&review).map_err(|e| e.to_string())?;
+/// Keep a review in the workspace and, with a library, copy it there with
+/// its reports and the run's events.
+fn write_review(
+    folder: &Path,
+    review: &RunReview,
+    run: &RunRecord,
+    reports: &[(PathBuf, PlacementReport)],
+    library: Option<&Path>,
+) -> Result<(RunReview, Option<PathBuf>), String> {
+    let text = serde_json::to_string_pretty(review).map_err(|e| e.to_string())?;
     let here = folder.join(super::REVIEWS_DIR).join(REVIEW_FILE);
     crate::workspace::make_parent(&here).map_err(|e| e.to_string())?;
     std::fs::write(&here, &text).map_err(|e| format!("{}: {e}", here.display()))?;
@@ -866,7 +889,7 @@ pub fn mark_reviewed(
             let write = || -> anyhow::Result<()> {
                 std::fs::create_dir_all(into.join(REPORTS_DIR))?;
                 std::fs::write(into.join(REVIEW_FILE), &text)?;
-                for (path, report) in &reports {
+                for (path, report) in reports {
                     std::fs::copy(path, into.join(REPORTS_DIR).join(report.file_name()))?;
                 }
                 // And the events behind every placement, the accepted as well
@@ -884,7 +907,7 @@ pub fn mark_reviewed(
         }
         None => None,
     };
-    Ok((review, copied))
+    Ok((review.clone(), copied))
 }
 
 #[cfg(test)]
