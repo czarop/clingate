@@ -128,7 +128,7 @@ fn density(
         .colormap(ColorMaps::Jet)
         .x_axis(x_options)
         .y_axis(y_options)
-        .point_size(0.5)
+        .point_size(0.5_f32)
         .build()?;
     let data = ScatterPlotData {
         points,

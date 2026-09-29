@@ -92,7 +92,7 @@ pub fn PseudoColourPlot(
                         .colormap(ColorMaps::Jet)
                         .x_axis(x_axis_options)
                         .y_axis(y_axis_options)
-                        .point_size(0.5)
+                        .point_size(0.5_f32)
                         .build()?;
 
                     let mut render_config = RenderConfig::default();
