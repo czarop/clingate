@@ -111,9 +111,13 @@ no line is solved and no corner anchored, so slanted shapes work
   parameter (for `Above`), too few -> back.
 - **It stops at the first probe inside the band.** It does not aim for the
   middle of the band. Where in the band it stops depends on the bisection
-  path, which depends on the reference population's minimum and maximum and
-  on where the gate started. (The band's midpoint is used only to choose the
-  best probe when no probe ever lands inside the band.)
+  path, which is fixed by the search range - from the reference
+  population's dimmest event less the population's width to its brightest
+  plus the width - so moving the single brightest or dimmest event can move
+  where the gate lands anywhere within the band. Where the gate started
+  does not change the path; it matters only in that a gate already in the
+  band is kept where it is (3.0). (The band's midpoint is used only to
+  choose the best probe when no probe ever lands inside the band.)
 - No probe could be evaluated -> skipped ("no position along this axis holds
   the band").
 
@@ -355,9 +359,9 @@ not replayed.
 These are properties of the code as it stands, not settled choices:
 
 1. **Band rules stop at the first in-band probe** (3.1), so where in the
-   band a gate lands depends on the reference population's extremes and the
-   starting position. Two similar samples can land at opposite edges of the
-   band. Aiming for the band's middle would make placements steadier.
+   band a gate lands depends on the reference population's two most extreme
+   events, and a gate already in the band is kept wherever in it it sits.
+   Two similar samples can land at opposite edges of the band. Aiming for the band's middle would make placements steadier.
 2. **The band rule's bracket mixes files**: it is built from the
    reference's values and the sample's current line, and the slide is
    applied to the gate on the reference file.
