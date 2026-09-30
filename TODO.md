@@ -52,6 +52,14 @@ the running app.
       reference over MCP; the confidence behind a placement in more detail
       (once the confidence scores are reworked); undoing an applied preview
       without reopening the folder.
+- [ ] **A rules run that pauses, over MCP.** In the app, a run stops at the
+      end of a level when a gate with gates under it could not be placed, or
+      scored under 0.2, on any sample, and asks the person to place it by hand
+      before the level below is measured. Claude cannot do that: where a gate
+      should go on a plot is not something a person can say in words, and
+      Claude cannot see the plot. Work out what a paused run looks like over
+      MCP - probably the run stops, reports which gates on which samples need
+      a person, and Claude hands them back to the user in the app.
 - [ ] **A cache of scaled events**, if questions over a plate get slow: each
       question reads its files afresh, as the editor does per plot. Keyed by
       path, file modification time, cofactors and compensation, so a change
