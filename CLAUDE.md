@@ -15,3 +15,8 @@ A Rust workspace: the `clingate` app (Dioxus, `src/`), `crates/clingate-core` (e
 - Expected values come from an independent route - by hand, or another path - never from the code under test.
 - New features get integration tests through `Session` (`crates/clingate-core/tests/session.rs`), the MCP protocol (`crates/clingate-mcp/tests/protocol.rs`) and the app where they reach it, including how they combine with existing features.
 - Run: `cargo test -p clingate-core`, `cargo test -p clingate-mcp`, `cargo test -p clingate --no-default-features`.
+
+## Pull requests
+
+- Before opening one, run the `review` skill once: the reviewer over the branch's diff, and `cargo mutants` over the changed code.
+- Tell the user when the branch is ready for a pull request: when a piece of work is finished and tested, and before starting the next one - small pull requests, one piece of work each.
