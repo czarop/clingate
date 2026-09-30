@@ -60,11 +60,12 @@ biological population, whose frequency is the thing being measured.
     gives each specimen its own line.
   - `Run` counts it on every file of that kind in the run together - all
     the FMX files analysed together, which is the workspace - and gives
-    every specimen the same line. For small populations: a band of 0.2-0.5%
-    of an FMX of 700 events is one to three events, so a line per specimen
-    is set by where a couple of stray events fall; pooled over the run's FMX
-    files, it is set by dozens. It is what "per run in the first instance"
-    means.
+    every specimen the same line, so each specimen's own FMX no longer
+    holds the band - every one reports the run's figure. For small
+    populations: a band of 0.2-0.5% of an FMX of 700 events is one to three
+    events, so a line per specimen is set by where a couple of stray events
+    fall; pooled over the run's FMX files, it is set by dozens. Use it only
+    when the user asks for it.
   The line is solved once, from the gate as it stands on the first file of
   that kind, and placed on every specimen - including one whose own FMX is
   missing. `measured_on` is then a partner type or `Itself`, never one named
@@ -82,8 +83,8 @@ biological population, whose frequency is the thing being measured.
   background and can move the line a long way through a smear.
 - **Few events decide it.** The confidence's "events in the gate" score is
   1 - 1/sqrt(k) of the smaller side: 4 events score 0.5, 100 score 0.9.
-  Reading the run's files together (`pool`: `Run`) is the remedy when the
-  specimens are alike enough to share a line.
+  Reading the run's files together (`pool`: `Run`) is one remedy; suggest
+  it, but write it only if the user asks.
 - **A pooled line hides a specimen that differs.** One line for the run
   means a donor whose negative sits higher gets the run's line, not its
   own; check the run with gate_profile before pooling.
