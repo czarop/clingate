@@ -2173,7 +2173,7 @@ fn the_offset_from_the_bottom_is_carried_across() {
     // A gate drawn 0.4 to the right of the bottom.
     let cal = rule.calibrate(&v, bottom + 0.4).unwrap();
     assert!((cal.offset - 0.4).abs() < 1e-9, "offset {}", cal.offset);
-    let back = rule.place(&v, cal.offset).unwrap();
+    let back = rule.place(&v, cal.offset, cal.at).unwrap();
     assert!(
         (back.at - (bottom + 0.4)).abs() < 1e-9,
         "applied back to its own sample it reproduces the gate: {}",
@@ -3422,7 +3422,11 @@ fn aimed_at_the_middle_a_gate_near_the_band_s_edge_is_placed_again() {
         pool: crate::gate_rules::rule::Pool::Run,
         ..TailFractionRule::aimed((0.002, 0.005), BandAim::Middle)
     };
-    assert!(Rule::TailFraction(pooled).describe().contains("one line for every specimen"));
+    assert!(
+        Rule::TailFraction(pooled)
+            .describe()
+            .contains("one line for every specimen")
+    );
     assert!(!aimed(BandAim::Middle).describe().contains("together"));
     for aim in BandAim::ALL {
         assert_eq!(BandAim::from_key(aim.key()), Some(aim));

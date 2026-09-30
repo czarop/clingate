@@ -397,7 +397,7 @@ fn a_population_too_small_to_read_is_declined() {
 
 // ─── finding the valley ──────────────────────────────────────────────────────
 
-use crate::gate_rules::threshold::{first_valley, valley_in};
+use crate::gate_rules::threshold::{first_valley, valley_for_gate, valley_in};
 
 /// A density built by hand, so the right answer is known rather than estimated.
 fn density(heights: &[f64]) -> (Vec<f64>, Vec<f64>) {
@@ -828,4 +828,71 @@ fn a_negative_running_into_a_smear_has_no_right_side_to_read() {
     // Nothing to read at all.
     assert_eq!(peak_sides(&[1.0]), None);
     assert_eq!(peak_sides(&[2.0, 2.0, 2.0]), None);
+}
+
+fn mostly_positive(negatives: usize, seed: u64) -> Vec<f64> {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+    let mut rng = StdRng::seed_from_u64(seed);
+    let neg = Normal::new(0.0, 0.6).unwrap();
+    let pos = Normal::new(3.0, 0.5).unwrap();
+    let mut v: Vec<f64> = (0..negatives).map(|_| neg.sample(&mut rng)).collect();
+    v.extend((0..20_000 - negatives).map(|_| pos.sample(&mut rng)));
+    v
+}
+
+#[test]
+fn a_small_thin_negative_is_missed_without_the_gate_and_found_with_it() {
+    // 6% negative, spread wider than the positives: its peak is a few percent
+    // of theirs, under the quarter-height bar.
+    let v = mostly_positive(1_200, 7);
+    assert!(first_valley(&v, 1.0).is_err());
+    let found = valley_for_gate(&v, 1.0, 1.5).expect("the positives stand above the gate");
+    assert!(
+        found.peak.abs() < 0.5,
+        "the negative's peak: {}",
+        found.peak
+    );
+    assert!(
+        found.bottom > 0.8 && found.bottom < 2.2,
+        "bottom {}",
+        found.bottom
+    );
+}
+
+#[test]
+fn stray_events_under_the_positives_are_not_a_negative() {
+    // 40 events is 0.2% - under the 1% a negative must hold.
+    let v = mostly_positive(40, 8);
+    assert!(valley_for_gate(&v, 1.0, 1.5).is_err());
+}
+
+#[test]
+fn a_tallest_peak_below_the_gate_is_the_negative_and_nothing_is_searched_under_it() {
+    let v = mostly_positive(1_200, 9);
+    assert!(valley_for_gate(&v, 1.0, 3.5).is_err());
+}
+
+#[test]
+fn with_a_clear_negative_the_gate_changes_nothing() {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+    let mut rng = StdRng::seed_from_u64(10);
+    let neg = Normal::new(0.0, 0.4).unwrap();
+    let pos = Normal::new(3.0, 0.5).unwrap();
+    let mut v: Vec<f64> = (0..20_000).map(|_| neg.sample(&mut rng)).collect();
+    v.extend((0..8_000).map(|_| pos.sample(&mut rng)));
+    assert_eq!(valley_for_gate(&v, 1.0, 1.5), first_valley(&v, 1.0));
+}
+
+#[test]
+fn the_bottom_of_a_flat_dip_is_its_middle() {
+    use crate::gate_rules::threshold::lowest_between;
+    // Flat at zero from 4 to 8: the middle, 6, not either end.
+    let heights = [1.0, 30.0, 60.0, 5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 400.0, 1000.0];
+    assert_eq!(lowest_between(&heights, 2, 10), 6);
+    // A single lowest point is itself.
+    assert_eq!(lowest_between(&[5.0, 1.0, 3.0, 2.0, 9.0], 0, 4), 1);
 }

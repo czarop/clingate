@@ -669,6 +669,26 @@ const FAR_SIDE_PROMINENCE: f64 = 0.05;
 /// noise; above 1 smooths shallow ones away. It is exposed because which of
 /// those is wanted depends on the marker, and no automatic rule knows that.
 pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> {
+    let (xs, density, events) = smoothed(values, smoothing)?;
+    valley_in(&xs, &density).map_err(|why| counted(why, events))
+}
+
+/// [`first_valley`], or failing that the dip below a small negative when the
+/// tallest peak stands above `gate` - where the positives are.
+///
+/// A stimulated sample can be almost all positive: its negative a few percent
+/// of the events, spread thin, and far below a quarter of the positives'
+/// height, so [`first_valley`] takes the positives for the negative and finds
+/// nothing beyond them. The gate says which side the positives are on.
+pub fn valley_for_gate(values: &[f64], smoothing: f64, gate: f64) -> Result<Valley, NoValley> {
+    let (xs, density, events) = smoothed(values, smoothing)?;
+    valley_in(&xs, &density)
+        .or_else(|why| small_negative_below(&xs, &density, gate, events).ok_or(why))
+        .map_err(|why| counted(why, events))
+}
+
+/// The density [`first_valley`] reads, and how many events made it.
+fn smoothed(values: &[f64], smoothing: f64) -> Result<(Vec<f64>, Vec<f64>, usize), NoValley> {
     if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
         return Err(NoValley::NoPopulation);
     }
@@ -682,15 +702,70 @@ pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> 
         return Err(NoValley::NoPopulation);
     }
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
-    // The density alone does not know how many events made it; this does.
     let events = values.iter().filter(|v| v.is_finite()).count();
-    valley_in(&xs, &density).map_err(|why| match why {
+    Ok((xs, density, events))
+}
+
+/// The density alone does not know how many events made it; the caller does.
+fn counted(why: NoValley, events: usize) -> NoValley {
+    match why {
         NoValley::OnlyOnePeak { peak, .. } => NoValley::OnlyOnePeak {
             peak,
             events: Some(events),
         },
         other => other,
+    }
+}
+
+/// The least share of all the events a small negative must hold.
+const SMALL_NEGATIVE_SHARE: f64 = 0.01;
+/// The fewest events a small negative must hold.
+const SMALL_NEGATIVE_EVENTS: f64 = 30.0;
+
+/// Below the tallest peak, when it stands above `gate`: the highest bump
+/// before it, and the lowest point between the two.
+///
+/// Judged by the events below the dip rather than the bump's height. A ripple
+/// in a sparse tail - the failure the height bars in [`valley_in`] exist for -
+/// holds a handful of events; a real negative, however thin, holds hundreds.
+fn small_negative_below(xs: &[f64], density: &[f64], gate: f64, events: usize) -> Option<Valley> {
+    let n = density.len().min(xs.len());
+    let tallest = (0..n).max_by(|&a, &b| density[a].total_cmp(&density[b]))?;
+    if xs[tallest] <= gate {
+        return None;
+    }
+    let mut first_dip = tallest;
+    while first_dip > 0 && density[first_dip - 1] <= density[first_dip] {
+        first_dip -= 1;
+    }
+    if first_dip == 0 {
+        return None;
+    }
+    let negative = (0..first_dip).max_by(|&a, &b| density[a].total_cmp(&density[b]))?;
+    let bottom = lowest_between(density, negative, tallest);
+
+    let total: f64 = density[..n].iter().sum();
+    let below = density[..=bottom].iter().sum::<f64>() / total;
+    if !(below >= SMALL_NEGATIVE_SHARE) || below * (events as f64) < SMALL_NEGATIVE_EVENTS {
+        return None;
+    }
+    let depth = (density[negative] - density[bottom]) / density[negative];
+    (depth >= VALLEY_FLOOR).then(|| Valley {
+        peak: xs[negative],
+        bottom: xs[bottom],
+        depth,
     })
+}
+
+/// The lowest point of `density` from `from` to `to`, taking the middle of a
+/// flat bottom rather than one of its ends.
+pub(crate) fn lowest_between(density: &[f64], from: usize, to: usize) -> usize {
+    let floor = density[from..=to]
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let flat: Vec<usize> = (from..=to).filter(|&i| density[i] == floor).collect();
+    flat[flat.len() / 2]
 }
 
 /// Why no boundary was found, in enough detail to tell the cases apart.

@@ -634,7 +634,9 @@ fn a_valley_placement_keeps_the_reference_s_offset_from_the_bottom() {
     let rule = ValleyRule::default();
     let reference = rule.calibrate(&two_humps(22, 3.0), 1.9).unwrap();
     let shifted: Vec<f64> = two_humps(22, 3.0).iter().map(|v| v + 0.6).collect();
-    let here = rule.place(&shifted, reference.offset).unwrap();
+    let here = rule
+        .place(&shifted, reference.offset, reference.at)
+        .unwrap();
 
     assert_eq!(here.offset, reference.offset);
     assert!((here.at - (here.bottom + reference.offset)).abs() < 1e-12);
@@ -651,7 +653,33 @@ fn a_valley_rule_refuses_a_population_with_no_dip() {
     let rule = ValleyRule::default();
     let one_hump = gaussian(23, 20_000, 0.0, 0.4);
     assert!(rule.calibrate(&one_hump, 1.0).is_err());
-    assert!(rule.place(&one_hump, 0.0).is_err());
+    assert!(rule.place(&one_hump, 0.0, 1.0).is_err());
+    // With the gate below the hump, the hump is the positives - and there is
+    // still no negative under it to find.
+    assert!(rule.place(&one_hump, 0.0, -1.0).is_err());
+}
+
+#[test]
+fn a_valley_rule_finds_a_small_negative_under_a_mostly_positive_sample() {
+    // The IFNg case: 94% positive, the negative 6% and spread thin - far below
+    // a quarter of the positives' height. Calibrated on a reference with a
+    // clear negative, the gate goes into this sample's dip all the same.
+    let rule = ValleyRule::default();
+    let reference = rule.calibrate(&two_humps(24, 3.0), 1.9).unwrap();
+    let mut mostly_positive = gaussian(25, 1_200, 0.0, 0.6);
+    mostly_positive.extend(gaussian(26, 18_800, 3.0, 0.5));
+
+    let here = rule
+        .place(&mostly_positive, reference.offset, reference.at)
+        .expect("a small negative is still a negative");
+    assert!(here.peak.abs() < 0.5, "the negative's peak: {}", here.peak);
+    assert!(
+        here.bottom > 0.8 && here.bottom < 2.2,
+        "between the two: {}",
+        here.bottom
+    );
+    // Found only because the gate says the tallest peak is the positives.
+    assert!(rule.place(&mostly_positive, reference.offset, 3.5).is_err());
 }
 
 #[test]

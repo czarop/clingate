@@ -2454,7 +2454,7 @@ fn position_one(
                 .calibrate(&reference_line.values, reference_line.current)
                 .map_err(|why| format!("the reference {}: {why}", reference.id))?;
             let here = dip
-                .place(&line.values, from_reference.offset)
+                .place(&line.values, from_reference.offset, line.current)
                 .map_err(|why| why.to_string())?;
             let moved = translate_edge_to(&current_gate, &line.parameter, line.bound, here.at)
                 .map_err(|e| e.to_string())?;

@@ -572,7 +572,8 @@ impl ValleyRule {
         values: &[f64],
         reference_x: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
+        let found =
+            crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, reference_x)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
@@ -583,12 +584,14 @@ impl ValleyRule {
     }
 
     /// Find this sample's valley and put the gate the same distance from it.
+    /// `gate` is where the gate stands on this sample now.
     pub fn place(
         &self,
         values: &[f64],
         offset: f64,
+        gate: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found = crate::gate_rules::threshold::first_valley(values, self.smoothing)?;
+        let found = crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, gate)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,

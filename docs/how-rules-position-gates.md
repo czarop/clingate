@@ -218,7 +218,8 @@ Consequences worth knowing:
 
 ### 3.4 InTheValley - "in the dip, where it sits on the reference"
 
-`ValleyRule::calibrate` / `place` over `threshold::first_valley`:
+`ValleyRule::calibrate` / `place` over `threshold::valley_for_gate`, which is
+`first_valley` with one fallback:
 
 - KDE with Silverman's bandwidth times `smoothing`, 512 points over
   `[min, max]`.
@@ -226,8 +227,15 @@ Consequences worth knowing:
 - Walk right: descend to the bottom of a dip, climb to the summit on its far
   side. `depth = (min(left peak, right summit) - bottom) / min(...)`. The
   first dip with `depth >= 0.02` **and** a far-side summit at least 5% of the
-  tallest is the valley. None -> refused with what the density looked like
-  (one peak only / nothing deep enough).
+  tallest is the valley.
+- Fallback, when that finds nothing and the tallest peak is above the gate
+  (the reference's gate when calibrating, the sample's current gate when
+  placing): the negative is the highest point below the first dip under the
+  tallest peak; the bottom is the lowest point between the two (the middle of
+  a flat stretch). Accepted when the events below the bottom are at least 1%
+  of all and at least 30, and `depth = (negative - bottom) / negative >= 0.02`.
+  None -> refused with what the density looked like (one peak only / nothing
+  deep enough).
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 
