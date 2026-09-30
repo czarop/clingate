@@ -7,3 +7,4 @@ justfile
 .cargo/config.toml
 gate_rules.json
 gating_export.omiqgt
+.claude/worktrees/
