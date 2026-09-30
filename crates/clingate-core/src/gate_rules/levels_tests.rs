@@ -1540,3 +1540,51 @@ fn a_paused_run_and_the_rest_of_it_are_kept_as_one_run() {
     assert_eq!(whole.events.samples.len(), events_first + events_rest);
     assert!(whole.report.unplaced.iter().any(|u| &*u.gate == "Lymph"));
 }
+
+#[test]
+fn a_gate_held_for_placing_is_where_it_was_and_moves_for_its_specimen_alone() {
+    use crate::gates::gate_store::GateSource;
+    let files = files("pause-hold");
+    let mut state = three_deep();
+    let outcome = pausing(
+        &state,
+        &files,
+        store(&[lymph_rule_with_no_reference(), cd69_rule()]),
+        0,
+    );
+    let needs: Vec<_> = outcome
+        .paused
+        .unwrap()
+        .needs
+        .into_iter()
+        .filter(|n| &*n.file == "fs_a")
+        .collect();
+    let before = (
+        edge(&state, "lymph", X, "fs_a"),
+        edge(&state, "lymph", X, "fs_b"),
+    );
+
+    crate::gate_rules::run::hold_for_placing(&mut state, &needs, &specimens());
+
+    assert_eq!(
+        (
+            edge(&state, "lymph", X, "fs_a"),
+            edge(&state, "lymph", X, "fs_b")
+        ),
+        before
+    );
+    let source = |file: &str| {
+        state
+            .gate_and_source_for_file(&Arc::from("lymph"), &Arc::from(file), &specimens())
+            .unwrap()
+            .0
+    };
+    assert!(
+        matches!(source("fs_a"), GateSource::Group((_, ref key)) if &*key.group == "DONOR-A"),
+        "a drag on fs_a is saved to DONOR-A's own position"
+    );
+    assert!(
+        matches!(source("fs_b"), GateSource::Global),
+        "fs_b is untouched"
+    );
+}

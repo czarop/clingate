@@ -529,6 +529,38 @@ fn run_levels(
     }
 }
 
+/// Give each gate a person has to place a position of its own on its
+/// specimen - or its file, with no specimen - where it stands now, so that
+/// moving it there moves it for nobody else. An edit is saved at the level the
+/// gate came from, and a gate still in its drawn position would move everywhere.
+pub fn hold_for_placing(
+    state: &mut GateState,
+    needs: &[NeedsPlacing],
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+) {
+    for need in needs {
+        let Some(gate) = state.gate_for_file(&need.gate_id, &need.file, metadata) else {
+            continue;
+        };
+        match &need.specimen {
+            Some(specimen) => crate::gate_rules::autogate::place_for_specimen(
+                state,
+                &need.gate_id,
+                specimen,
+                &gate,
+            ),
+            None => state.place_gate(
+                &crate::gates::gate_store::GateSubStore::ids_for(&gate, &need.gate_id),
+                &gate,
+                &crate::gates::gate_store::GateSource::Sample((
+                    need.gate_id.clone(),
+                    need.file.clone(),
+                )),
+            ),
+        }
+    }
+}
+
 /// The gates of a level a person has to place before `below` - the levels
 /// under it - can be measured: unplaced, or placed with a confidence under
 /// [`PAUSE_BELOW`], on any specimen, and with a ruled gate somewhere under them.
