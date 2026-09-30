@@ -896,3 +896,31 @@ fn the_bottom_of_a_flat_dip_is_its_middle() {
     // A single lowest point is itself.
     assert_eq!(lowest_between(&[5.0, 1.0, 3.0, 2.0, 9.0], 0, 4), 1);
 }
+
+/// A bump below the positives, and a dip between them at index 3 of `bottom`
+/// height. The bump holds 18 of about 233 parts of the density - near 8%.
+fn bump_under_the_positives(bottom: f64) -> (Vec<f64>, Vec<f64>) {
+    density(&[1.0, 5.0, 10.0, bottom, 9.95, 50.0, 100.0, 50.0, 5.0])
+}
+
+#[test]
+fn a_small_negative_needs_a_dip_at_least_two_percent_deep() {
+    use crate::gate_rules::threshold::small_negative_below;
+    // 10 down to 9.9: a 1% dip, a shoulder rather than a boundary.
+    let (xs, d) = bump_under_the_positives(9.9);
+    assert_eq!(small_negative_below(&xs, &d, 5.0, 10_000), None);
+    // 10 down to 2: 80% deep.
+    let (xs, d) = bump_under_the_positives(2.0);
+    let found = small_negative_below(&xs, &d, 5.0, 10_000).expect("a clear dip");
+    assert_eq!((found.peak, found.bottom), (2.0, 3.0));
+    assert!((found.depth - 0.8).abs() < 1e-12, "{}", found.depth);
+}
+
+#[test]
+fn a_small_negative_needs_thirty_events_as_well_as_one_percent() {
+    use crate::gate_rules::threshold::small_negative_below;
+    // Near 8% of the events lie below the dip: 15 of 200, 77 of 1,000.
+    let (xs, d) = bump_under_the_positives(2.0);
+    assert_eq!(small_negative_below(&xs, &d, 5.0, 200), None);
+    assert!(small_negative_below(&xs, &d, 5.0, 1_000).is_some());
+}

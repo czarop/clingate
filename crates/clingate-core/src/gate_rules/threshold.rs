@@ -728,7 +728,12 @@ const SMALL_NEGATIVE_EVENTS: f64 = 30.0;
 /// Judged by the events below the dip rather than the bump's height. A ripple
 /// in a sparse tail - the failure the height bars in [`valley_in`] exist for -
 /// holds a handful of events; a real negative, however thin, holds hundreds.
-fn small_negative_below(xs: &[f64], density: &[f64], gate: f64, events: usize) -> Option<Valley> {
+pub(crate) fn small_negative_below(
+    xs: &[f64],
+    density: &[f64],
+    gate: f64,
+    events: usize,
+) -> Option<Valley> {
     let n = density.len().min(xs.len());
     let tallest = (0..n).max_by(|&a, &b| density[a].total_cmp(&density[b]))?;
     if xs[tallest] <= gate {
