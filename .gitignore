@@ -8,3 +8,5 @@ justfile
 gate_rules.json
 gating_export.omiqgt
 .claude/worktrees/
+mutants.out/
+mutants.out.old/
