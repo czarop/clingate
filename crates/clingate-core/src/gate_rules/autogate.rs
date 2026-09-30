@@ -1254,6 +1254,35 @@ pub struct Skipped {
     pub reason: String,
 }
 
+/// One specimen whose gate a rule could not place, one line each.
+///
+/// [`Report::skipped`] says the same once per gate and reason, for reading;
+/// this names every specimen, for acting on one at a time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unplaced {
+    pub gate_id: GateId,
+    pub gate: Arc<str>,
+    pub parent_gate: Option<Arc<str>>,
+    /// The file the rule would have read the answer from.
+    pub file: FileId,
+    /// `None` for a file with no sample id, which has no specimen to place.
+    pub specimen: Option<MetaDataKey>,
+    pub reason: String,
+}
+
+impl Unplaced {
+    fn of(measured: &Measurement, specimen: Option<&MetaDataKey>, reason: &str) -> Self {
+        Self {
+            gate_id: measured.gate_id.clone(),
+            gate: measured.gate.clone(),
+            parent_gate: measured.parent_gate.clone(),
+            file: measured.file.clone(),
+            specimen: specimen.cloned(),
+            reason: reason.to_string(),
+        }
+    }
+}
+
 /// "a4b7+ of CD4+", or just the gate where it has no parent.
 pub fn describe(gate: &str, parent: Option<&str>) -> String {
     match parent {
@@ -1271,6 +1300,7 @@ pub struct Report {
     /// candidates.
     pub reference: Vec<Unchanged>,
     pub skipped: Vec<Skipped>,
+    pub unplaced: Vec<Unplaced>,
 }
 
 impl Report {
@@ -1804,6 +1834,26 @@ pub fn solve_all_reporting(
         }
     }
 
+    for miss in unmeasured {
+        let Some(specimen) = specimen_of(&store.pairing, &miss.file, metadata) else {
+            continue;
+        };
+        let already = report
+            .unplaced
+            .iter()
+            .any(|u| u.gate_id == miss.gate_id && u.specimen.as_ref() == Some(&specimen));
+        if !already && !chosen.contains_key(&(specimen.group.clone(), miss.gate_id.clone())) {
+            report.unplaced.push(Unplaced {
+                gate_id: miss.gate_id.clone(),
+                gate: miss.gate.clone(),
+                parent_gate: miss.parent_gate.clone(),
+                file: miss.file.clone(),
+                specimen: Some(specimen),
+                reason: miss.reason.clone(),
+            });
+        }
+    }
+
     for (seen, measured) in measurements.iter().enumerate() {
         // Stopped: nothing half-done is handed back. The caller sees the flag
         // and writes nothing.
@@ -1815,14 +1865,16 @@ pub fn solve_all_reporting(
             continue;
         };
         let Some(specimen) = specimen_of(&store.pairing, &measured.file, metadata) else {
+            let reason = format!(
+                "no {} for this file, so there is no specimen to position",
+                store.pairing.sample_id_column
+            );
+            report.unplaced.push(Unplaced::of(measured, None, &reason));
             report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
-                reason: format!(
-                    "no {} for this file, so there is no specimen to position",
-                    store.pairing.sample_id_column
-                ),
+                reason,
             });
             continue;
         };
@@ -1893,31 +1945,39 @@ pub fn solve_all_reporting(
                 Ok(Outcome::Kept(u)) => report.unchanged.push(u),
                 // The run's line failed for every specimen alike: said once,
                 // naming the first and counting the rest.
-                Err(reason) => match pooled_failures
-                    .iter_mut()
-                    .find(|(s, _)| s.gate == measured.gate && s.parent_gate == measured.parent_gate)
-                {
-                    Some((_, count)) => *count += 1,
-                    None => pooled_failures.push((
-                        Skipped {
-                            file: measured.file.clone(),
-                            gate: measured.gate.clone(),
-                            parent_gate: measured.parent_gate.clone(),
-                            reason,
-                        },
-                        1,
-                    )),
-                },
+                Err(reason) => {
+                    report
+                        .unplaced
+                        .push(Unplaced::of(measured, Some(&specimen), &reason));
+                    match pooled_failures.iter_mut().find(|(s, _)| {
+                        s.gate == measured.gate && s.parent_gate == measured.parent_gate
+                    }) {
+                        Some((_, count)) => *count += 1,
+                        None => pooled_failures.push((
+                            Skipped {
+                                file: measured.file.clone(),
+                                gate: measured.gate.clone(),
+                                parent_gate: measured.parent_gate.clone(),
+                                reason,
+                            },
+                            1,
+                        )),
+                    }
+                }
             }
             continue;
         }
 
         let Some(reference) = resolve_reference(store, measured, measurements, metadata) else {
+            let reason = why_no_reference(store, measured, unmeasured, metadata);
+            report
+                .unplaced
+                .push(Unplaced::of(measured, Some(&specimen), &reason));
             report.skipped.push(Skipped {
                 file: measured.file.clone(),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
-                reason: why_no_reference(store, measured, unmeasured, metadata),
+                reason,
             });
             continue;
         };
@@ -1928,12 +1988,17 @@ pub fn solve_all_reporting(
                 placements.push(placed);
             }
             Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-            Err(reason) => report.skipped.push(Skipped {
-                file: measured.file.clone(),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                reason,
-            }),
+            Err(reason) => {
+                report
+                    .unplaced
+                    .push(Unplaced::of(measured, Some(&specimen), &reason));
+                report.skipped.push(Skipped {
+                    file: measured.file.clone(),
+                    gate: measured.gate.clone(),
+                    parent_gate: measured.parent_gate.clone(),
+                    reason,
+                });
+            }
         }
     }
 

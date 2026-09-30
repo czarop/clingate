@@ -1356,3 +1356,187 @@ fn an_edge_that_cannot_be_set_is_refused_on_that_sample_with_the_reason() {
         "{said:?}"
     );
 }
+
+// ─── a run that pauses for a person ───────────────────────────────────────────
+
+fn pausing(
+    state: &GateState,
+    files: &[(Arc<str>, PathBuf)],
+    rules: RuleStore,
+    from_level: usize,
+) -> RunOutcome {
+    crate::gate_rules::run::run_rules_pausing(
+        state,
+        &inputs(files, rules),
+        from_level,
+        |_| {},
+        &AtomicBool::new(false),
+    )
+}
+
+/// Lymph's rule read on each specimen's FMO, which no specimen has: it can
+/// place Lymph on nobody.
+fn lymph_rule_with_no_reference() -> (RuleTarget, GateRule) {
+    let (target, mut rule) = lymph_rule();
+    rule.measured_on = MeasuredOn::Partner(Arc::from("FMO"));
+    (target, rule)
+}
+
+#[test]
+fn a_parent_that_cannot_be_placed_stops_the_run_before_its_child() {
+    let files = files("pause-unplaced");
+    let state = three_deep();
+    let outcome = pausing(
+        &state,
+        &files,
+        store(&[lymph_rule_with_no_reference(), cd69_rule()]),
+        0,
+    );
+
+    let paused = outcome.paused.expect("CD69+ is measured under Lymph");
+    assert_eq!(paused.next_level, 1);
+    let mut on: Vec<(&str, &str)> = paused
+        .needs
+        .iter()
+        .map(|n| (&*n.gate, &*n.specimen.as_ref().unwrap().group))
+        .collect();
+    on.sort();
+    assert_eq!(on, [("Lymph", "DONOR-A"), ("Lymph", "DONOR-B")]);
+    assert!(paused.needs.iter().all(|n| n.why.contains("FMO")));
+    assert!(
+        outcome
+            .report
+            .positioned
+            .iter()
+            .all(|p| &*p.gate != "CD69+")
+            && outcome.report.unchanged.iter().all(|u| &*u.gate != "CD69+"),
+        "nothing under the unplaced gate is measured"
+    );
+}
+
+#[test]
+fn the_same_run_without_pausing_goes_on_as_before() {
+    let files = files("pause-not-asked");
+    let outcome = run(
+        &three_deep(),
+        &files,
+        store(&[lymph_rule_with_no_reference(), cd69_rule()]),
+    );
+    assert!(outcome.paused.is_none());
+    assert!(
+        outcome
+            .report
+            .positioned
+            .iter()
+            .any(|p| &*p.gate == "CD69+")
+    );
+}
+
+#[test]
+fn a_gate_with_no_ruled_gate_under_it_does_not_stop_the_run() {
+    // The Review tab is for those.
+    let files = files("pause-leaf");
+    let outcome = pausing(
+        &three_deep(),
+        &files,
+        store(&[lymph_rule_with_no_reference()]),
+        0,
+    );
+    assert!(outcome.paused.is_none());
+    assert_eq!(outcome.report.unplaced.len(), 2, "one line per specimen");
+}
+
+#[test]
+fn a_parent_placed_with_low_confidence_stops_the_run_and_a_confident_one_does_not() {
+    use crate::gate_rules::run::{PAUSE_BELOW, needing_a_person};
+    let files = files("pause-confidence");
+    let state = three_deep();
+    let rules = store(&[lymph_rule(), cd69_rule()]);
+    let below = &rule_levels(&state, &rules)[1..];
+    let mut lymph_only = run(&state, &files, store(&[lymph_rule()])).report;
+    assert_eq!(lymph_only.positioned.len(), 2);
+    for placed in &mut lymph_only.positioned {
+        placed.confidence = 0.9;
+    }
+    assert!(needing_a_person(&state, below, &lymph_only, &rules).is_empty());
+
+    lymph_only.positioned[0].confidence = PAUSE_BELOW - 0.01;
+    let needs = needing_a_person(&state, below, &lymph_only, &rules);
+    assert_eq!(needs.len(), 1);
+    assert_eq!(needs[0].file, lymph_only.positioned[0].file);
+    assert!(needs[0].why.contains("0.19"), "{}", needs[0].why);
+
+    lymph_only.positioned[0].confidence = PAUSE_BELOW;
+    assert!(needing_a_person(&state, below, &lymph_only, &rules).is_empty());
+}
+
+#[test]
+fn going_on_after_a_pause_measures_the_child_under_the_parent_as_placed_by_hand() {
+    let files = files("pause-resume");
+    let state = three_deep();
+    let rules = store(&[lymph_rule_with_no_reference(), cd69_rule()]);
+    let first = pausing(&state, &files, rules.clone(), 0);
+    let paused = first.paused.expect("stopped for Lymph");
+
+    // "By hand": Lymph where its own-sample rule would put it.
+    let placed_by_hand = applied(&state, &run(&state, &files, store(&[lymph_rule()])));
+    let rest = pausing(&placed_by_hand, &files, rules, paused.next_level);
+    assert!(rest.paused.is_none());
+    let resumed = applied(&placed_by_hand, &rest);
+
+    let cd69_alone = applied(
+        &placed_by_hand,
+        &run(&placed_by_hand, &files, store(&[cd69_rule()])),
+    );
+    for file in ["fs_a", "fs_b"] {
+        assert_eq!(
+            edge(&resumed, "cd69", Y, file),
+            edge(&cd69_alone, "cd69", Y, file)
+        );
+        assert_eq!(
+            edge(&resumed, "lymph", X, file),
+            edge(&placed_by_hand, "lymph", X, file)
+        );
+    }
+}
+
+#[test]
+fn going_on_after_a_pause_does_not_repeat_what_the_whole_run_said() {
+    let files = files("pause-said-once");
+    let state = three_deep();
+    let nowhere = (RuleTarget::named("Nowhere"), top(X, (0.1, 0.2)));
+    let rules = store(&[lymph_rule(), cd69_rule(), nowhere]);
+    let says_nowhere =
+        |outcome: &RunOutcome| outcome.report.skipped.iter().any(|s| &*s.gate == "Nowhere");
+    assert!(says_nowhere(&pausing(&state, &files, rules.clone(), 0)));
+    assert!(!says_nowhere(&pausing(&state, &files, rules, 1)));
+}
+
+#[test]
+fn a_paused_run_and_the_rest_of_it_are_kept_as_one_run() {
+    let files = files("pause-joined");
+    let state = three_deep();
+    let rules = store(&[lymph_rule_with_no_reference(), cd69_rule()]);
+    let first = pausing(&state, &files, rules.clone(), 0);
+    let (skipped_first, events_first) = (first.report.skipped.len(), first.events.samples.len());
+    let placed_by_hand = applied(&state, &run(&state, &files, store(&[lymph_rule()])));
+    let rest = pausing(&placed_by_hand, &files, rules, 1);
+    let (positioned_rest, placements_rest, events_rest) = (
+        rest.report.positioned.len(),
+        rest.placements.len(),
+        rest.events.samples.len(),
+    );
+    assert!(positioned_rest > 0 && events_first > 0 && events_rest > 0);
+
+    let whole = first.then(rest);
+    assert!(whole.paused.is_none(), "the rest finished");
+    assert_eq!(whole.report.positioned.len(), positioned_rest);
+    assert_eq!(whole.placements.len(), placements_rest);
+    assert_eq!(
+        whole.report.skipped.len(),
+        skipped_first,
+        "the rest skipped nothing"
+    );
+    assert_eq!(whole.events.samples.len(), events_first + events_rest);
+    assert!(whole.report.unplaced.iter().any(|u| &*u.gate == "Lymph"));
+}

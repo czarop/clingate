@@ -289,6 +289,51 @@ pub struct RunOutcome {
     /// A sample of the events behind every gate on every file the run
     /// measured, kept with the run once it is applied.
     pub events: crate::review::events::KeptEvents,
+    /// Set when a pausing run stopped for a person to place gates by hand.
+    pub paused: Option<Paused>,
+}
+
+impl RunOutcome {
+    /// This part of a paused run followed by the part that went on after it:
+    /// one run, as the Review tab keeps it.
+    pub fn then(mut self, rest: RunOutcome) -> RunOutcome {
+        self.report.positioned.extend(rest.report.positioned);
+        self.report.unchanged.extend(rest.report.unchanged);
+        self.report.reference.extend(rest.report.reference);
+        self.report.skipped.extend(rest.report.skipped);
+        self.report.unplaced.extend(rest.report.unplaced);
+        self.placements.extend(rest.placements);
+        self.events.metadata.extend(rest.events.metadata);
+        self.events.samples.extend(rest.events.samples);
+        self.cancelled = rest.cancelled;
+        self.paused = rest.paused;
+        self
+    }
+}
+
+/// Below this confidence, a gate that other rules measure under stops a
+/// pausing run.
+pub const PAUSE_BELOW: f64 = 0.2;
+
+/// A gate a person has to place on one specimen before a run goes on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeedsPlacing {
+    pub gate_id: crate::gates::gate_store::GateId,
+    pub gate: Arc<str>,
+    pub parent_gate: Option<Arc<str>>,
+    /// The file to place it on.
+    pub file: crate::gates::gate_store::FileId,
+    /// `None` for a file with no sample id: placed on that file alone.
+    pub specimen: Option<crate::omiq::metadata::MetaDataKey>,
+    pub why: String,
+}
+
+/// Where a pausing run stopped, and what it needs before it goes on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Paused {
+    /// The level to go on from with [`run_rules_pausing`].
+    pub next_level: usize,
+    pub needs: Vec<NeedsPlacing>,
 }
 
 /// The whole solve. Blocking: run it off any thread that has to stay
@@ -304,6 +349,33 @@ pub fn run_rules(
     progress: impl Fn(Progress) + Sync,
     cancel: &AtomicBool,
 ) -> RunOutcome {
+    run_levels(gates, inputs, 0, false, progress, cancel)
+}
+
+/// [`run_rules`] from level `from_level`, stopping after any level where a
+/// gate with ruled gates under it could not be placed, or was placed with a
+/// confidence below [`PAUSE_BELOW`], on any specimen: a child measured under a
+/// misplaced parent is measured on the wrong cells. What was placed up to
+/// there is handed back with [`RunOutcome::paused`] saying what a person has to
+/// place, and the level to go on from once they have.
+pub fn run_rules_pausing(
+    gates: &GateState,
+    inputs: &RunInputs,
+    from_level: usize,
+    progress: impl Fn(Progress) + Sync,
+    cancel: &AtomicBool,
+) -> RunOutcome {
+    run_levels(gates, inputs, from_level, true, progress, cancel)
+}
+
+fn run_levels(
+    gates: &GateState,
+    inputs: &RunInputs,
+    from_level: usize,
+    pause: bool,
+    progress: impl Fn(Progress) + Sync,
+    cancel: &AtomicBool,
+) -> RunOutcome {
     use crate::gate_rules::autogate::{
         Skipped, apply_placements, linked_conflicts, rule_levels, rules_reaching_nothing,
         solve_all_reporting,
@@ -315,6 +387,7 @@ pub fn run_rules(
         placements: Vec::new(),
         cancelled: true,
         events: Default::default(),
+        paused: None,
     };
 
     // Level by level, down the tree: each level is measured on the gates as
@@ -326,8 +399,16 @@ pub fn run_rules(
     let mut placements = Vec::new();
     let mut measured_all = Vec::new();
     let mut problems: Vec<String> = Vec::new();
+    let mut paused = None;
 
-    for target in rules_reaching_nothing(gates, &inputs.rules) {
+    // Said once, by the run's first part: a run that goes on after a pause
+    // would otherwise say it again.
+    let whole_run_problems = if from_level == 0 {
+        rules_reaching_nothing(gates, &inputs.rules)
+    } else {
+        Vec::new()
+    };
+    for target in whole_run_problems {
         report.skipped.push(Skipped {
             file: Arc::from(""),
             gate: target.gate.clone(),
@@ -337,7 +418,12 @@ pub fn run_rules(
                 .to_string(),
         });
     }
-    for problem in crate::gate_rules::autogate::anchor_problems(gates, &inputs.rules) {
+    let anchor_problems = if from_level == 0 {
+        crate::gate_rules::autogate::anchor_problems(gates, &inputs.rules)
+    } else {
+        Vec::new()
+    };
+    for problem in anchor_problems {
         report.skipped.push(Skipped {
             file: Arc::from(""),
             gate: problem.target.gate.clone(),
@@ -345,7 +431,12 @@ pub fn run_rules(
             reason: problem.reason,
         });
     }
-    for conflict in linked_conflicts(gates, &inputs.rules) {
+    let conflicts = if from_level == 0 {
+        linked_conflicts(gates, &inputs.rules)
+    } else {
+        Vec::new()
+    };
+    for conflict in conflicts {
         report.skipped.push(Skipped {
             file: Arc::from(""),
             gate: conflict.gate.clone(),
@@ -354,7 +445,7 @@ pub fn run_rules(
         });
     }
 
-    for (step, level) in levels.iter().enumerate() {
+    for (step, level) in levels.iter().enumerate().skip(from_level) {
         let (measured, unmeasured, trouble) = measure_all(
             &working,
             &inputs.files,
@@ -398,13 +489,26 @@ pub fn run_rules(
         }
         // The next level reads its populations through these.
         apply_placements(&mut working, &level_placements);
+        let needs = if pause {
+            needing_a_person(&working, &levels[step + 1..], &level_report, &inputs.rules)
+        } else {
+            Vec::new()
+        };
 
         report.positioned.extend(level_report.positioned);
         report.unchanged.extend(level_report.unchanged);
         report.reference.extend(level_report.reference);
         report.skipped.extend(level_report.skipped);
+        report.unplaced.extend(level_report.unplaced);
         placements.extend(level_placements);
         measured_all.extend(measured);
+        if !needs.is_empty() {
+            paused = Some(Paused {
+                next_level: step + 1,
+                needs,
+            });
+            break;
+        }
     }
 
     for problem in problems {
@@ -421,7 +525,72 @@ pub fn run_rules(
         placements,
         cancelled: false,
         events: crate::review::events::of_run(&measured_all, &inputs.metadata),
+        paused,
     }
+}
+
+/// The gates of a level a person has to place before `below` - the levels
+/// under it - can be measured: unplaced, or placed with a confidence under
+/// [`PAUSE_BELOW`], on any specimen, and with a ruled gate somewhere under them.
+pub(crate) fn needing_a_person(
+    state: &GateState,
+    below: &[rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>],
+    level: &Report,
+    rules: &RuleStore,
+) -> Vec<NeedsPlacing> {
+    let parents = gates_above(state, below);
+    let unplaced = level
+        .unplaced
+        .iter()
+        .filter(|u| parents.contains(&u.gate_id))
+        .map(|u| NeedsPlacing {
+            gate_id: u.gate_id.clone(),
+            gate: u.gate.clone(),
+            parent_gate: u.parent_gate.clone(),
+            file: u.file.clone(),
+            specimen: u.specimen.clone(),
+            why: u.reason.clone(),
+        });
+    let doubtful = level
+        .positioned
+        .iter()
+        .filter(|p| p.confidence < PAUSE_BELOW && parents.contains(&p.gate_id))
+        .map(|p| NeedsPlacing {
+            gate_id: p.gate_id.clone(),
+            gate: p.gate.clone(),
+            parent_gate: p.parent_gate.clone(),
+            file: p.file.clone(),
+            specimen: Some(crate::omiq::metadata::MetaDataKey {
+                parameter: rules.pairing.sample_id_column.clone(),
+                group: p.specimen.clone(),
+            }),
+            why: match p.weakest {
+                Some(weakest) => format!(
+                    "placed with confidence {:.2}, held down by {weakest}",
+                    p.confidence
+                ),
+                None => format!("placed with confidence {:.2}", p.confidence),
+            },
+        });
+    unplaced.chain(doubtful).collect()
+}
+
+/// Every gate with one of `nodes` somewhere under it.
+fn gates_above(
+    state: &GateState,
+    nodes: &[rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>],
+) -> rustc_hash::FxHashSet<crate::gates::gate_store::GateId> {
+    let mut above = rustc_hash::FxHashSet::default();
+    for node in nodes.iter().flatten() {
+        let mut at = state.parent_node(node);
+        while let Some(parent) = at {
+            if let Some(gate) = state.gate_for_node(&parent) {
+                above.insert(gate.clone());
+            }
+            at = state.parent_node(&parent);
+        }
+    }
+    above
 }
 
 #[cfg(test)]
