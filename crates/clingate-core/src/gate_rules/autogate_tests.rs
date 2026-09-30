@@ -3415,6 +3415,15 @@ fn aimed_at_the_middle_a_gate_near_the_band_s_edge_is_placed_again() {
             .ends_with("aiming for the middle")
     );
     assert!(!aimed(BandAim::AnywhereInBand).describe().contains("middle"));
+    // A band counted on the whole run puts one line on every specimen, so
+    // each specimen's own file no longer holds the band - the description
+    // has to say which it is.
+    let pooled = TailFractionRule {
+        pool: crate::gate_rules::rule::Pool::Run,
+        ..TailFractionRule::aimed((0.002, 0.005), BandAim::Middle)
+    };
+    assert!(Rule::TailFraction(pooled).describe().contains("one line for every specimen"));
+    assert!(!aimed(BandAim::Middle).describe().contains("together"));
     for aim in BandAim::ALL {
         assert_eq!(BandAim::from_key(aim.key()), Some(aim));
         assert_eq!(serde_json::to_value(aim).unwrap(), aim.key());

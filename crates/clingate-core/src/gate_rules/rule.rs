@@ -213,6 +213,9 @@ impl PositioningRule for TailFractionRule {
         if self.aim == BandAim::Middle {
             said.push_str(", aiming for the middle");
         }
+        if self.pool == Pool::Run {
+            said.push_str(", counted on all of the run's files of that kind together - one line for every specimen");
+        }
         said
     }
 }

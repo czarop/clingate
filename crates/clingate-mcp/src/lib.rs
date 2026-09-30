@@ -132,7 +132,9 @@ them: a band rule with 'pool': 'Run' reads every FMX file in the workspace \
 together and puts the same line on every specimen. For small populations, \
 where 0.2% of one FMX is a couple of events, that is the difference between \
 a line set by stray events and one set by dozens. Check with gate_profile \
-that the specimens are alike enough to share a line before suggesting it.
+that the specimens are alike enough to share a line. Write a pooled rule \
+only when the user asks for one: it is not how this lab gates, and each \
+specimen's own FMX no longer holds the band under it.
 
 To work out with the user how the rules could \
 place gates better: explain_gate_positioning says exactly how every rule \
