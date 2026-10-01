@@ -148,7 +148,12 @@ pub struct EventSample {
     /// The gate as it stood on this file when the run measured it - before
     /// the run moved anything. What a replay starts the rule from.
     pub gate: Option<flow_gates::Gate>,
+    /// The gates on its plot the run kept it clear of, by name, as outlines.
+    pub beside: Vec<KeptNeighbour>,
 }
+
+/// A gate kept clear of: its name, and its outline on the plot.
+pub type KeptNeighbour = (String, Vec<(f64, f64)>);
 
 /// What a run keeps of what it read: every population it measured, and the
 /// metadata of every file it measured them on, so a replay can tell
@@ -173,6 +178,11 @@ impl EventSample {
             events: m.events,
             points: m.kept_events.to_vec(),
             gate: Some(m.drawn.clone()),
+            beside: m
+                .beside
+                .iter()
+                .map(|(name, outline)| (name.to_string(), outline.clone()))
+                .collect(),
         }
     }
 }
@@ -191,6 +201,8 @@ struct Head {
     y_range: (f32, f32),
     #[serde(default)]
     gate: Option<flow_gates::Gate>,
+    #[serde(default)]
+    beside: Vec<KeptNeighbour>,
 }
 
 /// The span of `values`; nothing for none, so an empty population writes
@@ -253,6 +265,7 @@ pub fn encode(kept: &KeptEvents) -> Vec<u8> {
             x_range: range(points.iter().map(|p| p.0)),
             y_range: range(points.iter().map(|p| p.1)),
             gate: s.gate.clone(),
+            beside: s.beside.clone(),
         };
         let json = serde_json::to_vec(&head).expect("a head always serialises");
         out.extend_from_slice(&(json.len() as u32).to_le_bytes());
@@ -331,6 +344,7 @@ pub fn decode(bytes: &[u8]) -> anyhow::Result<KeptEvents> {
             events: head.events,
             points,
             gate: head.gate,
+            beside: head.beside,
         });
     }
     if r.at != bytes.len() {
@@ -562,6 +576,8 @@ pub struct ManifestEntry {
     pub file: String,
     pub gate: Option<flow_gates::Gate>,
     pub population: String,
+    #[serde(default)]
+    pub beside: Vec<KeptNeighbour>,
 }
 
 /// Keep a run's events in a library: each population in the pool, once,
@@ -577,6 +593,7 @@ pub fn save_to_library(run_folder: &Path, pool: &Pool, kept: &KeptEvents) -> any
                 file: s.file.clone(),
                 gate: s.gate.clone(),
                 population: pool.put(s)?,
+                beside: s.beside.clone(),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -617,6 +634,7 @@ pub fn load_from_library(run_folder: &Path) -> anyhow::Result<Option<KeptEvents>
                     events: population.events,
                     points: population.points,
                     gate: e.gate,
+                    beside: e.beside,
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -646,6 +664,7 @@ mod tests {
             events: points.len() * 3,
             points,
             gate: Some(a_gate(gate)),
+            beside: Vec::new(),
         }
     }
 
@@ -739,6 +758,20 @@ mod tests {
     }
 
     #[test]
+    fn the_gates_a_population_was_kept_clear_of_come_back_as_written() {
+        let mut held = sample("g1", "f1", spread(10, 0.0, 1.0));
+        held.beside = vec![(
+            "teff_naive".into(),
+            vec![(0.5, 1.0), (2.0, 1.0), (1.25, 3.0)],
+        )];
+        let written = kept("2026-10-01T12:00:00Z", vec![held.clone()]);
+
+        let back = decode(&encode(&written)).unwrap();
+
+        assert_eq!(back.samples[0].beside, held.beside);
+    }
+
+    #[test]
     fn a_version_1_file_still_reads_without_metadata_or_gates() {
         // As the first version wrote it: stamp, count, heads without gates.
         let mut bytes = Vec::new();
@@ -756,6 +789,7 @@ mod tests {
         assert_eq!(back.run_applied_at, "t");
         assert!(back.metadata.is_empty());
         assert_eq!(back.samples[0].gate, None);
+        assert!(back.samples[0].beside.is_empty());
         assert_eq!(back.samples[0].points, vec![(1.0, 0.0)]);
     }
 

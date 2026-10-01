@@ -375,8 +375,10 @@ as it was, so a rerun adds only its lists and the populations that changed.
 A replay (`review/replay.rs`, `replay_run`) rebuilds those populations and
 gates and runs the **real** solver (`measure_population` + `solve_all`) on
 them - with the run's own rules (the *baseline*) and with proposed rule
-changes. Each placement is judged against where the review says the gate
-belongs:
+changes. A run keeps, with each population, the outlines of the gates it
+kept that gate clear of (`EventSample::beside`), so a replay holds it back
+off the same gates, where they stood in the run. Each placement is judged
+against where the review says the gate belongs:
 
 | truth | right gate |
 |-------|-----------|

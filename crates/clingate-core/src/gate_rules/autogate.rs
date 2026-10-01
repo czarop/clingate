@@ -368,6 +368,9 @@ pub struct Measurement {
     /// `None` for every other rule, so a panel of markers is only ever
     /// extracted for the gates that actually want one.
     pub phenotype: Option<PhenotypeReading>,
+    /// The gates on its plot it is kept clear of on this file, as they stood
+    /// when it was measured - see [`crate::gate_rules::clearance`].
+    pub beside: Vec<crate::gate_rules::clearance::Neighbour>,
 }
 
 /// The reading a rule that positions one edge works from.
@@ -498,7 +501,10 @@ pub fn measure_file_at(
             }
         };
         match measure_population(file, gate_id, name, parent_gate, &gate, rule, &frame) {
-            Ok(m) => out.push(m),
+            Ok(mut m) => {
+                m.beside = neighbours(state, rules, &names, gate_id, file, metadata);
+                out.push(m);
+            }
             Err(u) => unmeasured.push(u),
         }
     }
@@ -555,6 +561,7 @@ pub fn measure_population(
             params,
             line: None,
             phenotype: None,
+            beside: Vec::new(),
         });
     }
     let Some(inner) = gate.get_gate_ref(None) else {
@@ -681,6 +688,7 @@ pub fn measure_population(
                 rows,
                 points: points.iter().map(|(x, y)| (*x as f64, *y as f64)).collect(),
             }),
+            beside: Vec::new(),
         });
     }
 
@@ -775,6 +783,7 @@ pub fn measure_population(
             shadow,
         }),
         phenotype: None,
+        beside: Vec::new(),
     })
 }
 
@@ -1812,7 +1821,6 @@ pub fn solve_all_reporting(
     let mut report = Report::default();
     let mut pooled: FxHashMap<GateId, Result<PooledLine, String>> = FxHashMap::default();
     let mut pooled_failures: Vec<(Skipped, usize)> = Vec::new();
-    let names = crate::gates::gate_paths::unique_names(state);
 
     // One line per gate and reason, not per file: the same miss on every file
     // is one problem. But it says which file, and how many shared it - a
@@ -1993,20 +2001,7 @@ pub fn solve_all_reporting(
                 &mut pooled,
             )
             .and_then(|line| line.for_specimen(state, measured, &specimen, metadata))
-            .and_then(|outcome| {
-                kept_clear(
-                    outcome,
-                    &measured.gate_id,
-                    &neighbours(
-                        state,
-                        store,
-                        &names,
-                        &measured.gate_id,
-                        &measured.file,
-                        metadata,
-                    ),
-                )
-            });
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside));
             match outcome {
                 Ok(Outcome::Moved(p, placed)) => {
                     report.positioned.push(p);
@@ -2052,18 +2047,11 @@ pub fn solve_all_reporting(
             continue;
         };
 
-        let beside = neighbours(
-            state,
-            store,
-            &names,
-            &measured.gate_id,
-            &measured.file,
-            metadata,
-        );
+        let beside = &measured.beside;
         let outcome = position_one(
-            state, rule, measured, &reference, &specimen, metadata, &beside,
+            state, rule, measured, &reference, &specimen, metadata, beside,
         )
-        .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &beside));
+        .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside));
         match outcome {
             Ok(Outcome::Moved(p, placed)) => {
                 report.positioned.push(p);

@@ -533,7 +533,14 @@ pub(crate) fn solve(events: &KeptEvents, rules: &RuleStore) -> Solved {
             }
         };
         match measure_population(&file, &id, name, parent, &gate, rule, &frame) {
-            Ok(m) => measured.push(m),
+            Ok(mut m) => {
+                m.beside = sample
+                    .beside
+                    .iter()
+                    .map(|(name, outline)| (Arc::from(name.as_str()), outline.clone()))
+                    .collect();
+                measured.push(m);
+            }
             Err(u) => {
                 skipped.insert(key, u.reason.clone());
                 unmeasured.push(u);
@@ -1261,6 +1268,7 @@ mod tests {
             events: points.len(),
             points,
             gate: Some(gate),
+            beside: Vec::new(),
         }
     }
 

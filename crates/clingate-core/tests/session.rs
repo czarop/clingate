@@ -859,7 +859,11 @@ fn a_run_reviewed_with_no_library_is_kept_in_the_workspace_only() {
 /// between the negatives and the positives, holding the positives alone,
 /// and that is where the reviewer puts it back.
 fn reviewed_run(name: &str) -> (Session, f64, std::path::PathBuf) {
-    let folder = rule_in(tmem_workspace(name), percentile(-0.5));
+    reviewed_run_in(rule_in(tmem_workspace(name), percentile(-0.5)), name)
+}
+
+/// [`reviewed_run`], of the rules in `folder`.
+fn reviewed_run_in(folder: std::path::PathBuf, name: &str) -> (Session, f64, std::path::PathBuf) {
     let library = scratch(&format!("{name}-library"));
     let mut session = Session::open(&folder).unwrap();
     session.set_review_library(Some(library.clone()));
@@ -880,6 +884,14 @@ fn reviewed_run(name: &str) -> (Session, f64, std::path::PathBuf) {
 /// there on BUV563-A, and on BUV805-A a third are positive - inside the gate
 /// as drawn - and the rest negative, to the left of it.
 fn tmem_workspace(name: &str) -> std::path::PathBuf {
+    let dir = tmem_workspace_beside_teff_naive(name);
+    out_of_tmems_way(&dir.join("gating.omiqgt"));
+    dir
+}
+
+/// [`tmem_workspace`] with teff_naive where it is drawn: beside Tmem on its
+/// plot, to the left of it on BUV805-A.
+fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
     let dir = workspace(name);
     let mut channels = vec!["FSC-A", "SSC-A"];
     channels.extend(FLUORESCENCE);
@@ -904,6 +916,41 @@ fn tmem_workspace(name: &str) -> std::path::PathBuf {
         write_fcs(&dir.join(file), &channels, &rows);
     }
     dir
+}
+
+/// teff_naive moved down BUV563-A, below Tmem, so nothing beside Tmem on its
+/// plot holds it back wherever a rule slides it along BUV805-A.
+fn out_of_tmems_way(gating: &std::path::Path) {
+    fn lower(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, field) in fields.iter_mut() {
+                    match (key.as_str(), field.as_f64()) {
+                        ("f2Val", Some(v)) => *field = serde_json::json!(v - 7.0),
+                        _ => lower(field),
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(lower),
+            _ => {}
+        }
+    }
+    fn find(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields)
+                if fields.get("name") == Some(&"teff_naive".into()) =>
+            {
+                lower(value)
+            }
+            serde_json::Value::Object(fields) => fields.values_mut().for_each(find),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(find),
+            _ => {}
+        }
+    }
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(gating).unwrap()).unwrap();
+    find(&mut json);
+    std::fs::write(gating, serde_json::to_vec(&json).unwrap()).unwrap();
 }
 
 /// The line `offset` above the median of the parent.
@@ -2814,4 +2861,35 @@ fn a_rule_next_to_another_gate_is_checked_and_kept_with_its_channel() {
         .clone();
     assert_eq!(&*stored.parameter, "");
     assert_eq!(stored.measured_on, MeasuredOn::Itself);
+}
+
+/// A run that held Tmem back off teff_naive is replayed the same: the replay
+/// keeps it clear of the gate the run kept it clear of, where it stood then.
+#[test]
+fn a_run_held_back_off_a_gate_beside_it_is_replayed_held_back_the_same() {
+    use clingate_core::session::ReplayScope;
+    let folder = rule_in(
+        tmem_workspace_beside_teff_naive("session-replay-held"),
+        percentile(-0.5),
+    );
+    let (session, before, _) = reviewed_run_in(folder, "session-replay-held");
+
+    let as_run = session
+        .replay_rules(&[], ReplayScope::Both, None, None)
+        .unwrap();
+
+    assert_eq!(as_run.cases_total, 2, "{as_run:?}");
+    for case in &as_run.cases {
+        let (run_at, replay_at) = (case.run_at.unwrap(), case.replay_at.unwrap());
+        assert!(
+            run_at < before,
+            "the run moved it left, towards teff_naive: {case:?}"
+        );
+        assert!((replay_at - run_at).abs() < 1e-6, "{case:?}");
+        assert_eq!(
+            case.replay_weakest.as_deref(),
+            Some("held back off another gate"),
+            "{case:?}"
+        );
+    }
 }
