@@ -2632,3 +2632,68 @@ fn a_band_counted_on_the_run_reads_a_kind_of_file_and_runs_with_no_setting() {
     );
     assert_eq!(preview.would_move.len() + preview.already_in_place.len(), 2);
 }
+
+// ─── a valley rule's fallback, as Claude writes one ───────────────────────────
+
+fn valley_falling_back_to(
+    fallback: clingate_core::gate_rules::rule_store::RuleTarget,
+) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::InTheValley(
+        clingate_core::gate_rules::rule::ValleyRule {
+            fallback: Some(fallback),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn a_valley_rule_s_fallback_is_kept_and_checked_as_a_followed_gate_is() {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    let folder = linked_workspace("session-valley-fallback");
+    let rules_file = clingate_core::workspace::rules_file(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let before = std::fs::read_to_string(&rules_file).unwrap();
+    for (fallback, expected) in [
+        ("Branch B", "cannot follow itself"),
+        ("Branch C", "Branch C, is not in the gating"),
+    ] {
+        let said = session
+            .update_rule(change(
+                "Branch B",
+                None,
+                "FSC-A",
+                file("sample1_FMX.fcs"),
+                valley_falling_back_to(RuleTarget::named(fallback)),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(expected), "{expected}\nsaid: {said}");
+    }
+    assert_eq!(std::fs::read_to_string(&rules_file).unwrap(), before);
+
+    let written = session
+        .update_rule(change(
+            "Branch B",
+            None,
+            "FSC-A",
+            file("sample1_FMX.fcs"),
+            valley_falling_back_to(RuleTarget::named("Branch A")),
+        ))
+        .unwrap();
+    assert!(
+        written.now.contains("with no dip, where Branch A is"),
+        "{}",
+        written.now
+    );
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Branch B"))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        stored.rule,
+        valley_falling_back_to(RuleTarget::named("Branch A"))
+    );
+}

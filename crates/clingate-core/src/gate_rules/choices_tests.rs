@@ -344,6 +344,20 @@ mod following {
     }
 
     #[test]
+    fn a_valley_rule_falls_back_to_the_same_gate_under_another_parent() {
+        use crate::gate_rules::choices::fallback_targets;
+        let named = |gate, parent| -> Vec<String> {
+            fallback_targets(&offered(), gate, parent)
+                .iter()
+                .map(|t| t.describe())
+                .collect()
+        };
+        assert_eq!(named("CD19-", "CD45+"), ["CD19- of Lymph"]);
+        assert_eq!(named("CD19-", "Lymph"), ["CD19- of CD45+"]);
+        assert!(named("CD19+CD14-", "CD45+").is_empty(), "drawn once");
+    }
+
+    #[test]
     fn every_gate_is_offered_as_a_rule_names_it_under_each_parent() {
         let named: Vec<String> = every_target(&offered())
             .iter()

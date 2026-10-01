@@ -46,10 +46,11 @@ show, not raw channel values.
    gate is placed. The ruled gates are put in levels by the tree: level 0 has
    no ruled gate above it, level 1 has one, and so on. Steps 1-6 run once per
    level, each measuring on the gates as the levels above left them, and the
-   next level reads through those placements. A gate whose rule is from
-   another gate also waits for every gate it follows that a rule places. The
-   order the rules are listed in plays no part. A rule from another gate
-   whose anchor is not one gate, is itself, or leads round in a loop back to
+   next level reads through those placements. A gate whose rule reads a
+   position from another gate (`Rule::anchors`: a rule from another gate, or
+   a valley rule's `fallback`) also waits for every such gate that a rule
+   places. The order the rules are listed in plays no part. A rule whose
+   anchor is not one gate, is itself, or leads round in a loop back to
    it is reported and left alone (`anchor_problems`). A run with no ruled gate under another is one level,
    and reads each file once; each further level reads every file again.
    Before any level: a rule that reaches no gate is reported
@@ -253,6 +254,11 @@ Consequences worth knowing:
   deep enough).
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
+- No valley on the reference or the sample, and a `fallback` gate named
+  (`ValleyRule::fallback_rule`, `autogate::fall_back`): the gate's leading
+  edge - the lower for `Above`, the upper for `Below` - goes where the
+  fallback's same edge is on this sample, as a rule from another gate sets
+  an edge. Its confidence is one component at `FALLBACK_CONFIDENCE`, 0.25.
 
 Judged on the reference population; distance moved not scored. An extra
 component compares the dip's depth with the reference's (below).
@@ -286,6 +292,7 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
 | distance moved from the reference | band and percentile rules only: `1 - (abs(to - from) / IQR) / 0.5`, where `from` is the sample's line **before the run** (not the reference file's line) |
 | depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
+| no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
 
@@ -466,7 +473,8 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0}`
+- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}}` -
+  `fallback` is optional; it is placed first, like an anchor
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -

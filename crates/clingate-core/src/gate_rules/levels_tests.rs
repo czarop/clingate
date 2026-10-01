@@ -1797,3 +1797,168 @@ fn two_gates_missed_on_one_specimen_are_each_named() {
         ]
     );
 }
+
+// ─── a valley rule's fallback ─────────────────────────────────────────────────
+//
+// X is one peak - a smear with no dip - so a valley rule on it finds
+// nothing, and one with a fallback puts its edge where the same gate's is
+// under another parent.
+
+/// fs_a and fs_b with X one normal peak, and Y the same.
+fn smears(name: &str) -> Vec<(Arc<str>, PathBuf)> {
+    let dir = scratch(name);
+    let channels = [(X, None), (Y, None)];
+    ["fs_a", "fs_b"]
+        .iter()
+        .enumerate()
+        .map(|(seed, file)| {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed as u64 + 1);
+            let x = rand_distr::Normal::new(500.0f32, 100.0).unwrap();
+            let rows: Vec<Vec<f32>> = (0..20_000)
+                .map(|_| {
+                    let v = x.sample(&mut rng);
+                    vec![v, v]
+                })
+                .collect();
+            let path = dir.join(format!("{file}.fcs"));
+            write_fcs_rows(&path, &channels, &rows, &[]);
+            (Arc::from(format!("{file}.fcs")), path)
+        })
+        .collect()
+}
+
+/// IFNy+ under A and under B, both open from -1 on X.
+fn ifng_twice() -> GateState {
+    let mut state = GateState::default();
+    add(&mut state, rect("a", "A", -1.0, -BIG), None);
+    add(&mut state, rect("b", "B", -1.0, -BIG), None);
+    add(&mut state, rect("ifng_a", "IFNy+", -1.0, -BIG), Some("a"));
+    add(&mut state, rect("ifng_b", "IFNy+", -1.0, -BIG), Some("b"));
+    state
+}
+
+fn valley_on_b(fallback: Option<RuleTarget>) -> (RuleTarget, GateRule) {
+    (
+        RuleTarget::under("IFNy+", "B"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from("fs_a")),
+            rule: Rule::InTheValley(crate::gate_rules::rule::ValleyRule {
+                fallback,
+                ..Default::default()
+            }),
+        },
+    )
+}
+
+fn band_on_a() -> (RuleTarget, GateRule) {
+    (RuleTarget::under("IFNy+", "A"), top(X, (0.19, 0.21)))
+}
+
+#[test]
+fn a_valley_rule_with_no_dip_takes_its_fallback_s_edge_after_the_fallback_s_rule() {
+    use crate::gate_rules::autogate::FALLBACK_CONFIDENCE;
+    use crate::gate_rules::confidence::FALLBACK;
+    let files = smears("valley-fallback");
+    let state = ifng_twice();
+    let fallback = Some(RuleTarget::under("IFNy+", "A"));
+    // Listed before the rule it falls back to.
+    let rules = store(&[valley_on_b(fallback), band_on_a()]);
+    assert_eq!(level_names(&state, &rules), [["IFNy+"], ["IFNy+"]]);
+
+    let outcome = run(&state, &files, rules);
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    let after = applied(&state, &outcome);
+    // By hand: the band rule applied, then its edge read off.
+    let by_hand = applied(&state, &run(&state, &files, store(&[band_on_a()])));
+    let theirs = extent(&by_hand, "ifng_a", X, "fs_b").0;
+    assert!(theirs > 500.0, "the band rule moved it, to {theirs}");
+    assert_eq!(extent(&after, "ifng_b", X, "fs_b").0, theirs);
+    assert_eq!(
+        extent(&after, "ifng_b", Y, "fs_b"),
+        extent(&state, "ifng_b", Y, "fs_b"),
+        "only the edge the valley sets"
+    );
+    // The reference is gated by hand, and stays as it was drawn.
+    assert_eq!(
+        extent(&after, "ifng_b", X, "fs_a"),
+        extent(&state, "ifng_b", X, "fs_a")
+    );
+    assert!(
+        outcome
+            .report
+            .reference
+            .iter()
+            .any(|r| &*r.gate_id == "ifng_b" && &*r.file == "fs_a")
+    );
+    let placed: Vec<_> = outcome
+        .report
+        .positioned
+        .iter()
+        .filter(|p| &*p.gate_id == "ifng_b")
+        .collect();
+    assert_eq!(placed.len(), 1, "the specimen that is not the reference");
+    for p in placed {
+        assert_eq!(p.confidence, 0.25);
+        assert_eq!(p.weakest, Some(FALLBACK));
+        assert!(
+            p.components[0].detail.contains("IFNy+ of A"),
+            "{}",
+            p.components[0].detail
+        );
+    }
+    assert!(
+        crate::gate_rules::run::PAUSE_BELOW <= FALLBACK_CONFIDENCE
+            && FALLBACK_CONFIDENCE < crate::review::assess::REVIEW_FLOOR,
+        "reviewed, but no pause"
+    );
+}
+
+#[test]
+fn a_valley_rule_with_no_dip_and_no_fallback_is_left_unplaced() {
+    let files = smears("valley-no-fallback");
+    let state = ifng_twice();
+    let outcome = run(&state, &files, store(&[valley_on_b(None), band_on_a()]));
+    assert!(
+        outcome
+            .report
+            .positioned
+            .iter()
+            .all(|p| &*p.gate_id != "ifng_b")
+    );
+    assert!(
+        reasons(&outcome).iter().any(|r| r.starts_with("IFNy+ |")),
+        "{:?}",
+        reasons(&outcome)
+    );
+}
+
+#[test]
+fn a_fallback_that_cannot_give_an_edge_says_both_why() {
+    let files = smears("valley-fallback-open");
+    let mut state = ifng_twice();
+    add(&mut state, rect("open", "Open", -BIG, -BIG), Some("a"));
+    let rules = store(&[valley_on_b(Some(RuleTarget::under("Open", "A")))]);
+    let outcome = run(&state, &files, rules);
+    let said = reasons(&outcome);
+    assert!(
+        said.iter()
+            .any(|r| r.contains("its fallback failed") && r.contains("is open")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn a_fallback_naming_itself_or_no_gate_is_refused_before_the_run() {
+    use crate::gate_rules::autogate::anchor_problems;
+    let state = ifng_twice();
+    for (fallback, says) in [
+        (RuleTarget::under("IFNy+", "B"), "names itself"),
+        (RuleTarget::under("Nothing", "A"), "Nothing"),
+    ] {
+        let problems = anchor_problems(&state, &store(&[valley_on_b(Some(fallback))]));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].reason.contains(says), "{}", problems[0].reason);
+    }
+}

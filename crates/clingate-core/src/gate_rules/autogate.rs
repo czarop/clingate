@@ -1475,8 +1475,8 @@ pub fn rule_levels(state: &GateState, rules: &RuleStore) -> Vec<rustc_hash::FxHa
 }
 
 /// For every ruled node, the ruled nodes that have to be placed before it:
-/// every ruled gate above it, and - for a rule from another gate - every
-/// place its anchors are drawn that a rule places.
+/// every ruled gate above it, and every place the gates its rule reads a
+/// position from are drawn that a rule places.
 fn dependencies(
     state: &GateState,
     rules: &RuleStore,
@@ -1496,19 +1496,17 @@ fn dependencies(
             }
             above = state.parent_node(&ancestor);
         }
-        if let crate::gate_rules::rule::Rule::FromAnotherGate(from) = &entry.rule.rule {
-            for anchor in from.anchors() {
-                if let Ok(id) = anchor_gate(state, anchor) {
-                    // Itself is not a dependency - it is refused as naming
-                    // itself, which says more than a loop of one would.
-                    deps.extend(
-                        state
-                            .nodes_for_gate(&id)
-                            .iter()
-                            .filter(|n| *n != node && ruled(n))
-                            .cloned(),
-                    );
-                }
+        for anchor in entry.rule.rule.anchors() {
+            if let Ok(id) = anchor_gate(state, anchor) {
+                // Itself is not a dependency - it is refused as naming
+                // itself, which says more than a loop of one would.
+                deps.extend(
+                    state
+                        .nodes_for_gate(&id)
+                        .iter()
+                        .filter(|n| *n != node && ruled(n))
+                        .cloned(),
+                );
             }
         }
         graph.insert(node.clone(), deps);
@@ -1516,7 +1514,7 @@ fn dependencies(
     graph
 }
 
-/// A rule from another gate that cannot be placed at all.
+/// A rule reading another gate's position that cannot be placed at all.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnchorProblem {
     pub target: crate::gate_rules::rule_store::RuleTarget,
@@ -1524,8 +1522,9 @@ pub struct AnchorProblem {
     pub reason: String,
 }
 
-/// Every rule from another gate whose anchor names no one gate, names the
-/// gate itself, or leads round in a loop back to it.
+/// Every rule reading another gate's position - from another gate, or a
+/// valley's fallback - whose anchor names no one gate, names the gate itself,
+/// or leads round in a loop back to it.
 ///
 /// Said once for the rule rather than once per sample, and the gates left
 /// where they are: a loop has no first gate to place, and an anchor that is not
@@ -1554,11 +1553,14 @@ pub fn anchor_problems(state: &GateState, rules: &RuleStore) -> Vec<AnchorProble
         let Some(entry) = entry_at(state, rules, &names, node) else {
             continue;
         };
-        let crate::gate_rules::rule::Rule::FromAnotherGate(from) = &entry.rule.rule else {
-            continue;
-        };
-        if let Some(problem) = from.problem() {
+        let anchors = entry.rule.rule.anchors();
+        if let crate::gate_rules::rule::Rule::FromAnotherGate(from) = &entry.rule.rule
+            && let Some(problem) = from.problem()
+        {
             push(&entry.target, node, problem.to_string());
+            continue;
+        }
+        if anchors.is_empty() {
             continue;
         }
         // Compared as gates, not placements: a quadrant's corners are one gate.
@@ -1569,7 +1571,7 @@ pub fn anchor_problems(state: &GateState, rules: &RuleStore) -> Vec<AnchorProble
                 .unwrap_or_else(|| id.clone())
         };
         let own = state.gate_for_node(node).map(identity);
-        for anchor in from.anchors() {
+        for anchor in anchors {
             match anchor_gate(state, anchor) {
                 Err(reason) => push(&entry.target, node, reason),
                 Ok(id) if Some(identity(&id)) == own => push(
@@ -2547,12 +2549,22 @@ fn position_one(
         // The boundary read directly rather than paced out from the negative's
         // centre. Nothing is multiplied, so nothing is amplified.
         crate::gate_rules::rule::Rule::InTheValley(dip) => {
-            let from_reference = dip
+            let found = dip
                 .calibrate(&reference_line.values, reference_line.current)
-                .map_err(|why| format!("the reference {}: {why}", reference.id))?;
-            let here = dip
-                .place(&line.values, from_reference.offset, line.current)
-                .map_err(|why| why.to_string())?;
+                .map_err(|why| format!("the reference {}: {why}", reference.id))
+                .and_then(|from_reference| {
+                    dip.place(&line.values, from_reference.offset, line.current)
+                        .map(|here| (from_reference, here))
+                        .map_err(|why| why.to_string())
+                });
+            let (from_reference, here) =
+                match (found, dip.fallback_rule(&line.parameter, line.bound)) {
+                    (Ok(found), _) => found,
+                    (Err(why), None) => return Err(why),
+                    (Err(why), Some(fallback)) => {
+                        return fall_back(state, &fallback, measured, specimen, metadata, &why);
+                    }
+                };
             let moved = translate_edge_to(&current_gate, &line.parameter, line.bound, here.at)
                 .map_err(|e| e.to_string())?;
             let got = admitted_by(&moved, population).unwrap_or(0.0);
@@ -3288,6 +3300,38 @@ fn set_edge(
     let mut moved = inner.clone();
     moved.geometry = slide(&inner.geometry, parameter, to - from);
     rebuild(gate, moved).map_err(|e| e.to_string())
+}
+
+/// How sure a valley rule's fallback is: low enough that the Review tab flags
+/// it, as nothing was read off the sample, and not so low that a run pauses
+/// for it - placing it where a person would is the fallback's whole point.
+pub const FALLBACK_CONFIDENCE: f64 = 0.25;
+
+/// A valley rule that found no valley, `why`, placed by its fallback.
+fn fall_back(
+    state: &GateState,
+    fallback: &crate::gate_rules::rule::FromGateRule,
+    measured: &Measurement,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+    why: &str,
+) -> Result<Outcome, String> {
+    let placed = position_from_gate(state, fallback, measured, specimen, metadata)
+        .map_err(|fallback_failed| format!("{why}, and its fallback failed: {fallback_failed}"))?;
+    let Outcome::Moved(mut positioned, placement) = placed else {
+        return Ok(placed);
+    };
+    let confidence = crate::gate_rules::confidence::Confidence::from_components(vec![
+        crate::gate_rules::confidence::Component::new(
+            crate::gate_rules::confidence::FALLBACK,
+            FALLBACK_CONFIDENCE,
+            format!("{why}, so it was placed from {}", fallback.describe()),
+        ),
+    ]);
+    positioned.confidence = confidence.score;
+    positioned.weakest = confidence.weakest().map(|c| c.name);
+    positioned.components = confidence.components;
+    Ok(Outcome::Moved(positioned, placement))
 }
 
 /// Where a rule from another gate puts this gate on this sample: wherever the

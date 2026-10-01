@@ -13,9 +13,10 @@ that broadens does not throw the gate out.
 ## When not to use it
 
 - Positives that smear with no dip: there is nothing to find, and the rule
-  refuses those samples (above the negative is for them).
+  refuses those samples (above the negative is for them) - unless it has a
+  `fallback`.
 - Datasets where some samples have a positive population and others only a
-  smear: the smear samples will be refused.
+  smear: the smear samples will be refused, or placed by the `fallback`.
 
 ## How it works
 
@@ -39,8 +40,10 @@ that broadens does not throw the gate out.
 4. **Calibrate** on the reference: the offset from the bottom of its dip to
    its gate. **Place** on each sample: the bottom of its dip plus the same
    offset. The whole shape slides.
-5. No dip at all: refused, with what the density looked like (one peak only,
-   or dips too shallow or in the tail).
+5. No dip at all - on the reference or on this sample: refused, with what
+   the density looked like (one peak only, or dips too shallow or in the
+   tail). With a `fallback`, the gate's edge - the one the dip would have
+   set - goes where the fallback gate's same edge is on this sample instead.
 
 ## Settings
 
@@ -48,6 +51,11 @@ that broadens does not throw the gate out.
   noise; above 1 smooths shallow ones away. Which is wanted depends on the
   marker.
 - `confidence` - see the shared settings in the choosing guide.
+- `fallback` - a gate named as a rule names one, `{"gate": "IFNy+",
+  "parent": "CD4+"}`: where this gate goes on a sample with no dip. Usually
+  the same gate under another parent, where the positives do separate. It
+  has to be drawn on the rule's parameter. When a rule places it, the run
+  places it first, as for a rule from another gate.
 
 ## Traps
 
@@ -64,3 +72,7 @@ that broadens does not throw the gate out.
 - *depth of the valley it sat in* - this sample's dip depth against the
   reference's.
 - Not scored on distance moved: finding each sample's own dip is the rule.
+- Placed by the fallback: one component, *no valley, so placed from another
+  gate*, at 0.25 - below the Review tab's 0.30, so every one comes up for
+  review, and above the 0.2 at which a run pauses, so it does not stop the
+  run.

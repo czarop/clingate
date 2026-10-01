@@ -19,6 +19,7 @@
 //! in one file.
 
 use crate::gate_rules::confidence::{Confidence, ConfidenceModel, CountAndSeparation};
+use crate::gate_rules::rule_store::Bound;
 use crate::gate_rules::threshold::{SolveError, Threshold, percentile_offset, tail_fraction};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -537,6 +538,11 @@ pub struct ValleyRule {
     pub smoothing: f64,
     #[serde(default)]
     pub confidence: CountAndSeparation,
+    /// Where the gate goes on a sample with no valley to find - a smear: the
+    /// edge of this gate there, usually the same gate under another parent.
+    /// A run places it first when a rule places it.
+    #[serde(default)]
+    pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
 }
 
 impl Default for ValleyRule {
@@ -544,6 +550,7 @@ impl Default for ValleyRule {
         Self {
             smoothing: 1.0,
             confidence: CountAndSeparation::default(),
+            fallback: None,
         }
     }
 }
@@ -601,11 +608,34 @@ impl ValleyRule {
         })
     }
 
+    /// The fallback as a rule from another gate: this gate's leading edge on
+    /// `parameter` - the one the valley would have set - where the fallback's
+    /// same edge is.
+    pub fn fallback_rule(&self, parameter: &Arc<str>, bound: Bound) -> Option<FromGateRule> {
+        let side = match bound {
+            Bound::Above => Side::Lower,
+            Bound::Below => Side::Upper,
+        };
+        Some(FromGateRule {
+            same_shape_as: None,
+            edges: vec![EdgeFrom {
+                anchor: self.fallback.clone()?,
+                parameter: parameter.clone(),
+                side,
+                anchor_side: side,
+                gap: 0.0,
+            }],
+        })
+    }
+
     pub fn describe(&self) -> String {
         let mut how =
             "in the dip between the negative and the positive, as on the reference".to_string();
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
+        }
+        if let Some(fallback) = &self.fallback {
+            how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
         }
         how
     }
@@ -714,6 +744,15 @@ impl Rule {
         match self {
             Rule::TailFraction(r) => Some(r.aim),
             _ => None,
+        }
+    }
+
+    /// The gates this rule reads a position from, which a run places first.
+    pub fn anchors(&self) -> Vec<&crate::gate_rules::rule_store::RuleTarget> {
+        match self {
+            Rule::FromAnotherGate(r) => r.anchors(),
+            Rule::InTheValley(r) => r.fallback.iter().collect(),
+            _ => Vec::new(),
         }
     }
 

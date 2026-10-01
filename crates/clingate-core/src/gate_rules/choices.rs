@@ -247,6 +247,19 @@ pub fn every_target(choices: &GateChoices) -> Vec<crate::gate_rules::rule_store:
     out
 }
 
+/// The gates a valley rule for `gate` under `parent` can fall back to: the
+/// same gate under every other parent.
+pub fn fallback_targets(
+    choices: &GateChoices,
+    gate: &str,
+    parent: &str,
+) -> Vec<crate::gate_rules::rule_store::RuleTarget> {
+    every_target(choices)
+        .into_iter()
+        .filter(|t| *t.gate == *gate && t.parent.as_deref() != Some(parent))
+        .collect()
+}
+
 /// One edge as the form holds it: text, until it is saved.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct EdgeForm {

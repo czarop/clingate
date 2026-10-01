@@ -666,3 +666,66 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
     );
     assert_eq!(wrong["outcome"], "failed", "{wrong}");
 }
+
+#[test]
+fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
+    let folder = workspace_with_rules("valley-fallback");
+    let session = clingate_core::session::Session::open(&folder).unwrap();
+    let tmem = session.gate("Tmem", None).unwrap();
+    let parameter = tmem.parameters[0].clone();
+    // Another gate drawn on the same parameter: something to fall back to.
+    let other = session
+        .populations(None)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.parameters.contains(&parameter) && row.rule_target != tmem.rule_target)
+        .expect("a second gate on the parameter");
+    let (gate, parent) = other
+        .rule_target
+        .split_once(" of ")
+        .map_or((other.rule_target.as_str(), None), |(g, p)| (g, Some(p)));
+    let valley = |fallback: Value| {
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": parameter,
+                "bound": "Above",
+                "measured_on": {"File": "sample1_FMX.fcs"},
+                "rule": {"kind": "InTheValley", "smoothing": 1.0, "fallback": fallback}
+            }
+        })
+    };
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let itself = server.call("update_rule", valley(json!({"gate": "Tmem"})));
+    assert_eq!(itself["outcome"], "failed", "{itself}");
+    assert!(
+        itself["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cannot follow itself"),
+        "{itself}"
+    );
+
+    let written = server.call(
+        "update_rule",
+        valley(json!({"gate": gate, "parent": parent})),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules[0]
+            .rule
+            .contains(&format!("with no dip, where {} is", other.rule_target)),
+        "{:?}",
+        view.rules
+    );
+}

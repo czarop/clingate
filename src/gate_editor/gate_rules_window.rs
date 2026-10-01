@@ -10,8 +10,8 @@ use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
 use clingate_core::gate_rules::choices::{
-    EdgeForm, carry_over, choices, describe_phenotype, every_target, follow_from_form,
-    follow_to_form, marker_label,
+    EdgeForm, carry_over, choices, describe_phenotype, every_target, fallback_targets,
+    follow_from_form, follow_to_form, marker_label,
 };
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
@@ -278,6 +278,9 @@ pub fn GateRulesWindow() -> Element {
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
+    // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
+    // for none.
+    let mut valley_fallback = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -609,6 +612,12 @@ pub fn GateRulesWindow() -> Element {
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
+                valley_fallback.set(
+                    r.fallback
+                        .as_ref()
+                        .map(RuleTarget::describe)
+                        .unwrap_or_default(),
+                );
             }
         }
         editing.set(replacing.then(|| entry.target.clone()));
@@ -687,8 +696,12 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, "The smoothing must be a number");
                     return;
                 };
+                let fallback = every_target(&choices.read())
+                    .into_iter()
+                    .find(|t| t.describe() == valley_fallback());
                 Rule::InTheValley(ValleyRule {
                     smoothing: sm,
+                    fallback,
                     ..ValleyRule::default()
                 })
             }
@@ -1242,6 +1255,23 @@ pub fn GateRulesWindow() -> Element {
                     }
                     p { class: "gate_rules-hint gate_rules-span",
                         "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
+                    }
+
+                    label { "With no dip" }
+                    select {
+                        value: "{valley_fallback}",
+                        onchange: move |e| valley_fallback.set(e.value()),
+                        option { value: "", "leave the gate unplaced" }
+                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: valley_fallback() == target.describe(),
+                                "where {target.describe()} is"
+                            }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "For a sample whose positives smear with no dip: its edge goes where the same gate's is under another parent, on the same sample. A run places that gate first, and every placement made this way comes up for review."
                     }
                 }
 
