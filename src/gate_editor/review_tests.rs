@@ -1,5 +1,5 @@
 //! What the review wiring decides, on the shared test workspace's gating:
-//! what a plot's and a gallery tile's Report buttons report, where a Review
+//! what a plot's Report button reports, where a Review
 //! tile draws a placement, and where "Open in editor" takes the editor.
 #![cfg(test)]
 
@@ -13,7 +13,7 @@ use clingate_core::review::run_record::SampleRef;
 use clingate_core::session::Session;
 use clingate_core::test_workspace::two_samples_with_a_rule;
 
-use crate::gate_editor::review::{drawn_target, gates_on_plot, selected_target};
+use crate::gate_editor::review::selected_target;
 use crate::gate_editor::review_window::{EditorFocus, file_of, focus_on, where_drawn};
 
 /// The workspace, Tmem's gate id, its node and the population above it.
@@ -55,7 +55,6 @@ fn a_plot_reports_the_gate_selected_on_it_at_its_place_under_the_plot() {
     assert_eq!(target.gate, "Tmem");
     assert_eq!(&*target.sample, "sample1");
     assert_eq!(target.sample_name, "sample1_FMX", "without .fcs");
-    assert!(target.choices.is_empty());
 
     // Nothing selected, a sample no metadata names, or a gate not in the
     // document: nothing to report.
@@ -72,59 +71,6 @@ fn a_plot_reports_the_gate_selected_on_it_at_its_place_under_the_plot() {
         )
         .is_none()
     );
-}
-
-#[test]
-fn a_gallery_tile_reports_a_gate_drawn_on_it_and_offers_the_others() {
-    let (session, id, node, parent) = tmem("review-drawn");
-    let state = session.gates();
-    let (x, y) = state.registered_gate(&id).unwrap().get_params();
-
-    let drawn = gates_on_plot(state, &parent, &x, &y);
-    assert!(
-        drawn.iter().any(|(n, g)| *n == node && g == "Tmem"),
-        "{drawn:?}"
-    );
-    // Every gate offered is a child of the population, on the page's axes.
-    for (child, _) in &drawn {
-        assert_eq!(state.parent_node(child).as_ref(), Some(&parent));
-        let (a, b) = state
-            .registered_gate(state.gate_for_node(child).unwrap())
-            .unwrap()
-            .get_params();
-        assert!((a == x && b == y) || (a == y && b == x));
-    }
-    // Drawn the other way round, the same gates.
-    assert_eq!(gates_on_plot(state, &parent, &y, &x), drawn);
-
-    let target = drawn_target(
-        state,
-        &parent,
-        &x,
-        &y,
-        Some(Arc::from("sample2")),
-        "sample2_FS.fcs",
-    )
-    .expect("a gate is drawn");
-    assert_eq!((target.node.clone(), target.gate.clone()), drawn[0].clone());
-    assert_eq!(target.choices, drawn);
-    assert_eq!(target.sample_name, "sample2_FS");
-
-    // A page on axes no gate under it uses draws nothing to report.
-    assert!(gates_on_plot(state, &parent, "FSC-A", "no such channel").is_empty());
-    assert!(
-        drawn_target(
-            state,
-            &parent,
-            "FSC-A",
-            "no such channel",
-            Some(Arc::from("sample2")),
-            "x"
-        )
-        .is_none()
-    );
-    // Nor does a tile whose sample no metadata names.
-    assert!(drawn_target(state, &parent, &x, &y, None, "x").is_none());
 }
 
 #[test]

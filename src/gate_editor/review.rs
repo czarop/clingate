@@ -37,29 +37,6 @@ pub struct ReportTarget {
     /// For the dialog's heading.
     pub gate: String,
     pub sample_name: String,
-    /// Where several gates are drawn on the plot - a gallery page shows
-    /// every gate on its axes - the others, to choose between in the dialog.
-    pub choices: Vec<(NodeId, String)>,
-}
-
-/// The gates drawn on a plot of the population at `parent` on `x` and `y`:
-/// each child gate on those two parameters, either way round.
-pub fn gates_on_plot(
-    state: &clingate_core::gates::GateState,
-    parent: &NodeId,
-    x: &str,
-    y: &str,
-) -> Vec<(NodeId, String)> {
-    state
-        .child_nodes(parent)
-        .into_iter()
-        .filter_map(|child| {
-            let gate = state.registered_gate(state.gate_for_node(&child)?)?;
-            let (a, b) = gate.get_params();
-            let on_axes = (&*a == x && &*b == y) || (&*a == y && &*b == x);
-            on_axes.then(|| (child, gate.get_name().to_string()))
-        })
-        .collect()
 }
 
 /// What a plot's Report button reports: the gate selected on it, at its
@@ -79,29 +56,6 @@ pub fn selected_target(
         sample: sample?,
         gate,
         sample_name: sample_name.trim_end_matches(".fcs").to_string(),
-        choices: Vec::new(),
-    })
-}
-
-/// What a gallery tile's Report button reports: a gate drawn on the tile -
-/// the page's population's child gates on the page's axes - on the tile's
-/// sample; with several drawn, the first, and the rest to choose from.
-pub fn drawn_target(
-    state: &clingate_core::gates::GateState,
-    population: &NodeId,
-    x: &str,
-    y: &str,
-    sample: Option<FileId>,
-    sample_name: &str,
-) -> Option<ReportTarget> {
-    let choices = gates_on_plot(state, population, x, y);
-    let (first, gate) = choices.first().cloned()?;
-    Some(ReportTarget {
-        node: first,
-        sample: sample?,
-        gate,
-        sample_name: sample_name.trim_end_matches(".fcs").to_string(),
-        choices,
     })
 }
 
@@ -247,36 +201,7 @@ pub fn ReportDialog() -> Element {
             div { class: "review-dialog",
                 h3 { "Report a badly placed gate" }
                 p { class: "review-dialog_what",
-                    if target.choices.len() > 1 {
-                        select {
-                            value: "{target.node}",
-                            onchange: move |e| {
-                                let chosen = e.value();
-                                let mut now = open();
-                                if let Some(t) = now.as_mut()
-                                    && let Some((node, name)) = t
-                                        .choices
-                                        .iter()
-                                        .find(|(n, _)| n.as_str() == chosen)
-                                        .cloned()
-                                {
-                                    t.node = node;
-                                    t.gate = name;
-                                }
-                                open.set(now);
-                            },
-                            for (node , name) in target.choices.iter() {
-                                option {
-                                    key: "{node}",
-                                    value: "{node}",
-                                    selected: *node == target.node,
-                                    "{name}"
-                                }
-                            }
-                        }
-                    } else {
-                        strong { "{target.gate}" }
-                    }
+                    strong { "{target.gate}" }
                     " on "
                     strong { "{target.sample_name}" }
                 }
@@ -407,7 +332,7 @@ pub fn ReviewPanel() -> Element {
             p { class: "gate_rules-hint", "{summary}" }
             label { "" }
             p { class: "gate_rules-hint",
-                "Report a gate the rules placed badly from the gate editor (Report... above each plot) or the gallery. When the run has been checked, mark it reviewed: every placement not reported and still where the rule put it is recorded as accepted, which is what the confidence scores are measured against."
+                "Report a gate the rules placed badly from the gate editor (Report... above each plot) or from a tile on the Review tab. When the run has been checked, mark it reviewed: every placement not reported and still where the rule put it is recorded as accepted, which is what the confidence scores are measured against."
             }
             if let Some(board) = sorted() {
                 label { "Needs a look" }
