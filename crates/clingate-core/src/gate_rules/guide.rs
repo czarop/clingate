@@ -64,6 +64,14 @@ pub const GUIDES: &[Guide] = &[
                   same sample - gates a guide places by other gates",
         text: include_str!("../../../../docs/rules/from-another-gate.md"),
     },
+    Guide {
+        key: "NextToGate",
+        name: "Next to another gate",
+        summary: "brought up against another gate on the same plot, as close as it can be \
+                  without overlapping it - growing its side, following the other's outline, or \
+                  sliding whole",
+        text: include_str!("../../../../docs/rules/next-to-another-gate.md"),
+    },
 ];
 
 /// A rule's guide by its kind or its name, however written: "TailFraction",
@@ -85,7 +93,7 @@ pub fn find(asked: &str) -> Option<&'static Guide> {
 mod tests {
     use super::*;
     use crate::gate_rules::rule::{
-        AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, NegativeFinder,
+        AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, Meet, NegativeFinder, NextToRule,
         PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
     };
 
@@ -105,6 +113,13 @@ mod tests {
                     anchor_side: Side::Lower,
                     gap: 0.0,
                 }],
+            }),
+            Rule::NextToGate(NextToRule {
+                anchor: crate::gate_rules::rule_store::RuleTarget::named("CD19+CD14-"),
+                parameter: "CD19".into(),
+                side: Side::Lower,
+                meet: Meet::GrowSide,
+                gap: 0.0,
             }),
         ]
     }
@@ -185,6 +200,12 @@ mod tests {
         }
         for side in ["Lower", "Upper"] {
             assert!(text("FromAnotherGate").contains(&format!("`{side}`")));
+            assert!(text("NextToGate").contains(&format!("`{side}`")));
+        }
+        for meet in [Meet::GrowSide, Meet::FollowOutline, Meet::Slide] {
+            let key = serde_json::to_value(meet).unwrap();
+            let key = key.as_str().unwrap();
+            assert!(text("NextToGate").contains(&format!("`{key}`")), "{key}");
         }
         // The settings every rule shares.
         for shared in [

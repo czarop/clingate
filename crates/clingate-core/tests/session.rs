@@ -2741,3 +2741,77 @@ fn a_run_puts_a_gate_positioned_per_sample_into_positions_by_specimen() {
         Mode::ByColumn(std::sync::Arc::from("test"))
     );
 }
+
+// ─── a rule next to another gate, as Claude writes one ────────────────────────
+
+fn next_to(
+    anchor: clingate_core::gate_rules::rule_store::RuleTarget,
+    parameter: &str,
+) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::NextToGate(clingate_core::gate_rules::rule::NextToRule {
+        anchor,
+        parameter: parameter.into(),
+        side: clingate_core::gate_rules::rule::Side::Upper,
+        meet: clingate_core::gate_rules::rule::Meet::GrowSide,
+        gap: 0.0,
+    })
+}
+
+#[test]
+fn a_rule_next_to_another_gate_is_checked_and_kept_with_its_channel() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = linked_workspace("session-next-to");
+    let rules_file = clingate_core::workspace::rules_file(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let before = std::fs::read_to_string(&rules_file).unwrap();
+    for (rule, expected) in [
+        (
+            next_to(RuleTarget::named("Branch B"), "FSC-A"),
+            "cannot sit next to itself",
+        ),
+        (
+            next_to(RuleTarget::under("Shared", "Branch A"), "FSC-A"),
+            "is not on the same plot as Branch B",
+        ),
+        (
+            next_to(RuleTarget::named("Branch A"), "BUV661-A"),
+            "so it does not move along BUV661-A",
+        ),
+        (
+            next_to(RuleTarget::named("Branch C"), "FSC-A"),
+            "Branch C, is not in the gating",
+        ),
+    ] {
+        let said = session
+            .update_rule(change("Branch B", None, "", MeasuredOn::Itself, rule))
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains(expected), "{expected}\nsaid: {said}");
+    }
+    assert_eq!(std::fs::read_to_string(&rules_file).unwrap(), before);
+
+    let written = session
+        .update_rule(change(
+            "Branch B",
+            None,
+            "SSC-A",
+            MeasuredOn::Partner("FMX".into()),
+            next_to(RuleTarget::named("Branch A"), "fsc-a"),
+        ))
+        .unwrap();
+    assert_eq!(written.resolved, ["parameter fsc-a is the channel FSC-A"]);
+    assert!(
+        written.now.contains("next to Branch A, above it on FSC-A"),
+        "{}",
+        written.now
+    );
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Branch B"))
+        .unwrap()
+        .clone();
+    assert_eq!(&*stored.parameter, "");
+    assert_eq!(stored.measured_on, MeasuredOn::Itself);
+}

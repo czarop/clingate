@@ -127,7 +127,10 @@ a gate's whole shape, edges sets an edge against another gate's edge. A run \
 places the gate it follows first, on each sample. Settle the gate it follows \
 before writing this rule - its rule written and reviewed, or placed by hand - \
 since this gate copies wherever that one ends up. update_rule refuses a rule \
-that follows itself, a gate that is not there, or a loop. An InTheValley rule \
+that follows itself, a gate that is not there, or a loop. A gate the guide \
+places 'adjacent to' another on the same plot - grown or slid up to it, \
+touching but not overlapping - takes the kind NextToGate (rule_guide 'Next to \
+another gate'). An InTheValley rule \
 can name a fallback the same way - usually the same gate under another parent \
 - for samples where the positives smear with no dip: there its edge goes where \
 the fallback's is, placed first, and the placement comes up for review.

@@ -472,7 +472,7 @@ pub fn measure_file_at(
         // Checked before the population is cut out, which is the costly part.
         // A rule following another gate can place a quadrant, which has no
         // one shape of its own; `measure_population` measures it by a corner.
-        let follows = matches!(rule.rule, Rule::FromAnotherGate(_));
+        let follows = rule.rule.reads_another_gate();
         if !follows && gate.get_gate_ref(None).is_none() {
             unmeasured.push(Unmeasured {
                 file: file.clone(),
@@ -528,7 +528,7 @@ pub fn measure_population(
     // events, since the anchor has the position whatever this parent holds.
     // Measured all the same, so the report says what it holds. A corner of a
     // quadrant is measured by its own shape.
-    if let Rule::FromAnotherGate(_) = &rule.rule {
+    if rule.rule.reads_another_gate() {
         let unmeasured = |reason: String| Unmeasured {
             file: file.clone(),
             gate_id: gate_id.clone(),
@@ -1083,7 +1083,7 @@ pub fn position_by_capture(
 }
 
 /// The same gate, moved `delta` along `parameter`.
-fn translate_by(
+pub(crate) fn translate_by(
     gate: &Arc<dyn DrawableGate>,
     parameter: &str,
     delta: f64,
@@ -2151,9 +2151,10 @@ fn resolve_reference<'a>(
     let rule = store.rule_for(&measured.gate, measured.parent_gate.as_deref())?;
     // A gate that follows another reads the anchor on its own sample, whatever
     // the rule says it is measured on.
-    let measured_on = match &rule.rule {
-        Rule::FromAnotherGate(_) => &MeasuredOn::Itself,
-        _ => &rule.measured_on,
+    let measured_on = if rule.rule.reads_another_gate() {
+        &MeasuredOn::Itself
+    } else {
+        &rule.measured_on
     };
     let id = store.reference_file(&measured.file, measured_on, metadata)?;
     let measurement = measurements
@@ -2507,6 +2508,9 @@ fn position_one(
     }
     if let Rule::FromAnotherGate(wanted) = &rule.rule {
         return position_from_gate(state, wanted, measured, specimen, metadata);
+    }
+    if let Rule::NextToGate(wanted) = &rule.rule {
+        return position_next_to(state, wanted, measured, specimen, metadata);
     }
     let line = measured
         .line
@@ -3496,12 +3500,33 @@ fn position_from_gate(
         }
     };
 
-    let before = holds(&current, &measured.gate_id, &measured.index);
+    Ok(read_from_another(
+        measured,
+        specimen,
+        &current,
+        placed,
+        format!("placed from {}", wanted.describe()),
+    ))
+}
+
+/// Where a rule reading another gate put `current`, as `placed`: kept when
+/// that is where it already was. Nothing is estimated - the position is the
+/// other gate's - so the confidence says that, `said`, and the review of the
+/// other gate is where doubt about the position belongs.
+fn read_from_another(
+    measured: &Measurement,
+    specimen: &MetaDataKey,
+    current: &Arc<dyn DrawableGate>,
+    placed: Arc<dyn DrawableGate>,
+    said: String,
+) -> Outcome {
+    let file = &measured.file;
+    let before = holds(current, &measured.gate_id, &measured.index);
     let after = holds(&placed, &measured.gate_id, &measured.index);
-    let same = own_shape(&current, &measured.gate_id).map(|g| &g.geometry)
+    let same = own_shape(current, &measured.gate_id).map(|g| &g.geometry)
         == own_shape(&placed, &measured.gate_id).map(|g| &g.geometry);
     if same {
-        return Ok(Outcome::Kept(Unchanged {
+        return Outcome::Kept(Unchanged {
             gate_id: measured.gate_id.clone(),
             file: file.clone(),
             measured_on: Some(file.clone()),
@@ -3513,19 +3538,12 @@ fn position_from_gate(
             specimen: specimen.group.clone(),
             achieved: after,
             above_the_line: f64::NAN,
-        }));
+        });
     }
-    // Nothing is estimated: the position is the anchor's, exactly. What the
-    // confidence says is that, and the review of the anchor is where doubt
-    // about the position belongs.
     let confidence = crate::gate_rules::confidence::Confidence::from_components(vec![
-        crate::gate_rules::confidence::Component::new(
-            "copied",
-            1.0,
-            format!("placed from {}", wanted.describe()),
-        ),
+        crate::gate_rules::confidence::Component::new("copied", 1.0, said),
     ]);
-    Ok(Outcome::Moved(
+    Outcome::Moved(
         Positioned {
             gate_id: measured.gate_id.clone(),
             file: file.clone(),
@@ -3556,5 +3574,41 @@ fn position_from_gate(
             specimen: specimen.clone(),
             gate: placed,
         },
+    )
+}
+
+/// Where a rule next to another gate puts this gate on this sample: against
+/// that gate where it is on the same sample, which a run has already placed.
+fn position_next_to(
+    state: &GateState,
+    wanted: &crate::gate_rules::rule::NextToRule,
+    measured: &Measurement,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+) -> Result<Outcome, String> {
+    let file = &measured.file;
+    let current = state
+        .gate_for_file(&measured.gate_id, file, metadata)
+        .ok_or_else(|| "this gate is not drawn on this sample".to_string())?;
+    let anchor_id = anchor_gate(state, &wanted.anchor)?;
+    let anchor = state
+        .gate_for_file(&anchor_id, file, metadata)
+        .ok_or_else(|| format!("{} is not drawn on this sample", wanted.anchor.describe()))?;
+    let (x, y) = current.get_params();
+    let against =
+        crate::gates::gate_contact::outline(&anchor, &anchor_id, &x, &y).ok_or_else(|| {
+            format!(
+                "{} is not drawn on {x} and {y}, so it is not beside this gate",
+                wanted.anchor.describe()
+            )
+        })?;
+    let placed =
+        crate::gate_rules::next_to::placed_next_to(&current, &measured.gate_id, &against, wanted)?;
+    Ok(read_from_another(
+        measured,
+        specimen,
+        &current,
+        placed,
+        format!("placed {}", wanted.describe()),
     ))
 }

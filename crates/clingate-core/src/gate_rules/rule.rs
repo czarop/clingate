@@ -275,6 +275,7 @@ pub enum Rule {
     InTheValley(ValleyRule),
     MatchThePhenotype(PhenotypeRule),
     FromAnotherGate(FromGateRule),
+    NextToGate(NextToRule),
 }
 
 /// "Where I put it on the QC, relative to that sample's negative."
@@ -655,7 +656,8 @@ impl Rule {
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -679,7 +681,9 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
-            Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) => return None,
+            Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
+                return None;
+            }
         })
     }
 
@@ -690,7 +694,8 @@ impl Rule {
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -702,6 +707,7 @@ impl Rule {
             Rule::InTheValley(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
             Rule::FromAnotherGate(r) => r.describe(),
+            Rule::NextToGate(r) => r.describe(),
         }
     }
 
@@ -726,7 +732,8 @@ impl Rule {
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => None,
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => None,
         }
     }
 
@@ -747,11 +754,18 @@ impl Rule {
         }
     }
 
+    /// Whether the gate's place is read off another gate on the same sample,
+    /// not off the events: measured on its own sample, whatever it says.
+    pub fn reads_another_gate(&self) -> bool {
+        matches!(self, Rule::FromAnotherGate(_) | Rule::NextToGate(_))
+    }
+
     /// The gates this rule reads a position from, which a run places first.
     pub fn anchors(&self) -> Vec<&crate::gate_rules::rule_store::RuleTarget> {
         match self {
             Rule::FromAnotherGate(r) => r.anchors(),
             Rule::InTheValley(r) => r.fallback.iter().collect(),
+            Rule::NextToGate(r) => vec![&r.anchor],
             _ => Vec::new(),
         }
     }
@@ -765,6 +779,7 @@ impl Rule {
             Rule::InTheValley(_) => "In the valley",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
+            Rule::NextToGate(_) => "Next to another gate",
         }
     }
 }
@@ -1019,5 +1034,70 @@ impl FromGateRule {
                 .collect::<Vec<_>>()
                 .join("; "),
         }
+    }
+}
+
+/// How a gate placed next to another comes to meet it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Meet {
+    /// Its side facing the other gate moves, every point of it alike; the
+    /// side away stays. It shrinks back where it overlaps.
+    #[default]
+    GrowSide,
+    /// Where it lies alongside the other gate, its facing side takes the
+    /// other's outline - no gap anywhere along it. A polygon's only: a
+    /// rectangle grows its side.
+    FollowOutline,
+    /// The whole gate slides, its shape as it is.
+    Slide,
+}
+
+impl Meet {
+    pub fn label(self) -> &'static str {
+        match self {
+            Meet::GrowSide => "growing its facing side",
+            Meet::FollowOutline => "following the other's outline",
+            Meet::Slide => "sliding whole",
+        }
+    }
+}
+
+/// "Next to that gate": against it along one axis, as close as it can be
+/// without overlapping - the CD19- gate grown up to the CD19+CD14- gate
+/// wherever a rule puts that one. The other gate is placed first; both are
+/// on the same plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NextToRule {
+    /// The gate it sits next to, named as a rule names a gate.
+    pub anchor: crate::gate_rules::rule_store::RuleTarget,
+    /// The parameter it moves along.
+    pub parameter: Arc<str>,
+    /// Which side of the anchor it sits on: lower is to the left of it, or
+    /// below it.
+    pub side: Side,
+    #[serde(default)]
+    pub meet: Meet,
+    /// Left between the two, in the plot's units. 0 is touching.
+    #[serde(default)]
+    pub gap: f64,
+}
+
+impl NextToRule {
+    pub fn describe(&self) -> String {
+        let side = match self.side {
+            Side::Lower => "below",
+            Side::Upper => "above",
+        };
+        let gap = if self.gap == 0.0 {
+            String::new()
+        } else {
+            format!(", {} apart", self.gap)
+        };
+        format!(
+            "next to {}, {side} it on {}, {}{gap}",
+            self.anchor.describe(),
+            self.parameter,
+            self.meet.label()
+        )
     }
 }

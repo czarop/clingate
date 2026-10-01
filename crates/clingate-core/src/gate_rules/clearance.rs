@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use crate::gate_rules::autogate::{UNBOUNDED, anchor_gate, entry_at, rebuild};
 use crate::gate_rules::rule_store::RuleStore;
 use crate::gates::GateState;
-use crate::gates::gate_contact::{Point, outline, overlaps};
+use crate::gates::gate_contact::{Point, nearly_overlaps, outline, overlaps};
 use crate::gates::gate_store::{FileId, GateId, NodeId};
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::MetaDataFileMap;
@@ -143,11 +143,20 @@ pub(crate) fn first_overlap<'n>(
     gate_id: &GateId,
     neighbours: &'n [Neighbour],
 ) -> Option<&'n Arc<str>> {
+    first_meeting(gate, gate_id, neighbours, overlaps)
+}
+
+fn first_meeting<'n>(
+    gate: &Arc<dyn DrawableGate>,
+    gate_id: &GateId,
+    neighbours: &'n [Neighbour],
+    meets: fn(&[Point], &[Point]) -> bool,
+) -> Option<&'n Arc<str>> {
     let (x, y) = gate.get_params();
     let shape = outline(gate, gate_id, &x, &y)?;
     neighbours
         .iter()
-        .find(|(_, other)| overlaps(&shape, other))
+        .find(|(_, other)| meets(&shape, other))
         .map(|(name, _)| name)
 }
 
@@ -217,7 +226,8 @@ pub(crate) fn hold_clear(
         return Ok(Clear::AsPlaced);
     };
     let clear = |t: f64| {
-        between(from, moved, t).filter(|g| first_overlap(g, gate_id, neighbours).is_none())
+        between(from, moved, t)
+            .filter(|g| first_meeting(g, gate_id, neighbours, nearly_overlaps).is_none())
     };
     // Back from the rule's place in widening steps, to bracket the edge of
     // the clear stretch nearest to it.

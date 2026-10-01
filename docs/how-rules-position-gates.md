@@ -493,6 +493,8 @@ Rule kinds and their fields:
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
   the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.
+- `{"kind": "NextToGate", "anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Lower" | "Upper", "meet": "GrowSide" | "FollowOutline" | "Slide", "gap": 0.0}` -
+  brought up against the anchor on the same plot (`next_to`); the anchor is placed first.
 
 `measured_on` is `"Itself"`, `{"Partner": "<sample type>"}` or
 `{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and

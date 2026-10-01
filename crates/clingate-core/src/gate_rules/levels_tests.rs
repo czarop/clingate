@@ -2040,7 +2040,8 @@ fn a_line_rule_is_held_back_where_its_gate_meets_one_no_rule_moves() {
     let outcome = run(&state, &files, store(&[pos_to_the_top_80()]));
     let after = applied(&state, &outcome);
     for file in ["fs_a", "fs_b"] {
-        assert_eq!(edge(&after, "pos", X, file), 400.0, "{file}: Neg's edge");
+        let pos = edge(&after, "pos", X, file);
+        assert!((pos - 400.0).abs() < 1e-2, "{file}: at Neg's edge, {pos}");
     }
     for placed in &outcome.report.positioned {
         let held = placed
@@ -2070,7 +2071,8 @@ fn a_gate_beside_one_listed_first_is_held_against_where_that_one_went() {
     for file in ["fs_a", "fs_b"] {
         let neg = upper(&after, "neg", file);
         assert!((neg - 500.0).abs() < 15.0, "{file}: Neg to {neg}");
-        assert_eq!(edge(&after, "pos", X, file), neg, "{file}");
+        let pos = edge(&after, "pos", X, file);
+        assert!((pos - neg).abs() < 1e-2, "{file}: {pos} against {neg}");
     }
 
     // Listed the other way round, Pos goes first and Neg is held at it.
@@ -2080,7 +2082,8 @@ fn a_gate_beside_one_listed_first_is_held_against_where_that_one_went() {
     for file in ["fs_a", "fs_b"] {
         let pos = edge(&after, "pos", X, file);
         assert!((pos - 200.0).abs() < 15.0, "{file}: Pos to {pos}");
-        assert_eq!(upper(&after, "neg", file), pos, "{file}");
+        let neg = upper(&after, "neg", file);
+        assert!((neg - pos).abs() < 1e-2, "{file}: {neg} against {pos}");
     }
 }
 
@@ -2096,4 +2099,268 @@ fn a_copy_that_would_lie_over_another_gate_is_left_where_it_was() {
         "{said:?}"
     );
     assert_eq!(said.len(), 2, "{said:?}");
+}
+
+// ─── next to another gate ─────────────────────────────────────────────────────
+
+fn polygon(id: &str, name: &str, points: &[(f32, f32)]) -> Arc<dyn DrawableGate> {
+    Arc::new(
+        crate::gates::gate_single::polygon_gate::PolygonGate::try_new(
+            flow_gates::Gate {
+                id: Arc::from(id),
+                name: name.into(),
+                geometry: flow_gates::create_polygon_geometry(points.to_vec(), X, Y).unwrap(),
+                mode: flow_gates::GateMode::Global,
+                parameters: (Arc::from(X), Arc::from(Y)),
+                label_position: None,
+            },
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+fn next_to(
+    gate: &str,
+    anchor: &str,
+    parameter: &str,
+    side: Side,
+    meet: crate::gate_rules::rule::Meet,
+    gap: f64,
+) -> (RuleTarget, GateRule) {
+    (
+        RuleTarget::under(gate, "Lymph"),
+        GateRule {
+            parameter: Arc::from(""),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::NextToGate(crate::gate_rules::rule::NextToRule {
+                anchor: RuleTarget::under(anchor, "Lymph"),
+                parameter: Arc::from(parameter),
+                side,
+                meet,
+                gap,
+            }),
+        },
+    )
+}
+
+/// Under Lymph: Left from 0 to 300 on X, and `right` beside it.
+fn left_and(right: Arc<dyn DrawableGate>) -> GateState {
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("left", "Left", (0.0, 300.0), (0.0, 500.0)),
+        Some("lymph"),
+    );
+    add(&mut state, right, Some("lymph"));
+    state
+}
+
+fn placed(state: &GateState, rule: (RuleTarget, GateRule), name: &str) -> GateState {
+    let files = files(name);
+    let outcome = run(state, &files, store(&[rule]));
+    assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
+    applied(state, &outcome)
+}
+
+#[test]
+fn a_rectangle_grows_its_facing_side_up_to_the_gate_beside_it() {
+    use crate::gate_rules::rule::Meet;
+    let state = left_and(boxed("right", "Right", (600.0, 900.0), (0.0, 500.0)));
+    let rule = next_to("Left", "Right", X, Side::Lower, Meet::GrowSide, 0.0);
+    let after = placed(&state, rule, "next-grow");
+    for file in ["fs_a", "fs_b"] {
+        let (lo, hi) = extent(&after, "left", X, file);
+        assert_eq!(lo, 0.0, "the far side stays");
+        assert!(
+            (hi - 600.0).abs() < 1e-2,
+            "{file}: up to Right at 600, {hi}"
+        );
+        assert_eq!(extent(&after, "left", Y, file), (0.0, 500.0));
+    }
+}
+
+#[test]
+fn a_gap_leaves_that_much_between_them_and_sliding_keeps_the_width() {
+    use crate::gate_rules::rule::Meet;
+    let state = left_and(boxed("right", "Right", (600.0, 900.0), (0.0, 500.0)));
+    let gapped = placed(
+        &state,
+        next_to("Left", "Right", X, Side::Lower, Meet::GrowSide, 10.0),
+        "next-gap",
+    );
+    let (lo, hi) = extent(&gapped, "left", X, "fs_a");
+    assert_eq!(lo, 0.0);
+    assert!((hi - 590.0).abs() < 1e-2, "{hi}");
+
+    let slid = placed(
+        &state,
+        next_to("Left", "Right", X, Side::Lower, Meet::Slide, 0.0),
+        "next-slide",
+    );
+    let (lo, hi) = extent(&slid, "left", X, "fs_a");
+    assert!(
+        (lo - 300.0).abs() < 1e-2 && (hi - 600.0).abs() < 1e-2,
+        "{lo} {hi}"
+    );
+}
+
+#[test]
+fn a_gate_above_another_comes_down_to_it() {
+    use crate::gate_rules::rule::Meet;
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("low", "Low", (0.0, 1000.0), (0.0, 500.0)),
+        Some("lymph"),
+    );
+    add(
+        &mut state,
+        boxed("high", "High", (0.0, 1000.0), (700.0, 900.0)),
+        Some("lymph"),
+    );
+    let after = placed(
+        &state,
+        next_to("High", "Low", Y, Side::Upper, Meet::GrowSide, 0.0),
+        "next-above",
+    );
+    let (lo, hi) = extent(&after, "high", Y, "fs_a");
+    assert!((lo - 500.0).abs() < 1e-2, "{lo}");
+    assert_eq!(hi, 900.0);
+}
+
+#[test]
+fn the_gate_beside_is_placed_first_and_the_gate_follows_it_on_each_sample() {
+    use crate::gate_rules::rule::Meet;
+    let state = left_and(rect("right", "Right", 600.0, -BIG));
+    let right_rule = (RuleTarget::under("Right", "Lymph"), top(X, (0.29, 0.31)));
+    let rules = store(&[
+        next_to("Left", "Right", X, Side::Lower, Meet::GrowSide, 0.0),
+        right_rule.clone(),
+    ]);
+    assert_eq!(level_names(&state, &rules), [["Right"], ["Left"]]);
+    let files = files("next-follows");
+    let after = applied(&state, &run(&state, &files, rules));
+    // By hand: Right's rule alone, and its edge read off.
+    let first = applied(&state, &run(&state, &files, store(&[right_rule])));
+    for file in ["fs_a", "fs_b"] {
+        let right = edge(&first, "right", X, file);
+        assert!((right - 700.0).abs() < 20.0, "{file}: Right to {right}");
+        let (_, hi) = extent(&after, "left", X, file);
+        assert!((hi - right).abs() < 1e-2, "{file}: {hi} against {right}");
+    }
+}
+
+/// Right's left side slants from (600, 0) up to (500, 500).
+fn slanted() -> Arc<dyn DrawableGate> {
+    polygon(
+        "right",
+        "Right",
+        &[(600.0, 0.0), (900.0, 0.0), (900.0, 500.0), (500.0, 500.0)],
+    )
+}
+
+/// Left as a polygon, 0 to 300 across and 0 to 800 up - taller than Right.
+fn tall_left() -> GateState {
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        polygon(
+            "left",
+            "Left",
+            &[(0.0, 0.0), (300.0, 0.0), (300.0, 800.0), (0.0, 800.0)],
+        ),
+        Some("lymph"),
+    );
+    add(&mut state, slanted(), Some("lymph"));
+    state
+}
+
+fn points_of(state: &GateState, gate: &str) -> Vec<(f32, f32)> {
+    let g = state
+        .gate_for_file(&Arc::from(gate), &Arc::from("fs_a"), &specimens())
+        .unwrap();
+    let flow_gates::GateGeometry::Polygon { nodes, .. } = &g.get_gate_ref(None).unwrap().geometry
+    else {
+        panic!("a polygon");
+    };
+    nodes
+        .iter()
+        .map(|n| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap()))
+        .collect()
+}
+
+fn near(points: &[(f32, f32)], to: (f32, f32)) -> bool {
+    points
+        .iter()
+        .any(|p| (p.0 - to.0).abs() < 1e-2 && (p.1 - to.1).abs() < 1e-2)
+}
+
+#[test]
+fn a_polygon_grows_its_whole_side_until_its_nearest_point_touches() {
+    use crate::gate_rules::rule::Meet;
+    let after = placed(
+        &tall_left(),
+        next_to("Left", "Right", X, Side::Lower, Meet::GrowSide, 0.0),
+        "next-poly-side",
+    );
+    // The slant is nearest at the top of Right, x = 500: the whole right
+    // side moves out 200 to it, kinks and all.
+    let points = points_of(&after, "left");
+    for to in [(0.0, 0.0), (500.0, 0.0), (500.0, 800.0), (0.0, 800.0)] {
+        assert!(near(&points, to), "{to:?} in {points:?}");
+    }
+}
+
+#[test]
+fn a_polygon_follows_the_other_s_outline_where_it_lies_alongside_it() {
+    use crate::gate_rules::rule::Meet;
+    let after = placed(
+        &tall_left(),
+        next_to("Left", "Right", X, Side::Lower, Meet::FollowOutline, 0.0),
+        "next-poly-follow",
+    );
+    // Alongside Right (0 to 500 up) its side runs down the slant from
+    // (500, 500) to (600, 0); above that it stays at 300.
+    let points = points_of(&after, "left");
+    for to in [
+        (0.0, 0.0),
+        (600.0, 0.0),
+        (500.0, 500.0),
+        (300.0, 500.0),
+        (300.0, 800.0),
+        (0.0, 800.0),
+    ] {
+        assert!(near(&points, to), "{to:?} in {points:?}");
+    }
+}
+
+#[test]
+fn a_gate_that_never_comes_level_with_the_other_is_left_and_says_so() {
+    use crate::gate_rules::rule::Meet;
+    let state = left_and(boxed("right", "Right", (600.0, 900.0), (700.0, 900.0)));
+    let files = files("next-never");
+    let outcome = run(
+        &state,
+        &files,
+        store(&[next_to(
+            "Left",
+            "Right",
+            X,
+            Side::Lower,
+            Meet::GrowSide,
+            0.0,
+        )]),
+    );
+    assert!(outcome.placements.is_empty());
+    let said = reasons(&outcome);
+    assert!(
+        said.iter()
+            .all(|r| r.contains("never comes level with Right")),
+        "{said:?}"
+    );
 }

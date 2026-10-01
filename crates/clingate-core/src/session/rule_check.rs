@@ -26,9 +26,21 @@ impl Session {
         // A gate that follows another has no parameter of its own and reads
         // its own sample: whatever was given there means nothing, so it is
         // not kept to confuse the list.
-        if let Rule::FromAnotherGate(from) = &mut rule.rule {
+        if rule.rule.reads_another_gate() {
             rule.parameter = Arc::from("");
             rule.measured_on = MeasuredOn::Itself;
+        }
+        if let Rule::NextToGate(next) = &mut rule.rule {
+            let channel = self.channel_named(&next.parameter)?;
+            if *channel != *next.parameter {
+                notes.push(format!(
+                    "parameter {} is the channel {channel}",
+                    next.parameter
+                ));
+            }
+            next.parameter = channel;
+        }
+        if let Rule::FromAnotherGate(from) = &mut rule.rule {
             for edge in &mut from.edges {
                 let channel = self.channel_named(&edge.parameter)?;
                 if *channel != *edge.parameter {
@@ -139,6 +151,9 @@ impl Session {
         if let Rule::FromAnotherGate(from) = &rule.rule {
             return self.check_follow(target, from);
         }
+        if let Rule::NextToGate(next) = &rule.rule {
+            return self.check_next_to(target, next);
+        }
         if let Rule::MatchThePhenotype(_) = &rule.rule {
             if !matches!(rule.measured_on, MeasuredOn::File(_)) {
                 return Err(failed(
@@ -162,6 +177,84 @@ impl Session {
             && let Some(fallback) = dip.fallback_rule(&rule.parameter, rule.bound)
         {
             return self.check_follow(target, &fallback);
+        }
+        Ok(())
+    }
+
+    /// Refuses a rule next to another gate that could never place its gate:
+    /// another gate that is not one gate, the gate itself, one not on the same
+    /// plot, a shape that cannot be brought up to it, or a parameter the gate
+    /// is not drawn on.
+    fn check_next_to(
+        &self,
+        target: &RuleTarget,
+        next: &crate::gate_rules::rule::NextToRule,
+    ) -> Result<(), Refusal> {
+        use crate::gate_rules::autogate::anchor_gate;
+        let anchor = anchor_gate(&self.gates, &next.anchor).map_err(failed)?;
+        let identity = |id: &crate::gates::gate_store::GateId| {
+            self.gates
+                .registered_gate(id)
+                .map(|g| g.get_id())
+                .unwrap_or_else(|| id.clone())
+        };
+        let anchor_gate = self
+            .gates
+            .registered_gate(&anchor)
+            .ok_or_else(|| failed(format!("{} has no gate", next.anchor.describe())))?;
+        let (nodes, _) = self.population_facts();
+        for node in &nodes {
+            let Some((here, id, (x, y))) = self.target_of(node) else {
+                continue;
+            };
+            if here.gate != target.gate || (target.parent.is_some() && target.parent != here.parent)
+            {
+                continue;
+            }
+            if identity(&id) == identity(&anchor) {
+                return Err(failed(format!(
+                    "{} cannot sit next to itself - name the gate beside it",
+                    target.describe()
+                )));
+            }
+            let shaped = self.gates.registered_gate(&id).and_then(|g| {
+                g.get_gate_ref(None).map(|inner| {
+                    matches!(
+                        inner.geometry,
+                        flow_gates::GateGeometry::Rectangle { .. }
+                            | flow_gates::GateGeometry::Polygon { .. }
+                    )
+                })
+            });
+            if shaped != Some(true) {
+                return Err(failed(format!(
+                    "{} is not a rectangle or a polygon, so it cannot be brought up to another gate",
+                    target.describe()
+                )));
+            }
+            if *next.parameter != *x && *next.parameter != *y {
+                return Err(failed(format!(
+                    "{} is drawn on {x} and {y}, so it does not move along {}",
+                    target.describe(),
+                    next.parameter
+                )));
+            }
+            let parent = self.gates.parent_node(node);
+            let (ax, ay) = anchor_gate.get_params();
+            let beside = self
+                .gates
+                .nodes_for_gate(&anchor)
+                .iter()
+                .any(|at| self.gates.parent_node(at) == parent)
+                && ((*ax == *x && *ay == *y) || (*ax == *y && *ay == *x));
+            if !beside {
+                return Err(failed(format!(
+                    "{} is not on the same plot as {} - the gate it sits next to is drawn \
+                     beside it, under the same parent and on the same two parameters",
+                    next.anchor.describe(),
+                    target.describe()
+                )));
+            }
         }
         Ok(())
     }

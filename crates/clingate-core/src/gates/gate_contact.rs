@@ -118,7 +118,8 @@ pub fn outline(
 const OPEN: f64 = 1e8;
 
 /// The smallest distance worth telling apart from none, for outlines of
-/// this size.
+/// this size: a gate's points are kept to about seven figures, so a gate
+/// placed touching another may come back a hair over it.
 fn tolerance(a: &[Point], b: &[Point]) -> f64 {
     let size = a
         .iter()
@@ -126,7 +127,7 @@ fn tolerance(a: &[Point], b: &[Point]) -> f64 {
         .flat_map(|p| [p.0.abs(), p.1.abs()])
         .filter(|v| *v < OPEN)
         .fold(1.0_f64, f64::max);
-    size * 1e-9
+    size * 1e-6
 }
 
 fn edges(outline: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
@@ -184,10 +185,20 @@ fn centre(outline: &[Point]) -> Point {
 /// Whether two outlines share any area. Touching - along an edge or at a
 /// point - is not overlapping.
 pub fn overlaps(a: &[Point], b: &[Point]) -> bool {
+    overlaps_by_more_than(a, b, tolerance(a, b))
+}
+
+/// [`overlaps`], by a tenth of its tolerance: what a search for a place
+/// clear of a gate asks, so that the place it finds is still clear once
+/// its points are stored.
+pub fn nearly_overlaps(a: &[Point], b: &[Point]) -> bool {
+    overlaps_by_more_than(a, b, tolerance(a, b) / 10.0)
+}
+
+fn overlaps_by_more_than(a: &[Point], b: &[Point], eps: f64) -> bool {
     if a.len() < 3 || b.len() < 3 {
         return false;
     }
-    let eps = tolerance(a, b);
     let midpoints = |outline: &[Point]| -> Vec<Point> {
         edges(outline)
             .map(|(p, q)| ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0))
