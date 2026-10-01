@@ -105,7 +105,10 @@ them, e.g. 'IFNy+ of CD161+Va7.2+ / CD4+CD8-' - and, for a linked gate, \
 linked_with: the other places the same gate is drawn. list_rules shows any rule already written that \
 cannot run, under problems; fix those before previewing.
 
-A run places gates down the tree: a gate under another gate a rule moves is \
+A run never places a gate over another gate on the same plot: a rule that \
+moves a line is held back until its gate touches the other, and anything else \
+that would overlap is left where it was. Ruled gates on one plot are placed in \
+the order their rules are listed. A run places gates down the tree: a gate under another gate a rule moves is \
 measured only after that gate is placed, whatever order the rules are listed \
 in. So settle the rules for the gates higher up before those under them. \
 preview_rules runs every level; try_rules and gate_profile read the gates as \

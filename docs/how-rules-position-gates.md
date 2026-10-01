@@ -111,7 +111,16 @@ show, not raw channel values.
    in the workspace; the specimen has no file of that type; the reference
    was read but could not be measured (and why); or it is in the metadata
    but was not loaded (`why_no_reference`).
-5. **Position** (`position_one`, section 3).
+5. **Position** (`position_one`, section 3). Never over another gate on
+   the same plot - beside it under the same parent, on the same two
+   parameters - that no rule in the run moves, or that a rule listed first
+   has placed (`clearance`; ruled gates on one plot are placed in the order
+   their rules are listed, one level each). A rule that moves a line is held
+   back along it until its gate just touches the other, scored *held back
+   off another gate*; any other placement that would overlap - a phenotype
+   match, a copy of another gate, a run's pooled line - is left where it was
+   and the run says why. Quadrants are not kept clear of: one covers its
+   whole plot. Touching is not overlapping.
 6. **Write back** (`apply_placements`). A gate has one mode of positioning
    for every sample (`gates::gate_positions`): as drawn, one position per
    value of a metadata column, or one per sample. A gate a run places is put
@@ -262,7 +271,7 @@ Consequences worth knowing:
   (`ValleyRule::fallback_rule`, `autogate::fall_back`): the gate's leading
   edge - the lower for `Above`, the upper for `Below` - goes where the
   fallback's same edge is on this sample, as a rule from another gate sets
-  an edge. Its confidence is one component at `FALLBACK_CONFIDENCE`, 0.25.
+  an edge. Its confidence is one component at `FLAGGED_CONFIDENCE`, 0.25.
 
 Judged on the reference population; distance moved not scored. An extra
 component compares the dip's depth with the reference's (below).
@@ -297,6 +306,7 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | distance moved from the reference | band and percentile rules only: `1 - (abs(to - from) / IQR) / 0.5`, where `from` is the sample's line **before the run** (not the reference file's line) |
 | depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
 | no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
+| held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
 

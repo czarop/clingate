@@ -80,3 +80,16 @@ fn a_square_that_never_comes_level_with_another_never_meets_it() {
         "the other way"
     );
 }
+
+#[test]
+fn a_gate_open_to_the_end_of_its_axis_is_told_apart_from_one_beside_it() {
+    // Open to 1e16 on the right and the top, as a gate drawn to the end of
+    // the axis is; the other sits a hundredth of a unit to its left.
+    const BIG: f64 = 1e16;
+    let open = vec![(1.0, 0.0), (BIG, 0.0), (BIG, BIG), (1.0, BIG)];
+    let beside = vec![(0.0, 0.0), (0.99, 0.0), (0.99, 1.0), (0.0, 1.0)];
+    assert!(!overlaps(&open, &beside));
+    assert!(overlaps(&open, &shifted(&beside, Axis::X, 0.02)));
+    let gap = contact_distance(&beside, &open, Axis::X, 1.0).unwrap();
+    assert!((gap - 0.01).abs() < 1e-9, "{gap}");
+}

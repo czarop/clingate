@@ -113,14 +113,20 @@ pub fn outline(
     }
 }
 
+/// Beyond this a coordinate is an edge left open to the end of the axis,
+/// and says nothing about the size of the gate.
+const OPEN: f64 = 1e8;
+
 /// The smallest distance worth telling apart from none, for outlines of
 /// this size.
 fn tolerance(a: &[Point], b: &[Point]) -> f64 {
     let size = a
         .iter()
         .chain(b)
-        .fold(0.0_f64, |m, p| m.max(p.0.abs()).max(p.1.abs()));
-    size.max(1.0) * 1e-9
+        .flat_map(|p| [p.0.abs(), p.1.abs()])
+        .filter(|v| *v < OPEN)
+        .fold(1.0_f64, f64::max);
+    size * 1e-9
 }
 
 fn edges(outline: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {

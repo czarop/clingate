@@ -19,6 +19,7 @@
 //! [`GateSource::Group`] has always been for; this is the first thing in the
 //! app to write one.
 
+use crate::gate_rules::clearance::{Clear, first_overlap, hold_clear, neighbours};
 use crate::gate_rules::rule::{NegativeRead, Rule, ValleyRead};
 use crate::gate_rules::rule_store::{Bound, MeasuredOn, SamplePairing};
 use crate::gates::GateState;
@@ -34,7 +35,7 @@ use std::sync::Arc;
 /// Beyond this, an edge is Omiq's "unbounded" sentinel (`1e16`) rather than a
 /// coordinate. Moving one would be meaningless, and turning one into a real
 /// number would close a side the person left open.
-const UNBOUNDED: f32 = 1e9;
+pub(crate) const UNBOUNDED: f32 = 1e9;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
@@ -168,7 +169,7 @@ pub fn translate_edge_to(
 /// drawn as one edge with a height - so rebuilding from the geometry turned
 /// every line into a box, which draws differently and exports as a different
 /// Omiq type. The gate it came from is what knows.
-fn rebuild(
+pub(crate) fn rebuild(
     was: &Arc<dyn DrawableGate>,
     moved: flow_gates::Gate,
 ) -> Result<Arc<dyn DrawableGate>, ApplyError> {
@@ -1469,7 +1470,8 @@ pub fn rule_levels(state: &GateState, rules: &RuleStore) -> Vec<rustc_hash::FxHa
 }
 
 /// For every ruled node, the ruled nodes that have to be placed before it:
-/// every ruled gate above it, and every place the gates its rule reads a
+/// every ruled gate above it, every ruled gate beside it on the same plot
+/// whose rule is listed first, and every place the gates its rule reads a
 /// position from are drawn that a rule places.
 fn dependencies(
     state: &GateState,
@@ -1490,6 +1492,13 @@ fn dependencies(
             }
             above = state.parent_node(&ancestor);
         }
+        // A gate beside it on the same plot whose rule is listed first is
+        // placed first, so this one is kept clear of where it ends up.
+        deps.extend(
+            crate::gate_rules::clearance::settled_beside(state, rules, names, node)
+                .into_iter()
+                .filter(|beside| ruled(beside)),
+        );
         for anchor in entry.rule.rule.anchors() {
             if let Ok(id) = anchor_gate(state, anchor) {
                 // Itself is not a dependency - it is refused as naming
@@ -1602,7 +1611,7 @@ pub fn anchor_problems(state: &GateState, rules: &RuleStore) -> Vec<AnchorProble
 }
 
 /// The rule entry that applies at `node`, as [`measure_file`] finds it.
-fn entry_at<'r>(
+pub(crate) fn entry_at<'r>(
     state: &GateState,
     rules: &'r RuleStore,
     names: &FxHashMap<NodeId, Arc<str>>,
@@ -1803,6 +1812,7 @@ pub fn solve_all_reporting(
     let mut report = Report::default();
     let mut pooled: FxHashMap<GateId, Result<PooledLine, String>> = FxHashMap::default();
     let mut pooled_failures: Vec<(Skipped, usize)> = Vec::new();
+    let names = crate::gates::gate_paths::unique_names(state);
 
     // One line per gate and reason, not per file: the same miss on every file
     // is one problem. But it says which file, and how many shared it - a
@@ -1982,7 +1992,21 @@ pub fn solve_all_reporting(
                 state,
                 &mut pooled,
             )
-            .and_then(|line| line.for_specimen(state, measured, &specimen, metadata));
+            .and_then(|line| line.for_specimen(state, measured, &specimen, metadata))
+            .and_then(|outcome| {
+                kept_clear(
+                    outcome,
+                    &measured.gate_id,
+                    &neighbours(
+                        state,
+                        store,
+                        &names,
+                        &measured.gate_id,
+                        &measured.file,
+                        metadata,
+                    ),
+                )
+            });
             match outcome {
                 Ok(Outcome::Moved(p, placed)) => {
                     report.positioned.push(p);
@@ -2028,7 +2052,19 @@ pub fn solve_all_reporting(
             continue;
         };
 
-        match position_one(state, rule, measured, &reference, &specimen, metadata) {
+        let beside = neighbours(
+            state,
+            store,
+            &names,
+            &measured.gate_id,
+            &measured.file,
+            metadata,
+        );
+        let outcome = position_one(
+            state, rule, measured, &reference, &specimen, metadata, &beside,
+        )
+        .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &beside));
+        match outcome {
             Ok(Outcome::Moved(p, placed)) => {
                 report.positioned.push(p);
                 placements.push(placed);
@@ -2439,6 +2475,22 @@ enum Outcome {
     Kept(Unchanged),
 }
 
+/// `outcome` refused if it would leave its gate over one of `beside`.
+fn kept_clear(
+    outcome: Outcome,
+    gate_id: &GateId,
+    beside: &[crate::gate_rules::clearance::Neighbour],
+) -> Result<Outcome, String> {
+    if let Outcome::Moved(_, placement) = &outcome
+        && let Some(other) = first_overlap(&placement.gate, gate_id, beside)
+    {
+        return Err(format!(
+            "it would overlap {other} on the same plot, so it was left where it was"
+        ));
+    }
+    Ok(outcome)
+}
+
 fn position_one(
     state: &GateState,
     rule: &GateRule,
@@ -2446,6 +2498,7 @@ fn position_one(
     reference: &Reference<'_>,
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
+    beside: &[crate::gate_rules::clearance::Neighbour],
 ) -> Result<Outcome, String> {
     // A rule that identifies a population does not move an edge, so none of
     // what follows applies to it.
@@ -2618,6 +2671,18 @@ fn position_one(
         },
     };
 
+    // Never over another gate on its plot: held back along its line until
+    // it just touches.
+    let (moved, to, achieved, held_by) =
+        match hold_clear(&current_gate, &moved, &measured.gate_id, beside)? {
+            Clear::AsPlaced => (moved, to, achieved, None),
+            Clear::HeldBack(held, by) => {
+                let edge = leading_edge(&held, &line.parameter, line.bound).unwrap_or(to);
+                let got = admitted_by(&held, population).unwrap_or(0.0);
+                (held, edge, got, Some(by))
+            }
+        };
+
     let in_band = match rule.rule.accepted_band() {
         Some((lo, hi)) => (lo..=hi).contains(&achieved),
         None => true,
@@ -2712,6 +2777,17 @@ fn position_one(
                     here.depth,
                     reference_dip.depth
                 ),
+            ));
+        confidence =
+            crate::gate_rules::confidence::Confidence::from_components(confidence.components);
+    }
+    if let Some(by) = held_by {
+        confidence
+            .components
+            .push(crate::gate_rules::confidence::Component::new(
+                crate::gate_rules::confidence::HELD_BACK,
+                FLAGGED_CONFIDENCE,
+                format!("held back so as not to overlap {by}"),
             ));
         confidence =
             crate::gate_rules::confidence::Confidence::from_components(confidence.components);
@@ -3314,10 +3390,11 @@ fn set_edge(
     rebuild(gate, moved).map_err(|e| e.to_string())
 }
 
-/// How sure a valley rule's fallback is: low enough that the Review tab flags
-/// it, as nothing was read off the sample, and not so low that a run pauses
-/// for it - placing it where a person would is the fallback's whole point.
-pub const FALLBACK_CONFIDENCE: f64 = 0.25;
+/// How sure a placement made some other way than the rule asked is - by a
+/// valley rule's fallback, or held back off another gate: low enough that
+/// the Review tab flags it, and not so low that a run pauses for it - placing
+/// it where a person would is the point.
+pub const FLAGGED_CONFIDENCE: f64 = 0.25;
 
 /// A valley rule that found no valley, `why`, placed by its fallback.
 fn fall_back(
@@ -3336,7 +3413,7 @@ fn fall_back(
     let confidence = crate::gate_rules::confidence::Confidence::from_components(vec![
         crate::gate_rules::confidence::Component::new(
             crate::gate_rules::confidence::FALLBACK,
-            FALLBACK_CONFIDENCE,
+            FLAGGED_CONFIDENCE,
             format!("{why}, so it was placed from {}", fallback.describe()),
         ),
     ]);
@@ -3344,6 +3421,15 @@ fn fall_back(
     positioned.weakest = confidence.weakest().map(|c| c.name);
     positioned.components = confidence.components;
     Ok(Outcome::Moved(positioned, placement))
+}
+
+/// Where `gate`'s edge on `parameter` that a rule with `bound` positions is.
+fn leading_edge(gate: &Arc<dyn DrawableGate>, parameter: &str, bound: Bound) -> Option<f64> {
+    let (low, high) = extent_on(&gate.get_gate_ref(None)?.geometry, parameter)?;
+    Some(f64::from(match bound {
+        Bound::Above => low,
+        Bound::Below => high,
+    }))
 }
 
 /// Where a rule from another gate puts this gate on this sample: wherever the

@@ -760,12 +760,33 @@ fn copy_rule() -> (RuleTarget, GateRule) {
     )
 }
 
+/// [`three_deep`], with "CD69 copy" under a top-level gate of its own,
+/// holding every event as Lymph does: a copy of CD69+'s shape beside CD69+
+/// would be over it.
+fn with_a_copy_elsewhere() -> GateState {
+    let mut state = three_deep();
+    add(&mut state, rect("elsewhere", "Elsewhere", -1.0, -BIG), None);
+    add(
+        &mut state,
+        rect("copy", "CD69 copy", -BIG, -500.0),
+        Some("elsewhere"),
+    );
+    state
+}
+
+fn copy_elsewhere_rule() -> (RuleTarget, GateRule) {
+    (
+        RuleTarget::under("CD69 copy", "Elsewhere"),
+        follows(Some(RuleTarget::under("CD69+", "Lymph")), Vec::new()),
+    )
+}
+
 #[test]
 fn a_copy_takes_the_anchor_s_position_on_each_sample_after_the_anchor_s_rule() {
     let files = files("follow-copy");
-    let state = with_a_copy();
+    let state = with_a_copy_elsewhere();
     // Listed before the rule it depends on.
-    let outcome = run(&state, &files, store(&[copy_rule(), cd69_rule()]));
+    let outcome = run(&state, &files, store(&[copy_elsewhere_rule(), cd69_rule()]));
     assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
     let after = applied(&state, &outcome);
     for file in ["fs_a", "fs_b"] {
@@ -783,7 +804,10 @@ fn a_copy_takes_the_anchor_s_position_on_each_sample_after_the_anchor_s_rule() {
     }
     // And by hand: the anchor's rule, applied, then the copy's.
     let first = applied(&state, &run(&state, &files, store(&[cd69_rule()])));
-    let by_hand = applied(&first, &run(&first, &files, store(&[copy_rule()])));
+    let by_hand = applied(
+        &first,
+        &run(&first, &files, store(&[copy_elsewhere_rule()])),
+    );
     for file in ["fs_a", "fs_b"] {
         assert_eq!(
             extent(&after, "copy", Y, file),
@@ -800,14 +824,14 @@ fn a_copy_takes_the_anchor_s_position_on_each_sample_after_the_anchor_s_rule() {
 #[test]
 fn a_copy_of_a_gate_placed_by_hand_takes_each_donor_s_own_position() {
     let files = files("follow-hand");
-    let mut state = with_a_copy();
+    let mut state = with_a_copy_elsewhere();
     for (donor, at) in [("DONOR-A", 300.0), ("DONOR-B", 600.0)] {
         let cd69 = state.registered_gate(&Arc::from("cd69")).unwrap();
         let moved =
             crate::gate_rules::autogate::translate_edge_to(&cd69, Y, Bound::Above, at).unwrap();
         place_by_hand(&mut state, "cd69", donor, moved);
     }
-    let outcome = run(&state, &files, store(&[copy_rule()]));
+    let outcome = run(&state, &files, store(&[copy_elsewhere_rule()]));
     let after = applied(&state, &outcome);
     assert_eq!(extent(&after, "copy", Y, "fs_a").0, 300.0);
     assert_eq!(extent(&after, "copy", Y, "fs_b").0, 600.0);
@@ -821,7 +845,12 @@ fn a_copy_of_a_gate_placed_by_hand_takes_each_donor_s_own_position() {
             p.from,
             p.to
         );
-        assert!(p.to < p.from, "moved up from -500, it holds less");
+        assert!(
+            p.to < p.from,
+            "moved up from -500, it holds less: {} -> {}",
+            p.from,
+            p.to
+        );
         assert_eq!(p.confidence, 1.0, "copied, not estimated");
     }
 }
@@ -1031,7 +1060,7 @@ fn a_polygon_slides_whole_until_its_edge_is_there() {
             vec![edge_from(
                 RuleTarget::named("Pos"),
                 X,
-                Side::Lower,
+                Side::Upper,
                 Side::Lower,
                 0.0,
             )],
@@ -1040,8 +1069,8 @@ fn a_polygon_slides_whole_until_its_edge_is_there() {
     let after = applied(&state, &run(&state, &files, store(&[rule])));
     assert_eq!(
         extent(&after, "poly", X, "fs_a"),
-        (450.0, 650.0),
-        "slid 350, width kept"
+        (250.0, 450.0),
+        "slid 150 to meet it, width kept"
     );
     assert_eq!(extent(&after, "poly", Y, "fs_a"), (100.0, 400.0));
 }
@@ -1077,10 +1106,12 @@ fn a_gate_drawn_the_other_way_round_is_copied_turned() {
         .unwrap(),
     );
     add(&mut state, turned, Some("lymph"));
+    // Under a parent of its own: a copy beside its anchor would be over it.
+    add(&mut state, rect("apart", "Apart", -1.0, -BIG), None);
     add(
         &mut state,
         boxed("mine", "Mine", (0.0, 10.0), (0.0, 10.0)),
-        Some("lymph"),
+        Some("apart"),
     );
     let rule = (
         RuleTarget::named("Mine"),
@@ -1752,8 +1783,10 @@ fn a_specimen_with_several_files_is_named_once_on_the_file_to_place_it_on() {
 fn two_gates_missed_on_one_specimen_are_each_named() {
     let files = files("pause-two-gates");
     let mut state = GateState::default();
+    // A and B on plots of their own, so neither waits for the other.
     add(&mut state, rect("a", "A", -1.0, -BIG), None);
-    add(&mut state, rect("b", "B", -1.0, -BIG), None);
+    add(&mut state, rect("p", "P", -1.0, -BIG), None);
+    add(&mut state, rect("b", "B", -1.0, -BIG), Some("p"));
     add(
         &mut state,
         rect("under_a", "Under A", -BIG, -1.0),
@@ -1856,7 +1889,7 @@ fn band_on_a() -> (RuleTarget, GateRule) {
 
 #[test]
 fn a_valley_rule_with_no_dip_takes_its_fallback_s_edge_after_the_fallback_s_rule() {
-    use crate::gate_rules::autogate::FALLBACK_CONFIDENCE;
+    use crate::gate_rules::autogate::FLAGGED_CONFIDENCE;
     use crate::gate_rules::confidence::FALLBACK;
     let files = smears("valley-fallback");
     let state = ifng_twice();
@@ -1907,8 +1940,8 @@ fn a_valley_rule_with_no_dip_takes_its_fallback_s_edge_after_the_fallback_s_rule
         );
     }
     assert!(
-        crate::gate_rules::run::PAUSE_BELOW <= FALLBACK_CONFIDENCE
-            && FALLBACK_CONFIDENCE < crate::review::assess::REVIEW_FLOOR,
+        crate::gate_rules::run::PAUSE_BELOW <= FLAGGED_CONFIDENCE
+            && FLAGGED_CONFIDENCE < crate::review::assess::REVIEW_FLOOR,
         "reviewed, but no pause"
     );
 }
@@ -1959,4 +1992,108 @@ fn a_fallback_naming_itself_or_no_gate_is_refused_before_the_run() {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].reason.contains(says), "{}", problems[0].reason);
     }
+}
+
+// ─── never over another gate on the plot ──────────────────────────────────────
+//
+// X is uniform over 0-1000 under Lymph: the top 80% starts at 200. Neg holds
+// everything up to 400 on the same plot.
+
+/// Lymph, and under it Neg up to 400 and Pos from 600, side by side.
+fn neg_and_pos() -> GateState {
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    add(
+        &mut state,
+        boxed("neg", "Neg", (-BIG, 400.0), (-BIG, BIG)),
+        Some("lymph"),
+    );
+    add(&mut state, rect("pos", "Pos", 600.0, -BIG), Some("lymph"));
+    state
+}
+
+fn pos_to_the_top_80() -> (RuleTarget, GateRule) {
+    (RuleTarget::under("Pos", "Lymph"), top(X, (0.79, 0.81)))
+}
+
+/// Neg's upper edge where it keeps the bottom half: 500.
+fn neg_to_the_bottom_half() -> (RuleTarget, GateRule) {
+    (
+        RuleTarget::under("Neg", "Lymph"),
+        GateRule {
+            bound: Bound::Below,
+            ..top(X, (0.49, 0.51))
+        },
+    )
+}
+
+fn upper(state: &GateState, gate: &str, file: &str) -> f32 {
+    extent(state, gate, X, file).1
+}
+
+#[test]
+fn a_line_rule_is_held_back_where_its_gate_meets_one_no_rule_moves() {
+    use crate::gate_rules::autogate::FLAGGED_CONFIDENCE;
+    use crate::gate_rules::confidence::HELD_BACK;
+    let files = files("clear-held");
+    let state = neg_and_pos();
+    let outcome = run(&state, &files, store(&[pos_to_the_top_80()]));
+    let after = applied(&state, &outcome);
+    for file in ["fs_a", "fs_b"] {
+        assert_eq!(edge(&after, "pos", X, file), 400.0, "{file}: Neg's edge");
+    }
+    for placed in &outcome.report.positioned {
+        let held = placed
+            .components
+            .iter()
+            .find(|c| c.name == HELD_BACK)
+            .expect("said to be held back");
+        assert_eq!(held.score, FLAGGED_CONFIDENCE);
+        assert!(held.detail.contains("Neg"), "{}", held.detail);
+        assert!(placed.confidence <= FLAGGED_CONFIDENCE);
+        assert!((placed.to - 400.0).abs() < 1e-3, "{}", placed.to);
+        assert!(
+            (placed.achieved - 0.6).abs() < 0.02,
+            "what it holds from 400: {}",
+            placed.achieved
+        );
+    }
+}
+
+#[test]
+fn a_gate_beside_one_listed_first_is_held_against_where_that_one_went() {
+    let files = files("clear-order");
+    let state = neg_and_pos();
+    let rules = store(&[neg_to_the_bottom_half(), pos_to_the_top_80()]);
+    assert_eq!(level_names(&state, &rules), [["Neg"], ["Pos"]]);
+    let after = applied(&state, &run(&state, &files, rules));
+    for file in ["fs_a", "fs_b"] {
+        let neg = upper(&after, "neg", file);
+        assert!((neg - 500.0).abs() < 15.0, "{file}: Neg to {neg}");
+        assert_eq!(edge(&after, "pos", X, file), neg, "{file}");
+    }
+
+    // Listed the other way round, Pos goes first and Neg is held at it.
+    let rules = store(&[pos_to_the_top_80(), neg_to_the_bottom_half()]);
+    assert_eq!(level_names(&state, &rules), [["Pos"], ["Neg"]]);
+    let after = applied(&state, &run(&state, &files, rules));
+    for file in ["fs_a", "fs_b"] {
+        let pos = edge(&after, "pos", X, file);
+        assert!((pos - 200.0).abs() < 15.0, "{file}: Pos to {pos}");
+        assert_eq!(upper(&after, "neg", file), pos, "{file}");
+    }
+}
+
+#[test]
+fn a_copy_that_would_lie_over_another_gate_is_left_where_it_was() {
+    let files = files("clear-copy");
+    let state = with_a_copy();
+    let outcome = run(&state, &files, store(&[copy_rule()]));
+    assert!(outcome.placements.is_empty());
+    let said = reasons(&outcome);
+    assert!(
+        said.iter().all(|r| r.contains("would overlap CD69+")),
+        "{said:?}"
+    );
+    assert_eq!(said.len(), 2, "{said:?}");
 }

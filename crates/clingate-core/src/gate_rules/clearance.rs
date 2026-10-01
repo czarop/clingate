@@ -1,0 +1,249 @@
+//! A rule never places a gate over another gate on its plot: one no rule in
+//! the run moves, or one a rule has already placed. A rule that moves a line
+//! is held back until its gate just touches; anything else that would
+//! overlap is left where it was, and the run says why.
+
+use std::sync::Arc;
+
+use flow_gates::GateGeometry;
+use rustc_hash::FxHashMap;
+
+use crate::gate_rules::autogate::{UNBOUNDED, anchor_gate, entry_at, rebuild};
+use crate::gate_rules::rule_store::RuleStore;
+use crate::gates::GateState;
+use crate::gates::gate_contact::{Point, outline, overlaps};
+use crate::gates::gate_store::{FileId, GateId, NodeId};
+use crate::gates::gate_traits::DrawableGate;
+use crate::omiq::metadata::MetaDataFileMap;
+
+/// A gate to keep clear of: its name, and its outline on the plot.
+pub type Neighbour = (Arc<str>, Vec<Point>);
+
+/// What a gate is, whichever id names it: a quadrant's corners are one gate.
+fn identity(state: &GateState, id: &GateId) -> GateId {
+    state
+        .registered_gate(id)
+        .map(|gate| gate.get_id())
+        .unwrap_or_else(|| id.clone())
+}
+
+fn rule_index(
+    state: &GateState,
+    store: &RuleStore,
+    names: &FxHashMap<NodeId, Arc<str>>,
+    node: &NodeId,
+) -> Option<usize> {
+    let entry = entry_at(state, store, names, node)?;
+    store.entries().iter().position(|e| std::ptr::eq(e, entry))
+}
+
+/// Whether the rule at `node` reads its position from the gate `own`, and so
+/// is placed after it.
+fn reads_from(
+    state: &GateState,
+    store: &RuleStore,
+    names: &FxHashMap<NodeId, Arc<str>>,
+    node: &NodeId,
+    own: &GateId,
+) -> bool {
+    entry_at(state, store, names, node).is_some_and(|entry| {
+        entry
+            .rule
+            .rule
+            .anchors()
+            .into_iter()
+            .any(|anchor| anchor_gate(state, anchor).is_ok_and(|id| identity(state, &id) == *own))
+    })
+}
+
+/// The other gates on the plot `node` is drawn on - beside it under the same
+/// parent, on the same two parameters - that a rule in `store` listed after
+/// `node`'s does not place, nor one reading its position from `node`'s gate.
+/// Quadrants are left out: one covers its whole plot. The rules listed first
+/// are placed first (see `rule_levels`).
+pub(crate) fn settled_beside(
+    state: &GateState,
+    store: &RuleStore,
+    names: &FxHashMap<NodeId, Arc<str>>,
+    node: &NodeId,
+) -> Vec<NodeId> {
+    let Some(gate_id) = state.gate_for_node(node) else {
+        return Vec::new();
+    };
+    let Some(gate) = state.registered_gate(gate_id) else {
+        return Vec::new();
+    };
+    let Some(parent) = state.parent_node(node) else {
+        return Vec::new();
+    };
+    let own = identity(state, gate_id);
+    let params = gate.get_params();
+    let mine = rule_index(state, store, names, node);
+    let same_plot = |other: &Arc<dyn DrawableGate>| {
+        let (x, y) = other.get_params();
+        (x == params.0 && y == params.1) || (x == params.1 && y == params.0)
+    };
+    state
+        .child_nodes(&parent)
+        .iter()
+        .filter(|beside| {
+            let Some(id) = state.gate_for_node(beside) else {
+                return false;
+            };
+            let Some(other) = state.registered_gate(id) else {
+                return false;
+            };
+            let later = match (mine, rule_index(state, store, names, beside)) {
+                (Some(mine), Some(theirs)) => theirs > mine,
+                (None, Some(_)) => true,
+                _ => false,
+            };
+            identity(state, id) != own
+                && !other.is_composite()
+                && same_plot(&other)
+                && !later
+                && !reads_from(state, store, names, beside, &own)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The gates to keep `gate_id` clear of on `file`, at every place it is
+/// drawn, as outlines on its own two parameters.
+pub(crate) fn neighbours(
+    state: &GateState,
+    store: &RuleStore,
+    names: &FxHashMap<NodeId, Arc<str>>,
+    gate_id: &GateId,
+    file: &FileId,
+    metadata: &MetaDataFileMap,
+) -> Vec<Neighbour> {
+    let Some(gate) = state.registered_gate(gate_id) else {
+        return Vec::new();
+    };
+    let (x, y) = gate.get_params();
+    state
+        .nodes_for_gate(gate_id)
+        .iter()
+        .flat_map(|node| settled_beside(state, store, names, node))
+        .filter_map(|beside| {
+            let id = state.gate_for_node(&beside)?;
+            let shown = state.gate_for_file(id, file, metadata)?;
+            let name = state
+                .population_name(id)
+                .unwrap_or_else(|| Arc::from(shown.get_name()));
+            Some((name, outline(&shown, id, &x, &y)?))
+        })
+        .collect()
+}
+
+/// The first of `neighbours` that `gate` overlaps.
+pub(crate) fn first_overlap<'n>(
+    gate: &Arc<dyn DrawableGate>,
+    gate_id: &GateId,
+    neighbours: &'n [Neighbour],
+) -> Option<&'n Arc<str>> {
+    let (x, y) = gate.get_params();
+    let shape = outline(gate, gate_id, &x, &y)?;
+    neighbours
+        .iter()
+        .find(|(_, other)| overlaps(&shape, other))
+        .map(|(name, _)| name)
+}
+
+/// `from` moved `t` of the way to `to`: every point of a rectangle or a
+/// polygon on the straight line between its two places. Past `to` beyond 1,
+/// and back past `from` below 0. An open edge stays open.
+fn between(
+    from: &Arc<dyn DrawableGate>,
+    to: &Arc<dyn DrawableGate>,
+    t: f64,
+) -> Option<Arc<dyn DrawableGate>> {
+    let (a, b) = (from.get_gate_ref(None)?, to.get_gate_ref(None)?);
+    let (x, y) = to.get_params();
+    let mix = |p: &flow_gates::GateNode, q: &flow_gates::GateNode| {
+        let mut node = q.clone();
+        for param in [&x, &y] {
+            if let (Some(u), Some(v)) = (p.get_coordinate(param), q.get_coordinate(param))
+                && v.is_finite()
+                && v.abs() <= UNBOUNDED
+            {
+                let at = f64::from(u) + t * (f64::from(v) - f64::from(u));
+                node.set_coordinate(param.clone(), at as f32);
+            }
+        }
+        node
+    };
+    let geometry = match (&a.geometry, &b.geometry) {
+        (GateGeometry::Rectangle { min: m0, max: x0 }, GateGeometry::Rectangle { min, max }) => {
+            GateGeometry::Rectangle {
+                min: mix(m0, min),
+                max: mix(x0, max),
+            }
+        }
+        (GateGeometry::Polygon { nodes: n0, .. }, GateGeometry::Polygon { nodes, closed })
+            if n0.len() == nodes.len() =>
+        {
+            GateGeometry::Polygon {
+                nodes: n0.iter().zip(nodes).map(|(p, q)| mix(p, q)).collect(),
+                closed: *closed,
+            }
+        }
+        _ => return None,
+    };
+    let mut moved = b.clone();
+    moved.geometry = geometry;
+    rebuild(to, moved).ok()
+}
+
+/// How a rule's line placement came out against the gates beside it.
+pub(crate) enum Clear {
+    /// Clear as the rule placed it.
+    AsPlaced,
+    /// Held back until it just touched the gate named.
+    HeldBack(Arc<dyn DrawableGate>, Arc<str>),
+}
+
+/// `moved` - where a rule moved `from` along one line - held back towards
+/// `from`, and past it if `from` overlaps too, until it overlaps none of
+/// `neighbours`. Refused when nowhere along that line is clear.
+pub(crate) fn hold_clear(
+    from: &Arc<dyn DrawableGate>,
+    moved: &Arc<dyn DrawableGate>,
+    gate_id: &GateId,
+    neighbours: &[Neighbour],
+) -> Result<Clear, String> {
+    let Some(blocker) = first_overlap(moved, gate_id, neighbours).cloned() else {
+        return Ok(Clear::AsPlaced);
+    };
+    let clear = |t: f64| {
+        between(from, moved, t).filter(|g| first_overlap(g, gate_id, neighbours).is_none())
+    };
+    // Back from the rule's place in widening steps, to bracket the edge of
+    // the clear stretch nearest to it.
+    let mut inside = 1.0;
+    let mut out = None;
+    for step in (0..24).map(|k| f64::from(1u32 << k) / 1024.0) {
+        let t = 1.0 - step;
+        if clear(t).is_some() {
+            out = Some(t);
+            break;
+        }
+        inside = t;
+    }
+    let Some(mut outside) = out else {
+        return Err(format!(
+            "it would overlap {blocker} wherever along its line it went"
+        ));
+    };
+    for _ in 0..60 {
+        let mid = (inside + outside) / 2.0;
+        if clear(mid).is_some() {
+            outside = mid;
+        } else {
+            inside = mid;
+        }
+    }
+    let held = clear(outside).ok_or_else(|| format!("it could not be kept clear of {blocker}"))?;
+    Ok(Clear::HeldBack(held, blocker))
+}
