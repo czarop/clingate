@@ -30,6 +30,9 @@ mod gate_paths_tests;
 pub mod gate_positions;
 #[cfg(test)]
 mod gate_positions_tests;
+pub mod gate_shape_edit;
+#[cfg(test)]
+mod gate_shape_edit_tests;
 #[cfg(test)]
 mod gate_stats_tests;
 #[cfg(test)]

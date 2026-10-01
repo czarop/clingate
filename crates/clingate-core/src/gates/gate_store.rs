@@ -362,6 +362,37 @@ impl GateSubStore {
         Ok(())
     }
 
+    /// Make the rectangle `gate_id` a polygon at every position it holds:
+    /// drawn, per group and per sample. In place, as [`Self::set_label`]:
+    /// the shape changes, not which position is the newest.
+    pub fn convert_to_polygon(&mut self, gate_id: &GateId) -> anyhow::Result<()> {
+        use crate::gates::gate_shape_edit::as_polygon;
+        let drawn = self
+            .primary_and_subgate_registry
+            .get(gate_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("gate {gate_id} is not registered"))?;
+        let new_drawn = as_polygon(&drawn, gate_id)?;
+        let groups = self
+            .group_position_overrides
+            .iter()
+            .filter(|((id, _), _)| id == gate_id)
+            .map(|(key, gate)| Ok((key.clone(), as_polygon(gate, gate_id)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let samples = self
+            .sample_position_overrides
+            .iter()
+            .filter(|((id, _), _)| id == gate_id)
+            .map(|(key, gate)| Ok((key.clone(), as_polygon(gate, gate_id)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        self.primary_and_subgate_registry
+            .insert(gate_id.clone(), new_drawn);
+        self.group_position_overrides.extend(groups);
+        self.sample_position_overrides.extend(samples);
+        Ok(())
+    }
+
     /// Move a gate's label so its bottom centre is at `at`, a point on the
     /// plot `axes` describes. Measured from the drawn gate - see
     /// [`crate::gates::gate_label`].
@@ -1642,6 +1673,11 @@ impl GateState {
         self.gate_store.retain_group_positions(keep);
     }
 
+    /// See [`GateSubStore::convert_to_polygon`].
+    pub fn convert_to_polygon(&mut self, gate_id: &GateId) -> anyhow::Result<()> {
+        self.gate_store.convert_to_polygon(gate_id)
+    }
+
     /// Write a gate into one of the three tiers.
     ///
     /// The store methods write back into the tier a gate was *resolved* from,
@@ -2421,11 +2457,10 @@ impl GateState {
 fn edit_to_write(
     gate_id: &GateId,
     current: &Arc<dyn DrawableGate>,
-    edited: Box<dyn DrawableGate>,
+    edited: Arc<dyn DrawableGate>,
     resolver: &GateOverrideResolver,
     apart_from: &[Arc<dyn DrawableGate>],
 ) -> anyhow::Result<(Vec<GateId>, Arc<dyn DrawableGate>, GateSource)> {
-    let edited: Arc<dyn DrawableGate> = Arc::from(edited);
     let gate = crate::gate_rules::clearance::kept_apart(current, &edited, gate_id, apart_from);
     let origin = resolver
         .gate_origins
@@ -2573,8 +2608,13 @@ impl<Lens> Store<GateState, Lens> {
             drag.set_anchor_once(anchor);
         }
         let new_gate = current.replace_point(new_point, point_idx, drag.anchor(), plot_map)?;
-        let (ids, gate, origin) =
-            edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
+        let (ids, gate, origin) = edit_to_write(
+            &gate_id,
+            &current,
+            Arc::from(new_gate),
+            resolver,
+            apart_from,
+        )?;
         self.gate_store().with_mut(|state| {
             state.insert_for_source(&ids, &gate, &origin);
         });
@@ -2605,8 +2645,13 @@ impl<Lens> Store<GateState, Lens> {
         let gate_id = gate_drag_data.gate_id();
         let current = resolver.resolve_drawable(&gate_id)?;
         if let Some(new_gate) = current.replace_points(gate_drag_data)? {
-            let (ids, gate, origin) =
-                edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
+            let (ids, gate, origin) = edit_to_write(
+                &gate_id,
+                &current,
+                Arc::from(new_gate),
+                resolver,
+                apart_from,
+            )?;
             self.gate_store().with_mut(|state| {
                 state.insert_for_source(&ids, &gate, &origin);
             });
@@ -2623,12 +2668,36 @@ impl<Lens> Store<GateState, Lens> {
     ) -> anyhow::Result<()> {
         let current = resolver.resolve_drawable(&gate_id)?;
         if let Some(new_gate) = current.rotate_gate(current_position)? {
-            let (ids, gate, origin) =
-                edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
+            let (ids, gate, origin) = edit_to_write(
+                &gate_id,
+                &current,
+                Arc::from(new_gate),
+                resolver,
+                apart_from,
+            )?;
             self.gate_store().with_mut(|state| {
                 state.insert_for_source(&ids, &gate, &origin);
             });
         }
+        Ok(())
+    }
+
+    /// `reshape`, an edit of the gate `gate_id`'s outline, made to the
+    /// position `resolver` shows, as a drag is - see [`crate::gates::gate_shape_edit`].
+    fn reshape_gate(
+        &mut self,
+        gate_id: GateId,
+        resolver: &GateOverrideResolver,
+        apart_from: &[Arc<dyn DrawableGate>],
+        reshape: impl FnOnce(&Arc<dyn DrawableGate>) -> anyhow::Result<Arc<dyn DrawableGate>>,
+    ) -> anyhow::Result<()> {
+        let current = resolver.resolve_drawable(&gate_id)?;
+        let reshaped = reshape(&current)?;
+        let (ids, gate, origin) =
+            edit_to_write(&gate_id, &current, reshaped, resolver, apart_from)?;
+        self.gate_store().with_mut(|state| {
+            state.insert_for_source(&ids, &gate, &origin);
+        });
         Ok(())
     }
 
