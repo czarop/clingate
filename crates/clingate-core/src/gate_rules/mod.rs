@@ -36,6 +36,8 @@ mod autogate_tests;
 #[cfg(test)]
 mod choices_tests;
 #[cfg(test)]
+mod clearance_tests;
+#[cfg(test)]
 mod confidence_tests;
 mod harness_tests;
 #[cfg(test)]

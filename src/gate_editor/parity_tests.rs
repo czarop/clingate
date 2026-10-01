@@ -885,3 +885,91 @@ fn a_change_of_mode_from_the_menu_is_one_step_that_undo_takes_back() {
     assert_eq!(mode(&mut app), was);
     assert_eq!(app.standing().undo_steps, 0, "a refused change is no step");
 }
+
+/// A gate dragged into another on its plot stops touching it when the
+/// editor keeps gates apart, and goes all the way when it does not.
+#[test]
+fn a_drag_with_gates_kept_apart_stops_at_the_gate_beside() {
+    use clingate_core::axis_store::PlotMapper;
+    use clingate_core::gates::GateState;
+    use clingate_core::gates::gate_drag::GateDragData;
+    use clingate_core::gates::gate_store::{GateStateImplExt, ROOTGATE};
+    use clingate_core::gates::gate_types::PrimaryGateType;
+    let square = |x: f32| vec![(x, 0.0), (x + 100.0, 0.0), (x + 100.0, 100.0), (x, 100.0)];
+    let mut app = App::new();
+    let (moving, beside) = app.with(|held| {
+        let mut state = GateState::default();
+        let mapper = PlotMapper::new(
+            600.0,
+            600.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            0.0..=1000.0,
+            flow_fcs::TransformType::Linear,
+            flow_fcs::TransformType::Linear,
+        );
+        for (name, x) in [("moving", 0.0), ("beside", 200.0)] {
+            state
+                .add_gate(
+                    &mapper,
+                    0.0,
+                    0.0,
+                    Arc::from("FSC-A"),
+                    Arc::from("SSC-A"),
+                    Some(square(x)),
+                    Some(ROOTGATE.clone()),
+                    PrimaryGateType::Polygon,
+                    Some(name.to_string()),
+                )
+                .unwrap();
+        }
+        let id = |name: &str| {
+            state
+                .registered_ids()
+                .into_iter()
+                .find(|id| state.registered_gate(id).unwrap().get_name() == name)
+                .unwrap()
+        };
+        let ids = (id("moving"), id("beside"));
+        held.gates.clone().set(state);
+        ids
+    });
+    let drag_right = |app: &mut App, keep_apart: bool| {
+        app.with(|held| {
+            let mut gates = held.gates;
+            let resolver = gates
+                .peek()
+                .get_current_sample(Arc::from("no-such-file"), &Default::default());
+            let apart_from: Vec<_> = if keep_apart {
+                [&moving, &beside]
+                    .map(|id| resolver.resolve_drawable(id).unwrap())
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            let drag = GateDragData::new(moving.clone(), (50.0, 50.0), (200.0, 50.0));
+            gates.move_gate(drag, &resolver, &apart_from).unwrap();
+            let gate = gates.peek().registered_gate(&moving).unwrap();
+            let shape = gate.get_gate_ref(None).unwrap();
+            match &shape.geometry {
+                flow_gates::GateGeometry::Polygon { nodes, .. } => {
+                    f64::from(nodes[0].get_coordinate("FSC-A").unwrap())
+                }
+                other => panic!("a polygon, got {other:?}"),
+            }
+        })
+    };
+
+    let left_edge = drag_right(&mut app, true);
+    assert!(
+        (left_edge - 100.0).abs() < 1e-2,
+        "stops touching, at {left_edge}"
+    );
+
+    let left_edge = drag_right(&mut app, false);
+    assert!(
+        (left_edge - 250.0).abs() < 1e-2,
+        "goes on through, at {left_edge}"
+    );
+}

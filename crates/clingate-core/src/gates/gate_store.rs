@@ -2415,6 +2415,26 @@ impl GateState {
     }
 }
 
+/// `edited`, an edit of the gate `gate_id` from `current` as `resolver`
+/// shows it, kept apart from `apart_from`: the ids to write it under, the
+/// gate, and the tier it was resolved from.
+fn edit_to_write(
+    gate_id: &GateId,
+    current: &Arc<dyn DrawableGate>,
+    edited: Box<dyn DrawableGate>,
+    resolver: &GateOverrideResolver,
+    apart_from: &[Arc<dyn DrawableGate>],
+) -> anyhow::Result<(Vec<GateId>, Arc<dyn DrawableGate>, GateSource)> {
+    let edited: Arc<dyn DrawableGate> = Arc::from(edited);
+    let gate = crate::gate_rules::clearance::kept_apart(current, &edited, gate_id, apart_from);
+    let origin = resolver
+        .gate_origins
+        .get(gate_id)
+        .ok_or_else(|| anyhow!("error finding gate source for {}", gate_id))?
+        .clone();
+    Ok((GateSubStore::ids_for(&gate, gate_id), gate, origin))
+}
+
 #[store(pub name = GateStateImplExt)]
 impl<Lens> Store<GateState, Lens> {
     /// Subscribe the caller to every change in the gating - the gates at
@@ -2545,6 +2565,7 @@ impl<Lens> Store<GateState, Lens> {
         new_point: (f32, f32),
         plot_map: &PlotMapper,
         resolver: &GateOverrideResolver,
+        apart_from: &[Arc<dyn DrawableGate>],
     ) -> anyhow::Result<()> {
         let current = resolver.resolve_drawable(&gate_id)?;
         let point_idx = drag.point_index();
@@ -2552,17 +2573,10 @@ impl<Lens> Store<GateState, Lens> {
             drag.set_anchor_once(anchor);
         }
         let new_gate = current.replace_point(new_point, point_idx, drag.anchor(), plot_map)?;
-        let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
-        let gate_origin = resolver
-            .gate_origins
-            .get(&gate_id)
-            .ok_or_else(|| anyhow!("error finding gate source for {}", &gate_id))?
-            .clone();
-
-        let ids_to_update = GateSubStore::ids_for(&new_gate_arc, &gate_id);
-
+        let (ids, gate, origin) =
+            edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
         self.gate_store().with_mut(|state| {
-            state.insert_for_source(&ids_to_update, &new_gate_arc, &gate_origin);
+            state.insert_for_source(&ids, &gate, &origin);
         });
         Ok(())
     }
@@ -2586,25 +2600,15 @@ impl<Lens> Store<GateState, Lens> {
         &mut self,
         gate_drag_data: GateDragData,
         resolver: &GateOverrideResolver,
+        apart_from: &[Arc<dyn DrawableGate>],
     ) -> anyhow::Result<()> {
         let gate_id = gate_drag_data.gate_id();
-
-        let new_gate = resolver
-            .resolve_drawable(&gate_id)?
-            .replace_points(gate_drag_data)?;
-
-        let gate_origin = resolver
-            .gate_origins
-            .get(&gate_id)
-            .ok_or_else(|| anyhow!("error finding gate source for {}", &gate_id))?
-            .clone();
-
-        if let Some(new_gate) = new_gate {
-            let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
-            let ids_to_update = GateSubStore::ids_for(&new_gate_arc, &gate_id);
-
+        let current = resolver.resolve_drawable(&gate_id)?;
+        if let Some(new_gate) = current.replace_points(gate_drag_data)? {
+            let (ids, gate, origin) =
+                edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
             self.gate_store().with_mut(|state| {
-                state.insert_for_source(&ids_to_update, &new_gate_arc, &gate_origin);
+                state.insert_for_source(&ids, &gate, &origin);
             });
         }
         Ok(())
@@ -2615,23 +2619,14 @@ impl<Lens> Store<GateState, Lens> {
         gate_id: GateId,
         current_position: (f32, f32),
         resolver: &GateOverrideResolver,
+        apart_from: &[Arc<dyn DrawableGate>],
     ) -> anyhow::Result<()> {
-        let new_gate = resolver
-            .resolve_drawable(&gate_id)?
-            .rotate_gate(current_position)?;
-
-        let gate_origin = resolver
-            .gate_origins
-            .get(&gate_id)
-            .ok_or_else(|| anyhow!("error finding gate source for {}", &gate_id))?
-            .clone();
-
-        if let Some(new_gate) = new_gate {
-            let new_gate_arc: Arc<dyn DrawableGate> = Arc::from(new_gate);
-            let ids_to_update = GateSubStore::ids_for(&new_gate_arc, &gate_id);
-
+        let current = resolver.resolve_drawable(&gate_id)?;
+        if let Some(new_gate) = current.rotate_gate(current_position)? {
+            let (ids, gate, origin) =
+                edit_to_write(&gate_id, &current, new_gate, resolver, apart_from)?;
             self.gate_store().with_mut(|state| {
-                state.insert_for_source(&ids_to_update, &new_gate_arc, &gate_origin);
+                state.insert_for_source(&ids, &gate, &origin);
             });
         }
         Ok(())

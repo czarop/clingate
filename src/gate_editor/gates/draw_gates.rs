@@ -44,6 +44,11 @@ impl Deref for GateList {
     }
 }
 
+/// Whether an edit or a move of a gate stops where it meets another gate on
+/// its plot. Drawing a new gate is never stopped.
+#[derive(Clone, Copy)]
+pub struct KeepGatesApart(pub Signal<bool>);
+
 /// The plot's size on screen, measured when a press starts, so a drag can
 /// turn window coordinates into the plot's own.
 type ClientRect = dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>;
@@ -106,6 +111,7 @@ pub fn GateLayer(
     let mut draft_gate_coords = use_signal(Vec::<(f32, f32)>::new);
 
     let current_gate_type = use_context::<Signal<PrimaryGateType>>();
+    let keep_apart = try_use_context::<KeepGatesApart>();
 
     let plot_store = use_context::<Store<PlotStore>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
@@ -120,6 +126,13 @@ pub fn GateLayer(
             .unwrap_or_default();
         GateList(g)
     });
+    let apart_from = move || -> Vec<Arc<dyn DrawableGate>> {
+        if keep_apart.is_some_and(|keep| *keep.0.peek()) {
+            gates.peek().to_vec()
+        } else {
+            Vec::new()
+        }
+    };
 
     use_effect(move || {
         println!("matching gates to plot");
@@ -488,12 +501,13 @@ pub fn GateLayer(
                                             data_coords,
                                             &map,
                                             &current_resolver_move,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Gate(gate_drag_data) => {
                                     gate_store
-                                        .move_gate(gate_drag_data.clone(), &current_resolver_move)
+                                        .move_gate(gate_drag_data.clone(), &current_resolver_move, &apart_from())
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Rotation(rotation_data) => {
@@ -502,6 +516,7 @@ pub fn GateLayer(
                                             selected_gate_id.clone(),
                                             rotation_data.current_loc(),
                                             &current_resolver_move,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
@@ -541,6 +556,7 @@ pub fn GateLayer(
                                             data_coords,
                                             mapper,
                                             &current_resolver_up,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
@@ -548,7 +564,7 @@ pub fn GateLayer(
                             }
                             GateDragType::Gate(gate_drag_data) => {
                                 gate_store
-                                    .move_gate(gate_drag_data, &current_resolver_up)
+                                    .move_gate(gate_drag_data, &current_resolver_up, &apart_from())
                                     .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }
                             GateDragType::Rotation(rotation_data) => {
@@ -557,6 +573,7 @@ pub fn GateLayer(
                                         selected_gate_id.clone(),
                                         rotation_data.current_loc(),
                                         &current_resolver_up,
+                                        &apart_from(),
                                     )
                                     .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }

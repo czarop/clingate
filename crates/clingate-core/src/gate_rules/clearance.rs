@@ -257,3 +257,58 @@ pub(crate) fn hold_clear(
     let held = clear(outside).ok_or_else(|| format!("it could not be kept clear of {blocker}"))?;
     Ok(Clear::HeldBack(held, blocker))
 }
+
+/// The steps an edit is tried at, from where the gate was to where the edit
+/// takes it, so that one quick move cannot carry it over another gate.
+const EDIT_STEPS: u32 = 16;
+
+/// `moved` - an edit of `from` - stopped where it first touches one of
+/// `others` that `from` was clear of: an edit in the editor never takes a
+/// gate into another. A gate that cannot be moved part way, an ellipse,
+/// keeps to `from` when `moved` would overlap.
+pub fn kept_apart(
+    from: &Arc<dyn DrawableGate>,
+    moved: &Arc<dyn DrawableGate>,
+    gate_id: &GateId,
+    others: &[Arc<dyn DrawableGate>],
+) -> Arc<dyn DrawableGate> {
+    if moved.is_composite() {
+        return moved.clone();
+    }
+    let (x, y) = moved.get_params();
+    let Some(was) = outline(from, gate_id, &x, &y) else {
+        return moved.clone();
+    };
+    let apart: Vec<Vec<Point>> = others
+        .iter()
+        .filter(|other| other.get_id() != *gate_id && !other.is_composite())
+        .filter_map(|other| outline(other, &other.get_id(), &x, &y))
+        .filter(|other| !overlaps(&was, other))
+        .collect();
+    let meets = |gate: &Arc<dyn DrawableGate>, test: fn(&[Point], &[Point]) -> bool| {
+        outline(gate, gate_id, &x, &y).is_none_or(|shape| apart.iter().any(|o| test(&shape, o)))
+    };
+    if between(from, moved, 1.0).is_none() {
+        return if meets(moved, overlaps) {
+            from.clone()
+        } else {
+            moved.clone()
+        };
+    }
+    let Some(first_meeting) = (1..=EDIT_STEPS)
+        .map(|k| f64::from(k) / f64::from(EDIT_STEPS))
+        .find(|t| between(from, moved, *t).is_none_or(|g| meets(&g, overlaps)))
+    else {
+        return moved.clone();
+    };
+    let (mut clear, mut meeting) = (first_meeting - 1.0 / f64::from(EDIT_STEPS), first_meeting);
+    for _ in 0..40 {
+        let mid = (clear + meeting) / 2.0;
+        if between(from, moved, mid).is_none_or(|g| meets(&g, nearly_overlaps)) {
+            meeting = mid;
+        } else {
+            clear = mid;
+        }
+    }
+    between(from, moved, clear).unwrap_or_else(|| from.clone())
+}
