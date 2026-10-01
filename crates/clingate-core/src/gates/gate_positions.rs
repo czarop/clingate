@@ -51,9 +51,8 @@ pub fn tier(
 /// [`GateSubStore::ids_for`].
 pub fn position_ids(gate: &Arc<dyn DrawableGate>, gate_id: &GateId) -> Vec<GateId> {
     let mut ids = GateSubStore::ids_for(gate, gate_id);
-    let own = gate.get_id();
-    if gate.is_composite() && !ids.contains(&own) {
-        ids.push(own);
+    if gate.is_composite() {
+        ids.push(gate.get_id());
     }
     ids.sort();
     ids.dedup();

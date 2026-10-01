@@ -205,8 +205,9 @@ fn without_its_own_position_a_sample_shows_its_group_s_or_the_gate_as_drawn() {
     own(&mut state, "a1", 50.0);
     own(&mut state, "b1", 70.0);
     release_sample(&mut state, &gate(), &file("a1"));
-    release_sample(&mut state, &gate(), &file("b1"));
     assert_eq!(shows(&state, "a1"), 100.0);
+    assert_eq!(shows(&state, "b1"), 70.0, "only the one sample's");
+    release_sample(&mut state, &gate(), &file("b1"));
     assert_eq!(shows(&state, "b1"), DRAWN);
 }
 
