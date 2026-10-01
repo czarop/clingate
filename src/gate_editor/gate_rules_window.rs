@@ -10,12 +10,12 @@ use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
 use clingate_core::gate_rules::choices::{
-    EdgeForm, carry_over, choices, describe_phenotype, every_target, fallback_targets,
-    follow_from_form, follow_to_form, marker_label,
+    EdgeForm, beside, carry_over, choices, describe_phenotype, every_target, fallback_targets,
+    follow_from_form, follow_to_form, marker_label, side_from, side_to,
 };
 use clingate_core::gate_rules::rule::{
-    AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
-    ShapeFit, TailFractionRule, ValleyRule,
+    AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
+    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -299,6 +299,12 @@ pub fn GateRulesWindow() -> Element {
     let mut follow_mode = use_signal(|| "shape".to_string());
     let mut follow_anchor = use_signal(String::new);
     let mut follow_edges = use_signal(Vec::<EdgeForm>::new);
+    // A rule next to another gate: that gate, as `RuleTarget::describe`
+    // writes it, which side of it, and how it is met.
+    let mut next_anchor = use_signal(String::new);
+    let mut next_side = use_signal(|| "Lower".to_string());
+    let mut next_meet = use_signal(|| Meet::default().key().to_string());
+    let mut next_gap = use_signal(|| "0".to_string());
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
@@ -611,6 +617,14 @@ pub fn GateRulesWindow() -> Element {
                 follow_anchor.set(same.unwrap_or_default());
                 follow_edges.set(edges);
             }
+            Rule::NextToGate(r) => {
+                kind.set("NextToGate".to_string());
+                parameter.set(r.parameter.to_string());
+                next_anchor.set(r.anchor.describe());
+                next_side.set(side_to(r.side));
+                next_meet.set(r.meet.key().to_string());
+                next_gap.set(format!("{}", r.gap));
+            }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
@@ -693,6 +707,26 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
             }
+            "NextToGate" => {
+                let Some(anchor) = beside(&choices.read(), &name, &parent())
+                    .into_iter()
+                    .find(|t| t.describe() == next_anchor())
+                else {
+                    warn(&toasts, "Choose the gate it sits next to");
+                    return;
+                };
+                let Ok(gap) = next_gap().trim().parse::<f64>() else {
+                    warn(&toasts, "The gap must be a number");
+                    return;
+                };
+                Rule::NextToGate(NextToRule {
+                    anchor,
+                    parameter: Arc::from(param.as_str()),
+                    side: side_from(&next_side()).unwrap_or(Side::Lower),
+                    meet: Meet::from_key(&next_meet()).unwrap_or_default(),
+                    gap,
+                })
+            }
             "InTheValley" => {
                 let Ok(sm) = smoothing().parse::<f64>() else {
                     warn(&toasts, "The smoothing must be a number");
@@ -764,7 +798,7 @@ pub fn GateRulesWindow() -> Element {
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
-        let follows = kind() == "FromAnotherGate";
+        let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
             // A rule from another gate reads its own sample, and positions
             // along no parameter of its own.
@@ -840,6 +874,9 @@ pub fn GateRulesWindow() -> Element {
                                     td { }
                                 } else if matches!(entry.rule.rule, Rule::FromAnotherGate(_)) {
                                     td { class: "gate_rules-hint", "from another gate" }
+                                    td { }
+                                } else if matches!(entry.rule.rule, Rule::NextToGate(_)) {
+                                    td { class: "gate_rules-hint", "next to another gate" }
                                     td { }
                                 } else {
                                     td { "{entry.rule.parameter}" }
@@ -995,18 +1032,22 @@ pub fn GateRulesWindow() -> Element {
                         }
                     }
 
-                    label { "Gate keeps events" }
-                    select {
-                        value: "{bound}",
-                        onchange: move |e| bound.set(e.value()),
-                        option { value: "Above", "above the line" }
-                        option { value: "Below", "below the line" }
+                    // A gate next to another moves along a parameter, but no
+                    // line of its own decides which events it keeps.
+                    if kind() != "NextToGate" {
+                        label { "Gate keeps events" }
+                        select {
+                            value: "{bound}",
+                            onchange: move |e| bound.set(e.value()),
+                            option { value: "Above", "above the line" }
+                            option { value: "Below", "below the line" }
+                        }
                     }
                 }
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -1034,6 +1075,55 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "InTheValley", "in the valley between the negative and the positive" }
                     option { value: "MatchThePhenotype", "find the cells that match the reference population" }
                     option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
+                    option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
+                }
+
+                if kind() == "NextToGate" {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Brings this gate up against another on the same plot, as close as it can be without overlapping it, on each sample. A run places that gate first, so settle it before relying on this one. Rectangles and polygons only."
+                    }
+                    label { "Next to" }
+                    select {
+                        value: "{next_anchor}",
+                        onchange: move |e| next_anchor.set(e.value()),
+                        option { value: "", "choose the gate beside it" }
+                        for target in beside(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: next_anchor() == target.describe(),
+                                "{target.describe()}"
+                            }
+                        }
+                    }
+                    label { "On its" }
+                    select {
+                        value: "{next_side}",
+                        onchange: move |e| next_side.set(e.value()),
+                        option { value: "Lower", "lower side - to its left, or below it" }
+                        option { value: "Upper", "upper side - to its right, or above it" }
+                    }
+                    label { "By" }
+                    select {
+                        value: "{next_meet}",
+                        onchange: move |e| next_meet.set(e.value()),
+                        for meet in Meet::ALL {
+                            option {
+                                value: "{meet.key()}",
+                                selected: next_meet() == meet.key(),
+                                "{meet.label()}"
+                            }
+                        }
+                    }
+                    label { "Gap" }
+                    input {
+                        r#type: "number",
+                        step: "any",
+                        value: "{next_gap}",
+                        oninput: move |e| next_gap.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the other's shape where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
+                    }
                 }
 
                 if kind() == "FromAnotherGate" {

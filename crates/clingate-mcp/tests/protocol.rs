@@ -729,3 +729,49 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
         view.rules
     );
 }
+
+#[test]
+fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
+    let folder = workspace_with_rules("next-to");
+    let parameter = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let refused = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {
+                    "kind": "NextToGate",
+                    "anchor": {"gate": "Tmem"},
+                    "parameter": parameter,
+                    "side": "Lower",
+                    "meet": "FollowOutline",
+                    "gap": 0.0
+                }
+            }
+        }),
+    );
+    assert_eq!(refused["outcome"], "failed", "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cannot sit next to itself"),
+        "{refused}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "Next to another gate"}));
+    assert_eq!(guide["outcome"], "ok", "{guide}");
+}

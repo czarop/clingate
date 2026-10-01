@@ -819,3 +819,13 @@ fn a_valley_rule_saved_before_the_fallback_loads_with_none() {
         })
     );
 }
+
+#[test]
+fn how_a_gate_meets_another_is_written_as_the_rules_file_writes_it() {
+    for meet in Meet::ALL {
+        assert_eq!(serde_json::to_value(meet).unwrap(), meet.key());
+        assert_eq!(Meet::from_key(meet.key()), Some(meet));
+    }
+    assert_eq!(Meet::from_key("Sideways"), None);
+    assert_eq!(Meet::default(), Meet::GrowSide);
+}

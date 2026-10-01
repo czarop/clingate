@@ -1053,6 +1053,21 @@ pub enum Meet {
 }
 
 impl Meet {
+    pub const ALL: [Meet; 3] = [Meet::GrowSide, Meet::FollowOutline, Meet::Slide];
+
+    /// How the rules file writes it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Meet::GrowSide => "GrowSide",
+            Meet::FollowOutline => "FollowOutline",
+            Meet::Slide => "Slide",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Meet> {
+        Meet::ALL.into_iter().find(|meet| meet.key() == key)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Meet::GrowSide => "growing its facing side",
