@@ -70,7 +70,8 @@ show, not raw channel values.
    measured on the wrong cells. Everything placed so far is written; each such
    gate is put in the mode of positions by specimen where it stands
    (`hold_for_placing`), so a person can move it on one specimen without
-   moving it for anyone else - a file with no specimen shows it as drawn; and the editor shows them one at a time. Going on runs the
+   moving it for anyone else; a file with no specimen shows it as drawn. The
+   editor shows the gates to place one at a time. Going on runs the
    remaining levels on the gates as they are then, and the parts are kept as
    one run (`RunOutcome::then`) - only while the rules, and the levels they
    put the gates in, are those it paused with; otherwise it has to be stopped
@@ -116,7 +117,8 @@ show, not raw channel values.
    the same plot - beside it under the same parent, on the same two
    parameters - that no rule in the run moves, or that a rule listed first
    has placed (`clearance`; ruled gates on one plot are placed in the order
-   their rules are listed, one level each). A rule that moves a line is held
+   their rules are listed, one level each, unless a chain of rules reading
+   other gates needs the other order). A rule that moves a line is held
    back along it until its gate just touches the other, scored *held back
    off another gate*; any other placement that would overlap - a phenotype
    match, a copy of another gate, a run's pooled line - is left where it was
@@ -126,8 +128,9 @@ show, not raw channel values.
    for every sample (`gates::gate_positions`): as drawn, one position per
    value of a metadata column, or one per sample. A gate a run places is put
    in the mode of positions by the pairing's sample id column first
-   (`set_mode`), every specimen keeping what it showed - so a specimen the
-   run leaves alone stays where it was - and the moved gate is written as
+   (`set_mode`): each specimen takes what its first file showed, so a gate
+   that was per sample keeps one position per specimen - its first file's,
+   on every file of it, placed or not - and the moved gate is written as
    its specimen's position, which every file of the specimen - FMX and full
    stain alike - shows.
 

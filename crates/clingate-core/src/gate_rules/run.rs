@@ -530,8 +530,8 @@ pub fn hold_for_placing(
     use crate::gates::gate_positions::{Mode, set_mode};
     for need in needs {
         if let Some(specimen) = &need.specimen {
-            // Only refused for a gate that is not registered, which there is
-            // nothing to hold of.
+            // Refused for a gate not registered, or one a file cannot show:
+            // there is nothing of it to hold.
             let _ = set_mode(
                 state,
                 &need.gate_id,

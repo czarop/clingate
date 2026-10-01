@@ -7,6 +7,7 @@ use anyhow::{anyhow, bail};
 use flow_gates::{GateGeometry, GateNode};
 
 use crate::gate_rules::autogate::{UNBOUNDED, rebuild};
+use crate::gates::gate_contact::nearest_on_side;
 use crate::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gates::gate_store::GateId;
 use crate::gates::gate_traits::DrawableGate;
@@ -93,16 +94,11 @@ pub fn with_point_added(
     let (from, to) = ends(nodes.len(), side)?;
     let a = (coordinate(&nodes[from], x)?, coordinate(&nodes[from], y)?);
     let b = (coordinate(&nodes[to], x)?, coordinate(&nodes[to], y)?);
-    let along = (b.0 - a.0, b.1 - a.1);
-    let length = along.0 * along.0 + along.1 * along.1;
-    let t = if length > 0.0 {
-        (((at.0 - a.0) * along.0 + (at.1 - a.1) * along.1) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let wide = |p: (f32, f32)| (f64::from(p.0), f64::from(p.1));
+    let on = nearest_on_side(wide(at), (wide(a), wide(b)));
     let mut point = nodes[from].clone();
-    point.set_coordinate(x, a.0 + t * along.0);
-    point.set_coordinate(y, a.1 + t * along.1);
+    point.set_coordinate(x, on.0 as f32);
+    point.set_coordinate(y, on.1 as f32);
     nodes.insert(from + 1, point);
     with_nodes(gate, gate_id, nodes)
 }

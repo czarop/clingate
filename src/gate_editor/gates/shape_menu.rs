@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use clingate_core::axis_store::PlotMapper;
-use clingate_core::gates::gate_contact::{Point, outline};
+use clingate_core::gates::gate_contact::{Point, inside, nearest_on_side, outline};
 use clingate_core::gates::gate_shape_edit::{level_side, with_point_added, without_point};
 use clingate_core::gates::gate_single::rectangle_gate::RectangleGate;
 use clingate_core::gates::gate_store::GateOverrideResolver;
@@ -79,30 +79,6 @@ fn distance(a: Point, b: Point) -> f64 {
     (a.0 - b.0).hypot(a.1 - b.1)
 }
 
-fn distance_to_side(point: Point, (a, b): (Point, Point)) -> f64 {
-    let along = (b.0 - a.0, b.1 - a.1);
-    let length = along.0 * along.0 + along.1 * along.1;
-    let t = if length > 0.0 {
-        (((point.0 - a.0) * along.0 + (point.1 - a.1) * along.1) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    distance(point, (a.0 + t * along.0, a.1 + t * along.1))
-}
-
-fn inside(point: Point, outline: &[Point]) -> bool {
-    let mut inside = false;
-    for i in 0..outline.len() {
-        let (a, b) = (outline[i], outline[(i + 1) % outline.len()]);
-        if (a.1 > point.1) != (b.1 > point.1)
-            && point.0 < a.0 + (point.1 - a.1) / (b.1 - a.1) * (b.0 - a.0)
-        {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
 /// A gate, its id and its outline in the plot's pixels.
 type DrawnGate<'g> = (Arc<str>, &'g Arc<dyn DrawableGate>, Vec<Point>);
 
@@ -144,7 +120,7 @@ pub(crate) fn target_at(
         polygons().find_map(|(id, _, points)| {
             let index = (0..points.len()).find(|i| {
                 let side = (points[*i], points[(i + 1) % points.len()]);
-                distance_to_side(click, side) <= f64::from(SIDE_REACH)
+                distance(click, nearest_on_side(click, side)) <= f64::from(SIDE_REACH)
             })?;
             Some((id.clone(), ShapeTarget::Side(index)))
         })

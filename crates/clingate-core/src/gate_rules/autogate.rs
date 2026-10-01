@@ -309,9 +309,6 @@ pub fn place_for_specimen(
     specimen: &MetaDataKey,
     gate: &Arc<dyn DrawableGate>,
 ) {
-    // A rule names a composite by one of its corners - the corners are what
-    // the tree holds - so the composite's own id is among them, or the
-    // container would keep its old position while its corners moved.
     state.place_gate(
         &crate::gates::gate_positions::position_ids(gate, gate_id),
         gate,
@@ -1478,10 +1475,26 @@ pub fn rule_levels(state: &GateState, rules: &RuleStore) -> Vec<rustc_hash::FxHa
     levels
 }
 
+/// Whether `to` can be reached from `from` along `graph`'s edges.
+fn reaches(graph: &FxHashMap<NodeId, Vec<NodeId>>, from: &NodeId, to: &NodeId) -> bool {
+    let mut seen: rustc_hash::FxHashSet<&NodeId> = Default::default();
+    let mut stack = vec![from];
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if seen.insert(node) {
+            stack.extend(graph.get(node).into_iter().flatten());
+        }
+    }
+    false
+}
+
 /// For every ruled node, the ruled nodes that have to be placed before it:
-/// every ruled gate above it, every ruled gate beside it on the same plot
-/// whose rule is listed first, and every place the gates its rule reads a
-/// position from are drawn that a rule places.
+/// every ruled gate above it, every place the gates its rule reads a
+/// position from are drawn that a rule places, and every ruled gate beside
+/// it on the same plot whose rule is listed first - unless that gate has to
+/// wait for this one, when the list's order gives way.
 fn dependencies(
     state: &GateState,
     rules: &RuleStore,
@@ -1501,13 +1514,6 @@ fn dependencies(
             }
             above = state.parent_node(&ancestor);
         }
-        // A gate beside it on the same plot whose rule is listed first is
-        // placed first, so this one is kept clear of where it ends up.
-        deps.extend(
-            crate::gate_rules::clearance::settled_beside(state, rules, names, node)
-                .into_iter()
-                .filter(|beside| ruled(beside)),
-        );
         for anchor in entry.rule.rule.anchors() {
             if let Ok(id) = anchor_gate(state, anchor) {
                 // Itself is not a dependency - it is refused as naming
@@ -1522,6 +1528,17 @@ fn dependencies(
             }
         }
         graph.insert(node.clone(), deps);
+    }
+    // A gate beside it on the same plot whose rule is listed first is placed
+    // first, so this one is kept clear of where it ends up.
+    let mut nodes: Vec<NodeId> = graph.keys().cloned().collect();
+    nodes.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for node in nodes {
+        for beside in crate::gate_rules::clearance::settled_beside(state, rules, names, &node) {
+            if ruled(&beside) && !reaches(&graph, &beside, &node) {
+                graph.entry(node.clone()).or_default().push(beside);
+            }
+        }
     }
     graph
 }
@@ -1575,13 +1592,7 @@ pub fn anchor_problems(state: &GateState, rules: &RuleStore) -> Vec<AnchorProble
         if anchors.is_empty() {
             continue;
         }
-        // Compared as gates, not placements: a quadrant's corners are one gate.
-        let identity = |id: &GateId| {
-            state
-                .registered_gate(id)
-                .map(|g| g.get_id())
-                .unwrap_or_else(|| id.clone())
-        };
+        let identity = |id: &GateId| state.gate_identity(id);
         let own = state.gate_for_node(node).map(identity);
         for anchor in anchors {
             match anchor_gate(state, anchor) {
@@ -1760,8 +1771,8 @@ pub fn apply_placements(
         let by = (&placed.gate_id, &placed.specimen.parameter);
         if !moded.contains(&by) {
             let to = Mode::ByColumn(placed.specimen.parameter.clone());
-            // Only refused for a gate that is not registered, which has no
-            // position to write either.
+            // Refused for a gate not registered, or one a file cannot show:
+            // there is no position to write for it either.
             if set_mode(state, &placed.gate_id, &to, None, metadata).is_err() {
                 continue;
             }

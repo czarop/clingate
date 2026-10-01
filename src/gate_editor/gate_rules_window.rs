@@ -733,7 +733,7 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, "The smoothing must be a number");
                     return;
                 };
-                let fallback = every_target(&choices.read())
+                let fallback = fallback_targets(&choices.read(), &name, &parent())
                     .into_iter()
                     .find(|t| t.describe() == valley_fallback());
                 Rule::InTheValley(ValleyRule {
@@ -1679,8 +1679,8 @@ pub fn GateRulesWindow() -> Element {
                 p { class: "gate_rules-message", "{text}" }
             }
 
-            // ── what it did: last, in a box of its own that scrolls, so a
-            // run of thousands of lines does not push the sections apart ───────────────────────────────────────────────
+            // What a run did, last, in a box that scrolls: thousands of lines
+            // would otherwise push the sections above out of reach.
             if let Some(run) = report.read().as_ref() {
                 div { class: "gate_rules-report",
                     // Two kinds of placement, two tables. A phenotype rule's

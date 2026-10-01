@@ -1,6 +1,17 @@
 //! Overlap and contact between outlines, each case worked by hand.
 
-use crate::gates::gate_contact::{Axis, contact_distance, overlaps, shifted};
+use crate::gates::gate_contact::{Axis, Point, contact_distance, overlaps};
+
+/// `outline` moved `by` along `axis`.
+fn shifted(outline: &[Point], axis: Axis, by: f64) -> Vec<Point> {
+    outline
+        .iter()
+        .map(|p| match axis {
+            Axis::X => (p.0 + by, p.1),
+            Axis::Y => (p.0, p.1 + by),
+        })
+        .collect()
+}
 
 fn square(x0: f64, y0: f64, side: f64) -> Vec<(f64, f64)> {
     vec![

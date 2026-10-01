@@ -31,36 +31,15 @@ impl Session {
             rule.measured_on = MeasuredOn::Itself;
         }
         if let Rule::NextToGate(next) = &mut rule.rule {
-            let channel = self.channel_named(&next.parameter)?;
-            if *channel != *next.parameter {
-                notes.push(format!(
-                    "parameter {} is the channel {channel}",
-                    next.parameter
-                ));
-            }
-            next.parameter = channel;
+            next.parameter = self.channel_noted(&next.parameter, &mut notes)?;
         }
         if let Rule::FromAnotherGate(from) = &mut rule.rule {
             for edge in &mut from.edges {
-                let channel = self.channel_named(&edge.parameter)?;
-                if *channel != *edge.parameter {
-                    notes.push(format!(
-                        "parameter {} is the channel {channel}",
-                        edge.parameter
-                    ));
-                }
-                edge.parameter = channel;
+                edge.parameter = self.channel_noted(&edge.parameter, &mut notes)?;
             }
         }
         if !rule.parameter.trim().is_empty() {
-            let channel = self.channel_named(&rule.parameter)?;
-            if *channel != *rule.parameter {
-                notes.push(format!(
-                    "parameter {} is the channel {channel}",
-                    rule.parameter
-                ));
-            }
-            rule.parameter = channel;
+            rule.parameter = self.channel_noted(&rule.parameter, &mut notes)?;
         }
         if let Rule::MatchThePhenotype(wanted) = &mut rule.rule {
             let mut markers = Vec::with_capacity(wanted.markers.len());
@@ -195,12 +174,7 @@ impl Session {
             return Err(failed(problem.to_string()));
         }
         let anchor = anchor_gate(&self.gates, &next.anchor).map_err(failed)?;
-        let identity = |id: &crate::gates::gate_store::GateId| {
-            self.gates
-                .registered_gate(id)
-                .map(|g| g.get_id())
-                .unwrap_or_else(|| id.clone())
-        };
+        let identity = |id: &crate::gates::gate_store::GateId| self.gates.gate_identity(id);
         let anchor_gate = self
             .gates
             .registered_gate(&anchor)
@@ -243,13 +217,16 @@ impl Session {
                 )));
             }
             let parent = self.gates.parent_node(node);
-            let (ax, ay) = anchor_gate.get_params();
+            let anchor_axes = anchor_gate.get_params();
             let beside = self
                 .gates
                 .nodes_for_gate(&anchor)
                 .iter()
                 .any(|at| self.gates.parent_node(at) == parent)
-                && ((*ax == *x && *ay == *y) || (*ax == *y && *ay == *x));
+                && crate::gates::gate_contact::same_axes(
+                    &anchor_axes,
+                    &(Arc::from(x.as_str()), Arc::from(y.as_str())),
+                );
             if !beside {
                 return Err(failed(format!(
                     "{} is not on the same plot as {} - the gate it sits next to is drawn \
@@ -286,14 +263,10 @@ impl Session {
             .collect();
         let anchor = |named: &RuleTarget| {
             let id = anchor_gate(&self.gates, named).map_err(failed)?;
-            // Compared as gates: a quadrant's corners are one gate.
-            let identity = |id: &crate::gates::gate_store::GateId| {
-                self.gates
-                    .registered_gate(id)
-                    .map(|g| g.get_id())
-                    .unwrap_or_else(|| id.clone())
-            };
-            if mine.iter().any(|(own, _)| identity(own) == identity(&id)) {
+            if mine
+                .iter()
+                .any(|(own, _)| self.gates.gate_identity(own) == self.gates.gate_identity(&id))
+            {
                 return Err(failed(format!(
                     "{} cannot follow itself - name the gate it takes its position from",
                     target.describe()
@@ -405,6 +378,16 @@ impl Session {
             }
         }
         problems
+    }
+
+    /// The channel `parameter` names, noting it in `notes` when the name
+    /// was not the channel's own.
+    fn channel_noted(&self, parameter: &str, notes: &mut Vec<String>) -> Result<Arc<str>, Refusal> {
+        let channel = self.channel_named(parameter)?;
+        if *channel != *parameter {
+            notes.push(format!("parameter {parameter} is the channel {channel}"));
+        }
+        Ok(channel)
     }
 
     fn channel_named(&self, name: &str) -> Result<Arc<str>, Refusal> {

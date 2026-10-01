@@ -1673,6 +1673,13 @@ impl GateState {
         self.gate_store.retain_group_positions(keep);
     }
 
+    /// The gate `id` names, by its own id: a quadrant's corners are one gate.
+    pub fn gate_identity(&self, id: &GateId) -> GateId {
+        self.registered_gate(id)
+            .map(|gate| gate.get_id())
+            .unwrap_or_else(|| id.clone())
+    }
+
     /// See [`GateSubStore::convert_to_polygon`].
     pub fn convert_to_polygon(&mut self, gate_id: &GateId) -> anyhow::Result<()> {
         self.gate_store.convert_to_polygon(gate_id)

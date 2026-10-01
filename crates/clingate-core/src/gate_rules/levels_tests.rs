@@ -2087,6 +2087,40 @@ fn a_gate_beside_one_listed_first_is_held_against_where_that_one_went() {
     }
 }
 
+/// Neg, listed first, follows Other, which follows Pos, beside Neg: Pos
+/// waiting for Neg as listed would close a loop, so the list's order gives
+/// way and nothing is refused.
+#[test]
+fn the_order_of_gates_on_one_plot_gives_way_to_a_chain_that_needs_the_other_order() {
+    let mut state = neg_and_pos();
+    add(&mut state, rect("apart", "Apart", -1.0, -BIG), None);
+    add(
+        &mut state,
+        rect("other", "Other", 300.0, -BIG),
+        Some("apart"),
+    );
+    let reads = |gate: &str, parent: &str| {
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::under(gate, parent),
+                X,
+                Side::Lower,
+                Side::Lower,
+                0.0,
+            )],
+        )
+    };
+    let rules = store(&[
+        (RuleTarget::under("Neg", "Lymph"), reads("Other", "Apart")),
+        pos_to_the_top_80(),
+        (RuleTarget::under("Other", "Apart"), reads("Pos", "Lymph")),
+    ]);
+
+    assert!(anchor_problems(&state, &rules).is_empty());
+    assert_eq!(level_names(&state, &rules), [["Pos"], ["Other"], ["Neg"]]);
+}
+
 #[test]
 fn a_copy_that_would_lie_over_another_gate_is_left_where_it_was() {
     let files = files("clear-copy");

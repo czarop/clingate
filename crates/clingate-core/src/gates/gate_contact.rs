@@ -37,14 +37,12 @@ impl Axis {
             Axis::Y => point.0,
         }
     }
+}
 
-    /// `point` moved `by` along this axis.
-    pub fn shift(self, point: Point, by: f64) -> Point {
-        match self {
-            Axis::X => (point.0 + by, point.1),
-            Axis::Y => (point.0, point.1 + by),
-        }
-    }
+/// Whether two gates are drawn on the same two parameters, either way round:
+/// on the same plot, when they are under the same parent.
+pub fn same_axes(a: &(Arc<str>, Arc<str>), b: &(Arc<str>, Arc<str>)) -> bool {
+    (a.0 == b.0 && a.1 == b.1) || (a.0 == b.1 && a.1 == b.0)
 }
 
 /// The outline of the gate `gate_id` names, on a plot of `x` by `y`. `None`
@@ -151,17 +149,21 @@ fn cross_properly(p: (Point, Point), q: (Point, Point), eps: f64) -> bool {
         && ((d3 > ep && d4 < -ep) || (d3 < -ep && d4 > ep))
 }
 
-/// Whether `point` is inside `outline` and not on its edge.
-fn strictly_inside(point: Point, outline: &[Point], eps: f64) -> bool {
-    let on_edge = edges(outline).any(|(a, b)| {
-        let length = (b.0 - a.0).hypot(b.1 - a.1).max(eps);
-        let off = cross(a, b, point).abs() / length;
-        let within = (point.0 - a.0) * (b.0 - a.0) + (point.1 - a.1) * (b.1 - a.1);
-        off <= eps && within >= -eps && within <= length * length + eps
-    });
-    if on_edge {
-        return false;
-    }
+/// The point of the side from `a` to `b` nearest to `point`.
+pub fn nearest_on_side(point: Point, (a, b): (Point, Point)) -> Point {
+    let along = (b.0 - a.0, b.1 - a.1);
+    let length = along.0 * along.0 + along.1 * along.1;
+    let t = if length > 0.0 {
+        (((point.0 - a.0) * along.0 + (point.1 - a.1) * along.1) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a.0 + t * along.0, a.1 + t * along.1)
+}
+
+/// Whether `point` is inside `outline`, counting by the edges a line out
+/// from it crosses.
+pub fn inside(point: Point, outline: &[Point]) -> bool {
     let mut inside = false;
     for (a, b) in edges(outline) {
         if (a.1 > point.1) != (b.1 > point.1) {
@@ -172,6 +174,17 @@ fn strictly_inside(point: Point, outline: &[Point], eps: f64) -> bool {
         }
     }
     inside
+}
+
+/// Whether `point` is inside `outline` and not on its edge.
+fn strictly_inside(point: Point, outline: &[Point], eps: f64) -> bool {
+    let on_edge = edges(outline).any(|(a, b)| {
+        let length = (b.0 - a.0).hypot(b.1 - a.1).max(eps);
+        let off = cross(a, b, point).abs() / length;
+        let within = (point.0 - a.0) * (b.0 - a.0) + (point.1 - a.1) * (b.1 - a.1);
+        off <= eps && within >= -eps && within <= length * length + eps
+    });
+    !on_edge && inside(point, outline)
 }
 
 fn centre(outline: &[Point]) -> Point {
@@ -254,9 +267,4 @@ pub fn extent(outline: &[Point], axis: Axis) -> (f64, f64) {
     outline.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
         (lo.min(axis.along(*p)), hi.max(axis.along(*p)))
     })
-}
-
-/// `outline` moved `by` along `axis`.
-pub fn shifted(outline: &[Point], axis: Axis, by: f64) -> Vec<Point> {
-    outline.iter().map(|p| axis.shift(*p, by)).collect()
 }

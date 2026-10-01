@@ -11,21 +11,15 @@ use rustc_hash::FxHashMap;
 use crate::gate_rules::autogate::{UNBOUNDED, anchor_gate, entry_at, rebuild};
 use crate::gate_rules::rule_store::RuleStore;
 use crate::gates::GateState;
-use crate::gates::gate_contact::{Axis, Point, extent, nearly_overlaps, outline, overlaps};
+use crate::gates::gate_contact::{
+    Axis, Point, extent, nearly_overlaps, outline, overlaps, same_axes,
+};
 use crate::gates::gate_store::{FileId, GateId, NodeId};
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::MetaDataFileMap;
 
 /// A gate to keep clear of: its name, and its outline on the plot.
 pub type Neighbour = (Arc<str>, Vec<Point>);
-
-/// What a gate is, whichever id names it: a quadrant's corners are one gate.
-fn identity(state: &GateState, id: &GateId) -> GateId {
-    state
-        .registered_gate(id)
-        .map(|gate| gate.get_id())
-        .unwrap_or_else(|| id.clone())
-}
 
 fn rule_index(
     state: &GateState,
@@ -47,12 +41,9 @@ fn reads_from(
     own: &GateId,
 ) -> bool {
     entry_at(state, store, names, node).is_some_and(|entry| {
-        entry
-            .rule
-            .rule
-            .anchors()
-            .into_iter()
-            .any(|anchor| anchor_gate(state, anchor).is_ok_and(|id| identity(state, &id) == *own))
+        entry.rule.rule.anchors().into_iter().any(|anchor| {
+            anchor_gate(state, anchor).is_ok_and(|id| state.gate_identity(&id) == *own)
+        })
     })
 }
 
@@ -76,13 +67,9 @@ pub(crate) fn settled_beside(
     let Some(parent) = state.parent_node(node) else {
         return Vec::new();
     };
-    let own = identity(state, gate_id);
+    let own = state.gate_identity(gate_id);
     let params = gate.get_params();
     let mine = rule_index(state, store, names, node);
-    let same_plot = |other: &Arc<dyn DrawableGate>| {
-        let (x, y) = other.get_params();
-        (x == params.0 && y == params.1) || (x == params.1 && y == params.0)
-    };
     state
         .child_nodes(&parent)
         .iter()
@@ -98,9 +85,9 @@ pub(crate) fn settled_beside(
                 (None, Some(_)) => true,
                 _ => false,
             };
-            identity(state, id) != own
+            state.gate_identity(id) != own
                 && !other.is_composite()
-                && same_plot(&other)
+                && same_axes(&other.get_params(), &params)
                 && !later
                 && !reads_from(state, store, names, beside, &own)
         })
