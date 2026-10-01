@@ -451,7 +451,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 6);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
