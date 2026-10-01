@@ -476,7 +476,7 @@ fn run_levels(
             return stopped();
         }
         // The next level reads its populations through these.
-        apply_placements(&mut working, &level_placements);
+        apply_placements(&mut working, &level_placements, &inputs.metadata);
         let needs = if pause {
             needing_a_person(&working, &levels, &level_report, &inputs.rules)
         } else {
@@ -517,34 +517,28 @@ fn run_levels(
     }
 }
 
-/// Give each gate a person has to place a position of its own on its
-/// specimen - or its file, with no specimen - where it stands now, so that
-/// moving it there moves it for nobody else. An edit is saved at the level the
-/// gate came from, and a gate still in its drawn position would move everywhere.
+/// Put each gate a person has to place in the mode of positions by the column
+/// its specimens are grouped by, where it stands now on every specimen, so
+/// that moving it on one specimen moves it for nobody else. An edit is saved
+/// at the level the gate came from, and a gate still in its drawn position
+/// would move everywhere. A file with no specimen shows the gate as drawn.
 pub fn hold_for_placing(
     state: &mut GateState,
     needs: &[NeedsPlacing],
     metadata: &crate::omiq::metadata::MetaDataFileMap,
 ) {
+    use crate::gates::gate_positions::{Mode, set_mode};
     for need in needs {
-        let Some(gate) = state.gate_for_file(&need.gate_id, &need.file, metadata) else {
-            continue;
-        };
-        match &need.specimen {
-            Some(specimen) => crate::gate_rules::autogate::place_for_specimen(
+        if let Some(specimen) = &need.specimen {
+            // Only refused for a gate that is not registered, which there is
+            // nothing to hold of.
+            let _ = set_mode(
                 state,
                 &need.gate_id,
-                specimen,
-                &gate,
-            ),
-            None => state.place_gate(
-                &crate::gates::gate_store::GateSubStore::ids_for(&gate, &need.gate_id),
-                &gate,
-                &crate::gates::gate_store::GateSource::Sample((
-                    need.gate_id.clone(),
-                    need.file.clone(),
-                )),
-            ),
+                &Mode::ByColumn(specimen.parameter.clone()),
+                None,
+                metadata,
+            );
         }
     }
 }
@@ -895,7 +889,11 @@ mod tests {
                 "the premise: sorted by visit"
             );
 
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &metadata,
+            );
             let samples = Samples::new(&names, &metadata, &rules.pairing);
             let record =
                 RunRecord::from_run(&outcome.report, &outcome.placements, &rules, &samples);
@@ -1001,7 +999,11 @@ mod tests {
         fn applied(inputs: &RunInputs) -> (GateState, Arc<str>, crate::review::RunRecord) {
             let (mut state, id) = positive_gate();
             let outcome = run_rules(&state, inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &inputs.metadata,
+            );
             let samples = crate::review::run_record::Samples::new(
                 &inputs.names,
                 &inputs.metadata,
@@ -1538,7 +1540,11 @@ mod tests {
         fn applied_and_kept(inputs: &RunInputs) -> (GateState, Arc<str>, crate::review::RunRecord) {
             let (mut state, id) = positive_gate();
             let outcome = run_rules(&state, inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &inputs.metadata,
+            );
             let samples = crate::review::run_record::Samples::new(
                 &inputs.names,
                 &inputs.metadata,
@@ -2027,7 +2033,11 @@ mod tests {
             assert_eq!(RunRecord::load(&folder).unwrap().as_ref(), Some(&record));
 
             // Applied, every placement is as placed.
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &metadata,
+            );
             assert_eq!(
                 placement_status(placed, &state, &metadata),
                 PlacementStatus::AsPlaced
@@ -2380,7 +2390,11 @@ mod tests {
 
             // Before the run's placements are applied, the gate is where it was.
             assert_eq!(status(&state, &placed), PlacementStatus::Moved);
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &metadata,
+            );
             assert_eq!(status(&state, &placed), PlacementStatus::AsPlaced);
 
             // Rounding of the kind a save through Omiq's format does is not a move.
@@ -2461,7 +2475,11 @@ mod tests {
                     .collect::<Vec<_>>()
             );
 
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &specimens(),
+            );
             // The negative moved 300 up, so the gate should too - to within
             // what reading a noisy negative allows.
             let moved = left_edge(&state, &id, "fs_b");
@@ -2504,7 +2522,11 @@ mod tests {
                 |_| {},
                 &Arc::new(AtomicBool::new(false)),
             );
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &specimens(),
+            );
             let moved = left_edge(&state, &id, "fs_b");
             assert!(
                 (moved - 800.0).abs() < 30.0,
@@ -2572,7 +2594,11 @@ mod tests {
                 .iter()
                 .find(|p| &*p.file == "fs_b")
                 .map(|p| p.to);
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &specimens(),
+            );
             let shown = left_edge(&state, &id, "fs_b");
             if let Some(to) = claimed {
                 assert!(
@@ -2687,7 +2713,11 @@ mod tests {
                 |_| {},
                 &Arc::new(AtomicBool::new(false)),
             );
-            crate::gate_rules::autogate::apply_placements(&mut state, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &specimens(),
+            );
 
             let placed = state
                 .gate_for_file(&id, &Arc::from("fs_b"), &specimens())
@@ -2842,7 +2872,11 @@ mod tests {
 
             let mut compensated = state.clone();
             let outcome = run_with(&state, files.clone(), compensation);
-            crate::gate_rules::autogate::apply_placements(&mut compensated, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut compensated,
+                &outcome.placements,
+                &specimens(),
+            );
             let at = left_edge(&compensated, &id, "fs_b");
             assert!(
                 (at - 800.0).abs() < 30.0,
@@ -2851,7 +2885,11 @@ mod tests {
 
             let mut raw = state.clone();
             let outcome = run_with(&state, files, Compensation::default());
-            crate::gate_rules::autogate::apply_placements(&mut raw, &outcome.placements);
+            crate::gate_rules::autogate::apply_placements(
+                &mut raw,
+                &outcome.placements,
+                &specimens(),
+            );
             let at = left_edge(&raw, &id, "fs_b");
             assert!(
                 (at - 1000.0).abs() < 30.0,

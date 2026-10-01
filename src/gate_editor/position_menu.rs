@@ -1,13 +1,14 @@
-//! The Position menu over each plot: where the selected gate's position on
-//! the plot's sample comes from, and moving it - to this sample alone, to
-//! every sample sharing one of its metadata values, off a column's positions,
-//! or onto other samples. Each change is one step of the working copy.
+//! The Position menu over each plot: how the selected gate is positioned -
+//! the same for every sample, by a metadata column, or per sample - and
+//! putting this sample's position onto other samples, or other values of the
+//! column, without changing that. Each change is one step of the working
+//! copy.
 
 use std::sync::Arc;
 
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_positions::{self, Release, Tier};
-use clingate_core::gates::gate_store::{FileId, GateStateStoreExt, NodeId};
+use clingate_core::gates::gate_positions::{self, Mode};
+use clingate_core::gates::gate_store::{GateStateStoreExt, NodeId};
 use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataStoreStoreExt};
 use dioxus::prelude::*;
 
@@ -29,21 +30,26 @@ pub(crate) fn reposition(
     done.map_err(|e| e.to_string())
 }
 
-/// What the button says a sample shows.
-pub(crate) fn tier_label(tier: &Tier) -> String {
-    match tier {
-        Tier::Drawn => "as drawn, for every sample".to_string(),
-        Tier::Group(key) => format!("by {}, {}", key.parameter, key.group),
-        Tier::Sample => "this sample's own".to_string(),
+/// How a gate is positioned, as the menu says it.
+pub(crate) fn mode_label(mode: &Mode) -> String {
+    match mode {
+        Mode::Global => "the same for every sample".to_string(),
+        Mode::ByColumn(column) => format!("by {column}"),
+        Mode::PerSample => "per sample".to_string(),
     }
 }
 
-/// The samples to offer for "apply to", by name, without `file` itself.
-fn others(names: &[(Arc<str>, FileId)], file: &FileId, search: &str) -> Vec<(Arc<str>, FileId)> {
+/// What "apply this position to" offers, as `(shown, id)`: without `here`,
+/// and only those the search finds.
+fn offered(
+    entries: &[(Arc<str>, Arc<str>)],
+    here: &Arc<str>,
+    search: &str,
+) -> Vec<(Arc<str>, Arc<str>)> {
     let lowered = search.to_lowercase();
-    names
+    entries
         .iter()
-        .filter(|(name, id)| id != file && matches_search(name, &lowered))
+        .filter(|(shown, id)| id != here && matches_search(shown, &lowered))
         .cloned()
         .collect()
 }
@@ -61,7 +67,7 @@ fn act(
     }
 }
 
-/// The selected gate's position on this plot's sample, and the ways to move
+/// How the gate selected on this plot is positioned, and the ways to change
 /// it. Disabled with no gate on the plot selected.
 #[component]
 pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<str>>>) -> Element {
@@ -71,7 +77,7 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
     let toasts = use_toast();
     let mut open = use_signal(|| false);
     let mut search = use_signal(String::new);
-    let mut chosen = use_signal(Vec::<FileId>::new);
+    let mut chosen = use_signal(Vec::<Arc<str>>::new);
 
     let selected = gates.selected_gate().read().clone();
     let file = metadata
@@ -92,29 +98,52 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
             button {
                 class: "position-menu_button",
                 disabled: true,
-                title: "Select a gate on the plot to see where its position on this sample comes from",
+                title: "Select a gate on the plot to see how it is positioned",
                 "Position"
             }
         };
     };
     let file = target.sample.clone();
     let files: MetaDataFileMap = metadata.metadata().read().clone();
-    let Some(tier) = gate_positions::tier(&gates.read(), &gate_id, &file, &files) else {
-        return rsx! {};
-    };
+    let mode = gate_positions::mode(&gates.read(), &gate_id);
     let mut columns: Vec<(Arc<str>, Arc<str>)> = files
         .get(&file)
         .map(|row| row.iter().map(|(c, v)| (c.clone(), v.clone())).collect())
         .unwrap_or_default();
     columns.sort();
-    let mut names: Vec<(Arc<str>, FileId)> = metadata
-        .file_name_to_gating_id()
-        .read()
-        .iter()
-        .map(|(name, id)| (name.clone(), id.clone()))
-        .collect();
-    names.sort();
-    let offered = others(&names, &file, &search());
+    let mut modes = vec![Mode::Global];
+    modes.extend(
+        columns
+            .iter()
+            .map(|(column, _)| Mode::ByColumn(column.clone())),
+    );
+    modes.push(Mode::PerSample);
+
+    // What "apply this position to" offers: samples, or the column's values.
+    let (entries, here): (Vec<(Arc<str>, Arc<str>)>, Arc<str>) = match &mode {
+        Mode::ByColumn(column) => (
+            gate_positions::values_of(&files, column)
+                .into_iter()
+                .map(|value| (value.clone(), value))
+                .collect(),
+            files
+                .get(&file)
+                .and_then(|row| row.get(column))
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        _ => {
+            let mut names: Vec<(Arc<str>, Arc<str>)> = metadata
+                .file_name_to_gating_id()
+                .read()
+                .iter()
+                .map(|(name, id)| (name.clone(), id.clone()))
+                .collect();
+            names.sort();
+            (names, file.clone())
+        }
+    };
+    let shown = offered(&entries, &here, &search());
     let on = target.sample_name.clone();
     let gate = target.gate.clone();
 
@@ -122,152 +151,109 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
         div { class: "position-menu",
             button {
                 class: "position-menu_button",
-                title: "Where {gate}'s position on {on} comes from - click to change it",
+                title: "How {gate} is positioned - click to change it",
                 onclick: move |_| open.toggle(),
-                "Position: {tier_label(&tier)}"
+                "Position: {mode_label(&mode)}"
             }
             if open() {
                 div { class: "position-menu_panel",
-                    p { class: "position-menu_heading", "{gate} on {on}: {tier_label(&tier)}" }
-
-                    if tier != Tier::Sample {
+                    p { class: "position-menu_heading", "Position {gate}:" }
+                    for choice in modes {
                         button {
+                            key: "{mode_label(&choice)}",
+                            disabled: choice == mode,
+                            title: if choice == Mode::Global { "Every sample takes the position on {on}" } else { "Every sample keeps the position it has now" },
                             onclick: {
-                                let (gate_id, file, files, on) = (gate_id.clone(), file.clone(), files.clone(), on.clone());
+                                let (gate_id, file, files, gate, choice) = (gate_id.clone(), file.clone(), files.clone(), gate.clone(), choice.clone());
                                 move |_| {
-                                    act(gates, edits, toasts, format!("{on} has a position of its own"), |state| {
-                                        gate_positions::keep_for_sample(state, &gate_id, &file, &files)
+                                    let said = format!("{gate} is positioned {}", mode_label(&choice));
+                                    act(gates, edits, toasts, said, |state| {
+                                        gate_positions::set_mode(state, &gate_id, &choice, Some(&file), &files)
                                     });
+                                    chosen.set(Vec::new());
                                     open.set(false);
                                 }
                             },
-                            "Only this sample"
-                        }
-                    }
-                    for (column , value) in columns.clone() {
-                        if !matches!(&tier, Tier::Group(key) if key.parameter == column) {
-                            button {
-                                key: "{column}",
-                                onclick: {
-                                    let (gate_id, file, files) = (gate_id.clone(), file.clone(), files.clone());
-                                    let said = format!("Every sample with {column} {value} has this position");
-                                    move |_| {
-                                        act(gates, edits, toasts, said.clone(), |state| {
-                                            gate_positions::keep_for_group(state, &gate_id, &file, &column, &files)
-                                        });
-                                        open.set(false);
-                                    }
-                                },
-                                "Every sample with {column} {value}"
-                            }
+                            "{mode_label(&choice)}"
                         }
                     }
 
-                    if let Tier::Group(key) = tier.clone() {
-                        p { class: "position-menu_heading", "Remove the positions by {key.parameter}:" }
-                        for (how , label) in [
-                            (Release::ToDrawn, "back to the gate as drawn"),
-                            (Release::ToEachSample, "each sample keeps its own"),
-                        ] {
+                    if mode != Mode::Global {
+                        p { class: "position-menu_heading", "Apply the position on {on} to:" }
+                        div { class: "position-menu_picks",
                             button {
-                                key: "{label}",
                                 onclick: {
-                                    let (gate_id, files, column) = (gate_id.clone(), files.clone(), key.parameter.clone());
-                                    move |_| {
-                                        act(gates, edits, toasts, format!("No positions by {column} - {label}"), |state| {
-                                            gate_positions::release_column(state, &gate_id, &column, how, &files)
-                                        });
-                                        open.set(false);
-                                    }
+                                    let all: Vec<Arc<str>> = entries.iter().map(|(_, id)| id.clone()).filter(|id| *id != here).collect();
+                                    move |_| chosen.set(all.clone())
                                 },
-                                "{label}"
+                                "all"
                             }
-                        }
-                    }
-                    if tier == Tier::Sample {
-                        button {
-                            onclick: {
-                                let (gate_id, file, on) = (gate_id.clone(), file.clone(), on.clone());
-                                move |_| {
-                                    act(gates, edits, toasts, format!("{on} shows its group's position, or the gate as drawn"), |state| {
-                                        gate_positions::release_sample(state, &gate_id, &file);
-                                        Ok(())
-                                    });
-                                    open.set(false);
+                            if mode == Mode::PerSample {
+                                for (column , value) in columns.clone() {
+                                    button {
+                                        key: "same-{column}",
+                                        onclick: {
+                                            let (file, files) = (file.clone(), files.clone());
+                                            move |_| {
+                                                let same = gate_positions::sharing(&files, &file, &column);
+                                                chosen.set(same.into_iter().filter(|id| *id != file).collect());
+                                            }
+                                        },
+                                        "same {column} ({value})"
+                                    }
                                 }
-                            },
-                            "Remove this sample's own position"
-                        }
-                    }
-
-                    p { class: "position-menu_heading", "Apply this position to:" }
-                    div { class: "position-menu_picks",
-                        button {
-                            onclick: {
-                                let all: Vec<FileId> = names.iter().map(|(_, id)| id.clone()).filter(|id| *id != file).collect();
-                                move |_| chosen.set(all.clone())
-                            },
-                            "all"
-                        }
-                        for (column , value) in columns.clone() {
-                            button {
-                                key: "same-{column}",
-                                onclick: {
-                                    let (file, files) = (file.clone(), files.clone());
-                                    move |_| {
-                                        let same = gate_positions::sharing(&files, &file, &column);
-                                        chosen.set(same.into_iter().filter(|id| *id != file).collect());
-                                    }
-                                },
-                                "same {column} ({value})"
                             }
+                            button { onclick: move |_| chosen.set(Vec::new()), "none" }
                         }
-                        button { onclick: move |_| chosen.set(Vec::new()), "none" }
-                    }
-                    input {
-                        class: "position-menu_search",
-                        placeholder: "Filter samples",
-                        value: "{search}",
-                        oninput: move |e| search.set(e.value()),
-                    }
-                    div { class: "position-menu_samples",
-                        for (name , id) in offered {
-                            label { key: "{id}",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: chosen.read().contains(&id),
-                                    onchange: {
-                                        let id = id.clone();
-                                        move |_| {
-                                            chosen.with_mut(|picked| {
-                                                match picked.iter().position(|p| *p == id) {
-                                                    Some(at) => {
-                                                        picked.remove(at);
+                        input {
+                            class: "position-menu_search",
+                            placeholder: "Filter",
+                            value: "{search}",
+                            oninput: move |e| search.set(e.value()),
+                        }
+                        div { class: "position-menu_samples",
+                            for (name , id) in shown {
+                                label { key: "{id}",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: chosen.read().contains(&id),
+                                        onchange: {
+                                            let id = id.clone();
+                                            move |_| {
+                                                chosen.with_mut(|picked| {
+                                                    match picked.iter().position(|p| *p == id) {
+                                                        Some(at) => {
+                                                            picked.remove(at);
+                                                        }
+                                                        None => picked.push(id.clone()),
                                                     }
-                                                    None => picked.push(id.clone()),
-                                                }
-                                            })
-                                        }
-                                    },
+                                                })
+                                            }
+                                        },
+                                    }
+                                    "{name}"
                                 }
-                                "{name}"
                             }
                         }
-                    }
-                    button {
-                        disabled: chosen.read().is_empty(),
-                        onclick: {
-                            let (gate_id, file, files) = (gate_id.clone(), file.clone(), files.clone());
-                            move |_| {
-                                let to = chosen.peek().clone();
-                                act(gates, edits, toasts, format!("{} samples have this position as their own", to.len()), |state| {
-                                    gate_positions::copy_to_samples(state, &gate_id, &file, &to, &files)
-                                });
-                                chosen.set(Vec::new());
-                                open.set(false);
-                            }
-                        },
-                        "Apply to {chosen.read().len()}"
+                        button {
+                            disabled: chosen.read().is_empty(),
+                            onclick: {
+                                let (gate_id, file, files, mode) = (gate_id.clone(), file.clone(), files.clone(), mode.clone());
+                                move |_| {
+                                    let to = chosen.peek().clone();
+                                    let said = format!("{} now have the position on {on}", to.len());
+                                    act(gates, edits, toasts, said, |state| match &mode {
+                                        Mode::ByColumn(column) => gate_positions::copy_to_values(
+                                            state, &gate_id, &file, column, &to, &files,
+                                        ),
+                                        _ => gate_positions::copy_to_samples(state, &gate_id, &file, &to, &files),
+                                    });
+                                    chosen.set(Vec::new());
+                                    open.set(false);
+                                }
+                            },
+                            "Apply to {chosen.read().len()}"
+                        }
                     }
                 }
             }
@@ -280,14 +266,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_samples_offered_leave_out_this_one_and_follow_the_search() {
-        let names: Vec<(Arc<str>, FileId)> = ["DONOR-A_FS", "DONOR-A_FMX", "DONOR-B_FS"]
+    fn what_is_offered_leaves_out_this_one_and_follows_the_search() {
+        let entries: Vec<(Arc<str>, Arc<str>)> = ["DONOR-A_FS", "DONOR-A_FMX", "DONOR-B_FS"]
             .iter()
             .map(|n| (Arc::from(*n), Arc::from(n.to_lowercase())))
             .collect();
-        let here: FileId = Arc::from("donor-a_fs");
+        let here: Arc<str> = Arc::from("donor-a_fs");
         let named = |search: &str| -> Vec<String> {
-            others(&names, &here, search)
+            offered(&entries, &here, search)
                 .iter()
                 .map(|(name, _)| name.to_string())
                 .collect()
@@ -298,16 +284,12 @@ mod tests {
     }
 
     #[test]
-    fn the_button_says_where_the_position_comes_from() {
-        use clingate_core::omiq::metadata::MetaDataKey;
-        assert_eq!(tier_label(&Tier::Drawn), "as drawn, for every sample");
-        assert_eq!(tier_label(&Tier::Sample), "this sample's own");
+    fn the_button_says_how_the_gate_is_positioned() {
+        assert_eq!(mode_label(&Mode::Global), "the same for every sample");
+        assert_eq!(mode_label(&Mode::PerSample), "per sample");
         assert_eq!(
-            tier_label(&Tier::Group(MetaDataKey {
-                parameter: Arc::from("SampleID"),
-                group: Arc::from("DONOR-A"),
-            })),
-            "by SampleID, DONOR-A"
+            mode_label(&Mode::ByColumn(Arc::from("SampleID"))),
+            "by SampleID"
         );
     }
 }

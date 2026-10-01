@@ -1,6 +1,6 @@
-//! Moving a sample's position for a gate between the gate as drawn, a group's
-//! and its own. Every position is a rectangle placed by hand at a known left
-//! edge, so what a sample shows is read straight off that edge.
+//! One mode of positioning per gate, and moving a gate between modes without
+//! moving it on any sample. Every position is a rectangle placed by hand at a
+//! known left edge, so what a sample shows is read straight off that edge.
 
 use std::sync::Arc;
 
@@ -8,8 +8,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::gates::GateState;
 use crate::gates::gate_positions::{
-    Release, Tier, copy_to_samples, keep_for_group, keep_for_sample, release_column,
-    release_sample, tier,
+    Mode, copy_to_samples, copy_to_values, mode, set_mode, settle_modes, sharing, values_of,
 };
 use crate::gates::gate_store::{FileId, GateSource};
 use crate::gates::gate_traits::DrawableGate;
@@ -52,6 +51,10 @@ fn file(name: &str) -> FileId {
     Arc::from(name)
 }
 
+fn column(name: &str) -> Arc<str> {
+    Arc::from(name)
+}
+
 /// a1 and a2 of DONOR-A, b1 of DONOR-B; a1 and b1 are full stains, a2 an FMX.
 fn metadata() -> MetaDataFileMap {
     let mut map = im::HashMap::with_hasher(FxBuildHasher);
@@ -61,8 +64,8 @@ fn metadata() -> MetaDataFileMap {
         ("b1", "DONOR-B", "FS"),
     ] {
         let mut columns: FxHashMap<Arc<str>, Arc<str>> = FxHashMap::default();
-        columns.insert(Arc::from("SampleID"), Arc::from(donor));
-        columns.insert(Arc::from("SampleType"), Arc::from(kind));
+        columns.insert(column("SampleID"), Arc::from(donor));
+        columns.insert(column("SampleType"), Arc::from(kind));
         map.insert(file(name), columns);
     }
     map
@@ -75,18 +78,18 @@ fn drawn() -> GateState {
     state
 }
 
-fn donor(group: &str) -> MetaDataKey {
+fn key(parameter: &str, group: &str) -> MetaDataKey {
     MetaDataKey {
-        parameter: Arc::from("SampleID"),
+        parameter: column(parameter),
         group: Arc::from(group),
     }
 }
 
-fn by_donor(state: &mut GateState, group: &str, x0: f32) {
+fn by(state: &mut GateState, parameter: &str, group: &str, x0: f32) {
     state.place_gate(
         &[gate()],
         &at(x0),
-        &GateSource::Group((gate(), donor(group))),
+        &GateSource::Group((gate(), key(parameter, group))),
     );
 }
 
@@ -96,6 +99,23 @@ fn own(state: &mut GateState, name: &str, x0: f32) {
         &at(x0),
         &GateSource::Sample((gate(), file(name))),
     );
+}
+
+/// a1 at 50, a2 at 60, b1 at 70, each its own.
+fn per_sample() -> GateState {
+    let mut state = drawn();
+    own(&mut state, "a1", 50.0);
+    own(&mut state, "a2", 60.0);
+    own(&mut state, "b1", 70.0);
+    state
+}
+
+/// DONOR-A at 100, DONOR-B at 30.
+fn by_donor() -> GateState {
+    let mut state = drawn();
+    by(&mut state, "SampleID", "DONOR-A", 100.0);
+    by(&mut state, "SampleID", "DONOR-B", 30.0);
+    state
 }
 
 /// The left edge `name` shows.
@@ -108,190 +128,195 @@ fn shows(state: &GateState, name: &str) -> f32 {
         .0
 }
 
-fn tier_of(state: &GateState, name: &str) -> Tier {
-    tier(state, &gate(), &file(name), &metadata()).unwrap()
+fn all_show(state: &GateState) -> [f32; 3] {
+    ["a1", "a2", "b1"].map(|name| shows(state, name))
+}
+
+fn to(state: &mut GateState, mode: Mode, in_view: Option<&str>) {
+    let in_view = in_view.map(file);
+    set_mode(state, &gate(), &mode, in_view.as_ref(), &metadata()).unwrap();
+}
+
+fn by_sample_id() -> Mode {
+    Mode::ByColumn(column("SampleID"))
 }
 
 #[test]
-fn a_sample_s_tier_is_where_its_position_comes_from() {
-    let mut state = drawn();
-    assert_eq!(tier_of(&state, "a1"), Tier::Drawn);
-    by_donor(&mut state, "DONOR-A", 100.0);
-    own(&mut state, "b1", 70.0);
-    assert_eq!(tier_of(&state, "a1"), Tier::Group(donor("DONOR-A")));
-    assert_eq!(tier_of(&state, "b1"), Tier::Sample);
+fn a_gate_s_mode_is_read_from_the_positions_it_holds() {
+    assert_eq!(mode(&drawn(), &gate()), Mode::Global);
+    assert_eq!(mode(&by_donor(), &gate()), by_sample_id());
+    assert_eq!(mode(&per_sample(), &gate()), Mode::PerSample);
+
+    let mut both = by_donor();
+    own(&mut both, "a1", 50.0);
+    assert_eq!(mode(&both, &gate()), Mode::PerSample, "two kinds");
+    let mut two_columns = by_donor();
+    by(&mut two_columns, "SampleType", "FMX", 40.0);
+    assert_eq!(mode(&two_columns, &gate()), Mode::PerSample, "two columns");
 }
 
 #[test]
-fn kept_for_a_sample_its_position_is_its_own_and_unchanged() {
-    let mut state = drawn();
-    by_donor(&mut state, "DONOR-A", 100.0);
-    keep_for_sample(&mut state, &gate(), &file("a1"), &metadata()).unwrap();
-    assert_eq!(tier_of(&state, "a1"), Tier::Sample);
-    assert_eq!(shows(&state, "a1"), 100.0);
-    assert_eq!(tier_of(&state, "a2"), Tier::Group(donor("DONOR-A")));
-}
-
-#[test]
-fn a_drawn_gate_kept_for_a_sample_is_written_out_as_that_sample_s() {
-    let mut state = drawn();
-    keep_for_sample(&mut state, &gate(), &file("b1"), &metadata()).unwrap();
-    keep_for_group(
-        &mut state,
-        &gate(),
-        &file("a1"),
-        &Arc::from("SampleID"),
-        &metadata(),
-    )
-    .unwrap();
+fn made_per_sample_every_sample_holds_what_it_showed_as_its_own() {
+    let mut state = by_donor();
+    to(&mut state, Mode::PerSample, None);
+    assert_eq!(mode(&state, &gate()), Mode::PerSample);
+    assert_eq!(all_show(&state), [100.0, 100.0, 30.0]);
+    for name in ["a1", "a2", "b1"] {
+        assert!(state.has_sample_position(&gate(), &file(name)), "{name}");
+    }
+    assert!(state.group_columns_newest_first(&gate()).is_empty());
+    // Copies, so the export writes them as each sample's.
     let mut written = state.files_with_own_position(&gate(), &metadata());
     written.sort();
     assert_eq!(written, [file("a1"), file("a2"), file("b1")]);
 }
 
 #[test]
-fn kept_for_a_group_every_sample_of_it_shows_that_sample_s_position() {
+fn made_per_sample_from_the_drawn_gate_every_sample_holds_it() {
     let mut state = drawn();
-    own(&mut state, "a1", 50.0);
-    keep_for_group(
-        &mut state,
-        &gate(),
-        &file("a1"),
-        &Arc::from("SampleID"),
-        &metadata(),
-    )
-    .unwrap();
-    assert_eq!(tier_of(&state, "a1"), Tier::Group(donor("DONOR-A")));
-    assert_eq!(shows(&state, "a2"), 50.0, "the FMX of the same donor");
-    assert_eq!(shows(&state, "b1"), DRAWN, "another donor");
-
-    // By another column: every full stain, whichever donor.
-    keep_for_group(
-        &mut state,
-        &gate(),
-        &file("a1"),
-        &Arc::from("SampleType"),
-        &metadata(),
-    )
-    .unwrap();
-    assert_eq!(shows(&state, "b1"), 50.0);
-    assert!(
-        keep_for_group(
-            &mut state,
-            &gate(),
-            &file("a1"),
-            &Arc::from("Donor"),
-            &metadata()
-        )
-        .is_err(),
-        "a column the sample has no value in"
-    );
+    to(&mut state, Mode::PerSample, None);
+    assert_eq!(mode(&state, &gate()), Mode::PerSample);
+    assert_eq!(all_show(&state), [DRAWN; 3]);
+    assert_eq!(state.files_with_own_position(&gate(), &metadata()).len(), 3);
 }
 
 #[test]
-fn a_position_is_given_to_the_samples_chosen_and_no_others() {
-    let mut state = drawn();
-    own(&mut state, "a1", 100.0);
-    copy_to_samples(&mut state, &gate(), &file("a1"), &[file("b1")], &metadata()).unwrap();
-    assert_eq!(shows(&state, "b1"), 100.0);
-    assert_eq!(tier_of(&state, "b1"), Tier::Sample);
-    assert_eq!(shows(&state, "a2"), DRAWN);
+fn made_by_a_column_the_group_in_view_takes_the_sample_in_view_s_position() {
+    let mut state = per_sample();
+    to(&mut state, by_sample_id(), Some("a2"));
+    assert_eq!(mode(&state, &gate()), by_sample_id());
+    assert_eq!(all_show(&state), [60.0, 60.0, 70.0]);
+    assert!(!state.has_sample_positions(&gate()));
+
+    // Nothing in view: each group its first sample's.
+    let mut state = per_sample();
+    to(&mut state, by_sample_id(), None);
+    assert_eq!(all_show(&state), [50.0, 50.0, 70.0]);
 }
 
 #[test]
-fn without_its_own_position_a_sample_shows_its_group_s_or_the_gate_as_drawn() {
-    let mut state = drawn();
-    by_donor(&mut state, "DONOR-A", 100.0);
-    own(&mut state, "a1", 50.0);
-    own(&mut state, "b1", 70.0);
-    release_sample(&mut state, &gate(), &file("a1"));
-    assert_eq!(shows(&state, "a1"), 100.0);
-    assert_eq!(shows(&state, "b1"), 70.0, "only the one sample's");
-    release_sample(&mut state, &gate(), &file("b1"));
-    assert_eq!(shows(&state, "b1"), DRAWN);
-}
-
-/// DONOR-A by its group at 100, over an older position of a1's own at 50;
-/// b1's own position at 70 is newer than DONOR-B's at 30.
-fn grouped_over_older_and_under_newer() -> GateState {
-    let mut state = drawn();
-    own(&mut state, "a1", 50.0);
-    by_donor(&mut state, "DONOR-A", 100.0);
-    by_donor(&mut state, "DONOR-B", 30.0);
-    own(&mut state, "b1", 70.0);
-    state
-}
-
-#[test]
-fn a_column_s_positions_removed_back_to_the_drawn_gate() {
-    let mut state = grouped_over_older_and_under_newer();
-    release_column(
-        &mut state,
-        &gate(),
-        &Arc::from("SampleID"),
-        Release::ToDrawn,
-        &metadata(),
-    )
-    .unwrap();
-    assert_eq!(shows(&state, "a1"), DRAWN, "not the old position it hid");
-    assert_eq!(shows(&state, "a2"), DRAWN);
+fn made_by_another_column_the_first_column_s_positions_go() {
+    let mut state = by_donor();
+    to(&mut state, Mode::ByColumn(column("SampleType")), Some("b1"));
+    assert_eq!(mode(&state, &gate()), Mode::ByColumn(column("SampleType")));
+    // FS takes b1's, FMX its only sample's.
+    assert_eq!(all_show(&state), [30.0, 100.0, 30.0]);
     assert_eq!(
-        shows(&state, "b1"),
-        70.0,
-        "it showed its own, and still does"
+        state.group_columns_newest_first(&gate()),
+        [column("SampleType")]
     );
-    assert!(state.group_columns_newest_first(&gate()).is_empty());
 }
 
 #[test]
-fn a_column_s_positions_removed_each_sample_keeping_what_it_showed() {
-    let mut state = grouped_over_older_and_under_newer();
-    release_column(
-        &mut state,
-        &gate(),
-        &Arc::from("SampleID"),
-        Release::ToEachSample,
-        &metadata(),
-    )
-    .unwrap();
-    for (name, x0) in [("a1", 100.0), ("a2", 100.0), ("b1", 70.0)] {
-        assert_eq!(shows(&state, name), x0, "{name}");
-        assert_eq!(tier_of(&state, name), Tier::Sample, "{name}");
-    }
-    assert!(state.group_columns_newest_first(&gate()).is_empty());
+fn made_global_every_sample_shows_the_position_in_view() {
+    let mut state = by_donor();
+    to(&mut state, Mode::Global, Some("b1"));
+    assert_eq!(mode(&state, &gate()), Mode::Global);
+    assert_eq!(all_show(&state), [30.0; 3]);
+
+    let mut state = per_sample();
+    to(&mut state, Mode::Global, None);
+    assert_eq!(all_show(&state), [DRAWN; 3], "nothing in view: as drawn");
 }
 
 #[test]
-fn removing_one_column_s_positions_leaves_another_s() {
+fn a_gate_already_in_its_mode_is_left_as_it_is() {
     let mut state = drawn();
-    state.place_gate(
-        &[gate()],
-        &at(40.0),
-        &GateSource::Group((
-            gate(),
-            MetaDataKey {
-                parameter: Arc::from("SampleType"),
-                group: Arc::from("FMX"),
-            },
-        )),
-    );
-    by_donor(&mut state, "DONOR-B", 30.0);
-    release_column(
+    let before = state.clone();
+    to(&mut state, Mode::Global, Some("a1"));
+    assert!(state.unchanged_since(&before));
+
+    let mut state = by_donor();
+    let before = state.clone();
+    to(&mut state, by_sample_id(), Some("b1"));
+    assert!(state.unchanged_since(&before));
+}
+
+#[test]
+fn a_value_or_sample_missing_a_position_of_its_own_is_given_what_it_shows() {
+    let mut state = drawn();
+    by(&mut state, "SampleID", "DONOR-A", 100.0);
+    to(&mut state, by_sample_id(), None);
+    assert!(state.has_group_position(&gate(), &key("SampleID", "DONOR-B")));
+    assert_eq!(all_show(&state), [100.0, 100.0, DRAWN]);
+
+    let mut state = drawn();
+    own(&mut state, "a1", 50.0);
+    to(&mut state, Mode::PerSample, None);
+    assert!(state.has_sample_position(&gate(), &file("b1")));
+    assert_eq!(all_show(&state), [50.0, DRAWN, DRAWN]);
+}
+
+#[test]
+fn a_gate_holding_two_kinds_is_settled_per_sample_and_nothing_moves() {
+    let mut state = drawn();
+    own(&mut state, "a1", 50.0);
+    by(&mut state, "SampleID", "DONOR-A", 100.0);
+    own(&mut state, "b1", 70.0);
+    let showed = all_show(&state);
+    assert_eq!(showed, [100.0, 100.0, 70.0], "the newest position wins");
+
+    settle_modes(&mut state, &metadata()).unwrap();
+    assert_eq!(mode(&state, &gate()), Mode::PerSample);
+    assert!(state.group_columns_newest_first(&gate()).is_empty());
+    assert_eq!(all_show(&state), showed);
+}
+
+#[test]
+fn a_gate_in_one_mode_is_settled_in_it() {
+    let mut state = by_donor();
+    settle_modes(&mut state, &metadata()).unwrap();
+    assert_eq!(mode(&state, &gate()), by_sample_id());
+    assert_eq!(all_show(&state), [100.0, 100.0, 30.0]);
+}
+
+#[test]
+fn a_run_puts_a_gate_per_sample_into_positions_by_specimen() {
+    let mut state = per_sample();
+    let placement = crate::gate_rules::autogate::Placement {
+        gate_id: gate(),
+        specimen: key("SampleID", "DONOR-B"),
+        gate: at(200.0),
+    };
+    crate::gate_rules::autogate::apply_placements(&mut state, &[placement], &metadata());
+    assert_eq!(mode(&state, &gate()), by_sample_id());
+    // DONOR-A was not placed: it keeps its first sample's.
+    assert_eq!(all_show(&state), [50.0, 50.0, 200.0]);
+}
+
+#[test]
+fn a_position_copied_to_samples_leaves_the_gate_per_sample() {
+    let mut state = per_sample();
+    copy_to_samples(
         &mut state,
         &gate(),
-        &Arc::from("SampleID"),
-        Release::ToDrawn,
+        &file("b1"),
+        &[file("a1"), file("a2")],
         &metadata(),
     )
     .unwrap();
-    assert_eq!(shows(&state, "a2"), 40.0);
-    assert_eq!(shows(&state, "b1"), DRAWN);
+    assert_eq!(all_show(&state), [70.0; 3]);
+    assert_eq!(mode(&state, &gate()), Mode::PerSample);
+}
+
+#[test]
+fn a_position_copied_to_values_leaves_the_gate_by_its_column() {
+    let mut state = by_donor();
+    copy_to_values(
+        &mut state,
+        &gate(),
+        &file("a1"),
+        &column("SampleID"),
+        &[Arc::from("DONOR-B")],
+        &metadata(),
+    )
+    .unwrap();
+    assert_eq!(all_show(&state), [100.0; 3]);
+    assert_eq!(mode(&state, &gate()), by_sample_id());
 }
 
 #[test]
 fn the_samples_sharing_a_value_include_the_sample_itself() {
-    use crate::gates::gate_positions::sharing;
-    let column = |name: &str| Arc::from(name);
     assert_eq!(
         sharing(&metadata(), &file("a1"), &column("SampleID")),
         [file("a1"), file("a2")]
@@ -301,4 +326,24 @@ fn the_samples_sharing_a_value_include_the_sample_itself() {
         [file("a1"), file("b1")]
     );
     assert!(sharing(&metadata(), &file("a1"), &column("Donor")).is_empty());
+    let donors: Vec<String> = values_of(&metadata(), &column("SampleID"))
+        .iter()
+        .map(|v| v.to_string())
+        .collect();
+    assert_eq!(donors, ["DONOR-A", "DONOR-B"]);
+}
+
+#[test]
+fn a_column_no_sample_has_a_value_of_is_refused_and_nothing_changes() {
+    let mut state = by_donor();
+    let before = state.clone();
+    let refused = set_mode(
+        &mut state,
+        &gate(),
+        &Mode::ByColumn(column("Donor")),
+        None,
+        &metadata(),
+    );
+    assert!(refused.is_err());
+    assert!(state.unchanged_since(&before));
 }

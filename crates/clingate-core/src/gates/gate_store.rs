@@ -1610,6 +1610,28 @@ impl GateState {
             .collect()
     }
 
+    /// Whether any sample holds a position of its own for `gate_id`.
+    pub fn has_sample_positions(&self, gate_id: &GateId) -> bool {
+        self.gate_store
+            .sample_position_overrides
+            .keys()
+            .any(|(id, _)| id == gate_id)
+    }
+
+    /// Whether `file` holds a position of its own for `gate_id`.
+    pub fn has_sample_position(&self, gate_id: &GateId, file: &FileId) -> bool {
+        self.gate_store
+            .sample_position_overrides
+            .contains_key(&(gate_id.clone(), file.clone()))
+    }
+
+    /// Whether the group `key` holds a position for `gate_id`.
+    pub fn has_group_position(&self, gate_id: &GateId, key: &MetaDataKey) -> bool {
+        self.gate_store
+            .group_position_overrides
+            .contains_key(&(gate_id.clone(), key.clone()))
+    }
+
     /// Drop every per-sample position `keep` says no to.
     pub fn retain_sample_positions(&mut self, keep: impl FnMut(&(GateId, FileId)) -> bool) {
         self.gate_store.retain_sample_positions(keep);
@@ -2063,7 +2085,8 @@ impl GateState {
     /// is hundreds of kilobytes over a few hundred containers - and a `Store`
     /// cannot be written from one. The editor parses through this, then swaps
     /// the result in on the thread that owns the store; the two paths share this
-    /// one definition of what loading a file means.
+    /// one definition of what loading a file means - each gate in one mode of
+    /// positioning (see [`settle_modes`](crate::gates::gate_positions::settle_modes)).
     pub fn from_gating_file(
         path: PathBuf,
         metadata: &crate::omiq::metadata::MetaDataFileMap,
@@ -2071,6 +2094,7 @@ impl GateState {
     ) -> anyhow::Result<Self> {
         let mut fresh = GateState::default();
         fresh.upload_gates_from_file(path, metadata, axis_settings)?;
+        crate::gates::gate_positions::settle_modes(&mut fresh, metadata)?;
         Ok(fresh)
     }
 

@@ -2697,3 +2697,47 @@ fn a_valley_rule_s_fallback_is_kept_and_checked_as_a_followed_gate_is() {
         valley_falling_back_to(RuleTarget::named("Branch A"))
     );
 }
+
+// ─── a run and the gate's mode of positioning ─────────────────────────────────
+
+#[test]
+fn a_run_puts_a_gate_positioned_per_sample_into_positions_by_specimen() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleStore, SamplePairing};
+    use clingate_core::gates::gate_positions::{Mode, mode};
+    let folder = workspace("session-run-mode");
+    RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    })
+    .save(&clingate_core::workspace::rules_file(&folder))
+    .unwrap();
+    let mut session = Session::open(&folder).unwrap();
+    let ifny: std::sync::Arc<str> = std::sync::Arc::from("2PJQ");
+    assert_eq!(
+        mode(session.gates(), &ifny),
+        Mode::PerSample,
+        "as Omiq has it"
+    );
+
+    let parameter = session.gate("IFny+", None).unwrap().parameters[0].clone();
+    session
+        .update_rule(change(
+            "IFny+",
+            None,
+            &parameter,
+            MeasuredOn::Itself,
+            band((0.01, 0.02)),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        !preview.would_move.is_empty(),
+        "{:?}",
+        preview.not_positioned
+    );
+    session.apply_previewed_rules().unwrap();
+    assert_eq!(
+        mode(session.gates(), &ifny),
+        Mode::ByColumn(std::sync::Arc::from("test"))
+    );
+}

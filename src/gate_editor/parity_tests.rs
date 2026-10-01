@@ -835,8 +835,8 @@ fn a_run_going_on_from_a_pause_is_told_to_continue_not_to_run_again() {
 // ── the Position menu ────────────────────────────────────────────────────
 
 #[test]
-fn a_position_change_from_the_menu_is_one_step_that_undo_takes_back() {
-    use clingate_core::gates::gate_positions::{self, Tier};
+fn a_change_of_mode_from_the_menu_is_one_step_that_undo_takes_back() {
+    use clingate_core::gates::gate_positions::{self, Mode};
     use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
     let mut app = App::new();
     app.open(&two_samples_with_a_rule("position-menu-step"));
@@ -854,36 +854,34 @@ fn a_position_change_from_the_menu_is_one_step_that_undo_takes_back() {
         let file = files.keys().min().unwrap().clone();
         (gate_id, file, files)
     });
-    let tier = |app: &mut App| {
-        app.with(|held| gate_positions::tier(&held.gates.peek(), &gate_id, &file, &files).unwrap())
-    };
-    let was = tier(&mut app);
-    assert_ne!(was, Tier::Sample);
+    let mode = |app: &mut App| app.with(|held| gate_positions::mode(&held.gates.peek(), &gate_id));
+    let was = mode(&mut app);
+    assert_ne!(was, Mode::PerSample);
     assert_eq!(app.standing().undo_steps, 0);
 
     app.with(|held| {
         crate::gate_editor::position_menu::reposition(held.gates, held.edits, |state| {
-            gate_positions::keep_for_sample(state, &gate_id, &file, &files)
+            gate_positions::set_mode(state, &gate_id, &Mode::PerSample, Some(&file), &files)
         })
     })
     .unwrap();
-    assert_eq!(tier(&mut app), Tier::Sample);
+    assert_eq!(mode(&mut app), Mode::PerSample);
     assert_eq!(app.standing().undo_steps, 1, "one step");
 
     assert!(app.with(|held| held.edits.undo()));
-    assert_eq!(tier(&mut app), was);
+    assert_eq!(mode(&mut app), was);
 
     let refused = app.with(|held| {
         crate::gate_editor::position_menu::reposition(held.gates, held.edits, |state| {
-            gate_positions::keep_for_group(
-                state,
-                &gate_id,
-                &file,
-                &std::sync::Arc::from("Nothing"),
-                &files,
-            )
+            let by_nothing = Mode::ByColumn(std::sync::Arc::from("Nothing"));
+            gate_positions::set_mode(state, &gate_id, &by_nothing, Some(&file), &files)
         })
     });
-    assert!(refused.unwrap_err().contains("has no Nothing"));
+    assert!(
+        refused
+            .unwrap_err()
+            .contains("no sample has a value of Nothing")
+    );
+    assert_eq!(mode(&mut app), was);
     assert_eq!(app.standing().undo_steps, 0, "a refused change is no step");
 }

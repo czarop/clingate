@@ -217,7 +217,9 @@ impl RulesRun {
         let before = self.edits.before();
         {
             let mut gates = self.gates.write();
-            clingate_core::gate_rules::autogate::apply_placements(&mut gates, placements);
+            clingate_core::gate_rules::autogate::apply_placements(
+                &mut gates, placements, &metadata,
+            );
             clingate_core::gate_rules::run::hold_for_placing(&mut gates, hold, &metadata);
         }
         self.edits.after(before);

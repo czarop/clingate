@@ -171,7 +171,7 @@ fn edge(state: &GateState, gate: &str, parameter: &str, file: &str) -> f32 {
 
 fn applied(state: &GateState, outcome: &RunOutcome) -> GateState {
     let mut after = state.clone();
-    apply_placements(&mut after, &outcome.placements);
+    apply_placements(&mut after, &outcome.placements, &specimens());
     after
 }
 
@@ -1584,8 +1584,8 @@ fn a_gate_held_for_placing_is_where_it_was_and_moves_for_its_specimen_alone() {
         "a drag on fs_a is saved to DONOR-A's own position"
     );
     assert!(
-        matches!(source("fs_b"), GateSource::Global),
-        "fs_b is untouched"
+        matches!(source("fs_b"), GateSource::Group((_, ref key)) if &*key.group == "DONOR-B"),
+        "fs_b has a position of its own, where it was"
     );
 }
 
@@ -1638,7 +1638,7 @@ fn row(columns: &[(&str, &str)]) -> rustc_hash::FxHashMap<Arc<str>, Arc<str>> {
 }
 
 #[test]
-fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
+fn a_file_with_no_sample_id_is_named_by_itself_and_shows_the_gate_as_drawn() {
     use crate::gates::gate_store::GateSource;
     let files = files_named("pause-no-id", &["fs_a", "loose", "loose_2"]);
     let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
@@ -1686,10 +1686,8 @@ fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
         .gate_and_source_for_file(&Arc::from("lymph"), &Arc::from("loose"), &metadata)
         .unwrap()
         .0;
-    assert!(
-        matches!(source, GateSource::Sample((_, ref file)) if &**file == "loose"),
-        "held on the file itself: {source:?}"
-    );
+    // The gate is held by SampleID, which the file has no value in.
+    assert!(matches!(source, GateSource::Global), "{source:?}");
 }
 
 #[test]

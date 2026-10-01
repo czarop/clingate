@@ -258,7 +258,11 @@ impl Session {
         }
         // The whole run is one step of the working copy, as in the app.
         let before = self.working_state();
-        crate::gate_rules::autogate::apply_placements(&mut self.gates, &pending.placements);
+        crate::gate_rules::autogate::apply_placements(
+            &mut self.gates,
+            &pending.placements,
+            self.metadata.metadata(),
+        );
         self.edited(before);
         // Kept for reviewing the run, as the app keeps it.
         let kept = match pending.record.applied(&self.folder, &pending.events) {

@@ -67,9 +67,9 @@ show, not raw channel values.
    placed, or was placed with a confidence under 0.2 (`PAUSE_BELOW`), on any
    specimen, stops the run before the next level: the gates under it would be
    measured on the wrong cells. Everything placed so far is written; each such
-   gate is given a position of its own on its specimen where it stands
-   (`hold_for_placing`), so a person can move it there without moving it for
-   anyone else; and the editor shows them one at a time. Going on runs the
+   gate is put in the mode of positions by specimen where it stands
+   (`hold_for_placing`), so a person can move it on one specimen without
+   moving it for anyone else - a file with no specimen shows it as drawn; and the editor shows them one at a time. Going on runs the
    remaining levels on the gates as they are then, and the parts are kept as
    one run (`RunOutcome::then`) - only while the rules, and the levels they
    put the gates in, are those it paused with; otherwise it has to be stopped
@@ -112,10 +112,14 @@ show, not raw channel values.
    was read but could not be measured (and why); or it is in the metadata
    but was not loaded (`why_no_reference`).
 5. **Position** (`position_one`, section 3).
-6. **Write back** (`apply_placements`). The moved gate is written as a
-   per-specimen (group) override, so every file of the specimen - FMX and
-   full stain alike - shows the new position. A later per-file move by hand
-   wins over it (most recent wins).
+6. **Write back** (`apply_placements`). A gate has one mode of positioning
+   for every sample (`gates::gate_positions`): as drawn, one position per
+   value of a metadata column, or one per sample. A gate a run places is put
+   in the mode of positions by the pairing's sample id column first
+   (`set_mode`), every specimen keeping what it showed - so a specimen the
+   run leaves alone stays where it was - and the moved gate is written as
+   its specimen's position, which every file of the specimen - FMX and full
+   stain alike - shows.
 
 Every list in the report is then sorted by the pairing's sort column, with
 each placement kept beside its own line (`sort_report`).

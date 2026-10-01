@@ -1695,7 +1695,7 @@ fn a_snapshot_solve_matches_an_in_place_one() {
     let snapshot = owner.clone();
     let (measured, unmeasured) = measure(&snapshot);
     let (offline, placements) = solve_all(&snapshot, &store, &measured, &unmeasured, &map);
-    crate::gate_rules::autogate::apply_placements(&mut owner, &placements);
+    crate::gate_rules::autogate::apply_placements(&mut owner, &placements, &map);
 
     assert_eq!(
         live.positioned.len(),
@@ -3051,7 +3051,7 @@ fn a_valley_placement_is_kept_with_both_valleys_it_read() {
     assert_eq!(placed.sample.name.as_deref(), Some("fs_b.fcs"));
     assert_eq!(placed.measured_on.id, "fs_qc");
 
-    crate::gate_rules::autogate::apply_placements(&mut state, &placements);
+    crate::gate_rules::autogate::apply_placements(&mut state, &placements, &map);
     assert_eq!(
         placement_status(placed, &state, &map),
         PlacementStatus::AsPlaced
@@ -3121,7 +3121,7 @@ fn a_phenotype_placement_is_kept_with_what_it_matched_and_no_line() {
             .any(|k| k.sample.id == "fs_qc" && !k.met_rule)
     );
 
-    crate::gate_rules::autogate::apply_placements(&mut state, &placements);
+    crate::gate_rules::autogate::apply_placements(&mut state, &placements, &map);
     assert_eq!(
         placement_status(placed, &state, &map),
         PlacementStatus::AsPlaced

@@ -180,9 +180,13 @@ fn line(state: &GateState, file: &str, files: &[(&str, &str, &str, &str)]) -> f3
         .0
 }
 
-fn applied(state: &GateState, outcome: &RunOutcome) -> GateState {
+fn applied(
+    state: &GateState,
+    outcome: &RunOutcome,
+    files: &[(&str, &str, &str, &str)],
+) -> GateState {
     let mut after = state.clone();
-    apply_placements(&mut after, &outcome.placements);
+    apply_placements(&mut after, &outcome.placements, &metadata(files));
     after
 }
 
@@ -212,7 +216,7 @@ fn counted_on_the_run_every_specimen_gets_the_same_line() {
     let written = write("runs-pooled", &FILES);
     let outcome = run(&gates(), &written, &FILES, store(band(Pool::Run, fmx())));
     assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
-    let after = applied(&gates(), &outcome);
+    let after = applied(&gates(), &outcome, &FILES);
     let one = line(&after, "d1_fs", &FILES);
     for file in ["d1_fmx", "d2_fs", "d3_fs", "d4_fs", "d4_fmx"] {
         assert_eq!(line(&after, file, &FILES), one, "{file}");
@@ -228,6 +232,7 @@ fn counted_on_the_run_every_specimen_gets_the_same_line() {
             &FILES,
             store(band(Pool::Specimen, fmx())),
         ),
+        &FILES,
     );
     assert!(
         line(&alone, "d3_fs", &FILES) - line(&alone, "d1_fs", &FILES) > 20.0,
@@ -243,6 +248,7 @@ fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
     let pooled = applied(
         &gates(),
         &run(&gates(), &written, &FILES, store(band(Pool::Run, fmx()))),
+        &FILES,
     );
 
     let one: [(&str, &str, &str, &str); 2] =
@@ -263,6 +269,7 @@ fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
     let alone = applied(
         &gates(),
         &run(&gates(), &files_u, &one, store(band(Pool::Specimen, fmx()))),
+        &one,
     );
     assert_eq!(line(&pooled, "d1_fs", &FILES), line(&alone, "u_fs", &one));
 }
@@ -271,7 +278,7 @@ fn the_run_s_line_is_the_one_its_fmx_files_pooled_into_one_would_give() {
 fn what_the_run_s_line_holds_is_counted_over_all_its_fmx_files() {
     let written = write("runs-pooled-count", &FILES);
     let outcome = run(&gates(), &written, &FILES, store(band(Pool::Run, fmx())));
-    let at = line(&applied(&gates(), &outcome), "d1_fs", &FILES);
+    let at = line(&applied(&gates(), &outcome, &FILES), "d1_fs", &FILES);
     let fmx = fmx_of_all();
     let by_hand = fmx.iter().filter(|x| **x >= at).count() as f64 / fmx.len() as f64;
     assert_eq!(outcome.report.positioned.len(), 4);
@@ -306,7 +313,7 @@ fn a_specimen_without_its_own_fmx_still_takes_the_run_s_line() {
     let written = write("runs-pooled-missing", &files);
     let outcome = run(&gates(), &written, &files, store(band(Pool::Run, fmx())));
     assert!(outcome.report.skipped.is_empty(), "{:?}", reasons(&outcome));
-    let after = applied(&gates(), &outcome);
+    let after = applied(&gates(), &outcome, &FILES);
     assert_eq!(line(&after, "d2_fs", &files), line(&after, "d1_fs", &files));
 
     // Per specimen, the same donor has nothing to read.
@@ -329,7 +336,11 @@ fn a_specimen_without_its_own_fmx_still_takes_the_run_s_line() {
 fn a_run_already_on_its_line_is_left_where_it_is() {
     let written = write("runs-pooled-kept", &FILES);
     let rules = store(band(Pool::Run, fmx()));
-    let once = applied(&gates(), &run(&gates(), &written, &FILES, rules.clone()));
+    let once = applied(
+        &gates(),
+        &run(&gates(), &written, &FILES, rules.clone()),
+        &FILES,
+    );
     let again = run(&once, &written, &FILES, rules);
     assert!(again.placements.is_empty(), "nothing moves the second time");
     assert_eq!(again.report.unchanged.len(), 4, "every specimen, in place");

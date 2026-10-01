@@ -1371,7 +1371,7 @@ pub fn position_all(
     metadata: &MetaDataFileMap,
 ) -> Report {
     let (report, placements) = solve_all(state, store, measurements, unmeasured, metadata);
-    apply_placements(state, &placements);
+    apply_placements(state, &placements, metadata);
     report
 }
 
@@ -1728,9 +1728,27 @@ pub fn linked_conflicts(state: &GateState, rules: &RuleStore) -> Vec<LinkedConfl
     conflicts
 }
 
-/// Write a solve's answers into the store.
-pub fn apply_placements(state: &mut GateState, placements: &[Placement]) {
+/// Write a solve's answers into the store. Each gate placed is put in the
+/// mode of positions by the column its specimens are grouped by first, so
+/// the specimens it does not place keep what they show.
+pub fn apply_placements(
+    state: &mut GateState,
+    placements: &[Placement],
+    metadata: &MetaDataFileMap,
+) {
+    use crate::gates::gate_positions::{Mode, set_mode};
+    let mut moded: Vec<(&GateId, &MetaDataParameter)> = Vec::new();
     for placed in placements {
+        let by = (&placed.gate_id, &placed.specimen.parameter);
+        if !moded.contains(&by) {
+            let to = Mode::ByColumn(placed.specimen.parameter.clone());
+            // Only refused for a gate that is not registered, which has no
+            // position to write either.
+            if set_mode(state, &placed.gate_id, &to, None, metadata).is_err() {
+                continue;
+            }
+            moded.push(by);
+        }
         place_for_specimen(state, &placed.gate_id, &placed.specimen, &placed.gate);
     }
 }
