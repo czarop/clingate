@@ -11,7 +11,7 @@ use rustc_hash::FxHashMap;
 use crate::gate_rules::autogate::{UNBOUNDED, anchor_gate, entry_at, rebuild};
 use crate::gate_rules::rule_store::RuleStore;
 use crate::gates::GateState;
-use crate::gates::gate_contact::{Point, nearly_overlaps, outline, overlaps};
+use crate::gates::gate_contact::{Axis, Point, extent, nearly_overlaps, outline, overlaps};
 use crate::gates::gate_store::{FileId, GateId, NodeId};
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::MetaDataFileMap;
@@ -258,9 +258,37 @@ pub(crate) fn hold_clear(
     Ok(Clear::HeldBack(held, blocker))
 }
 
-/// The steps an edit is tried at, from where the gate was to where the edit
-/// takes it, so that one quick move cannot carry it over another gate.
-const EDIT_STEPS: u32 = 16;
+/// The fewest and the most steps an edit is tried at, from where the gate
+/// was to where the edit takes it.
+const FEWEST_EDIT_STEPS: usize = 16;
+const MOST_EDIT_STEPS: usize = 4096;
+
+/// How many steps from `was` to `to`, the same points moved, keep every
+/// step under half the narrowest of `outlines`: no step can jump one.
+fn edit_steps<'o>(
+    was: &[Point],
+    to: &[Point],
+    outlines: impl Iterator<Item = &'o [Point]>,
+) -> usize {
+    let travel = was
+        .iter()
+        .zip(to)
+        .map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1))
+        .fold(0.0, f64::max);
+    let narrowest = outlines
+        .map(|o| {
+            let (x0, x1) = extent(o, Axis::X);
+            let (y0, y1) = extent(o, Axis::Y);
+            (x1 - x0).min(y1 - y0)
+        })
+        .fold(f64::INFINITY, f64::min);
+    let steps = (2.0 * travel / narrowest).ceil();
+    if steps.is_finite() {
+        (steps as usize).clamp(FEWEST_EDIT_STEPS, MOST_EDIT_STEPS)
+    } else {
+        MOST_EDIT_STEPS
+    }
+}
 
 /// `moved` - an edit of `from` - stopped where it first touches one of
 /// `others` that `from` was clear of: an edit in the editor never takes a
@@ -295,13 +323,16 @@ pub fn kept_apart(
             moved.clone()
         };
     }
-    let Some(first_meeting) = (1..=EDIT_STEPS)
-        .map(|k| f64::from(k) / f64::from(EDIT_STEPS))
+    let to = outline(moved, gate_id, &x, &y).unwrap_or_default();
+    let steps = edit_steps(&was, &to, apart.iter().chain([&was]).map(Vec::as_slice));
+    let step = 1.0 / steps as f64;
+    let Some(first_meeting) = (1..=steps)
+        .map(|k| k as f64 * step)
         .find(|t| between(from, moved, *t).is_none_or(|g| meets(&g, overlaps)))
     else {
         return moved.clone();
     };
-    let (mut clear, mut meeting) = (first_meeting - 1.0 / f64::from(EDIT_STEPS), first_meeting);
+    let (mut clear, mut meeting) = (first_meeting - step, first_meeting);
     for _ in 0..40 {
         let mid = (clear + meeting) / 2.0;
         if between(from, moved, mid).is_none_or(|g| meets(&g, nearly_overlaps)) {

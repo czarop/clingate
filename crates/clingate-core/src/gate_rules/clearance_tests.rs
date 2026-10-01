@@ -169,3 +169,16 @@ fn an_ellipse_moved_into_another_gate_stays_where_it_was() {
         &clear
     ));
 }
+
+/// A neighbour 2 wide, a long way short of a sixteenth of a move of 10,000:
+/// still not stepped over.
+#[test]
+fn a_long_move_cannot_jump_over_a_thin_gate() {
+    let from = rectangle("a", (0.0, 0.0), (100.0, 100.0));
+    let moved = rectangle("a", (10_000.0, 0.0), (10_100.0, 100.0));
+    let thin = rectangle("b", (530.0, 0.0), (532.0, 100.0));
+
+    let kept = kept_apart(&from, &moved, &"a".into(), &[thin]);
+
+    assert_near(&kept, &square_at(430.0));
+}

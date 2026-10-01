@@ -1199,3 +1199,69 @@ fn a_rectangle_made_a_polygon_from_the_menu_is_one_for_every_sample() {
     assert!(app.with(|held| held.edits.undo()));
     assert!(!shown_t(&mut app, "s1").1, "a rectangle again");
 }
+
+/// A point deleted from a notch would fill it over the gate sitting in it:
+/// with gates kept apart, the menu refuses it and says why.
+#[test]
+fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, ShapeTarget, act};
+    let notched = [
+        (0.0, 0.0),
+        (100.0, 0.0),
+        (100.0, 100.0),
+        (60.0, 100.0),
+        (50.0, 40.0),
+        (40.0, 100.0),
+        (0.0, 100.0),
+    ];
+    let mut app = App::new();
+    a_gate_with_a_position_for_s1(&mut app, shape_t(&notched, false), shape_t(&notched, false));
+    let in_the_notch = {
+        let geometry = flow_gates::create_rectangle_geometry(
+            vec![(48.0, 70.0), (52.0, 70.0), (52.0, 95.0), (48.0, 95.0)],
+            "FSC-A",
+            "SSC-A",
+        )
+        .unwrap();
+        let gate = flow_gates::Gate {
+            id: Arc::from("n"),
+            name: "N".into(),
+            geometry,
+            mode: flow_gates::GateMode::Global,
+            parameters: (Arc::from("FSC-A"), Arc::from("SSC-A")),
+            label_position: None,
+        };
+        let gate: Arc<dyn clingate_core::gates::gate_traits::DrawableGate> = Arc::new(
+            clingate_core::gates::gate_single::rectangle_gate::RectangleGate::try_new(gate, true)
+                .unwrap(),
+        );
+        gate
+    };
+    let steps = app.standing().undo_steps;
+
+    let refused = app.with(|held| {
+        let resolver = held
+            .gates
+            .peek()
+            .get_current_sample(Arc::from("s1"), &Default::default());
+        let menu = ShapeMenu {
+            gate_id: Arc::from("t"),
+            target: ShapeTarget::Point(4),
+            at_pixel: (0.0, 0.0),
+            at: (50.0, 40.0),
+        };
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[in_the_notch],
+            ("FSC-A", "SSC-A"),
+            &menu,
+            ShapeAction::DeletePoint,
+        )
+    });
+
+    assert!(refused.unwrap_err().contains("overlap another gate"));
+    assert_eq!(shown_t(&mut app, "s1").0.len(), 7);
+    assert_eq!(app.standing().undo_steps, steps);
+}

@@ -1678,6 +1678,27 @@ impl GateState {
         self.gate_store.convert_to_polygon(gate_id)
     }
 
+    /// `reshape`, an edit of the gate `gate_id`'s outline, made to the
+    /// position `resolver` shows, as a drag is, kept apart from
+    /// `apart_from` - refused when that leaves it where it was. See
+    /// [`crate::gates::gate_shape_edit`].
+    pub fn reshape_gate(
+        &mut self,
+        gate_id: &GateId,
+        resolver: &GateOverrideResolver,
+        apart_from: &[Arc<dyn DrawableGate>],
+        reshape: impl FnOnce(&Arc<dyn DrawableGate>) -> anyhow::Result<Arc<dyn DrawableGate>>,
+    ) -> anyhow::Result<()> {
+        let current = resolver.resolve_drawable(gate_id)?;
+        let reshaped = reshape(&current)?;
+        let (ids, gate, origin) = edit_to_write(gate_id, &current, reshaped, resolver, apart_from)?;
+        if Arc::ptr_eq(&gate, &current) {
+            return Err(anyhow!("it would overlap another gate on its plot"));
+        }
+        self.gate_store.insert_for_source(&ids, &gate, &origin);
+        Ok(())
+    }
+
     /// Write a gate into one of the three tiers.
     ///
     /// The store methods write back into the tier a gate was *resolved* from,
@@ -2679,25 +2700,6 @@ impl<Lens> Store<GateState, Lens> {
                 state.insert_for_source(&ids, &gate, &origin);
             });
         }
-        Ok(())
-    }
-
-    /// `reshape`, an edit of the gate `gate_id`'s outline, made to the
-    /// position `resolver` shows, as a drag is - see [`crate::gates::gate_shape_edit`].
-    fn reshape_gate(
-        &mut self,
-        gate_id: GateId,
-        resolver: &GateOverrideResolver,
-        apart_from: &[Arc<dyn DrawableGate>],
-        reshape: impl FnOnce(&Arc<dyn DrawableGate>) -> anyhow::Result<Arc<dyn DrawableGate>>,
-    ) -> anyhow::Result<()> {
-        let current = resolver.resolve_drawable(&gate_id)?;
-        let reshaped = reshape(&current)?;
-        let (ids, gate, origin) =
-            edit_to_write(&gate_id, &current, reshaped, resolver, apart_from)?;
-        self.gate_store().with_mut(|state| {
-            state.insert_for_source(&ids, &gate, &origin);
-        });
         Ok(())
     }
 

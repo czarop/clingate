@@ -10,12 +10,13 @@ use clingate_core::axis_store::PlotMapper;
 use clingate_core::gates::gate_contact::{Point, outline};
 use clingate_core::gates::gate_shape_edit::{level_side, with_point_added, without_point};
 use clingate_core::gates::gate_single::rectangle_gate::RectangleGate;
-use clingate_core::gates::gate_store::{GateOverrideResolver, GateStateImplExt};
+use clingate_core::gates::gate_store::GateOverrideResolver;
 use clingate_core::gates::gate_traits::DrawableGate;
 use dioxus::prelude::*;
 use flow_gates::GateGeometry;
 
 use crate::gate_editor::edits::Edits;
+use crate::gate_editor::position_menu::reposition;
 use crate::gate_editor::workspace_window::GateStore;
 
 /// How near, in pixels, a right click must be to a point or a side.
@@ -162,7 +163,7 @@ pub(crate) fn target_at(
 /// copy. A point edit is made to the position `resolver` shows, kept apart
 /// from `apart_from`.
 pub(crate) fn act(
-    mut gates: GateStore,
+    gates: GateStore,
     edits: Edits,
     resolver: &GateOverrideResolver,
     apart_from: &[Arc<dyn DrawableGate>],
@@ -175,24 +176,19 @@ pub(crate) fn act(
         ShapeTarget::Side(index) | ShapeTarget::Point(index) => index,
         ShapeTarget::Rectangle => 0,
     };
-    let before = edits.before();
-    let done = match action {
-        ShapeAction::ConvertToPolygon => gates.write().convert_to_polygon(&id),
-        ShapeAction::MakeHorizontal => gates.reshape_gate(id.clone(), resolver, apart_from, |g| {
-            level_side(g, &id, index, y)
-        }),
-        ShapeAction::MakeVertical => gates.reshape_gate(id.clone(), resolver, apart_from, |g| {
-            level_side(g, &id, index, x)
-        }),
-        ShapeAction::AddPoint => gates.reshape_gate(id.clone(), resolver, apart_from, |g| {
-            with_point_added(g, &id, index, (x, y), menu.at)
-        }),
-        ShapeAction::DeletePoint => gates.reshape_gate(id.clone(), resolver, apart_from, |g| {
-            without_point(g, &id, index)
-        }),
-    };
-    edits.after(before);
-    done.map_err(|e| e.to_string())
+    reposition(gates, edits, |state| {
+        let mut reshape =
+            |edit: &dyn Fn(&Arc<dyn DrawableGate>) -> anyhow::Result<Arc<dyn DrawableGate>>| {
+                state.reshape_gate(&id, resolver, apart_from, edit)
+            };
+        match action {
+            ShapeAction::ConvertToPolygon => state.convert_to_polygon(&id),
+            ShapeAction::MakeHorizontal => reshape(&|g| level_side(g, &id, index, y)),
+            ShapeAction::MakeVertical => reshape(&|g| level_side(g, &id, index, x)),
+            ShapeAction::AddPoint => reshape(&|g| with_point_added(g, &id, index, (x, y), menu.at)),
+            ShapeAction::DeletePoint => reshape(&|g| without_point(g, &id, index)),
+        }
+    })
 }
 
 #[cfg(test)]
