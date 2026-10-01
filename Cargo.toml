@@ -24,9 +24,9 @@ tracing = "0.1"
 # Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch, which holds
 # the fixes and changes listed in docs/flow-review.md. Back to the default
 # branch once it is merged there.
-flow-fcs = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
-flow-plots = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba", default-features = false }
-flow-gates = { git = "https://github.com/czarop/flow", rev = "b7a77c4e674a3fbd98290fee3ca9e65d28df45ba" }
+flow-fcs = { git = "https://github.com/czarop/flow", rev = "6464611a2aca3735762f51ad6f91fbd76c80f82b" }
+flow-plots = { git = "https://github.com/czarop/flow", rev = "6464611a2aca3735762f51ad6f91fbd76c80f82b", default-features = false }
+flow-gates = { git = "https://github.com/czarop/flow", rev = "6464611a2aca3735762f51ad6f91fbd76c80f82b" }
 base64 = "0.23.1"
 dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 rustc-hash = "2.1"
