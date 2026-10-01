@@ -973,3 +973,229 @@ fn a_drag_with_gates_kept_apart_stops_at_the_gate_beside() {
         "goes on through, at {left_edge}"
     );
 }
+
+/// The gate "t" drawn globally at `drawn` and held for the sample "s1" at
+/// `own`, put in place of an opened workspace's gates.
+fn a_gate_with_a_position_for_s1(
+    app: &mut App,
+    drawn: Arc<dyn clingate_core::gates::gate_traits::DrawableGate>,
+    own: Arc<dyn clingate_core::gates::gate_traits::DrawableGate>,
+) {
+    use clingate_core::gates::GateState;
+    use clingate_core::gates::gate_store::GateSource;
+    app.open(&two_samples_with_a_rule("shape-menu"));
+    app.with(|held| {
+        let mut state = GateState::default();
+        let id: Arc<str> = Arc::from("t");
+        state.place_gate(std::slice::from_ref(&id), &drawn, &GateSource::Global);
+        state.place_new_gate(None, id.clone()).unwrap();
+        state.place_gate(
+            std::slice::from_ref(&id),
+            &own,
+            &GateSource::Sample((id.clone(), Arc::from("s1"))),
+        );
+        held.gates.clone().set(state);
+    });
+}
+
+fn shape_t(
+    points: &[(f32, f32)],
+    rectangle: bool,
+) -> Arc<dyn clingate_core::gates::gate_traits::DrawableGate> {
+    use clingate_core::gates::gate_single::{
+        polygon_gate::PolygonGate, rectangle_gate::RectangleGate,
+    };
+    let parameters = (Arc::from("FSC-A"), Arc::from("SSC-A"));
+    let geometry = if rectangle {
+        flow_gates::create_rectangle_geometry(points.to_vec(), "FSC-A", "SSC-A").unwrap()
+    } else {
+        flow_gates::create_polygon_geometry(points.to_vec(), "FSC-A", "SSC-A").unwrap()
+    };
+    let gate = flow_gates::Gate {
+        id: Arc::from("t"),
+        name: "T".into(),
+        geometry,
+        mode: flow_gates::GateMode::Global,
+        parameters,
+        label_position: None,
+    };
+    if rectangle {
+        Arc::new(RectangleGate::try_new(gate, true).unwrap())
+    } else {
+        Arc::new(PolygonGate::try_new(gate, true).unwrap())
+    }
+}
+
+/// What `file` shows of "t", as its points and whether it is a polygon.
+fn shown_t(app: &mut App, file: &str) -> (Vec<(f64, f64)>, bool) {
+    app.with(|held| {
+        let gates = held.gates.peek();
+        let resolver = gates.get_current_sample(Arc::from(file), &Default::default());
+        let gate = resolver.resolve_drawable("t").unwrap();
+        let polygon = gate
+            .as_any()
+            .downcast_ref::<clingate_core::gates::gate_single::polygon_gate::PolygonGate>()
+            .is_some();
+        let points =
+            clingate_core::gates::gate_contact::outline(&gate, &Arc::from("t"), "FSC-A", "SSC-A")
+                .unwrap();
+        (points, polygon)
+    })
+}
+
+fn from_the_menu(
+    app: &mut App,
+    file: &str,
+    target: crate::gate_editor::gates::shape_menu::ShapeTarget,
+    action: crate::gate_editor::gates::shape_menu::ShapeAction,
+) -> Result<(), String> {
+    use crate::gate_editor::gates::shape_menu::{ShapeMenu, act};
+    app.with(|held| {
+        let resolver = held
+            .gates
+            .peek()
+            .get_current_sample(Arc::from(file), &Default::default());
+        let menu = ShapeMenu {
+            gate_id: Arc::from("t"),
+            target,
+            at_pixel: (0.0, 0.0),
+            at: (40.0, 3.0),
+        };
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[],
+            ("FSC-A", "SSC-A"),
+            &menu,
+            action,
+        )
+    })
+}
+
+/// A side levelled on the sample shown changes that sample's position only,
+/// as a drag does, in one step undo takes back.
+#[test]
+fn a_side_levelled_from_the_menu_changes_the_position_shown_in_one_step() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeTarget};
+    let triangle = [(0.0, 0.0), (100.0, 10.0), (50.0, 100.0)];
+    let mut app = App::new();
+    a_gate_with_a_position_for_s1(
+        &mut app,
+        shape_t(&triangle, false),
+        shape_t(&triangle, false),
+    );
+    let steps = app.standing().undo_steps;
+
+    from_the_menu(
+        &mut app,
+        "s1",
+        ShapeTarget::Side(0),
+        ShapeAction::MakeHorizontal,
+    )
+    .unwrap();
+
+    assert_eq!(
+        shown_t(&mut app, "s1").0,
+        [(0.0, 5.0), (100.0, 5.0), (50.0, 100.0)]
+    );
+    assert_eq!(
+        shown_t(&mut app, "s2").0,
+        [(0.0, 0.0), (100.0, 10.0), (50.0, 100.0)],
+        "the drawn position, unchanged"
+    );
+    assert_eq!(app.standing().undo_steps, steps + 1);
+    assert!(app.with(|held| held.edits.undo()));
+    assert_eq!(
+        shown_t(&mut app, "s1").0,
+        [(0.0, 0.0), (100.0, 10.0), (50.0, 100.0)]
+    );
+}
+
+#[test]
+fn a_point_added_then_deleted_from_the_menu_gives_back_the_outline() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeTarget};
+    let square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
+    let mut app = App::new();
+    a_gate_with_a_position_for_s1(&mut app, shape_t(&square, false), shape_t(&square, false));
+
+    from_the_menu(&mut app, "s1", ShapeTarget::Side(0), ShapeAction::AddPoint).unwrap();
+    assert_eq!(
+        shown_t(&mut app, "s1").0,
+        [
+            (0.0, 0.0),
+            (40.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0)
+        ]
+    );
+    from_the_menu(
+        &mut app,
+        "s1",
+        ShapeTarget::Point(1),
+        ShapeAction::DeletePoint,
+    )
+    .unwrap();
+    assert_eq!(
+        shown_t(&mut app, "s1").0,
+        [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+    );
+}
+
+/// A refused edit says why and is no step.
+#[test]
+fn a_triangle_keeps_its_points_when_one_is_deleted_from_the_menu() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeTarget};
+    let triangle = [(0.0, 0.0), (100.0, 10.0), (50.0, 100.0)];
+    let mut app = App::new();
+    a_gate_with_a_position_for_s1(
+        &mut app,
+        shape_t(&triangle, false),
+        shape_t(&triangle, false),
+    );
+    let steps = app.standing().undo_steps;
+
+    let refused = from_the_menu(
+        &mut app,
+        "s1",
+        ShapeTarget::Point(0),
+        ShapeAction::DeletePoint,
+    );
+
+    assert!(refused.unwrap_err().contains("at least 3"));
+    assert_eq!(shown_t(&mut app, "s1").0.len(), 3);
+    assert_eq!(app.standing().undo_steps, steps);
+}
+
+/// Made a polygon from one sample's plot, the rectangle is a polygon for
+/// every sample, each where it was.
+#[test]
+fn a_rectangle_made_a_polygon_from_the_menu_is_one_for_every_sample() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeTarget};
+    let drawn = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+    let own = [(50.0, 0.0), (60.0, 0.0), (60.0, 10.0), (50.0, 10.0)];
+    let mut app = App::new();
+    a_gate_with_a_position_for_s1(&mut app, shape_t(&drawn, true), shape_t(&own, true));
+    let steps = app.standing().undo_steps;
+
+    from_the_menu(
+        &mut app,
+        "s1",
+        ShapeTarget::Rectangle,
+        ShapeAction::ConvertToPolygon,
+    )
+    .unwrap();
+
+    let as_points = |corners: &[(f32, f32)]| -> Vec<(f64, f64)> {
+        corners
+            .iter()
+            .map(|(x, y)| (f64::from(*x), f64::from(*y)))
+            .collect()
+    };
+    assert_eq!(shown_t(&mut app, "s1"), (as_points(&own), true));
+    assert_eq!(shown_t(&mut app, "s2"), (as_points(&drawn), true));
+    assert_eq!(app.standing().undo_steps, steps + 1);
+    assert!(app.with(|held| held.edits.undo()));
+    assert!(!shown_t(&mut app, "s1").1, "a rectangle again");
+}
