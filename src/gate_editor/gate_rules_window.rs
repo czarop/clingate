@@ -20,7 +20,7 @@ use clingate_core::gate_rules::rule::{
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
 };
-use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules};
+use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules_pausing};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::GateStateImplExt;
 use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
@@ -205,14 +205,27 @@ impl RulesRun {
         )
     }
 
-    /// A finished run's placements, written into the working copy as one
-    /// step, and the run kept in the workspace's `reviews` folder for
-    /// reviewing it - as the tools for Claude keep it. `rules` are the rules
-    /// the run read.
-    ///
-    /// Only the keeping can fail; the placements are applied either way.
-    pub(crate) fn apply(
+    /// A run's placements written as one step of the working copy, and the
+    /// gates a paused run needs placed by hand each given a position of their
+    /// own on their specimen, so moving one moves nobody else's.
+    pub(crate) fn place(
         mut self,
+        placements: &[clingate_core::gate_rules::autogate::Placement],
+        hold: &[clingate_core::gate_rules::run::NeedsPlacing],
+    ) {
+        let metadata = self.metadata.peek().metadata().clone();
+        let before = self.edits.before();
+        {
+            let mut gates = self.gates.write();
+            clingate_core::gate_rules::autogate::apply_placements(&mut gates, placements);
+            clingate_core::gate_rules::run::hold_for_placing(&mut gates, hold, &metadata);
+        }
+        self.edits.after(before);
+    }
+
+    /// A finished run kept in the workspace's `reviews` folder for reviewing.
+    pub(crate) fn keep(
+        &self,
         outcome: &clingate_core::gate_rules::run::RunOutcome,
         rules: &RuleStore,
     ) -> Result<(), String> {
@@ -222,12 +235,6 @@ impl RulesRun {
             rules,
             &self.metadata.peek(),
         );
-        let before = self.edits.before();
-        clingate_core::gate_rules::autogate::apply_placements(
-            &mut self.gates.write(),
-            &outcome.placements,
-        );
-        self.edits.after(before);
         match self.edits.folder() {
             Some(folder) => record
                 .applied(&folder, &outcome.events)
@@ -312,6 +319,178 @@ pub fn GateRulesWindow() -> Element {
     // Set while a run is in flight, so the Stop button has something to raise.
     let mut cancel = use_signal(|| None::<Arc<std::sync::atomic::AtomicBool>>);
     use_stop_run_on_change(cancel);
+
+    // A run stopped for gates to be placed by hand, and the editor's ask to go
+    // on with it.
+    let mut paused_run = use_context::<Signal<Option<crate::gate_editor::paused_run::PausedRun>>>();
+    let go_on = use_context::<Signal<crate::gate_editor::paused_run::GoOn>>();
+    let mut active = use_context::<Signal<crate::gate_editor::route::Tab>>();
+    // A paused run whose next part did not go ahead is still waiting.
+    let mut give_back = move |paused: Option<crate::gate_editor::paused_run::PausedRun>| {
+        if let Some(paused) = paused {
+            paused_run.set(Some(paused));
+        }
+    };
+
+    // Runs the rules - or, handed a paused run, goes on with it from the
+    // level it stopped before, measuring on the gates as they are now.
+    let start_run = move |from: Option<crate::gate_editor::paused_run::PausedRun>| {
+        let mut from = from;
+        spawn(async move {
+            if running() {
+                give_back(from.take());
+                return;
+            }
+            running.set(true);
+            report.set(None);
+            progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
+
+            // Everything the run reads, as it stands now. Read
+            // again before anything is written: see `RunInputs`.
+            //
+            // The axis settings are compared whole, not only the
+            // cofactors the run reads: any new scaling is a new
+            // workspace as far as the answers are concerned.
+            let inputs_now = move || run_with.inputs_now();
+            let started = inputs_now();
+            if started.0.files.is_empty() {
+                warn(
+                    &toasts,
+                    "No FCS files are loaded - open a workspace on the first tab",
+                );
+                running.set(false);
+                progress.set(None);
+                give_back(from.take());
+                return;
+            }
+
+            // A snapshot, not a lock. Every gate is behind an Arc,
+            // so this is a refcount bump rather than a copy, and
+            // the store is free for the rest of the editor the
+            // moment it is taken.
+            let snapshot = gate_store.read().clone();
+            let started_gates = snapshot.clone();
+
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            cancel.set(Some(flag.clone()));
+            let stopped = flag.clone();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
+
+            let from_level = from.as_ref().map_or(0, |paused| paused.next_level);
+            let worker = {
+                let inputs = started.0.clone();
+                tokio::task::spawn_blocking(move || {
+                    run_rules_pausing(
+                        &snapshot,
+                        &inputs,
+                        from_level,
+                        |step| {
+                            let _ = tx.send(step);
+                        },
+                        &flag,
+                    )
+                })
+            };
+
+            // The worker's sender drops when it returns, which ends
+            // this loop - no sentinel message to get wrong.
+            while let Some(step) = rx.recv().await {
+                progress.set(Some(step));
+            }
+
+            let outcome = worker.await;
+            progress.set(None);
+            cancel.set(None);
+            running.set(false);
+
+            let outcome = match outcome {
+                Ok(o) => o,
+                Err(e) => {
+                    warn(&toasts, format!("The run did not finish: {e}"));
+                    give_back(from.take());
+                    return;
+                }
+            };
+            // Answers measured on one workspace mean nothing in
+            // another, whatever stopped or did not stop the run.
+            // Checked here rather than trusted to the stop flag:
+            // the flag is raised by an effect, which runs after the
+            // change that fires it, and the run can finish first.
+            if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
+                warn(
+                    &toasts,
+                    "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now",
+                );
+                give_back(from.take());
+                return;
+            }
+            if outcome.cancelled || stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                note(&toasts, "Stopped - no gates were moved");
+                give_back(from.take());
+                return;
+            }
+
+            // Writing happens here, on the one thread that owns the
+            // store, and only once the document is known to be the
+            // one the run measured: each part of the run is one step
+            // of the working copy.
+            let needs = outcome
+                .paused
+                .as_ref()
+                .map(|paused| paused.needs.clone())
+                .unwrap_or_default();
+            run_with.place(&outcome.placements, &needs);
+            let whole = match from.take() {
+                Some(paused) => paused.so_far.then(outcome),
+                None => outcome,
+            };
+            if let Some(pause) = whole.paused.clone() {
+                warn(
+                    &toasts,
+                    format!(
+                        "The run stopped: {} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
+                        pause.needs.len(),
+                        if pause.needs.len() == 1 { "" } else { "s" }
+                    ),
+                );
+                paused_run.set(Some(crate::gate_editor::paused_run::PausedRun {
+                    so_far: whole,
+                    next_level: pause.next_level,
+                    needs: pause.needs,
+                    at: 0,
+                }));
+                active.set(crate::gate_editor::route::Tab::Editor);
+                crate::gate_editor::paused_run::show_need(0);
+                return;
+            }
+            if let Err(e) = run_with.keep(&whole, &started.0.rules) {
+                warn(&toasts, e);
+            }
+            crate::gate_editor::review::reviews_changed();
+
+            let run = whole.report;
+            say(
+                &toasts,
+                format!(
+                    "Moved {} gates, left {} already in band and {} reference; {} need review",
+                    run.positioned.len(),
+                    run.unchanged.len(),
+                    run.reference.len(),
+                    run.needs_review(REVIEW_FLOOR).count()
+                ),
+            );
+            report.set(Some(run));
+        });
+    };
+    use_effect(move || {
+        if go_on().0 == 0 {
+            return;
+        }
+        let paused = paused_run.write().take();
+        if paused.is_some() {
+            start_run(paused);
+        }
+    });
 
     // Picking a gate offers only the parents and parameters that gate is drawn
     // with, so the form cannot name a combination the document does not have.
@@ -1253,7 +1432,7 @@ pub fn GateRulesWindow() -> Element {
             fieldset { class: "gate_rules-form",
                 legend { "Autogate" }
                 p { class: "gate_rules-hint gate_rules-span",
-                    "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored."
+                    "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored. If a gate with other ruled gates under it cannot be placed on a sample, or is placed with a confidence under 0.2, the run stops and the editor shows each one to place by hand before the gates under it are measured."
                 }
 
                 p { class: "gate_rules-hint gate_rules-span",
@@ -1263,115 +1442,15 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
 
+                if paused_run.read().is_some() {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "A run is paused for gates to be placed by hand - continue or stop it from the banner in the editor."
+                    }
+                }
                 button {
                     class: "gate_rules-add",
-                    disabled: running(),
-                    onclick: move |_| async move {
-                        if running() {
-                            return;
-                        }
-                        running.set(true);
-                        report.set(None);
-                        progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
-
-                        // Everything the run reads, as it stands now. Read
-                        // again before anything is written: see `RunInputs`.
-                        //
-                        // The axis settings are compared whole, not only the
-                        // cofactors the run reads: any new scaling is a new
-                        // workspace as far as the answers are concerned.
-                        let inputs_now = move || run_with.inputs_now();
-                        let started = inputs_now();
-                        if started.0.files.is_empty() {
-                            warn(&toasts, "No FCS files are loaded - open a workspace on the first tab");
-                            running.set(false);
-                            progress.set(None);
-                            return;
-                        }
-
-                        // A snapshot, not a lock. Every gate is behind an Arc,
-                        // so this is a refcount bump rather than a copy, and
-                        // the store is free for the rest of the editor the
-                        // moment it is taken.
-                        let snapshot = gate_store.read().clone();
-                        let started_gates = snapshot.clone();
-
-                        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        cancel.set(Some(flag.clone()));
-                        let stopped = flag.clone();
-                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
-
-                        let worker = {
-                            let inputs = started.0.clone();
-                            tokio::task::spawn_blocking(move || {
-                                run_rules(
-                                    &snapshot,
-                                    &inputs,
-                                    |step| {
-                                        let _ = tx.send(step);
-                                    },
-                                    &flag,
-                                )
-                            })
-                        };
-
-                        // The worker's sender drops when it returns, which ends
-                        // this loop - no sentinel message to get wrong.
-                        while let Some(step) = rx.recv().await {
-                            progress.set(Some(step));
-                        }
-
-                        let outcome = worker.await;
-                        progress.set(None);
-                        cancel.set(None);
-                        running.set(false);
-
-                        let outcome = match outcome {
-                            Ok(o) => o,
-                            Err(e) => {
-                                warn(&toasts, format!("The run did not finish: {e}"));
-                                return;
-                            }
-                        };
-                        // Answers measured on one workspace mean nothing in
-                        // another, whatever stopped or did not stop the run.
-                        // Checked here rather than trusted to the stop flag:
-                        // the flag is raised by an effect, which runs after the
-                        // change that fires it, and the run can finish first.
-                        if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
-                            warn(
-                                &toasts,
-                                "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now",
-                            );
-                            return;
-                        }
-                        if outcome.cancelled || stopped.load(std::sync::atomic::Ordering::Relaxed) {
-                            note(&toasts, "Stopped - no gates were moved");
-                            return;
-                        }
-
-                        // Writing happens here, on the one thread that owns the
-                        // store, and only once the document is known to be the
-                        // one the run measured.
-                        // The whole run is one step of the working copy.
-                        if let Err(e) = run_with.apply(&outcome, &started.0.rules) {
-                            warn(&toasts, e);
-                        }
-                        crate::gate_editor::review::reviews_changed();
-
-                        let run = outcome.report;
-                        say(
-                            &toasts,
-                            format!(
-                                "Moved {} gates, left {} already in band and {} reference; {} need review",
-                                run.positioned.len(),
-                                run.unchanged.len(),
-                                run.reference.len(),
-                                run.needs_review(REVIEW_FLOOR).count()
-                            ),
-                        );
-                        report.set(Some(run));
-                    },
+                    disabled: running() || paused_run.read().is_some(),
+                    onclick: move |_| start_run(None),
                     if running() { "Working..." } else { "Solve and apply" }
                 }
 

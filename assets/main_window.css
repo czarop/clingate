@@ -271,3 +271,19 @@ button:hover {
     border: 1px solid hsl(35, 90%, 45%);
     border-radius: 4px;
 }
+
+/* A rules run waiting for gates to be placed by hand. */
+.paused-run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid #c98a00;
+    border-radius: 6px;
+    background: #fff4d6;
+    color: #4a3300;
+}
+.paused-run-text { flex: 1 1 24rem; }
+.paused-run-go-on { font-weight: 600; }

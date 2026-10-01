@@ -8,6 +8,7 @@ pub mod main_window;
 pub mod pairing_controls;
 mod parity_tests;
 pub mod path_picker;
+mod paused_run;
 pub mod plots;
 mod reactivity_tests;
 pub mod review;

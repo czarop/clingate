@@ -61,6 +61,18 @@ show, not raw channel values.
    a run would leave the levels above; a replay re-solves each gate on the
    events its run kept, so a changed parent rule does not re-filter the
    gates under it.
+   **Pausing** (`run_rules_pausing`, the Gate Rules tab's run). After a
+   level, a gate with a ruled gate anywhere under it that could not be
+   placed, or was placed with a confidence under 0.2 (`PAUSE_BELOW`), on any
+   specimen, stops the run before the next level: the gates under it would be
+   measured on the wrong cells. Everything placed so far is written; each such
+   gate is given a position of its own on its specimen where it stands
+   (`hold_for_placing`), so a person can move it there without moving it for
+   anyone else; and the editor shows them one at a time. Going on runs the
+   remaining levels on the gates as they are then, and the parts are kept as
+   one run (`RunOutcome::then`). A gate with nothing ruled under it never
+   pauses a run - the Review tab is for those. `run_rules`, which the tools
+   for Claude use, never pauses.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and
    every gate a rule names, the gate's parent population is filtered exactly
    as the plot filters it (same gate chain, same override resolution, same

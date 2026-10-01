@@ -134,6 +134,11 @@ pub(crate) fn provide_document() {
     // Where "Open in editor" on the Review tab asks the editor to go.
     let focus = use_signal(|| None::<crate::gate_editor::review_window::EditorFocus>);
     use_context_provider(|| focus);
+    // A rules run waiting for gates to be placed by hand, and the ask to go on.
+    let paused = use_signal(|| None::<crate::gate_editor::paused_run::PausedRun>);
+    use_context_provider(|| paused);
+    let go_on = use_signal(crate::gate_editor::paused_run::GoOn::default);
+    use_context_provider(|| go_on);
 }
 
 #[component]

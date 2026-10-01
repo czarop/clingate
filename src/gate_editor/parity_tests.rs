@@ -25,6 +25,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
@@ -217,7 +218,8 @@ impl App {
             assert!(!inputs.files.is_empty(), "the app has its files");
             let snapshot = held.gates.peek().clone();
             let outcome = run_rules(&snapshot, &inputs, |_| {}, &AtomicBool::new(false));
-            held.rules_run.apply(&outcome, &inputs.rules).unwrap();
+            held.rules_run.place(&outcome.placements, &[]);
+            held.rules_run.keep(&outcome, &inputs.rules).unwrap();
         });
     }
 }
@@ -598,4 +600,130 @@ fn a_report_and_a_review_come_out_the_same() {
     let (a, b) = (review(&tools), review(&ours));
     assert_eq!(a.reported(), 1);
     assert!(a == b, "the reviews differ");
+}
+
+// ── a run that pauses for a person ───────────────────────────────────────
+
+/// A gate with a shape of its own and a gate with one under it: the parent
+/// gets a rule it cannot meet on any specimen - read on an FMO no file is -
+/// and the child a rule, so the run has to stop for the parent first.
+fn rules_that_stop_at_a_parent(gates: &clingate_core::gates::GateState) -> RuleStore {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleTarget, SamplePairing,
+    };
+    let shaped = |node: &clingate_core::gates::gate_store::NodeId| {
+        let id = gates.gate_for_node(node)?.clone();
+        let gate = gates.registered_gate(&id)?;
+        gate.get_gate_ref(None)?;
+        Some((gates.population_name(&id)?, gate.get_params().0))
+    };
+    let (parent, child) = gates
+        .placements()
+        .find_map(|(node, _)| {
+            let parent = shaped(node)?;
+            let child = gates.child_nodes(node).iter().find_map(&shaped)?;
+            Some((parent, child))
+        })
+        .expect("a shaped gate with a shaped gate under it");
+    let rule = |parameter: Arc<str>, measured_on| GateRule {
+        parameter,
+        bound: Bound::Above,
+        measured_on,
+        rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+    };
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named(parent.0.clone()),
+        rule(parent.1, MeasuredOn::Partner("FMO".into())),
+    );
+    store.insert(
+        RuleTarget::under(child.0, parent.0),
+        rule(child.1, MeasuredOn::Itself),
+    );
+    store
+}
+
+#[test]
+fn a_paused_run_holds_each_gate_on_its_sample_and_the_editor_opens_on_it() {
+    use clingate_core::axis_store::{AxisStoreStoreExt, Param};
+    use clingate_core::gate_rules::run::run_rules_pausing;
+    use clingate_core::gates::gate_store::GateSource;
+    use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+
+    let folder = two_samples_with_a_rule("paused-run-app");
+    let mut app = App::new();
+    app.open(&folder);
+    let needs = app.with(|held| {
+        let rules = rules_that_stop_at_a_parent(&held.gates.peek());
+        held.rules.clone().set(rules);
+        let (inputs, _) = held.rules_run.inputs_now();
+        let snapshot = held.gates.peek().clone();
+        let outcome = run_rules_pausing(&snapshot, &inputs, 0, |_| {}, &AtomicBool::new(false));
+        let paused = outcome
+            .paused
+            .as_ref()
+            .expect("the parent has a ruled gate under it");
+        held.rules_run.place(&outcome.placements, &paused.needs);
+        paused.needs.clone()
+    });
+    assert_eq!(needs.len(), 2, "the parent on both specimens: {needs:?}");
+
+    app.with(|held| {
+        let gates = held.gates.peek();
+        let metadata = held.metadata.metadata().peek().clone();
+        let params: Vec<Param> = held.axes.sorted_settings().peek().iter().cloned().collect();
+        let names = held.metadata.file_name_to_gating_id().peek().clone();
+        let files: Vec<Arc<str>> = names.keys().cloned().collect();
+        let mut specimens = Vec::new();
+        for need in &needs {
+            let specimen = need.specimen.clone().expect("each file has a test value");
+            match gates.gate_and_source_for_file(&need.gate_id, &need.file, &metadata) {
+                Some((GateSource::Group((_, key)), _)) => assert_eq!(key, specimen),
+                other => panic!("not held on its specimen: {:?}", other.map(|o| o.0)),
+            }
+            specimens.push(specimen.group.clone());
+
+            let focus = crate::gate_editor::paused_run::focus_for(need, &gates, &params, &names)
+                .expect("the editor can show it");
+            let node = gates.nodes_for_gate(&need.gate_id)[0].clone();
+            assert_eq!(&*focus.parent, gates.parent_node(&node).unwrap().as_str());
+            let (x, y) = gates.registered_gate(&need.gate_id).unwrap().get_params();
+            assert_eq!((focus.x, focus.y), (x, y));
+            assert!(files.contains(&focus.sample_name));
+            assert_eq!(
+                names[&focus.sample_name], need.file,
+                "the file the run named"
+            );
+        }
+        specimens.sort();
+        specimens.dedup();
+        assert_eq!(specimens.len(), 2, "one position per specimen");
+    });
+}
+
+#[test]
+fn the_banner_names_the_gate_the_sample_and_why() {
+    use clingate_core::gate_rules::run::NeedsPlacing;
+    use clingate_core::omiq::metadata::MetaDataKey;
+    let mut need = NeedsPlacing {
+        gate_id: Arc::from("g1"),
+        gate: Arc::from("Lymph"),
+        parent_gate: Some(Arc::from("Live")),
+        file: Arc::from("file_b"),
+        specimen: Some(MetaDataKey {
+            parameter: Arc::from("SampleID"),
+            group: Arc::from("DONOR-B"),
+        }),
+        why: "no FMO for this specimen".to_string(),
+    };
+    assert_eq!(
+        crate::gate_editor::paused_run::describe_need(&need),
+        "Lymph of Live on DONOR-B: no FMO for this specimen"
+    );
+    need.specimen = None;
+    assert!(crate::gate_editor::paused_run::describe_need(&need).contains("on file_b:"));
 }

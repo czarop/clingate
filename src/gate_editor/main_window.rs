@@ -379,6 +379,8 @@ pub fn MainWindow() -> Element {
 
             main { class: "main-content",
 
+                crate::gate_editor::paused_run::PausedBanner {}
+
                 // The top bar: axis controls on the left, sample selection on
                 // the right. Its own class - `gate-window` stacks a plot under
                 // its title, which is the opposite of what this row wants.
