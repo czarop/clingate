@@ -10,9 +10,11 @@ use rustc_hash::FxBuildHasher;
 
 use clingate_core::axis_store::{AxisStoreStoreExt, Param};
 use clingate_core::gate_rules::autogate::describe;
+use clingate_core::gate_rules::autogate::rule_levels;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::run::{NeedsPlacing, RunOutcome};
 use clingate_core::gates::GateState;
+use clingate_core::gates::gate_store::NodeId;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
 
 use crate::components::toast::{note, use_toast, warn};
@@ -23,11 +25,86 @@ use crate::gate_editor::workspace_window::{AxesStore, GateStore, MetadataStore};
 /// A run stopped for a person, and everything it needs to go on.
 pub(crate) struct PausedRun {
     /// What the run has done so far, already written into the working copy.
-    pub so_far: RunOutcome,
-    pub next_level: usize,
-    pub needs: Vec<NeedsPlacing>,
-    /// Which of `needs` the editor is showing.
+    so_far: RunOutcome,
+    /// The document the run was made on.
+    document: u64,
+    /// The rules it ran, and the levels they put the gates in: going on from
+    /// a level means the same thing only while both stand.
+    rules: RuleStore,
+    levels: Vec<rustc_hash::FxHashSet<NodeId>>,
+    /// Which of the needs the editor is showing.
     pub at: usize,
+}
+
+impl PausedRun {
+    /// A run that paused, held for a person; `gates` as they are with its
+    /// placements written.
+    pub(crate) fn new(
+        so_far: RunOutcome,
+        document: u64,
+        rules: RuleStore,
+        gates: &GateState,
+    ) -> Self {
+        let levels = rule_levels(gates, &rules);
+        Self {
+            so_far,
+            document,
+            rules,
+            levels,
+            at: 0,
+        }
+    }
+
+    /// The gates to place by hand.
+    pub(crate) fn needs(&self) -> &[NeedsPlacing] {
+        self.so_far
+            .paused
+            .as_ref()
+            .map_or(&[], |paused| &paused.needs)
+    }
+
+    /// The level the run goes on from.
+    pub(crate) fn next_level(&self) -> usize {
+        self.so_far
+            .paused
+            .as_ref()
+            .map_or(0, |paused| paused.next_level)
+    }
+
+    pub(crate) fn is_on(&self, document: u64) -> bool {
+        self.document == document
+    }
+
+    /// Why the run cannot go on with the rules and gates as they are now.
+    pub(crate) fn why_not_go_on(
+        &self,
+        gates: &GateState,
+        rules: &RuleStore,
+    ) -> Option<&'static str> {
+        (*rules != self.rules || rule_levels(gates, rules) != self.levels).then_some(
+            "The rules, or the gates they place, changed since the run paused, so it cannot go on from where it stopped - stop the run and run the rules again",
+        )
+    }
+
+    /// The run so far, with what going on from it did.
+    pub(crate) fn then(self, rest: RunOutcome) -> RunOutcome {
+        self.so_far.then(rest)
+    }
+
+    /// The run so far kept for review with the rules it ran.
+    pub(crate) fn keep(&self, run_with: &RulesRun) -> Result<(), String> {
+        run_with.keep(&self.so_far, &self.rules)
+    }
+}
+
+/// What to say when the workspace changed under a run: a run going on from a
+/// pause is still paused, and goes on with another Continue.
+pub(crate) fn changed_while_running(going_on: bool) -> &'static str {
+    if going_on {
+        "The workspace changed while the run went on, so no more gates were moved - it is still paused: press Continue the run again"
+    } else {
+        "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now"
+    }
 }
 
 /// Asks the Gate Rules tab to go on with the paused run. A count, so each ask
@@ -83,8 +160,8 @@ pub(crate) fn show_need(at: usize) {
         let Some(run) = held.as_mut() else {
             return;
         };
-        run.at = at.min(run.needs.len().saturating_sub(1));
-        run.needs.get(run.at).cloned()
+        run.at = at.min(run.needs().len().saturating_sub(1));
+        run.needs().get(run.at).cloned()
     };
     let Some(need) = want else {
         return;
@@ -104,15 +181,17 @@ pub(crate) fn show_need(at: usize) {
 pub(crate) fn PausedBanner() -> Element {
     let mut paused = use_context::<Signal<Option<PausedRun>>>();
     let mut go_on = use_context::<Signal<GoOn>>();
-    let rules = use_context::<Signal<RuleStore>>();
     let run_with = RulesRun::from_context();
     let toasts = use_toast();
 
     let Some((at, count, line)) = paused.read().as_ref().map(|run| {
         (
             run.at,
-            run.needs.len(),
-            run.needs.get(run.at).map(describe_need).unwrap_or_default(),
+            run.needs().len(),
+            run.needs()
+                .get(run.at)
+                .map(describe_need)
+                .unwrap_or_default(),
         )
     }) else {
         return rsx! {};
@@ -122,7 +201,7 @@ pub(crate) fn PausedBanner() -> Element {
         let Some(run) = paused.write().take() else {
             return;
         };
-        match run_with.keep(&run.so_far, &rules.peek()) {
+        match run.keep(&run_with) {
             Ok(()) => note(
                 &toasts,
                 "The run was stopped. What it placed before it paused stays, and is on the Review tab",

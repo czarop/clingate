@@ -152,8 +152,10 @@ impl App {
         self.settle();
     }
 
-    /// One turn of the app: wait for work, then render.
+    /// One turn of the app: wait for work, then render - inside the runtime,
+    /// as rendering can poll a task that woke after the wait.
     fn step(&mut self, wait: Duration) -> bool {
+        let _inside = self.runtime.enter();
         let dom = &mut self.dom;
         let woke = self
             .runtime
@@ -730,31 +732,102 @@ fn the_banner_names_the_gate_the_sample_and_why() {
     assert!(crate::gate_editor::paused_run::describe_need(&need).contains("on file_b:"));
 }
 
+/// A paused run of `rules_that_stop_at_a_parent` on the open workspace, its
+/// placements written as the Run button writes them.
+fn pause_the_rules(app: &mut App) -> crate::gate_editor::paused_run::PausedRun {
+    use clingate_core::gate_rules::run::run_rules_pausing;
+    app.with(|held| {
+        let rules = rules_that_stop_at_a_parent(&held.gates.peek());
+        held.rules.clone().set(rules.clone());
+        let (inputs, _) = held.rules_run.inputs_now();
+        let snapshot = held.gates.peek().clone();
+        let outcome = run_rules_pausing(&snapshot, &inputs, 0, |_| {}, &AtomicBool::new(false));
+        let needs = outcome.paused.as_ref().expect("it pauses").needs.clone();
+        held.rules_run.place(&outcome.placements, &needs);
+        crate::gate_editor::paused_run::PausedRun::new(outcome, 1, rules, &held.gates.peek())
+    })
+}
+
 #[test]
 fn a_paused_run_is_dropped_when_another_workspace_is_opened() {
-    use clingate_core::gate_rules::run::RunOutcome;
     let mut app = App::new();
     app.open(&two_samples_with_a_rule("paused-run-first"));
-    app.with(|held| {
-        held.paused
-            .clone()
-            .set(Some(crate::gate_editor::paused_run::PausedRun {
-                so_far: RunOutcome {
-                    report: Default::default(),
-                    placements: Vec::new(),
-                    cancelled: false,
-                    events: Default::default(),
-                    paused: None,
-                },
-                next_level: 1,
-                needs: Vec::new(),
-                at: 0,
-            }));
-    });
-    assert!(app.with(|held| held.paused.peek().is_some()));
+    let paused = pause_the_rules(&mut app);
+    app.with(|held| held.paused.clone().set(Some(paused)));
     app.open(&two_samples_with_a_rule("paused-run-second"));
     assert!(
         app.with(|held| held.paused.peek().is_none()),
         "its gates and samples belong to the workspace that was closed"
     );
+}
+
+#[test]
+fn a_paused_run_belongs_only_to_the_document_it_was_run_on() {
+    let mut app = App::new();
+    app.open(&two_samples_with_a_rule("paused-run-document"));
+    let paused = pause_the_rules(&mut app);
+    assert!(paused.is_on(1));
+    assert!(!paused.is_on(2));
+}
+
+#[test]
+fn a_paused_run_goes_on_only_while_its_rules_and_their_levels_stand() {
+    use clingate_core::gate_rules::autogate::rule_levels;
+    let mut app = App::new();
+    app.open(&two_samples_with_a_rule("paused-run-go-on"));
+    let paused = pause_the_rules(&mut app);
+    app.with(|held| {
+        let rules = held.rules.peek().clone();
+        assert_eq!(paused.why_not_go_on(&held.gates.peek(), &rules), None);
+
+        let mut changed = rules.clone();
+        let mut entry = changed.entries()[0].clone();
+        entry.rule.bound = clingate_core::gate_rules::rule_store::Bound::Below;
+        changed.insert(entry.target, entry.rule);
+        assert_eq!(
+            rule_levels(&held.gates.peek(), &changed),
+            rule_levels(&held.gates.peek(), &rules)
+        );
+        assert!(
+            paused.why_not_go_on(&held.gates.peek(), &changed).is_some(),
+            "a rule was changed"
+        );
+
+        let mut gates = held.gates.peek().clone();
+        let child = rule_levels(&gates, &rules)
+            .last()
+            .and_then(|level| level.iter().next().cloned())
+            .expect("a gate on the last level");
+        gates.delete_placement(&child).unwrap();
+        assert!(
+            paused.why_not_go_on(&gates, &rules).is_some(),
+            "a gate the run would place next is gone"
+        );
+    });
+}
+
+#[test]
+fn stopping_a_paused_run_keeps_it_with_the_rules_it_ran() {
+    let folder = two_samples_with_a_rule("paused-run-stop");
+    let mut app = App::new();
+    app.open(&folder);
+    let paused = pause_the_rules(&mut app);
+    let ran = app.with(|held| {
+        let ran = held.rules.peek().clone();
+        held.rules.clone().set(RuleStore::default());
+        paused.keep(&held.rules_run).unwrap();
+        ran
+    });
+    let record = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .expect("the run is kept");
+    assert_eq!(record.rules, ran);
+}
+
+#[test]
+fn a_run_going_on_from_a_pause_is_told_to_continue_not_to_run_again() {
+    use crate::gate_editor::paused_run::changed_while_running;
+    assert!(changed_while_running(true).contains("Continue the run"));
+    assert!(!changed_while_running(true).contains("run it again"));
+    assert!(changed_while_running(false).contains("run it again"));
 }

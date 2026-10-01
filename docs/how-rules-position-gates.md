@@ -70,7 +70,10 @@ show, not raw channel values.
    (`hold_for_placing`), so a person can move it there without moving it for
    anyone else; and the editor shows them one at a time. Going on runs the
    remaining levels on the gates as they are then, and the parts are kept as
-   one run (`RunOutcome::then`). A gate with nothing ruled under it never
+   one run (`RunOutcome::then`) - only while the rules, and the levels they
+   put the gates in, are those it paused with; otherwise it has to be stopped
+   and run again. Stopping keeps what it did with the rules it ran. A paused
+   run is dropped when another workspace is opened. A gate with nothing ruled under it never
    pauses a run - the Review tab is for those. `run_rules`, which the tools
    for Claude use, never pauses.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and

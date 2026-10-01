@@ -325,9 +325,13 @@ pub fn GateRulesWindow() -> Element {
     let mut paused_run = use_context::<Signal<Option<crate::gate_editor::paused_run::PausedRun>>>();
     let go_on = use_context::<Signal<crate::gate_editor::paused_run::GoOn>>();
     let mut active = use_context::<Signal<crate::gate_editor::route::Tab>>();
-    // A paused run whose next part did not go ahead is still waiting.
+    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
+    // A paused run whose next part did not go ahead is still waiting - unless
+    // another workspace was opened meanwhile.
     let mut give_back = move |paused: Option<crate::gate_editor::paused_run::PausedRun>| {
-        if let Some(paused) = paused {
+        if let Some(paused) = paused
+            && paused.is_on(generation.peek().document)
+        {
             paused_run.set(Some(paused));
         }
     };
@@ -376,7 +380,7 @@ pub fn GateRulesWindow() -> Element {
             let stopped = flag.clone();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
 
-            let from_level = from.as_ref().map_or(0, |paused| paused.next_level);
+            let from_level = from.as_ref().map_or(0, |paused| paused.next_level());
             let worker = {
                 let inputs = started.0.clone();
                 tokio::task::spawn_blocking(move || {
@@ -419,7 +423,7 @@ pub fn GateRulesWindow() -> Element {
             if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
                 warn(
                     &toasts,
-                    "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now",
+                    crate::gate_editor::paused_run::changed_while_running(from.is_some()),
                 );
                 give_back(from.take());
                 return;
@@ -441,24 +445,25 @@ pub fn GateRulesWindow() -> Element {
                 .unwrap_or_default();
             run_with.place(&outcome.placements, &needs);
             let whole = match from.take() {
-                Some(paused) => paused.so_far.then(outcome),
+                Some(paused) => paused.then(outcome),
                 None => outcome,
             };
-            if let Some(pause) = whole.paused.clone() {
+            if whole.paused.is_some() {
+                let paused = crate::gate_editor::paused_run::PausedRun::new(
+                    whole,
+                    generation.peek().document,
+                    started.0.rules.clone(),
+                    &gate_store.peek(),
+                );
+                let count = paused.needs().len();
                 warn(
                     &toasts,
                     format!(
-                        "The run stopped: {} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
-                        pause.needs.len(),
-                        if pause.needs.len() == 1 { "" } else { "s" }
+                        "The run paused: {count} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
+                        if count == 1 { "" } else { "s" }
                     ),
                 );
-                paused_run.set(Some(crate::gate_editor::paused_run::PausedRun {
-                    so_far: whole,
-                    next_level: pause.next_level,
-                    needs: pause.needs,
-                    at: 0,
-                }));
+                paused_run.set(Some(paused));
                 active.set(crate::gate_editor::route::Tab::Editor);
                 crate::gate_editor::paused_run::show_need(0);
                 return;
@@ -486,9 +491,16 @@ pub fn GateRulesWindow() -> Element {
         if go_on().0 == 0 {
             return;
         }
-        let paused = paused_run.write().take();
-        if paused.is_some() {
-            start_run(paused);
+        let Some(why_not) = paused_run
+            .peek()
+            .as_ref()
+            .map(|paused| paused.why_not_go_on(&gate_store.peek(), &rules.peek()))
+        else {
+            return;
+        };
+        match why_not {
+            Some(why_not) => warn(&toasts, why_not),
+            None => start_run(paused_run.write().take()),
         }
     });
 
@@ -519,7 +531,6 @@ pub fn GateRulesWindow() -> Element {
 
     // The last run's report names gate positions in a document that has gone
     // once the gates are replaced, and is cleared with it.
-    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
     let document = use_memo(move || generation.read().document);
     use_effect(move || {
         document();
