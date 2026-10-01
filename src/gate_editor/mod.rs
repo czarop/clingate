@@ -10,6 +10,7 @@ mod parity_tests;
 pub mod path_picker;
 mod paused_run;
 pub mod plots;
+pub mod position_menu;
 mod reactivity_tests;
 pub mod review;
 mod review_tests;

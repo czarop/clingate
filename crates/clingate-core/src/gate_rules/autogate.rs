@@ -25,7 +25,7 @@ use crate::gates::GateState;
 use crate::gates::gate_single::line_gate::LineGate;
 use crate::gates::gate_single::polygon_gate::PolygonGate;
 use crate::gates::gate_single::rectangle_gate::RectangleGate;
-use crate::gates::gate_store::{FileId, GateId, GateSource, GateSubStore, NodeId};
+use crate::gates::gate_store::{FileId, GateId, GateSource, NodeId};
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::{MetaDataFileMap, MetaDataKey};
 use flow_gates::{GateGeometry, GateNode};
@@ -301,24 +301,18 @@ pub fn gated_rank(pairing: &SamplePairing, file: &FileId, metadata: &MetaDataFil
 ///
 /// A composite is registered under its own id and each of its corners', so all
 /// of them need the override or filtering would read the old position while the
-/// plot drew the new one. [`GateSubStore::ids_for`] is what knows that.
+/// plot drew the new one. [`gate_positions::position_ids`](crate::gates::gate_positions::position_ids) is what knows that.
 pub fn place_for_specimen(
     state: &mut GateState,
     gate_id: &GateId,
     specimen: &MetaDataKey,
     gate: &Arc<dyn DrawableGate>,
 ) {
-    let mut ids = GateSubStore::ids_for(gate, gate_id);
     // A rule names a composite by one of its corners - the corners are what
-    // the tree holds - so the composite's own id has to be added, or the
+    // the tree holds - so the composite's own id is among them, or the
     // container would keep its old position while its corners moved.
-    let own = gate.get_id();
-    if gate.is_composite() && !ids.contains(&own) {
-        ids.push(own);
-    }
-    ids.dedup();
     state.place_gate(
-        &ids,
+        &crate::gates::gate_positions::position_ids(gate, gate_id),
         gate,
         &GateSource::Group((gate_id.clone(), specimen.clone())),
     );

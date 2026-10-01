@@ -287,3 +287,51 @@ button:hover {
 }
 .paused-run-text { flex: 1 1 24rem; }
 .paused-run-go-on { font-weight: 600; }
+
+/* The Position menu under each plot's title: its panel floats over the plot. */
+.gate-window_position {
+    position: relative;
+    box-sizing: border-box;
+    text-align: center;
+}
+
+.position-menu_button {
+    font-size: 0.75rem;
+    padding: 1px 8px;
+}
+
+.position-menu_panel {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    top: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    text-align: left;
+    font-size: 0.8rem;
+    background: var(--primary-color, #fff);
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.position-menu_heading {
+    margin: 4px 0 0;
+    font-weight: 600;
+}
+
+.position-menu_picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.position-menu_samples {
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}

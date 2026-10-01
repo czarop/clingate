@@ -591,6 +591,14 @@ pub fn MainWindow() -> Element {
                                                     parental_gate,
                                                 }
                                             }
+                                            div {
+                                                class: "gate-window_position",
+                                                style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
+                                                crate::gate_editor::position_menu::PositionMenu {
+                                                    sample_name: sample_stub.name.clone(),
+                                                    parental_gate,
+                                                }
+                                            }
                                             PlotWindow {
                                                 sample_stub,
                                                 x_axis_marker,

@@ -24,6 +24,9 @@ mod gate_label_tests;
 pub mod gate_paths;
 #[cfg(test)]
 mod gate_paths_tests;
+pub mod gate_positions;
+#[cfg(test)]
+mod gate_positions_tests;
 #[cfg(test)]
 mod gate_stats_tests;
 #[cfg(test)]

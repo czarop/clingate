@@ -1610,6 +1610,16 @@ impl GateState {
             .collect()
     }
 
+    /// Drop every per-sample position `keep` says no to.
+    pub fn retain_sample_positions(&mut self, keep: impl FnMut(&(GateId, FileId)) -> bool) {
+        self.gate_store.retain_sample_positions(keep);
+    }
+
+    /// Drop every per-group position `keep` says no to.
+    pub fn retain_group_positions(&mut self, keep: impl FnMut(&(GateId, MetaDataKey)) -> bool) {
+        self.gate_store.retain_group_positions(keep);
+    }
+
     /// Write a gate into one of the three tiers.
     ///
     /// The store methods write back into the tier a gate was *resolved* from,
