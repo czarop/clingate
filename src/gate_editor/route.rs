@@ -135,8 +135,14 @@ pub(crate) fn provide_document() {
     let focus = use_signal(|| None::<crate::gate_editor::review_window::EditorFocus>);
     use_context_provider(|| focus);
     // A rules run waiting for gates to be placed by hand, and the ask to go on.
-    let paused = use_signal(|| None::<crate::gate_editor::paused_run::PausedRun>);
+    let mut paused = use_signal(|| None::<crate::gate_editor::paused_run::PausedRun>);
     use_context_provider(|| paused);
+    // A paused run names gates and samples of the document it was run on.
+    let document = use_memo(move || generation.read().document);
+    use_effect(move || {
+        document();
+        paused.set(None);
+    });
     let go_on = use_signal(crate::gate_editor::paused_run::GoOn::default);
     use_context_provider(|| go_on);
 }

@@ -56,6 +56,7 @@ struct Held {
     axes: AxesStore,
     metadata: MetadataStore,
     rules: Signal<RuleStore>,
+    paused: Signal<Option<crate::gate_editor::paused_run::PausedRun>>,
 }
 
 /// Where the probe leaves the handles, for the test to pick up.
@@ -85,6 +86,7 @@ fn Probe(holder: Holder) -> Element {
         axes: use_context(),
         metadata: use_context(),
         rules: use_context(),
+        paused: use_context(),
     };
     *holder.0.borrow_mut() = Some(held);
     rsx! {}
@@ -726,4 +728,33 @@ fn the_banner_names_the_gate_the_sample_and_why() {
     );
     need.specimen = None;
     assert!(crate::gate_editor::paused_run::describe_need(&need).contains("on file_b:"));
+}
+
+#[test]
+fn a_paused_run_is_dropped_when_another_workspace_is_opened() {
+    use clingate_core::gate_rules::run::RunOutcome;
+    let mut app = App::new();
+    app.open(&two_samples_with_a_rule("paused-run-first"));
+    app.with(|held| {
+        held.paused
+            .clone()
+            .set(Some(crate::gate_editor::paused_run::PausedRun {
+                so_far: RunOutcome {
+                    report: Default::default(),
+                    placements: Vec::new(),
+                    cancelled: false,
+                    events: Default::default(),
+                    paused: None,
+                },
+                next_level: 1,
+                needs: Vec::new(),
+                at: 0,
+            }));
+    });
+    assert!(app.with(|held| held.paused.peek().is_some()));
+    app.open(&two_samples_with_a_rule("paused-run-second"));
+    assert!(
+        app.with(|held| held.paused.peek().is_none()),
+        "its gates and samples belong to the workspace that was closed"
+    );
 }
