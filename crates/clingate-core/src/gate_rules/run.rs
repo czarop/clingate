@@ -403,46 +403,34 @@ fn run_levels(
 
     // Said once, by the run's first part: a run that goes on after a pause
     // would otherwise say it again.
-    let whole_run_problems = if from_level == 0 {
-        rules_reaching_nothing(gates, &inputs.rules)
-    } else {
-        Vec::new()
-    };
-    for target in whole_run_problems {
-        report.skipped.push(Skipped {
-            file: Arc::from(""),
-            gate: target.gate.clone(),
-            parent_gate: target.parent.clone(),
-            reason: "this rule reaches no gate: no gate of this name is drawn under a parent of \
-                     that name, or every one has a more specific rule"
-                .to_string(),
-        });
-    }
-    let anchor_problems = if from_level == 0 {
-        crate::gate_rules::autogate::anchor_problems(gates, &inputs.rules)
-    } else {
-        Vec::new()
-    };
-    for problem in anchor_problems {
-        report.skipped.push(Skipped {
-            file: Arc::from(""),
-            gate: problem.target.gate.clone(),
-            parent_gate: problem.target.parent.clone(),
-            reason: problem.reason,
-        });
-    }
-    let conflicts = if from_level == 0 {
-        linked_conflicts(gates, &inputs.rules)
-    } else {
-        Vec::new()
-    };
-    for conflict in conflicts {
-        report.skipped.push(Skipped {
-            file: Arc::from(""),
-            gate: conflict.gate.clone(),
-            parent_gate: None,
-            reason: conflict.reason,
-        });
+    if from_level == 0 {
+        for target in rules_reaching_nothing(gates, &inputs.rules) {
+            report.skipped.push(Skipped {
+                file: Arc::from(""),
+                gate: target.gate.clone(),
+                parent_gate: target.parent.clone(),
+                reason:
+                    "this rule reaches no gate: no gate of this name is drawn under a parent of \
+                         that name, or every one has a more specific rule"
+                        .to_string(),
+            });
+        }
+        for problem in crate::gate_rules::autogate::anchor_problems(gates, &inputs.rules) {
+            report.skipped.push(Skipped {
+                file: Arc::from(""),
+                gate: problem.target.gate.clone(),
+                parent_gate: problem.target.parent.clone(),
+                reason: problem.reason,
+            });
+        }
+        for conflict in linked_conflicts(gates, &inputs.rules) {
+            report.skipped.push(Skipped {
+                file: Arc::from(""),
+                gate: conflict.gate.clone(),
+                parent_gate: None,
+                reason: conflict.reason,
+            });
+        }
     }
 
     for (step, level) in levels.iter().enumerate().skip(from_level) {

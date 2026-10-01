@@ -1588,3 +1588,152 @@ fn a_gate_held_for_placing_is_where_it_was_and_moves_for_its_specimen_alone() {
         "fs_b is untouched"
     );
 }
+
+// ─── who a pause names ────────────────────────────────────────────────────────
+
+/// Lymph's rule on a channel no file has: it cannot be measured anywhere.
+fn lymph_rule_on_a_missing_channel() -> (RuleTarget, GateRule) {
+    let (target, mut rule) = lymph_rule();
+    rule.parameter = Arc::from("No-Such-Channel");
+    (target, rule)
+}
+
+fn files_named(name: &str, names: &[&str]) -> Vec<(Arc<str>, PathBuf)> {
+    let dir = scratch(name);
+    let channels = [(X, None), (Y, None)];
+    names
+        .iter()
+        .enumerate()
+        .map(|(seed, file)| {
+            let path = dir.join(format!("{file}.fcs"));
+            write_fcs_rows(&path, &channels, &events(seed as u64 + 1), &[]);
+            (Arc::from(format!("{file}.fcs")), path)
+        })
+        .collect()
+}
+
+fn inputs_for(
+    files: &[(Arc<str>, PathBuf)],
+    metadata: crate::omiq::metadata::MetaDataFileMap,
+    rules: RuleStore,
+) -> RunInputs {
+    RunInputs {
+        files: files.to_vec(),
+        compensation: crate::compensation::groups::Compensation::default(),
+        names: files
+            .iter()
+            .map(|(name, _)| (name.clone(), Arc::from(name.trim_end_matches(".fcs"))))
+            .collect::<std::collections::HashMap<_, _, FxBuildHasher>>(),
+        cofactors: Vec::new(),
+        metadata,
+        rules,
+    }
+}
+
+fn row(columns: &[(&str, &str)]) -> rustc_hash::FxHashMap<Arc<str>, Arc<str>> {
+    columns
+        .iter()
+        .map(|(column, value)| (Arc::from(*column), Arc::from(*value)))
+        .collect()
+}
+
+#[test]
+fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
+    use crate::gates::gate_store::GateSource;
+    let files = files_named("pause-no-id", &["fs_a", "loose"]);
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    metadata.insert(
+        Arc::from("fs_a") as Arc<str>,
+        row(&[("SampleID", "DONOR-A"), ("SampleType", "FS")]),
+    );
+    metadata.insert(Arc::from("loose") as Arc<str>, row(&[("SampleType", "FS")]));
+    let mut state = three_deep();
+    let outcome = crate::gate_rules::run::run_rules_pausing(
+        &state,
+        &inputs_for(
+            &files,
+            metadata.clone(),
+            store(&[lymph_rule_on_a_missing_channel(), cd69_rule()]),
+        ),
+        0,
+        |_| {},
+        &AtomicBool::new(false),
+    );
+    let needs = outcome.paused.expect("Lymph was measured nowhere").needs;
+    let mut named: Vec<(String, Option<String>)> = needs
+        .iter()
+        .map(|n| {
+            (
+                n.file.to_string(),
+                n.specimen.as_ref().map(|s| s.group.to_string()),
+            )
+        })
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        [
+            ("fs_a".to_string(), Some("DONOR-A".to_string())),
+            ("loose".to_string(), None)
+        ]
+    );
+
+    crate::gate_rules::run::hold_for_placing(&mut state, &needs, &metadata);
+    let source = state
+        .gate_and_source_for_file(&Arc::from("lymph"), &Arc::from("loose"), &metadata)
+        .unwrap()
+        .0;
+    assert!(
+        matches!(source, GateSource::Sample((_, ref file)) if &**file == "loose"),
+        "held on the file itself: {source:?}"
+    );
+}
+
+#[test]
+fn a_specimen_with_several_files_is_named_once_on_the_file_to_place_it_on() {
+    let files = files_named("pause-one-each", &["fmo_a", "fs_a", "fmo_b", "fs_b"]);
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, donor, kind) in [
+        ("fmo_a", "DONOR-A", "FMO"),
+        ("fs_a", "DONOR-A", "FS"),
+        ("fmo_b", "DONOR-B", "FMO"),
+        ("fs_b", "DONOR-B", "FS"),
+    ] {
+        metadata.insert(
+            Arc::from(file) as Arc<str>,
+            row(&[("SampleID", donor), ("SampleType", kind)]),
+        );
+    }
+    let outcome = crate::gate_rules::run::run_rules_pausing(
+        &three_deep(),
+        &inputs_for(
+            &files,
+            metadata,
+            store(&[lymph_rule_on_a_missing_channel(), cd69_rule()]),
+        ),
+        0,
+        |_| {},
+        &AtomicBool::new(false),
+    );
+    let mut named: Vec<(String, String)> = outcome
+        .paused
+        .expect("Lymph was measured nowhere")
+        .needs
+        .iter()
+        .map(|n| {
+            (
+                n.specimen.as_ref().unwrap().group.to_string(),
+                n.file.to_string(),
+            )
+        })
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        [
+            ("DONOR-A".to_string(), "fs_a".to_string()),
+            ("DONOR-B".to_string(), "fs_b".to_string())
+        ],
+        "one each, on the full stain rather than the FMO"
+    );
+}

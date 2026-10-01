@@ -1281,6 +1281,56 @@ impl Unplaced {
             reason: reason.to_string(),
         }
     }
+
+    fn missed(miss: &Unmeasured, specimen: Option<MetaDataKey>) -> Self {
+        Self {
+            gate_id: miss.gate_id.clone(),
+            gate: miss.gate.clone(),
+            parent_gate: miss.parent_gate.clone(),
+            file: miss.file.clone(),
+            specimen,
+            reason: miss.reason.clone(),
+        }
+    }
+}
+
+/// The specimens - or, with no sample id, the files - with no file measured
+/// for a gate: one line each, on the file most worth placing it on, as
+/// [`gated_rank`] picks the file a placement is read from.
+fn never_measured(
+    unmeasured: &[Unmeasured],
+    chosen: &FxHashMap<(Arc<str>, GateId), usize>,
+    pairing: &SamplePairing,
+    metadata: &MetaDataFileMap,
+) -> Vec<Unplaced> {
+    let mut out: Vec<Unplaced> = Vec::new();
+    for miss in unmeasured {
+        let specimen = specimen_of(pairing, &miss.file, metadata);
+        if let Some(specimen) = &specimen
+            && chosen.contains_key(&(specimen.group.clone(), miss.gate_id.clone()))
+        {
+            continue;
+        }
+        let same = out.iter().position(|u| {
+            u.gate_id == miss.gate_id
+                && match (&u.specimen, &specimen) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => u.file == miss.file,
+                    _ => false,
+                }
+        });
+        match same {
+            Some(at)
+                if gated_rank(pairing, &miss.file, metadata)
+                    > gated_rank(pairing, &out[at].file, metadata) =>
+            {
+                out[at] = Unplaced::missed(miss, specimen);
+            }
+            Some(_) => {}
+            None => out.push(Unplaced::missed(miss, specimen)),
+        }
+    }
+    out
 }
 
 /// "a4b7+ of CD4+", or just the gate where it has no parent.
@@ -1834,25 +1884,12 @@ pub fn solve_all_reporting(
         }
     }
 
-    for miss in unmeasured {
-        let Some(specimen) = specimen_of(&store.pairing, &miss.file, metadata) else {
-            continue;
-        };
-        let already = report
-            .unplaced
-            .iter()
-            .any(|u| u.gate_id == miss.gate_id && u.specimen.as_ref() == Some(&specimen));
-        if !already && !chosen.contains_key(&(specimen.group.clone(), miss.gate_id.clone())) {
-            report.unplaced.push(Unplaced {
-                gate_id: miss.gate_id.clone(),
-                gate: miss.gate.clone(),
-                parent_gate: miss.parent_gate.clone(),
-                file: miss.file.clone(),
-                specimen: Some(specimen),
-                reason: miss.reason.clone(),
-            });
-        }
-    }
+    report.unplaced.extend(never_measured(
+        unmeasured,
+        &chosen,
+        &store.pairing,
+        metadata,
+    ));
 
     for (seen, measured) in measurements.iter().enumerate() {
         // Stopped: nothing half-done is handed back. The caller sees the flag
