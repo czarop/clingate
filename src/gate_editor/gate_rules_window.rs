@@ -1477,7 +1477,76 @@ pub fn GateRulesWindow() -> Element {
                 }
             }
 
-            // ── what it did ───────────────────────────────────────────────
+            // ── the sidecar ───────────────────────────────────────────────
+            fieldset { class: "gate_rules-form",
+                legend { "Rules file" }
+                label { "File" }
+                div { class: "gate_rules-path",
+                    input {
+                        value: "{sidecar}",
+                        oninput: move |e| sidecar.set(e.value()),
+                    }
+                    // Choosing one that exists, for Load. Naming one to write
+                    // is the button beside Save; they are different dialogs,
+                    // and an open dialog cannot name a file that is not there.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::OpenFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
+                }
+                div { class: "gate_rules-band gate_rules-actions_row",
+                    button {
+                        onclick: move |_| {
+                            let path = sidecar_path();
+                            match rules.read().save(&path) {
+                                Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
+                                Err(e) => warn(&toasts, format!("Could not save: {e}")),
+                            }
+                        },
+                        "Save"
+                    }
+                    // Joined to Save, not floating between the two actions:
+                    // this dialog names where to write, which is Save's
+                    // question and not Load's.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::SaveFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
+                    span { class: "gate_rules-gap" }
+                    button {
+                        onclick: move |_| {
+                            let path = sidecar_path();
+                            match RuleStore::load(&path) {
+                                Ok(loaded) => {
+                                    let n = loaded.len();
+                                    rules.set(loaded);
+                                    say(&toasts, format!("Loaded {n} rules"));
+                                }
+                                Err(e) => warn(&toasts, format!("Could not load: {e}")),
+                            }
+                        },
+                        "Load"
+                    }
+                }
+                if let Some(folder) = loaded.read().folder.clone() {
+                    p { class: "gate_rules-hint",
+                        "A name alone is kept in {folder.join(clingate_core::workspace::RULES_DIR).display()}, and the workspace opens with {clingate_core::workspace::RULES_FILE} there."
+                    }
+                }
+            }
+
+            crate::gate_editor::review::ReviewPanel {}
+
+            if let Some(text) = editing_note() {
+                p { class: "gate_rules-message", "{text}" }
+            }
+
+            // ── what it did: last, in a box of its own that scrolls, so a
+            // run of thousands of lines does not push the sections apart ───────────────────────────────────────────────
             if let Some(run) = report.read().as_ref() {
                 div { class: "gate_rules-report",
                     // Two kinds of placement, two tables. A phenotype rule's
@@ -1772,74 +1841,6 @@ pub fn GateRulesWindow() -> Element {
                         }
                     }
                 }
-            }
-
-            // ── the sidecar ───────────────────────────────────────────────
-            fieldset { class: "gate_rules-form",
-                legend { "Rules file" }
-                label { "File" }
-                div { class: "gate_rules-path",
-                    input {
-                        value: "{sidecar}",
-                        oninput: move |e| sidecar.set(e.value()),
-                    }
-                    // Choosing one that exists, for Load. Naming one to write
-                    // is the button beside Save; they are different dialogs,
-                    // and an open dialog cannot name a file that is not there.
-                    PickPath {
-                        path: sidecar,
-                        mode: Pick::OpenFile,
-                        label: "Rules",
-                        extensions: vec!["json".to_string()],
-                    }
-                }
-                div { class: "gate_rules-band gate_rules-actions_row",
-                    button {
-                        onclick: move |_| {
-                            let path = sidecar_path();
-                            match rules.read().save(&path) {
-                                Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
-                                Err(e) => warn(&toasts, format!("Could not save: {e}")),
-                            }
-                        },
-                        "Save"
-                    }
-                    // Joined to Save, not floating between the two actions:
-                    // this dialog names where to write, which is Save's
-                    // question and not Load's.
-                    PickPath {
-                        path: sidecar,
-                        mode: Pick::SaveFile,
-                        label: "Rules",
-                        extensions: vec!["json".to_string()],
-                    }
-                    span { class: "gate_rules-gap" }
-                    button {
-                        onclick: move |_| {
-                            let path = sidecar_path();
-                            match RuleStore::load(&path) {
-                                Ok(loaded) => {
-                                    let n = loaded.len();
-                                    rules.set(loaded);
-                                    say(&toasts, format!("Loaded {n} rules"));
-                                }
-                                Err(e) => warn(&toasts, format!("Could not load: {e}")),
-                            }
-                        },
-                        "Load"
-                    }
-                }
-                if let Some(folder) = loaded.read().folder.clone() {
-                    p { class: "gate_rules-hint",
-                        "A name alone is kept in {folder.join(clingate_core::workspace::RULES_DIR).display()}, and the workspace opens with {clingate_core::workspace::RULES_FILE} there."
-                    }
-                }
-            }
-
-            crate::gate_editor::review::ReviewPanel {}
-
-            if let Some(text) = editing_note() {
-                p { class: "gate_rules-message", "{text}" }
             }
         }
     }
