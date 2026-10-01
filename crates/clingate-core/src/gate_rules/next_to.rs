@@ -11,7 +11,9 @@ use flow_gates::GateGeometry;
 
 use crate::gate_rules::autogate::{UNBOUNDED, rebuild, translate_by};
 use crate::gate_rules::rule::{Meet, NextToRule, Side};
-use crate::gates::gate_contact::{Axis, Point, contact_distance, extent, nearly_overlaps, outline};
+use crate::gates::gate_contact::{
+    Axis, OPEN, Point, contact_distance, extent, nearly_overlaps, outline,
+};
 use crate::gates::gate_store::GateId;
 use crate::gates::gate_traits::DrawableGate;
 
@@ -174,7 +176,12 @@ fn grow_by(
     other: &str,
 ) -> Result<f64, String> {
     let (lo, hi) = extent(mine, Axis::X);
-    let (_, their_hi) = extent(theirs, Axis::X);
+    // An edge open to the end of an axis is not somewhere to search to.
+    let their_hi = theirs
+        .iter()
+        .map(|p| p.0)
+        .filter(|u| u.abs() < OPEN)
+        .fold(f64::MIN, f64::max);
     let ahead = facing(mine);
     let nearest_facing = mine
         .iter()

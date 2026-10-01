@@ -191,6 +191,9 @@ impl Session {
         next: &crate::gate_rules::rule::NextToRule,
     ) -> Result<(), Refusal> {
         use crate::gate_rules::autogate::anchor_gate;
+        if let Some(problem) = crate::gate_rules::rule::gap_problem(next.gap) {
+            return Err(failed(problem.to_string()));
+        }
         let anchor = anchor_gate(&self.gates, &next.anchor).map_err(failed)?;
         let identity = |id: &crate::gates::gate_store::GateId| {
             self.gates

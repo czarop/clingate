@@ -2828,6 +2828,16 @@ fn a_rule_next_to_another_gate_is_checked_and_kept_with_its_channel() {
             next_to(RuleTarget::named("Branch C"), "FSC-A"),
             "Branch C, is not in the gating",
         ),
+        (
+            {
+                let mut rule = next_to(RuleTarget::named("Branch A"), "FSC-A");
+                if let clingate_core::gate_rules::rule::Rule::NextToGate(next) = &mut rule {
+                    next.gap = -1.0;
+                }
+                rule
+            },
+            "the gap must be a number, 0 or more",
+        ),
     ] {
         let said = session
             .update_rule(change("Branch B", None, "", MeasuredOn::Itself, rule))
@@ -2848,7 +2858,9 @@ fn a_rule_next_to_another_gate_is_checked_and_kept_with_its_channel() {
         .unwrap();
     assert_eq!(written.resolved, ["parameter fsc-a is the channel FSC-A"]);
     assert!(
-        written.now.contains("next to Branch A, above it on FSC-A"),
+        written
+            .now
+            .contains("next to Branch A, higher than it on FSC-A"),
         "{}",
         written.now
     );

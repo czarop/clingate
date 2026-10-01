@@ -2182,6 +2182,23 @@ fn a_rectangle_grows_its_facing_side_up_to_the_gate_beside_it() {
     }
 }
 
+/// Right open to the end of X: Left still grows to touch it exactly.
+#[test]
+fn a_gate_grows_to_touch_one_open_to_the_end_of_its_axis() {
+    use crate::gate_rules::rule::Meet;
+    let state = left_and(rect("right", "Right", 600.0, -BIG));
+    let rule = next_to("Left", "Right", X, Side::Lower, Meet::GrowSide, 0.0);
+    let after = placed(&state, rule, "next-open");
+    for file in ["fs_a", "fs_b"] {
+        let (lo, hi) = extent(&after, "left", X, file);
+        assert_eq!(lo, 0.0);
+        assert!(
+            (hi - 600.0).abs() < 1e-3,
+            "{file}: up to Right at 600, {hi}"
+        );
+    }
+}
+
 #[test]
 fn a_gap_leaves_that_much_between_them_and_sliding_keeps_the_width() {
     use crate::gate_rules::rule::Meet;

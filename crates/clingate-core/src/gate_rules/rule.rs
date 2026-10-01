@@ -1097,11 +1097,16 @@ pub struct NextToRule {
     pub gap: f64,
 }
 
+/// Why `gap` cannot be a next-to rule's gap, if it cannot.
+pub fn gap_problem(gap: f64) -> Option<&'static str> {
+    (!gap.is_finite() || gap < 0.0).then_some("the gap must be a number, 0 or more")
+}
+
 impl NextToRule {
     pub fn describe(&self) -> String {
         let side = match self.side {
-            Side::Lower => "below",
-            Side::Upper => "above",
+            Side::Lower => "lower than",
+            Side::Upper => "higher than",
         };
         let gap = if self.gap == 0.0 {
             String::new()

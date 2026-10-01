@@ -715,10 +715,11 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, "Choose the gate it sits next to");
                     return;
                 };
-                let Ok(gap) = next_gap().trim().parse::<f64>() else {
-                    warn(&toasts, "The gap must be a number");
+                let gap = next_gap().trim().parse::<f64>().unwrap_or(f64::NAN);
+                if let Some(problem) = clingate_core::gate_rules::rule::gap_problem(gap) {
+                    warn(&toasts, problem);
                     return;
-                };
+                }
                 Rule::NextToGate(NextToRule {
                     anchor,
                     parameter: Arc::from(param.as_str()),

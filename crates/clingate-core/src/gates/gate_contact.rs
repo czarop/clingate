@@ -115,7 +115,7 @@ pub fn outline(
 
 /// Beyond this a coordinate is an edge left open to the end of the axis,
 /// and says nothing about the size of the gate.
-const OPEN: f64 = 1e8;
+pub(crate) const OPEN: f64 = 1e8;
 
 /// The smallest distance worth telling apart from none, for outlines of
 /// this size: a gate's points are kept to about seven figures, so a gate
