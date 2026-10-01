@@ -256,16 +256,44 @@ fn a_gate_holding_two_kinds_is_settled_per_sample_and_nothing_moves() {
     let showed = all_show(&state);
     assert_eq!(showed, [100.0, 100.0, 70.0], "the newest position wins");
 
-    settle_modes(&mut state, &metadata()).unwrap();
+    settle_modes(&mut state, &metadata());
     assert_eq!(mode(&state, &gate()), Mode::PerSample);
     assert!(state.group_columns_newest_first(&gate()).is_empty());
     assert_eq!(all_show(&state), showed);
 }
 
+/// A sample the metadata does not list keeps its own position when the
+/// gate is settled per sample.
+#[test]
+fn a_mixed_gate_settled_per_sample_keeps_an_unlisted_samples_position() {
+    let mut state = drawn();
+    own(&mut state, "elsewhere", 90.0);
+    by(&mut state, "SampleID", "DONOR-A", 100.0);
+
+    settle_modes(&mut state, &metadata());
+
+    assert_eq!(mode(&state, &gate()), Mode::PerSample);
+    assert!(state.has_sample_position(&gate(), &file("elsewhere")));
+    assert_eq!(all_show(&state), [100.0, 100.0, DRAWN]);
+}
+
+/// Positioned by a column the metadata does not have: nothing to complete,
+/// and the gate loads as it was.
+#[test]
+fn a_gate_by_a_column_the_metadata_lacks_is_left_as_it_was() {
+    let mut state = drawn();
+    by(&mut state, "Batch", "B1", 100.0);
+
+    settle_modes(&mut state, &metadata());
+
+    assert_eq!(mode(&state, &gate()), Mode::ByColumn(column("Batch")));
+    assert!(state.has_group_position(&gate(), &key("Batch", "B1")));
+}
+
 #[test]
 fn a_gate_in_one_mode_is_settled_in_it() {
     let mut state = by_donor();
-    settle_modes(&mut state, &metadata()).unwrap();
+    settle_modes(&mut state, &metadata());
     assert_eq!(mode(&state, &gate()), by_sample_id());
     assert_eq!(all_show(&state), [100.0, 100.0, 30.0]);
 }

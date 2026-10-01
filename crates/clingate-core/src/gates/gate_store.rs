@@ -2130,7 +2130,7 @@ impl GateState {
     ) -> anyhow::Result<Self> {
         let mut fresh = GateState::default();
         fresh.upload_gates_from_file(path, metadata, axis_settings)?;
-        crate::gates::gate_positions::settle_modes(&mut fresh, metadata)?;
+        crate::gates::gate_positions::settle_modes(&mut fresh, metadata);
         Ok(fresh)
     }
 

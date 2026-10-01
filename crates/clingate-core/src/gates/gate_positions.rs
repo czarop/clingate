@@ -127,6 +127,9 @@ pub fn set_mode(
         }
         Mode::ByColumn(column) => {
             let groups = groups_of(metadata, column);
+            if groups.is_empty() && already {
+                return Ok(());
+            }
             if groups.is_empty() {
                 return Err(anyhow!("no sample has a value of {column}"));
             }
@@ -158,7 +161,11 @@ pub fn set_mode(
         }
     }
     if !already {
-        state.retain_sample_positions(|(id, _)| !ids.contains(id));
+        // A sample the metadata does not list keeps a position of its own
+        // per sample: there is nothing to put in its place.
+        if *to != Mode::PerSample {
+            state.retain_sample_positions(|(id, _)| !ids.contains(id));
+        }
         state.retain_group_positions(|(id, _)| !ids.contains(id));
     }
     for (source, gate) in positions {
@@ -169,8 +176,9 @@ pub fn set_mode(
 
 /// Every gate holding positions of more than one kind made per sample, and
 /// every gate's sample or value without a position of its own given what it
-/// shows: a document from elsewhere, put in one mode per gate.
-pub fn settle_modes(state: &mut GateState, metadata: &MetaDataFileMap) -> anyhow::Result<()> {
+/// shows: a document from elsewhere, put in one mode per gate. A gate that
+/// cannot be settled is left as it was loaded.
+pub fn settle_modes(state: &mut GateState, metadata: &MetaDataFileMap) {
     let (grouped, own) = state.overridden_ids();
     let mut gates: Vec<GateId> = grouped
         .into_iter()
@@ -181,9 +189,10 @@ pub fn settle_modes(state: &mut GateState, metadata: &MetaDataFileMap) -> anyhow
     gates.dedup();
     for gate_id in gates {
         let to = mode(state, &gate_id);
-        set_mode(state, &gate_id, &to, None, metadata)?;
+        if let Err(e) = set_mode(state, &gate_id, &to, None, metadata) {
+            tracing::warn!("{gate_id} is left as it was loaded: {e}");
+        }
     }
-    Ok(())
 }
 
 /// `from`'s position given to each of `to` as its own, for a gate per sample.

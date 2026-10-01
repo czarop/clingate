@@ -774,4 +774,58 @@ fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
     );
     let guide = server.call("rule_guide", json!({"rule": "Next to another gate"}));
     assert_eq!(guide["outcome"], "ok", "{guide}");
+
+    // teff_naive, left of Tmem on the same plot, grown to meet it: its far
+    // side stays where it is drawn.
+    let extent_of = |server: &mut Server| {
+        let details = server.call(
+            "gate_details",
+            json!({"population": "teff_naive", "sample": "fs"}),
+        );
+        assert_eq!(details["outcome"], "ok", "{details}");
+        let extent = details["result"]["extent"].as_array().unwrap().clone();
+        let on = extent
+            .iter()
+            .find(|e| e["parameter"] == parameter.as_str())
+            .unwrap()
+            .clone();
+        (on["lower"].as_f64().unwrap(), on["upper"].as_f64().unwrap())
+    };
+    let (lower, upper) = extent_of(&mut server);
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "teff_naive",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {
+                    "kind": "NextToGate",
+                    "anchor": {"gate": "Tmem"},
+                    "parameter": parameter,
+                    "side": "Lower"
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let preview = server.call("preview_rules", json!({}));
+    assert_eq!(preview["outcome"], "ok", "{preview}");
+    let moved = preview["result"]["would_move"].as_array().unwrap();
+    assert!(
+        moved
+            .iter()
+            .any(|m| m["gate"].as_str().unwrap().starts_with("teff_naive")),
+        "{preview}"
+    );
+    let applied = server.call("apply_rule_placements", json!({}));
+    assert_eq!(applied["outcome"], "ok", "{applied}");
+
+    let (now_lower, now_upper) = extent_of(&mut server);
+    assert!((now_lower - lower).abs() < 1e-3, "{lower} -> {now_lower}");
+    assert!(
+        now_upper > upper,
+        "grown towards Tmem: {upper} -> {now_upper}"
+    );
 }

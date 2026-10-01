@@ -110,7 +110,7 @@ moves a line is held back until its gate touches the other, and anything else \
 that would overlap is left where it was. Ruled gates on one plot are placed in \
 the order their rules are listed. A run places gates down the tree: a gate under another gate a rule moves is \
 measured only after that gate is placed, whatever order the rules are listed \
-in. So settle the rules for the gates higher up before those under them. \
+in - that order counts only between ruled gates on one plot. So settle the rules for the gates higher up before those under them. \
 preview_rules runs every level; try_rules and gate_profile read the gates as \
 they stand, so a child is only judged on its parent's new position once the \
 parent's placements are applied (with the user's say-so) - until then, say \

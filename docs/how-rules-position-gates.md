@@ -49,7 +49,8 @@ show, not raw channel values.
    next level reads through those placements. A gate whose rule reads a
    position from another gate (`Rule::anchors`: a rule from another gate, or
    a valley rule's `fallback`) also waits for every such gate that a rule
-   places. The order the rules are listed in plays no part. A rule whose
+   places. The order the rules are listed in plays no part, except between
+   ruled gates on one plot, which are placed in that order (see step 5). A rule whose
    anchor is not one gate, is itself, or leads round in a loop back to
    it is reported and left alone (`anchor_problems`). A run with no ruled gate under another is one level,
    and reads each file once; each further level reads every file again.

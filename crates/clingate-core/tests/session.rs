@@ -2893,3 +2893,182 @@ fn a_run_held_back_off_a_gate_beside_it_is_replayed_held_back_the_same() {
         );
     }
 }
+
+/// A rectangle on FSC-A by SSC-A, from `x0` to `x1` on FSC-A and the whole of
+/// SSC-A.
+fn omiq_rectangle_across(id: &str, name: &str, (x0, x1): (f64, f64)) -> String {
+    format!(
+        r#"{{
+            "containerType": "AtomicFilterContainer",
+            "id": "{id}",
+            "name": "{name}",
+            "defaultFilter": {{
+                "type": "RectangleGate",
+                "f1": "FSC-A",
+                "f2": "SSC-A",
+                "min": {{ "f1Val": {x0}, "f2Val": 0.0 }},
+                "max": {{ "f1Val": {x1}, "f2Val": 4194304.0 }}
+            }}
+        }}"#
+    )
+}
+
+/// [`workspace`], gated with `gates` - `(id, name, parent id, FSC-A span)` -
+/// and an empty rules file ready to write to.
+fn workspace_of_rectangles(
+    name: &str,
+    gates: &[(&str, &str, &str, (f64, f64))],
+) -> std::path::PathBuf {
+    use clingate_core::gate_rules::rule_store::{RuleStore, SamplePairing};
+    let dir = workspace(name);
+    let nodes: Vec<String> = gates
+        .iter()
+        .enumerate()
+        .map(|(ord, (id, _, parent, _))| {
+            let parent = if parent.is_empty() { String::new() } else { format!("n{parent}") };
+            format!(
+                r#""n{id}": {{ "id": "n{id}", "parentId": "{parent}", "filterContainerId": "{id}", "ord": {ord}, "collapsed": false }}"#
+            )
+        })
+        .collect();
+    let containers: Vec<String> = gates
+        .iter()
+        .map(|(id, name, _, span)| format!(r#""{id}": {}"#, omiq_rectangle_across(id, name, *span)))
+        .collect();
+    let gating = format!(
+        r#"{{ "tree": {{ "nodes": {{ {} }}, "filterContainers": {{ {} }} }} }}"#,
+        nodes.join(","),
+        containers.join(",")
+    );
+    std::fs::write(dir.join("gating.omiqgt"), gating).unwrap();
+    RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    })
+    .save(&clingate_core::workspace::rules_file(&dir))
+    .unwrap();
+    dir
+}
+
+fn fsc_span(session: &Session, gate: &str, sample: &str) -> (f64, f64) {
+    let extent = session.gate(gate, Some(sample)).unwrap().extent;
+    let fsc = extent.iter().find(|e| e.parameter == "FSC-A").unwrap();
+    (fsc.lower.unwrap(), fsc.upper.unwrap())
+}
+
+/// Left, from 0 to 1,000,000 on FSC-A, grows its right side to Right's left
+/// edge at 2,000,000; its left side stays where it is.
+#[test]
+fn a_gate_next_to_another_grows_its_facing_side_to_touch_it_in_a_run() {
+    use clingate_core::gate_rules::rule::{Meet, NextToRule, Rule, Side};
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = workspace_of_rectangles(
+        "session-next-to-run",
+        &[
+            ("l", "Left", "", (0.0, 1_000_000.0)),
+            ("r", "Right", "", (2_000_000.0, 4_000_000.0)),
+        ],
+    );
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Left",
+            None,
+            "",
+            MeasuredOn::Itself,
+            Rule::NextToGate(NextToRule {
+                anchor: RuleTarget::named("Right"),
+                parameter: "FSC-A".into(),
+                side: Side::Lower,
+                meet: Meet::GrowSide,
+                gap: 0.0,
+            }),
+        ))
+        .unwrap();
+
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.not_positioned.is_empty(),
+        "{:?}",
+        preview.not_positioned
+    );
+    assert_eq!(preview.would_move.len(), 2, "{:?}", preview.would_move);
+    session.apply_previewed_rules().unwrap();
+
+    for sample in ["fmx", "fs"] {
+        let (lower, upper) = fsc_span(&session, "Left", sample);
+        assert!(lower.abs() < 1.0, "{sample}: {lower}");
+        assert!((upper - 2_000_000.0).abs() < 1.0, "{sample}: {upper}");
+        assert_eq!(
+            fsc_span(&session, "Right", sample),
+            (2_000_000.0, 4_000_000.0)
+        );
+    }
+}
+
+/// Every sample's FSC-A one peak and nothing else, with no dip either side.
+fn one_peak_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    for (seed, file) in [(1, "sample1_FMX.fcs"), (2, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 100);
+        let peak = Normal::new(2_000_000.0f32, 200_000.0).unwrap();
+        let rows: Vec<Vec<f32>> = events(seed, 3_000)
+            .into_iter()
+            .map(|mut row| {
+                row[0] = peak.sample(&mut rng);
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+/// FSC-A is one peak - a smear with no dip - so Inner B's valley rule falls
+/// back to Inner A, under another parent: its lower edge goes to Inner A's,
+/// 1,000,000, flagged as placed from another gate.
+#[test]
+fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = workspace_of_rectangles(
+        "session-valley-fallback-run",
+        &[
+            ("a", "Branch A", "", (0.0, 4_194_304.0)),
+            ("b", "Branch B", "", (0.0, 4_194_304.0)),
+            ("ia", "Inner A", "a", (1_000_000.0, 3_000_000.0)),
+            ("ib", "Inner B", "b", (200_000.0, 2_200_000.0)),
+        ],
+    );
+    one_peak_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Inner B",
+            None,
+            "FSC-A",
+            MeasuredOn::Itself,
+            valley_falling_back_to(RuleTarget::named("Inner A")),
+        ))
+        .unwrap();
+
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.not_positioned.is_empty(),
+        "{:?}",
+        preview.not_positioned
+    );
+    assert!(!preview.would_move.is_empty());
+    for placed in &preview.would_move {
+        assert_eq!(
+            placed.weakest,
+            Some(clingate_core::gate_rules::confidence::FALLBACK),
+            "{placed:?}"
+        );
+    }
+    session.apply_previewed_rules().unwrap();
+
+    for sample in ["fmx", "fs"] {
+        let (lower, _) = fsc_span(&session, "Inner B", sample);
+        assert!((lower - 1_000_000.0).abs() < 1.0, "{sample}: {lower}");
+    }
+}
