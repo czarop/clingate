@@ -1312,12 +1312,7 @@ fn never_measured(
             continue;
         }
         let same = out.iter().position(|u| {
-            u.gate_id == miss.gate_id
-                && match (&u.specimen, &specimen) {
-                    (Some(a), Some(b)) => a == b,
-                    (None, None) => u.file == miss.file,
-                    _ => false,
-                }
+            u.gate_id == miss.gate_id && u.specimen.is_some() && u.specimen == specimen
         });
         match same {
             Some(at)

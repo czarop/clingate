@@ -478,7 +478,7 @@ fn run_levels(
         // The next level reads its populations through these.
         apply_placements(&mut working, &level_placements);
         let needs = if pause {
-            needing_a_person(&working, &levels[step + 1..], &level_report, &inputs.rules)
+            needing_a_person(&working, &levels, &level_report, &inputs.rules)
         } else {
             Vec::new()
         };
@@ -549,16 +549,16 @@ pub fn hold_for_placing(
     }
 }
 
-/// The gates of a level a person has to place before `below` - the levels
-/// under it - can be measured: unplaced, or placed with a confidence under
-/// [`PAUSE_BELOW`], on any specimen, and with a ruled gate somewhere under them.
+/// The gates of a level a person has to place before the levels under it can
+/// be measured: unplaced, or placed with a confidence under [`PAUSE_BELOW`], on
+/// any specimen, and with a gate of `ruled` somewhere under them.
 pub(crate) fn needing_a_person(
     state: &GateState,
-    below: &[rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>],
+    ruled: &[rustc_hash::FxHashSet<crate::gates::gate_store::NodeId>],
     level: &Report,
     rules: &RuleStore,
 ) -> Vec<NeedsPlacing> {
-    let parents = gates_above(state, below);
+    let parents = gates_above(state, ruled);
     let unplaced = level
         .unplaced
         .iter()

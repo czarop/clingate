@@ -1640,13 +1640,15 @@ fn row(columns: &[(&str, &str)]) -> rustc_hash::FxHashMap<Arc<str>, Arc<str>> {
 #[test]
 fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
     use crate::gates::gate_store::GateSource;
-    let files = files_named("pause-no-id", &["fs_a", "loose"]);
+    let files = files_named("pause-no-id", &["fs_a", "loose", "loose_2"]);
     let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
     metadata.insert(
         Arc::from("fs_a") as Arc<str>,
         row(&[("SampleID", "DONOR-A"), ("SampleType", "FS")]),
     );
-    metadata.insert(Arc::from("loose") as Arc<str>, row(&[("SampleType", "FS")]));
+    for loose in ["loose", "loose_2"] {
+        metadata.insert(Arc::from(loose) as Arc<str>, row(&[("SampleType", "FS")]));
+    }
     let mut state = three_deep();
     let outcome = crate::gate_rules::run::run_rules_pausing(
         &state,
@@ -1674,7 +1676,8 @@ fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
         named,
         [
             ("fs_a".to_string(), Some("DONOR-A".to_string())),
-            ("loose".to_string(), None)
+            ("loose".to_string(), None),
+            ("loose_2".to_string(), None)
         ]
     );
 
@@ -1691,13 +1694,21 @@ fn a_file_with_no_sample_id_is_named_by_itself_and_held_on_itself() {
 
 #[test]
 fn a_specimen_with_several_files_is_named_once_on_the_file_to_place_it_on() {
-    let files = files_named("pause-one-each", &["fmo_a", "fs_a", "fmo_b", "fs_b"]);
+    // Each full stain sorts before its FMO, so the order the files are read
+    // in does not pick it; DONOR-C has two, and the first is the one read.
+    let files = files_named(
+        "pause-one-each",
+        &["a_1", "a_2", "b_1", "b_2", "c_1", "c_2", "c_3"],
+    );
     let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
     for (file, donor, kind) in [
-        ("fmo_a", "DONOR-A", "FMO"),
-        ("fs_a", "DONOR-A", "FS"),
-        ("fmo_b", "DONOR-B", "FMO"),
-        ("fs_b", "DONOR-B", "FS"),
+        ("a_1", "DONOR-A", "FS"),
+        ("a_2", "DONOR-A", "FMO"),
+        ("b_1", "DONOR-B", "FS"),
+        ("b_2", "DONOR-B", "FMO"),
+        ("c_1", "DONOR-C", "FS"),
+        ("c_2", "DONOR-C", "FMO"),
+        ("c_3", "DONOR-C", "FS"),
     ] {
         metadata.insert(
             Arc::from(file) as Arc<str>,
@@ -1731,9 +1742,58 @@ fn a_specimen_with_several_files_is_named_once_on_the_file_to_place_it_on() {
     assert_eq!(
         named,
         [
-            ("DONOR-A".to_string(), "fs_a".to_string()),
-            ("DONOR-B".to_string(), "fs_b".to_string())
+            ("DONOR-A".to_string(), "a_1".to_string()),
+            ("DONOR-B".to_string(), "b_1".to_string()),
+            ("DONOR-C".to_string(), "c_1".to_string())
         ],
         "one each, on the full stain rather than the FMO"
+    );
+}
+
+#[test]
+fn two_gates_missed_on_one_specimen_are_each_named() {
+    let files = files("pause-two-gates");
+    let mut state = GateState::default();
+    add(&mut state, rect("a", "A", -1.0, -BIG), None);
+    add(&mut state, rect("b", "B", -1.0, -BIG), None);
+    add(
+        &mut state,
+        rect("under_a", "Under A", -BIG, -1.0),
+        Some("a"),
+    );
+    add(
+        &mut state,
+        rect("under_b", "Under B", -BIG, -1.0),
+        Some("b"),
+    );
+    let rules = store(&[
+        (RuleTarget::named("A"), top("No-Such-Channel", (0.49, 0.51))),
+        (RuleTarget::named("B"), top("No-Such-Channel", (0.49, 0.51))),
+        (RuleTarget::under("Under A", "A"), top(Y, (0.19, 0.21))),
+        (RuleTarget::under("Under B", "B"), top(Y, (0.19, 0.21))),
+    ]);
+    let outcome = crate::gate_rules::run::run_rules_pausing(
+        &state,
+        &inputs(&files, rules),
+        0,
+        |_| {},
+        &AtomicBool::new(false),
+    );
+    let mut named: Vec<(String, String)> = outcome
+        .paused
+        .expect("neither A nor B was measured")
+        .needs
+        .iter()
+        .map(|n| (n.gate.to_string(), n.file.to_string()))
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        [
+            ("A".to_string(), "fs_a".to_string()),
+            ("A".to_string(), "fs_b".to_string()),
+            ("B".to_string(), "fs_a".to_string()),
+            ("B".to_string(), "fs_b".to_string())
+        ]
     );
 }
