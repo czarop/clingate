@@ -163,6 +163,14 @@ fn a_rectangle_open_to_the_end_of_an_axis_is_not_made_a_polygon() {
     assert!(refused.to_string().contains("open"), "{refused}");
 }
 
+/// 1e9 is still a coordinate; only beyond it is an edge left open.
+#[test]
+fn a_rectangle_reaching_as_far_as_a_coordinate_goes_is_made_a_polygon() {
+    let far = rectangle((10.0, 20.0), (1e9, 220.0));
+    let made = as_polygon(&far, &id()).unwrap();
+    assert_eq!(points(&made)[1], (1e9, 20.0));
+}
+
 #[test]
 fn only_a_rectangle_is_made_a_polygon() {
     assert!(as_polygon(&triangle(), &id()).is_err());
