@@ -253,7 +253,16 @@ pub fn node_under(
     gate_id: &crate::gates::gate_store::GateId,
     parent: Option<&NodeId>,
 ) -> Option<NodeId> {
-    let nodes = state.nodes_for_gate(gate_id);
+    let mut nodes = state.nodes_for_gate(gate_id).to_vec();
+    // A quadrant is placed in the tree by its corners, not by its own id -
+    // the id a click on it selects.
+    if nodes.is_empty()
+        && let Some(gate) = state.registered_gate(gate_id)
+    {
+        for corner in gate.get_inner_gate_ids() {
+            nodes.extend_from_slice(state.nodes_for_gate(&corner));
+        }
+    }
     nodes
         .iter()
         .find(|node| {

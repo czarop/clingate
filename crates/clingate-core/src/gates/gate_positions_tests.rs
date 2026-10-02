@@ -375,3 +375,86 @@ fn a_column_no_sample_has_a_value_of_is_refused_and_nothing_changes() {
     assert!(refused.is_err());
     assert!(state.unchanged_since(&before));
 }
+
+/// A quadrant added as the editor adds one, and the id of each of its
+/// placements - the corners a click on the plot selects - with its own.
+fn quadrant() -> (GateState, Arc<str>, Vec<Arc<str>>) {
+    use crate::axis_store::PlotMapper;
+    use crate::gates::gate_store::ROOTGATE;
+    use crate::gates::gate_types::PrimaryGateType;
+    use flow_fcs::TransformType;
+    let mapper = PlotMapper::new(
+        600.0,
+        600.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        0.0..=1000.0,
+        TransformType::Linear,
+        TransformType::Linear,
+    );
+    let mut state = GateState::default();
+    state
+        .add_gate(
+            &mapper,
+            300.0,
+            300.0,
+            Arc::from(X),
+            Arc::from(Y),
+            None,
+            Some(ROOTGATE.clone()),
+            PrimaryGateType::Quadrant,
+            Some("Q".to_string()),
+        )
+        .expect("a quadrant can be added");
+    let corners: Vec<Arc<str>> = state.placements().map(|(_, p)| p.gate_id.clone()).collect();
+    let own = state.registered_gate(&corners[0]).unwrap().get_id();
+    (state, own, corners)
+}
+
+/// Selected by its own id - what a click on it selects - or by one of its
+/// corners, a quadrant is put per sample whole: the quadrant and every corner
+/// read per sample, and each sample holds a position for each of them.
+#[test]
+fn a_quadrant_changes_mode_whole_whichever_of_its_ids_is_selected() {
+    for by_corner in [false, true] {
+        let (mut state, own, corners) = quadrant();
+        let selected = if by_corner { &corners[0] } else { &own };
+        let map = metadata();
+        set_mode(
+            &mut state,
+            selected,
+            &Mode::PerSample,
+            Some(&file("a1")),
+            &map,
+        )
+        .unwrap();
+        for id in corners.iter().chain([&own]) {
+            assert_eq!(
+                mode(&state, id),
+                Mode::PerSample,
+                "{id}, selected {selected}"
+            );
+            for sample in ["a1", "a2", "b1"] {
+                assert!(
+                    state.has_sample_position(id, &file(sample)),
+                    "{id} on {sample}"
+                );
+            }
+        }
+    }
+}
+
+/// A quadrant is placed in the tree by its corners. Selected by its own id,
+/// it is found where its corners are.
+#[test]
+fn a_quadrant_selected_by_its_own_id_is_found_where_its_corners_are() {
+    let (state, own, corners) = quadrant();
+    assert!(state.nodes_for_gate(&own).is_empty());
+    let node = crate::review::report::node_under(&state, &own, None).expect("found");
+    assert!(
+        corners
+            .iter()
+            .any(|corner| state.nodes_for_gate(corner).contains(&node))
+    );
+}

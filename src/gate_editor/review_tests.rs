@@ -73,6 +73,47 @@ fn a_plot_reports_the_gate_selected_on_it_at_its_place_under_the_plot() {
     );
 }
 
+/// A click on a quadrant selects the quadrant, not a corner; the quadrant is
+/// placed in the tree by its corners. The plot's Position and Report buttons
+/// still find it, at a corner's place.
+#[test]
+fn a_quadrant_selected_on_a_plot_is_found_at_a_corner_s_place() {
+    let session = Session::open(&two_samples_with_a_rule("review-quadrant")).unwrap();
+    let state = session.gates();
+    let corner = state
+        .registered_ids()
+        .into_iter()
+        .find(|id| {
+            state.registered_gate(id).unwrap().is_composite()
+                && !state.nodes_for_gate(id).is_empty()
+        })
+        .expect("the fixture has a quadrant");
+    let quadrant = state.registered_gate(&corner).unwrap().get_id();
+    assert!(
+        state.nodes_for_gate(&quadrant).is_empty(),
+        "placed by its corners"
+    );
+    let parent = state
+        .parent_node(&state.nodes_for_gate(&corner)[0])
+        .unwrap();
+    let target = selected_target(
+        state,
+        Some(&quadrant),
+        Some(&parent),
+        Some(Arc::from("sample1")),
+        "sample1_FMX.fcs",
+    )
+    .expect("the quadrant is found");
+    assert!(
+        state
+            .registered_gate(&quadrant)
+            .unwrap()
+            .get_inner_gate_ids()
+            .iter()
+            .any(|id| state.nodes_for_gate(id).contains(&target.node))
+    );
+}
+
 #[test]
 fn a_review_tile_draws_the_population_above_the_gate_on_the_gate_s_axes() {
     let (session, id, node, parent) = tmem("review-where");
