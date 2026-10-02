@@ -70,10 +70,30 @@ impl Gap {
         Some(Self {
             inside: edge,
             beyond: enough
-                .then(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
+                .then(|| {
+                    near_boundary(&beyond, side)
+                        .or_else(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
+                })
                 .flatten(),
         })
     }
+}
+
+/// How many widths from its peak a symmetric population's 95th percentile
+/// sits.
+const NEAR_BOUNDARY_WIDTHS: f64 = 1.645;
+
+/// Where the cells `beyond` a population on `side` of it end towards it:
+/// their peak, as a negative's is found, plus 1.645 widths of their far side -
+/// where their 95th percentile would be were they as wide towards the
+/// population. Not their percentile itself: towards the population is where
+/// its dim tail trails into them, and a percentile moves with the tail.
+fn near_boundary(beyond: &[f64], side: Side) -> Option<f64> {
+    // Turned so the population lies above them, their far side below.
+    let toward = if side == Side::Lower { 1.0 } else { -1.0 };
+    let turned: Vec<f64> = beyond.iter().map(|value| value * toward).collect();
+    let peak = crate::gate_rules::threshold::negative_peak(&turned)?;
+    Some(toward * (peak.centre + NEAR_BOUNDARY_WIDTHS * peak.spread))
 }
 
 /// Where `edge`, drawn between a population and the cells beyond it on the

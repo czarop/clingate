@@ -320,7 +320,8 @@ reference's, the gate is left where it is (not placed). A side the reference
 gate leaves open on a marker - nothing beyond its edge but under 1% of the
 gate's events and at most 20 - sets no limit there. Otherwise the gate is
 placed edge by edge (`carries`, `phenotype_gate`): each edge keeps its share
-of the way across the gap from the cells beyond it (their 5% nearest) to the
+of the way across the gap from the cells beyond it (their peak, as
+`negative_peak` reads it, plus 1.645 widths of their far side) to the
 population's boundary (its 5% nearest), the population being the matched
 cells on the reference as on the sample, and the cells beyond the unmatched
 within the gate's span on the other axis - or, on an axis the rule reads,

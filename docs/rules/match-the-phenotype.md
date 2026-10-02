@@ -66,8 +66,8 @@ them.
 5. **Place the gate**, edge by edge. Each edge keeps its place in the gap
    between the population and the cells beyond it, as a person would put
    it: on the reference, how far it sits from the near boundary of the
-   cells beyond it (their 5% nearest the population) to the population's
-   own boundary (its 5% nearest the edge); on the sample, the same share of
+   cells beyond it to the population's own boundary (its 5% nearest the
+   edge); on the sample, the same share of
    the way across the same gap. The population is the cells that match, on
    the reference as on the sample, and the cells beyond are those that do
    not, within the gate's span on the plot's other axis. On an axis the rule
@@ -80,7 +80,11 @@ them.
    far as the boundary it sits past: scaled by the gap, a wider gap would
    carry it further in. Where no more than
    dust lies beyond the population, on either, the edge moves as far as the
-   population's boundary did. It is the gap, not the matched cells' middle,
+   population's boundary did. The near boundary of the cells beyond is their
+   peak plus 1.645 widths of their far side - where their 95th percentile
+   would be were they as wide towards the population - not their percentile
+   itself, which a dim tail of the population trailing into them drags
+   about. It is the gap, not the matched cells' middle,
    which moves with how many there are and how bright, nor the parent's
    negative and valley, which know nothing of the cells either side of the
    edge. Carried so, an edge on a side the gate leaves open is never pulled
