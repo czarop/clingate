@@ -892,11 +892,21 @@ fn tmem_workspace(name: &str) -> std::path::PathBuf {
 /// [`tmem_workspace`] with teff_naive where it is drawn: beside Tmem on its
 /// plot, to the left of it on BUV805-A.
 fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
+    tmem_workspace_positive_one_in(name, [3, 3])
+}
+
+/// [`tmem_workspace_beside_teff_naive`], with BUV805-A positive on one event
+/// in `one_in[0]` of sample1 and `one_in[1]` of sample2: a multiple of 3, so
+/// those events are all positive on BUV661-A and negative on BV785-A too.
+fn tmem_workspace_positive_one_in(name: &str, one_in: [usize; 2]) -> std::path::PathBuf {
     let dir = workspace(name);
     let mut channels = vec!["FSC-A", "SSC-A"];
     channels.extend(FLUORESCENCE);
     let at = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
-    for (seed, file) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")] {
+    for ((seed, file), every) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
+        .into_iter()
+        .zip(one_in)
+    {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let high = Normal::new(400_000.0f32, 40_000.0).unwrap();
         let rows: Vec<Vec<f32>> = events(seed, 20_000)
@@ -904,8 +914,7 @@ fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
             .enumerate()
             .map(|(i, mut row)| {
                 row[at("BUV563-A")] = high.sample(&mut rng);
-                // Positive a third of the time, as the other channels are.
-                row[at("BUV805-A")] = if i % 3 == 0 {
+                row[at("BUV805-A")] = if i % every == 0 {
                     Normal::new(40_000.0f32, 8_000.0).unwrap().sample(&mut rng)
                 } else {
                     Normal::new(0.0f32, 300.0).unwrap().sample(&mut rng)
@@ -3083,4 +3092,61 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
         let (lower, _) = fsc_span(&session, "Inner B", sample);
         assert!((lower - 1_000_000.0).abs() < 1.0, "{sample}: {lower}");
     }
+}
+
+/// A phenotype rule for Tmem, read on sample1: BUV805-A and BUV661-A
+/// positive, BV785-A negative.
+fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::RulesPreview {
+    let rule = clingate_core::gate_rules::rule::Rule::MatchThePhenotype(
+        clingate_core::gate_rules::rule::PhenotypeRule {
+            markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+            ..Default::default()
+        },
+    );
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    session.preview_rules().unwrap()
+}
+
+/// Both samples a third positive: the same cells are found on sample2 and
+/// its gate is moved onto them.
+#[test]
+fn a_phenotype_found_on_another_sample_moves_its_gate() {
+    let preview = phenotype_run_in(tmem_workspace_positive_one_in(
+        "session-phenotype-found",
+        [3, 3],
+    ));
+    assert_eq!(preview.not_positioned.len(), 0, "{preview:?}");
+    assert!(
+        preview.would_move.iter().any(|m| m.specimen == "two"),
+        "{preview:?}"
+    );
+}
+
+/// Sample2 one in 21 positive against one in three on sample1: a seventh as
+/// common, under the fifth a match needs - 78 cells in Tmem's parent of about
+/// 1,150 - though over the 50 it needs. Its gate is left alone and the
+/// preview says why.
+#[test]
+fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
+    let preview = phenotype_run_in(tmem_workspace_positive_one_in(
+        "session-phenotype-rare",
+        [3, 21],
+    ));
+    assert!(
+        preview.would_move.iter().all(|m| m.specimen != "two"),
+        "{preview:?}"
+    );
+    let refused = preview
+        .not_positioned
+        .iter()
+        .find(|n| n.sample.as_deref().is_some_and(|s| s.contains("sample2")))
+        .unwrap_or_else(|| panic!("{preview:?}"));
+    assert!(
+        refused.reason.contains("under a fifth as common")
+            && refused.reason.contains("left where it is"),
+        "{refused:?}"
+    );
 }
