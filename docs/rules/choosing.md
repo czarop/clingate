@@ -5,6 +5,9 @@ drew on one sample. It moves one edge of the gate - the side it keeps events
 from - along one marker, or (the phenotype rule) finds the cells themselves.
 Each rule has its own guide; this one is about choosing between them.
 
+Claude reads the samples' data for any of this only when the user asks it to.
+Otherwise it asks the user what the plots look like, and offers to look.
+
 ## First: what does the plot look like?
 
 Look at the gate's parent population on the rule's marker, on the samples the

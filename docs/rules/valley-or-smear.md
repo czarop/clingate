@@ -45,7 +45,8 @@ needs a smear gated by hand as well:
   to stop at a smear again.
 - Runs that never pause - the tools for Claude - leave a smear with no
   example unplaced, saying so. Gate one smear by hand and name it in the
-  rule as `smear_example`.
+  rule as `smear_example`. Which samples are smears is found by the run:
+  there is no need to read the data beforehand to predict it.
 
 The smear example is a reference, as the reference is: never moved by a run.
 

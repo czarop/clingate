@@ -50,8 +50,16 @@ it was, pastes the matrix exported from Omiq). Ask them; do not assume.
 Distributions, gate edges and comparisons are in the units the plots are drawn \
 in: arcsinh-scaled where the scaling says so.
 
-To see whether a sample is distributed unlike the rest - the usual reason a \
-rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
+Read the samples' events - population_stats, distribution, compare_samples, \
+compare_to_peers, gate_profile, gate_picture, try_rules, preview_rules - only \
+when the user asks you to, or asks for something that cannot be done without \
+them. Writing, changing or explaining a rule does not need them: say what the \
+rule does, and offer to look at the data rather than looking. Never read the \
+data to predict which samples a rule will refuse, stop at or flag - a run \
+finds that out, and says so.
+
+When the user asks whether a sample is distributed unlike the rest - the usual \
+reason a rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
 from 0, or spread_ratio well above 1, marks a sample worth a closer look.
 
 Gates are edited in a working copy, exactly as in the clingate app. The \
@@ -78,8 +86,8 @@ a gate on your own judgement. mark_run_reviewed records that the user has \
 finished reviewing a run: only when they say so, since every placement they \
 did not report then counts as accepted.
 
-To build rules for a panel with the user - done once per panel, so be \
-thorough but lean: \
+When the user asks you to build rules for a panel from the data with them - \
+done once per panel, so be thorough but lean: \
 1. gate_profile with no population: every gate in a line - what its \
 populations look like by sample type. Agree with the user which gates need \
 rules. \
@@ -136,7 +144,8 @@ hand-gated File: in the dip where a sample has one, and on a smear as far \
 above the negative as on its smear_example, a smear gated by hand - the \
 reference itself when the reference is a smear. With no example, a smear is \
 left unplaced: ask the user to gate one smear by hand, then name its file as \
-smear_example. It, and an InTheValley rule, can name a fallback the same way \
+smear_example. Which samples are smears is found when the rules run; do not \
+read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
 - usually the same gate under another parent - for samples where the \
 positives smear with no dip: there its edge goes where the fallback's is, \
 placed first, and the placement comes up for review.
@@ -146,8 +155,8 @@ guide that says 'per run in the first instance' means one line for all of \
 them: a band rule with 'pool': 'Run' reads every FMX file in the workspace \
 together and puts the same line on every specimen. For small populations, \
 where 0.2% of one FMX is a couple of events, that is the difference between \
-a line set by stray events and one set by dozens. Check with gate_profile \
-that the specimens are alike enough to share a line. Write a pooled rule \
+a line set by stray events and one set by dozens. Offer to check with \
+gate_profile that the specimens are alike enough to share a line. Write a pooled rule \
 only when the user asks for one: it is not how this lab gates, and each \
 specimen's own FMX no longer holds the band under it.
 
@@ -550,6 +559,7 @@ impl Clingate {
     /// Events in a population, in its parent and in the whole file, and the population's
     /// percent of parent and of total, for each sample named - with the minimum, median and
     /// maximum percent of parent across them.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn population_stats(&self, Parameters(args): Parameters<PopulationStats>) -> String {
         self.run(move |s| s.population_stats(&args.population, &args.samples))
@@ -559,6 +569,7 @@ impl Clingate {
     /// How a population's parent is spread on one parameter in one sample - percentiles and
     /// a histogram - and where the population's gate edges sit on it, with the share of the
     /// parent between them. In the units the plots are drawn in.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn distribution(&self, Parameters(args): Parameters<DistributionArgs>) -> String {
         self.run(move |s| s.distribution(&args.population, &args.sample, &args.parameter))
@@ -604,6 +615,7 @@ impl Clingate {
     /// How a population's parent is spread on one parameter in each sample named, side by
     /// side: percentiles, each sample's distance from the others in typical interquartile
     /// ranges, its spread against theirs, and where the population's gate sits in it.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn compare_samples(&self, Parameters(args): Parameters<CompareSamples>) -> String {
         self.run(move |s| s.compare_samples(&args.population, &args.parameter, &args.samples))
@@ -786,6 +798,7 @@ impl Clingate {
     /// they are, moving nothing: for each, what the gate would hold on every sample, summed up
     /// by sample type, beside what it holds as the gates stand now, with what each rule was
     /// unsure of or could not place. Each file is read once for all the candidates.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn try_rules(&self, Parameters(args): Parameters<TryRules>) -> String {
         self.run(move |s| {
@@ -805,7 +818,8 @@ impl Clingate {
     /// sample type: each sample's shape class (separate, shoulder, smear, merged, negative
     /// only, several peaks), how the negative shifts and changes shape, where the gate sits now
     /// against the negative and what it holds, and on the full stain how much lies above its
-    /// FMX's top. Reads a spread of specimens; moves nothing. For choosing a rule.
+    /// FMX's top. Reads a spread of specimens; moves nothing. For choosing a rule with the
+    /// user, only when they ask for the data to be read.
     #[tool(annotations(read_only_hint = true))]
     async fn gate_profile(&self, Parameters(args): Parameters<GateProfileArgs>) -> String {
         self.run(move |s| s.gate_profile(args.population.as_deref(), args.specimens))
@@ -817,6 +831,7 @@ impl Clingate {
     /// would - where the negative ends, whether the positive separates or smears, whether the
     /// gate sits alike on every sample. The captions say which plot is which, left to right,
     /// top to bottom, and what the gate holds on each.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn gate_picture(
         &self,
