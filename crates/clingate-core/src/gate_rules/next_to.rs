@@ -323,9 +323,38 @@ fn sides(outline: &[Point]) -> (Vec<Point>, Vec<Point>) {
     }
 }
 
+/// How far along `u` the side of `theirs` facing the gate reaches: its low
+/// `u` side, less the stretches at either end that run more along `u` than
+/// across - its top and bottom, which face away. Steepness is judged against
+/// the two gates' extent on each axis, so it does not depend on the units.
+fn facing_reach(theirs: &[Point], mine: &[Point]) -> Option<f64> {
+    let within: Vec<Point> = theirs
+        .iter()
+        .chain(mine)
+        .copied()
+        .filter(|p| p.0.abs() < OPEN && p.1.abs() < OPEN)
+        .collect();
+    let (u_lo, u_hi) = extent(&within, Axis::X);
+    let (v_lo, v_hi) = extent(&within, Axis::Y);
+    let upright = |pair: &[Point]| {
+        (pair[1].1 - pair[0].1).abs() / (v_hi - v_lo)
+            >= (pair[1].0 - pair[0].0).abs() / (u_hi - u_lo)
+    };
+    let (_, side) = sides(theirs);
+    let edges: Vec<&[Point]> = side.windows(2).collect();
+    let first = edges.iter().position(|pair| upright(pair))?;
+    let last = edges.iter().rposition(|pair| upright(pair))?;
+    edges[first..=last]
+        .iter()
+        .flat_map(|pair| [pair[0].0, pair[1].0])
+        .max_by(f64::total_cmp)
+}
+
 /// `mine` with its facing side, where it lies alongside the other gate,
 /// replaced by the other's outline `gap` short of it: steps where that
-/// stretch begins and ends, and the rest of the gate as it was.
+/// stretch begins and ends, and the rest of the gate as it was. It goes no
+/// further than the other's facing side reaches, so it never wraps round
+/// the other's top or bottom.
 fn follow_outline(
     mine: &[Point],
     theirs: &[Point],
@@ -338,6 +367,9 @@ fn follow_outline(
     if hi <= lo {
         return Err(never_level(other));
     }
+    let reach = facing_reach(theirs, mine).ok_or_else(|| {
+        format!("{other} has no side facing it along that axis, only a top and a bottom")
+    })?;
     let mut levels: Vec<f64> = theirs
         .iter()
         .map(|p| p.1)
@@ -348,7 +380,7 @@ fn follow_outline(
     levels.dedup();
     let along: Vec<Point> = levels
         .iter()
-        .filter_map(|v| Some((nearest_at(theirs, *v)? - gap, *v)))
+        .filter_map(|v| Some((nearest_at(theirs, *v)?.min(reach) - gap, *v)))
         .collect();
 
     let (near, far) = sides(mine);

@@ -34,7 +34,9 @@ the two meet where they first touch, on the plot as drawn.
    - `FollowOutline`: where the gate lies alongside the other, its facing
      side takes the other's outline, so there is no gap anywhere along it,
      with steps where that stretch begins and ends; the rest of the gate is
-     as it was. Polygons only - a rectangle grows its side.
+     as it was. Only the other's side facing it is followed, not its top or
+     bottom - an edge running more along the axis than across - so the gate
+     never wraps round it. Polygons only - a rectangle grows its side.
    - `Slide`: the whole gate slides, its shape as it is.
 3. A gate that never comes level with the other along that axis - the other
    lies wholly above it, say, for a gate moving across - is left where it

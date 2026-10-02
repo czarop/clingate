@@ -1136,7 +1136,7 @@ pub fn GateRulesWindow() -> Element {
                         oninput: move |e| next_gap.set(e.value()),
                     }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the other's shape where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
+                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the shape of the other's side facing it, not its top or bottom, where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
                     }
                 }
 
