@@ -524,8 +524,8 @@ impl AboveTheNegativeRule {
 /// - a run came back with seven samples unplaced at depths of 5% to 24%
 /// against a threshold of 25%, one of them short by a single point, and the
 /// only way to find out where the gate would have gone was to change the
-/// setting and run again. Only a density with no dip deeper than its counting
-/// noise is refused, because then there is nothing to place.
+/// setting and run again. Only a density with no dip at all is refused,
+/// because then there is nothing to place.
 ///
 /// There used to be a `min_depth_fraction` here, the depth below which a
 /// placement was refused. When refusing gave way to scoring it was left in the
