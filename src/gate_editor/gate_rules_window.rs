@@ -10,17 +10,17 @@ use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{Report, describe};
 use clingate_core::gate_rules::choices::{
-    EdgeForm, carry_over, choices, describe_phenotype, every_target, follow_from_form,
-    follow_to_form, marker_label,
+    EdgeForm, beside, carry_over, choices, describe_phenotype, every_target, fallback_targets,
+    follow_from_form, follow_to_form, marker_label, side_from, side_to,
 };
 use clingate_core::gate_rules::rule::{
-    AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
-    ShapeFit, TailFractionRule, ValleyRule,
+    AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
+    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
 };
-use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules};
+use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules_pausing};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::GateStateImplExt;
 use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
@@ -205,14 +205,29 @@ impl RulesRun {
         )
     }
 
-    /// A finished run's placements, written into the working copy as one
-    /// step, and the run kept in the workspace's `reviews` folder for
-    /// reviewing it - as the tools for Claude keep it. `rules` are the rules
-    /// the run read.
-    ///
-    /// Only the keeping can fail; the placements are applied either way.
-    pub(crate) fn apply(
+    /// A run's placements written as one step of the working copy, and the
+    /// gates a paused run needs placed by hand each given a position of their
+    /// own on their specimen, so moving one moves nobody else's.
+    pub(crate) fn place(
         mut self,
+        placements: &[clingate_core::gate_rules::autogate::Placement],
+        hold: &[clingate_core::gate_rules::run::NeedsPlacing],
+    ) {
+        let metadata = self.metadata.peek().metadata().clone();
+        let before = self.edits.before();
+        {
+            let mut gates = self.gates.write();
+            clingate_core::gate_rules::autogate::apply_placements(
+                &mut gates, placements, &metadata,
+            );
+            clingate_core::gate_rules::run::hold_for_placing(&mut gates, hold, &metadata);
+        }
+        self.edits.after(before);
+    }
+
+    /// A finished run kept in the workspace's `reviews` folder for reviewing.
+    pub(crate) fn keep(
+        &self,
         outcome: &clingate_core::gate_rules::run::RunOutcome,
         rules: &RuleStore,
     ) -> Result<(), String> {
@@ -222,12 +237,6 @@ impl RulesRun {
             rules,
             &self.metadata.peek(),
         );
-        let before = self.edits.before();
-        clingate_core::gate_rules::autogate::apply_placements(
-            &mut self.gates.write(),
-            &outcome.placements,
-        );
-        self.edits.after(before);
         match self.edits.folder() {
             Some(folder) => record
                 .applied(&folder, &outcome.events)
@@ -271,6 +280,9 @@ pub fn GateRulesWindow() -> Element {
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
+    // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
+    // for none.
+    let mut valley_fallback = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -287,6 +299,12 @@ pub fn GateRulesWindow() -> Element {
     let mut follow_mode = use_signal(|| "shape".to_string());
     let mut follow_anchor = use_signal(String::new);
     let mut follow_edges = use_signal(Vec::<EdgeForm>::new);
+    // A rule next to another gate: that gate, as `RuleTarget::describe`
+    // writes it, which side of it, and how it is met.
+    let mut next_anchor = use_signal(String::new);
+    let mut next_side = use_signal(|| "Lower".to_string());
+    let mut next_meet = use_signal(|| Meet::default().key().to_string());
+    let mut next_gap = use_signal(|| "0".to_string());
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
@@ -312,6 +330,190 @@ pub fn GateRulesWindow() -> Element {
     // Set while a run is in flight, so the Stop button has something to raise.
     let mut cancel = use_signal(|| None::<Arc<std::sync::atomic::AtomicBool>>);
     use_stop_run_on_change(cancel);
+
+    // A run stopped for gates to be placed by hand, and the editor's ask to go
+    // on with it.
+    let mut paused_run = use_context::<Signal<Option<crate::gate_editor::paused_run::PausedRun>>>();
+    let go_on = use_context::<Signal<crate::gate_editor::paused_run::GoOn>>();
+    let mut active = use_context::<Signal<crate::gate_editor::route::Tab>>();
+    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
+    // A paused run whose next part did not go ahead is still waiting - unless
+    // another workspace was opened meanwhile.
+    let mut give_back = move |paused: Option<crate::gate_editor::paused_run::PausedRun>| {
+        if let Some(paused) = paused
+            && paused.is_on(generation.peek().document)
+        {
+            paused_run.set(Some(paused));
+        }
+    };
+
+    // Runs the rules - or, handed a paused run, goes on with it from the
+    // level it stopped before, measuring on the gates as they are now.
+    let start_run = move |from: Option<crate::gate_editor::paused_run::PausedRun>| {
+        let mut from = from;
+        spawn(async move {
+            if running() {
+                give_back(from.take());
+                return;
+            }
+            running.set(true);
+            report.set(None);
+            progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
+
+            // Everything the run reads, as it stands now. Read
+            // again before anything is written: see `RunInputs`.
+            //
+            // The axis settings are compared whole, not only the
+            // cofactors the run reads: any new scaling is a new
+            // workspace as far as the answers are concerned.
+            let inputs_now = move || run_with.inputs_now();
+            let started = inputs_now();
+            if started.0.files.is_empty() {
+                warn(
+                    &toasts,
+                    "No FCS files are loaded - open a workspace on the first tab",
+                );
+                running.set(false);
+                progress.set(None);
+                give_back(from.take());
+                return;
+            }
+
+            // A snapshot, not a lock. Every gate is behind an Arc,
+            // so this is a refcount bump rather than a copy, and
+            // the store is free for the rest of the editor the
+            // moment it is taken.
+            let snapshot = gate_store.read().clone();
+            let started_gates = snapshot.clone();
+
+            let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            cancel.set(Some(flag.clone()));
+            let stopped = flag.clone();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
+
+            let from_level = from.as_ref().map_or(0, |paused| paused.next_level());
+            let worker = {
+                let inputs = started.0.clone();
+                tokio::task::spawn_blocking(move || {
+                    run_rules_pausing(
+                        &snapshot,
+                        &inputs,
+                        from_level,
+                        |step| {
+                            let _ = tx.send(step);
+                        },
+                        &flag,
+                    )
+                })
+            };
+
+            // The worker's sender drops when it returns, which ends
+            // this loop - no sentinel message to get wrong.
+            while let Some(step) = rx.recv().await {
+                progress.set(Some(step));
+            }
+
+            let outcome = worker.await;
+            progress.set(None);
+            cancel.set(None);
+            running.set(false);
+
+            let outcome = match outcome {
+                Ok(o) => o,
+                Err(e) => {
+                    warn(&toasts, format!("The run did not finish: {e}"));
+                    give_back(from.take());
+                    return;
+                }
+            };
+            // Answers measured on one workspace mean nothing in
+            // another, whatever stopped or did not stop the run.
+            // Checked here rather than trusted to the stop flag:
+            // the flag is raised by an effect, which runs after the
+            // change that fires it, and the run can finish first.
+            if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
+                warn(
+                    &toasts,
+                    crate::gate_editor::paused_run::changed_while_running(from.is_some()),
+                );
+                give_back(from.take());
+                return;
+            }
+            if outcome.cancelled || stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                note(&toasts, "Stopped - no gates were moved");
+                give_back(from.take());
+                return;
+            }
+
+            // Writing happens here, on the one thread that owns the
+            // store, and only once the document is known to be the
+            // one the run measured: each part of the run is one step
+            // of the working copy.
+            let needs = outcome
+                .paused
+                .as_ref()
+                .map(|paused| paused.needs.clone())
+                .unwrap_or_default();
+            run_with.place(&outcome.placements, &needs);
+            let whole = match from.take() {
+                Some(paused) => paused.then(outcome),
+                None => outcome,
+            };
+            if whole.paused.is_some() {
+                let paused = crate::gate_editor::paused_run::PausedRun::new(
+                    whole,
+                    generation.peek().document,
+                    started.0.rules.clone(),
+                    &gate_store.peek(),
+                );
+                let count = paused.needs().len();
+                warn(
+                    &toasts,
+                    format!(
+                        "The run paused: {count} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
+                        if count == 1 { "" } else { "s" }
+                    ),
+                );
+                paused_run.set(Some(paused));
+                active.set(crate::gate_editor::route::Tab::Editor);
+                crate::gate_editor::paused_run::show_need(0);
+                return;
+            }
+            if let Err(e) = run_with.keep(&whole, &started.0.rules) {
+                warn(&toasts, e);
+            }
+            crate::gate_editor::review::reviews_changed();
+
+            let run = whole.report;
+            say(
+                &toasts,
+                format!(
+                    "Moved {} gates, left {} already in band and {} reference; {} need review",
+                    run.positioned.len(),
+                    run.unchanged.len(),
+                    run.reference.len(),
+                    run.needs_review(REVIEW_FLOOR).count()
+                ),
+            );
+            report.set(Some(run));
+        });
+    };
+    use_effect(move || {
+        if go_on().0 == 0 {
+            return;
+        }
+        let Some(why_not) = paused_run
+            .peek()
+            .as_ref()
+            .map(|paused| paused.why_not_go_on(&gate_store.peek(), &rules.peek()))
+        else {
+            return;
+        };
+        match why_not {
+            Some(why_not) => warn(&toasts, why_not),
+            None => start_run(paused_run.write().take()),
+        }
+    });
 
     // Picking a gate offers only the parents and parameters that gate is drawn
     // with, so the form cannot name a combination the document does not have.
@@ -340,7 +542,6 @@ pub fn GateRulesWindow() -> Element {
 
     // The last run's report names gate positions in a document that has gone
     // once the gates are replaced, and is cleared with it.
-    let generation = use_context::<Signal<crate::gate_editor::workspace_window::Generation>>();
     let document = use_memo(move || generation.read().document);
     use_effect(move || {
         document();
@@ -416,9 +617,23 @@ pub fn GateRulesWindow() -> Element {
                 follow_anchor.set(same.unwrap_or_default());
                 follow_edges.set(edges);
             }
+            Rule::NextToGate(r) => {
+                kind.set("NextToGate".to_string());
+                parameter.set(r.parameter.to_string());
+                next_anchor.set(r.anchor.describe());
+                next_side.set(side_to(r.side));
+                next_meet.set(r.meet.key().to_string());
+                next_gap.set(format!("{}", r.gap));
+            }
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
+                valley_fallback.set(
+                    r.fallback
+                        .as_ref()
+                        .map(RuleTarget::describe)
+                        .unwrap_or_default(),
+                );
             }
         }
         editing.set(replacing.then(|| entry.target.clone()));
@@ -492,13 +707,38 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
             }
+            "NextToGate" => {
+                let Some(anchor) = beside(&choices.read(), &name, &parent())
+                    .into_iter()
+                    .find(|t| t.describe() == next_anchor())
+                else {
+                    warn(&toasts, "Choose the gate it sits next to");
+                    return;
+                };
+                let gap = next_gap().trim().parse::<f64>().unwrap_or(f64::NAN);
+                if let Some(problem) = clingate_core::gate_rules::rule::gap_problem(gap) {
+                    warn(&toasts, problem);
+                    return;
+                }
+                Rule::NextToGate(NextToRule {
+                    anchor,
+                    parameter: Arc::from(param.as_str()),
+                    side: side_from(&next_side()).unwrap_or(Side::Lower),
+                    meet: Meet::from_key(&next_meet()).unwrap_or_default(),
+                    gap,
+                })
+            }
             "InTheValley" => {
                 let Ok(sm) = smoothing().parse::<f64>() else {
                     warn(&toasts, "The smoothing must be a number");
                     return;
                 };
+                let fallback = fallback_targets(&choices.read(), &name, &parent())
+                    .into_iter()
+                    .find(|t| t.describe() == valley_fallback());
                 Rule::InTheValley(ValleyRule {
                     smoothing: sm,
+                    fallback,
                     ..ValleyRule::default()
                 })
             }
@@ -559,7 +799,7 @@ pub fn GateRulesWindow() -> Element {
             p => RuleTarget::under(name.as_str(), p),
         };
         let described = target.describe();
-        let follows = kind() == "FromAnotherGate";
+        let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
             // A rule from another gate reads its own sample, and positions
             // along no parameter of its own.
@@ -635,6 +875,9 @@ pub fn GateRulesWindow() -> Element {
                                     td { }
                                 } else if matches!(entry.rule.rule, Rule::FromAnotherGate(_)) {
                                     td { class: "gate_rules-hint", "from another gate" }
+                                    td { }
+                                } else if matches!(entry.rule.rule, Rule::NextToGate(_)) {
+                                    td { class: "gate_rules-hint", "next to another gate" }
                                     td { }
                                 } else {
                                     td { "{entry.rule.parameter}" }
@@ -790,18 +1033,22 @@ pub fn GateRulesWindow() -> Element {
                         }
                     }
 
-                    label { "Gate keeps events" }
-                    select {
-                        value: "{bound}",
-                        onchange: move |e| bound.set(e.value()),
-                        option { value: "Above", "above the line" }
-                        option { value: "Below", "below the line" }
+                    // A gate next to another moves along a parameter, but no
+                    // line of its own decides which events it keeps.
+                    if kind() != "NextToGate" {
+                        label { "Gate keeps events" }
+                        select {
+                            value: "{bound}",
+                            onchange: move |e| bound.set(e.value()),
+                            option { value: "Above", "above the line" }
+                            option { value: "Below", "below the line" }
+                        }
                     }
                 }
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -829,6 +1076,55 @@ pub fn GateRulesWindow() -> Element {
                     option { value: "InTheValley", "in the valley between the negative and the positive" }
                     option { value: "MatchThePhenotype", "find the cells that match the reference population" }
                     option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
+                    option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
+                }
+
+                if kind() == "NextToGate" {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Brings this gate up against another on the same plot, as close as it can be without overlapping it, on each sample. A run places that gate first, so settle it before relying on this one. Rectangles and polygons only."
+                    }
+                    label { "Next to" }
+                    select {
+                        value: "{next_anchor}",
+                        onchange: move |e| next_anchor.set(e.value()),
+                        option { value: "", "choose the gate beside it" }
+                        for target in beside(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: next_anchor() == target.describe(),
+                                "{target.describe()}"
+                            }
+                        }
+                    }
+                    label { "On its" }
+                    select {
+                        value: "{next_side}",
+                        onchange: move |e| next_side.set(e.value()),
+                        option { value: "Lower", "lower side - to its left, or below it" }
+                        option { value: "Upper", "upper side - to its right, or above it" }
+                    }
+                    label { "By" }
+                    select {
+                        value: "{next_meet}",
+                        onchange: move |e| next_meet.set(e.value()),
+                        for meet in Meet::ALL {
+                            option {
+                                value: "{meet.key()}",
+                                selected: next_meet() == meet.key(),
+                                "{meet.label()}"
+                            }
+                        }
+                    }
+                    label { "Gap" }
+                    input {
+                        r#type: "number",
+                        step: "any",
+                        value: "{next_gap}",
+                        oninput: move |e| next_gap.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the other's shape where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
+                    }
                 }
 
                 if kind() == "FromAnotherGate" {
@@ -1053,6 +1349,23 @@ pub fn GateRulesWindow() -> Element {
                     p { class: "gate_rules-hint gate_rules-span",
                         "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
                     }
+
+                    label { "With no dip" }
+                    select {
+                        value: "{valley_fallback}",
+                        onchange: move |e| valley_fallback.set(e.value()),
+                        option { value: "", "leave the gate unplaced" }
+                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: valley_fallback() == target.describe(),
+                                "where {target.describe()} is"
+                            }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "For a sample whose positives smear with no dip: its edge goes where the same gate's is under another parent, on the same sample. A run places that gate first, and every placement made this way comes up for review."
+                    }
                 }
 
                 if kind() == "AboveTheNegative" {
@@ -1253,7 +1566,7 @@ pub fn GateRulesWindow() -> Element {
             fieldset { class: "gate_rules-form",
                 legend { "Autogate" }
                 p { class: "gate_rules-hint gate_rules-span",
-                    "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored."
+                    "Solves every rule above against the loaded workflow and gives each specimen its own gate. The position drawn by hand stays put underneath, so this can be re-run or ignored. If a gate with other ruled gates under it cannot be placed on a sample, or is placed with a confidence under 0.2, the run stops and the editor shows each one to place by hand before the gates under it are measured."
                 }
 
                 p { class: "gate_rules-hint gate_rules-span",
@@ -1263,115 +1576,15 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
 
+                if paused_run.read().is_some() {
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "A run is paused for gates to be placed by hand - continue or stop it from the banner in the editor."
+                    }
+                }
                 button {
                     class: "gate_rules-add",
-                    disabled: running(),
-                    onclick: move |_| async move {
-                        if running() {
-                            return;
-                        }
-                        running.set(true);
-                        report.set(None);
-                        progress.set(Some(Progress::Measuring { done: 0, total: 0 }));
-
-                        // Everything the run reads, as it stands now. Read
-                        // again before anything is written: see `RunInputs`.
-                        //
-                        // The axis settings are compared whole, not only the
-                        // cofactors the run reads: any new scaling is a new
-                        // workspace as far as the answers are concerned.
-                        let inputs_now = move || run_with.inputs_now();
-                        let started = inputs_now();
-                        if started.0.files.is_empty() {
-                            warn(&toasts, "No FCS files are loaded - open a workspace on the first tab");
-                            running.set(false);
-                            progress.set(None);
-                            return;
-                        }
-
-                        // A snapshot, not a lock. Every gate is behind an Arc,
-                        // so this is a refcount bump rather than a copy, and
-                        // the store is free for the rest of the editor the
-                        // moment it is taken.
-                        let snapshot = gate_store.read().clone();
-                        let started_gates = snapshot.clone();
-
-                        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        cancel.set(Some(flag.clone()));
-                        let stopped = flag.clone();
-                        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
-
-                        let worker = {
-                            let inputs = started.0.clone();
-                            tokio::task::spawn_blocking(move || {
-                                run_rules(
-                                    &snapshot,
-                                    &inputs,
-                                    |step| {
-                                        let _ = tx.send(step);
-                                    },
-                                    &flag,
-                                )
-                            })
-                        };
-
-                        // The worker's sender drops when it returns, which ends
-                        // this loop - no sentinel message to get wrong.
-                        while let Some(step) = rx.recv().await {
-                            progress.set(Some(step));
-                        }
-
-                        let outcome = worker.await;
-                        progress.set(None);
-                        cancel.set(None);
-                        running.set(false);
-
-                        let outcome = match outcome {
-                            Ok(o) => o,
-                            Err(e) => {
-                                warn(&toasts, format!("The run did not finish: {e}"));
-                                return;
-                            }
-                        };
-                        // Answers measured on one workspace mean nothing in
-                        // another, whatever stopped or did not stop the run.
-                        // Checked here rather than trusted to the stop flag:
-                        // the flag is raised by an effect, which runs after the
-                        // change that fires it, and the run can finish first.
-                        if !gate_store.peek().unchanged_since(&started_gates) || inputs_now() != started {
-                            warn(
-                                &toasts,
-                                "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now",
-                            );
-                            return;
-                        }
-                        if outcome.cancelled || stopped.load(std::sync::atomic::Ordering::Relaxed) {
-                            note(&toasts, "Stopped - no gates were moved");
-                            return;
-                        }
-
-                        // Writing happens here, on the one thread that owns the
-                        // store, and only once the document is known to be the
-                        // one the run measured.
-                        // The whole run is one step of the working copy.
-                        if let Err(e) = run_with.apply(&outcome, &started.0.rules) {
-                            warn(&toasts, e);
-                        }
-                        crate::gate_editor::review::reviews_changed();
-
-                        let run = outcome.report;
-                        say(
-                            &toasts,
-                            format!(
-                                "Moved {} gates, left {} already in band and {} reference; {} need review",
-                                run.positioned.len(),
-                                run.unchanged.len(),
-                                run.reference.len(),
-                                run.needs_review(REVIEW_FLOOR).count()
-                            ),
-                        );
-                        report.set(Some(run));
-                    },
+                    disabled: running() || paused_run.read().is_some(),
+                    onclick: move |_| start_run(None),
                     if running() { "Working..." } else { "Solve and apply" }
                 }
 
@@ -1398,7 +1611,76 @@ pub fn GateRulesWindow() -> Element {
                 }
             }
 
-            // ── what it did ───────────────────────────────────────────────
+            // ── the sidecar ───────────────────────────────────────────────
+            fieldset { class: "gate_rules-form",
+                legend { "Rules file" }
+                label { "File" }
+                div { class: "gate_rules-path",
+                    input {
+                        value: "{sidecar}",
+                        oninput: move |e| sidecar.set(e.value()),
+                    }
+                    // Choosing one that exists, for Load. Naming one to write
+                    // is the button beside Save; they are different dialogs,
+                    // and an open dialog cannot name a file that is not there.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::OpenFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
+                }
+                div { class: "gate_rules-band gate_rules-actions_row",
+                    button {
+                        onclick: move |_| {
+                            let path = sidecar_path();
+                            match rules.read().save(&path) {
+                                Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
+                                Err(e) => warn(&toasts, format!("Could not save: {e}")),
+                            }
+                        },
+                        "Save"
+                    }
+                    // Joined to Save, not floating between the two actions:
+                    // this dialog names where to write, which is Save's
+                    // question and not Load's.
+                    PickPath {
+                        path: sidecar,
+                        mode: Pick::SaveFile,
+                        label: "Rules",
+                        extensions: vec!["json".to_string()],
+                    }
+                    span { class: "gate_rules-gap" }
+                    button {
+                        onclick: move |_| {
+                            let path = sidecar_path();
+                            match RuleStore::load(&path) {
+                                Ok(loaded) => {
+                                    let n = loaded.len();
+                                    rules.set(loaded);
+                                    say(&toasts, format!("Loaded {n} rules"));
+                                }
+                                Err(e) => warn(&toasts, format!("Could not load: {e}")),
+                            }
+                        },
+                        "Load"
+                    }
+                }
+                if let Some(folder) = loaded.read().folder.clone() {
+                    p { class: "gate_rules-hint",
+                        "A name alone is kept in {folder.join(clingate_core::workspace::RULES_DIR).display()}, and the workspace opens with {clingate_core::workspace::RULES_FILE} there."
+                    }
+                }
+            }
+
+            crate::gate_editor::review::ReviewPanel {}
+
+            if let Some(text) = editing_note() {
+                p { class: "gate_rules-message", "{text}" }
+            }
+
+            // What a run did, last, in a box that scrolls: thousands of lines
+            // would otherwise push the sections above out of reach.
             if let Some(run) = report.read().as_ref() {
                 div { class: "gate_rules-report",
                     // Two kinds of placement, two tables. A phenotype rule's
@@ -1693,74 +1975,6 @@ pub fn GateRulesWindow() -> Element {
                         }
                     }
                 }
-            }
-
-            // ── the sidecar ───────────────────────────────────────────────
-            fieldset { class: "gate_rules-form",
-                legend { "Rules file" }
-                label { "File" }
-                div { class: "gate_rules-path",
-                    input {
-                        value: "{sidecar}",
-                        oninput: move |e| sidecar.set(e.value()),
-                    }
-                    // Choosing one that exists, for Load. Naming one to write
-                    // is the button beside Save; they are different dialogs,
-                    // and an open dialog cannot name a file that is not there.
-                    PickPath {
-                        path: sidecar,
-                        mode: Pick::OpenFile,
-                        label: "Rules",
-                        extensions: vec!["json".to_string()],
-                    }
-                }
-                div { class: "gate_rules-band gate_rules-actions_row",
-                    button {
-                        onclick: move |_| {
-                            let path = sidecar_path();
-                            match rules.read().save(&path) {
-                                Ok(()) => say(&toasts, format!("Saved to {}", path.display())),
-                                Err(e) => warn(&toasts, format!("Could not save: {e}")),
-                            }
-                        },
-                        "Save"
-                    }
-                    // Joined to Save, not floating between the two actions:
-                    // this dialog names where to write, which is Save's
-                    // question and not Load's.
-                    PickPath {
-                        path: sidecar,
-                        mode: Pick::SaveFile,
-                        label: "Rules",
-                        extensions: vec!["json".to_string()],
-                    }
-                    span { class: "gate_rules-gap" }
-                    button {
-                        onclick: move |_| {
-                            let path = sidecar_path();
-                            match RuleStore::load(&path) {
-                                Ok(loaded) => {
-                                    let n = loaded.len();
-                                    rules.set(loaded);
-                                    say(&toasts, format!("Loaded {n} rules"));
-                                }
-                                Err(e) => warn(&toasts, format!("Could not load: {e}")),
-                            }
-                        },
-                        "Load"
-                    }
-                }
-                if let Some(folder) = loaded.read().folder.clone() {
-                    p { class: "gate_rules-hint",
-                        "A name alone is kept in {folder.join(clingate_core::workspace::RULES_DIR).display()}, and the workspace opens with {clingate_core::workspace::RULES_FILE} there."
-                    }
-                }
-            }
-
-            crate::gate_editor::review::ReviewPanel {}
-
-            if let Some(text) = editing_note() {
-                p { class: "gate_rules-message", "{text}" }
             }
         }
     }

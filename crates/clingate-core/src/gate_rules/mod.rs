@@ -17,8 +17,10 @@
 
 pub mod autogate;
 pub mod choices;
+pub(crate) mod clearance;
 pub mod confidence;
 pub mod guide;
+pub(crate) mod next_to;
 pub mod phenotype;
 pub mod phenotype_gate;
 pub mod profile;
@@ -33,6 +35,8 @@ pub mod trial;
 mod autogate_tests;
 #[cfg(test)]
 mod choices_tests;
+#[cfg(test)]
+mod clearance_tests;
 #[cfg(test)]
 mod confidence_tests;
 mod harness_tests;

@@ -451,7 +451,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 6);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
@@ -665,4 +665,167 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
         json!({"gate": "Tmem", "rule": {"kind": "TailFraction"}}),
     );
     assert_eq!(wrong["outcome"], "failed", "{wrong}");
+}
+
+#[test]
+fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
+    let folder = workspace_with_rules("valley-fallback");
+    let session = clingate_core::session::Session::open(&folder).unwrap();
+    let tmem = session.gate("Tmem", None).unwrap();
+    let parameter = tmem.parameters[0].clone();
+    // Another gate drawn on the same parameter: something to fall back to.
+    let other = session
+        .populations(None)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.parameters.contains(&parameter) && row.rule_target != tmem.rule_target)
+        .expect("a second gate on the parameter");
+    let (gate, parent) = other
+        .rule_target
+        .split_once(" of ")
+        .map_or((other.rule_target.as_str(), None), |(g, p)| (g, Some(p)));
+    let valley = |fallback: Value| {
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": parameter,
+                "bound": "Above",
+                "measured_on": {"File": "sample1_FMX.fcs"},
+                "rule": {"kind": "InTheValley", "smoothing": 1.0, "fallback": fallback}
+            }
+        })
+    };
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let itself = server.call("update_rule", valley(json!({"gate": "Tmem"})));
+    assert_eq!(itself["outcome"], "failed", "{itself}");
+    assert!(
+        itself["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cannot follow itself"),
+        "{itself}"
+    );
+
+    let written = server.call(
+        "update_rule",
+        valley(json!({"gate": gate, "parent": parent})),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules[0]
+            .rule
+            .contains(&format!("with no dip, where {} is", other.rule_target)),
+        "{:?}",
+        view.rules
+    );
+}
+
+#[test]
+fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
+    let folder = workspace_with_rules("next-to");
+    let parameter = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let refused = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {
+                    "kind": "NextToGate",
+                    "anchor": {"gate": "Tmem"},
+                    "parameter": parameter,
+                    "side": "Lower",
+                    "meet": "FollowOutline",
+                    "gap": 0.0
+                }
+            }
+        }),
+    );
+    assert_eq!(refused["outcome"], "failed", "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cannot sit next to itself"),
+        "{refused}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "Next to another gate"}));
+    assert_eq!(guide["outcome"], "ok", "{guide}");
+
+    // teff_naive, left of Tmem on the same plot, grown to meet it: its far
+    // side stays where it is drawn.
+    let extent_of = |server: &mut Server| {
+        let details = server.call(
+            "gate_details",
+            json!({"population": "teff_naive", "sample": "fs"}),
+        );
+        assert_eq!(details["outcome"], "ok", "{details}");
+        let extent = details["result"]["extent"].as_array().unwrap().clone();
+        let on = extent
+            .iter()
+            .find(|e| e["parameter"] == parameter.as_str())
+            .unwrap()
+            .clone();
+        (on["lower"].as_f64().unwrap(), on["upper"].as_f64().unwrap())
+    };
+    let (lower, upper) = extent_of(&mut server);
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "teff_naive",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {
+                    "kind": "NextToGate",
+                    "anchor": {"gate": "Tmem"},
+                    "parameter": parameter,
+                    "side": "Lower"
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let preview = server.call("preview_rules", json!({}));
+    assert_eq!(preview["outcome"], "ok", "{preview}");
+    let moved = preview["result"]["would_move"].as_array().unwrap();
+    assert!(
+        moved
+            .iter()
+            .any(|m| m["gate"].as_str().unwrap().starts_with("teff_naive")),
+        "{preview}"
+    );
+    let applied = server.call("apply_rule_placements", json!({}));
+    assert_eq!(applied["outcome"], "ok", "{applied}");
+
+    let (now_lower, now_upper) = extent_of(&mut server);
+    assert!((now_lower - lower).abs() < 1e-3, "{lower} -> {now_lower}");
+    assert!(
+        now_upper > upper,
+        "grown towards Tmem: {upper} -> {now_upper}"
+    );
 }

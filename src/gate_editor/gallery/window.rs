@@ -330,12 +330,6 @@ pub fn GalleryWindow() -> Element {
                                                 div { class: "gallery-plot", key: "{slot}",
                                                     div { class: "gallery-plot_name", title: "{file.name}",
                                                         "{file.label()}"
-                                                        ReportTile {
-                                                            sample_name: file.name.clone(),
-                                                            node: showing_node().unwrap_or_else(|| ROOTGATE.clone()),
-                                                            x: x_axis_marker().fluoro,
-                                                            y: y_axis_marker().fluoro,
-                                                        }
                                                     }
                                                     // Only the page in front renders. A hidden
                                                     // tab is still mounted - that is how the
@@ -369,39 +363,6 @@ pub fn GalleryWindow() -> Element {
                     }
                 }
             }
-        }
-    }
-}
-
-/// Report a gate drawn on this page, on one tile's sample: the page shows a
-/// population, and the gates drawn are its child gates on the page's axes.
-#[component]
-fn ReportTile(sample_name: Arc<str>, node: Arc<str>, x: Arc<str>, y: Arc<str>) -> Element {
-    use clingate_core::gates::gate_store::NodeId;
-    use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
-    let gates = use_context::<SyncStore<GateState>>();
-    let metadata = use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
-    let mut open = use_context::<Signal<Option<crate::gate_editor::review::ReportTarget>>>();
-    let node = NodeId::from(node);
-    let target = {
-        let state = gates.read();
-        let sample = metadata
-            .file_name_to_gating_id()
-            .read()
-            .get(&sample_name)
-            .cloned();
-        crate::gate_editor::review::drawn_target(&state, &node, &x, &y, sample, &sample_name)
-    };
-    rsx! {
-        button {
-            class: "review-report_button",
-            disabled: target.is_none(),
-            title: if target.is_some() { "Report a gate drawn here as badly placed on this sample" } else { "No gate is drawn on this plot" },
-            onclick: move |e| {
-                e.stop_propagation();
-                open.set(target.clone());
-            },
-            "Report..."
         }
     }
 }

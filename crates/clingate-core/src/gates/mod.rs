@@ -5,6 +5,9 @@ pub mod gate_store;
 pub mod gate_types;
 pub use gate_store::{GateId, GateState, GatesOnPlotKey};
 pub mod gate_composite;
+pub mod gate_contact;
+#[cfg(test)]
+mod gate_contact_tests;
 pub mod gate_filtering;
 pub mod gate_hierarchy;
 pub mod gate_label;
@@ -24,6 +27,12 @@ mod gate_label_tests;
 pub mod gate_paths;
 #[cfg(test)]
 mod gate_paths_tests;
+pub mod gate_positions;
+#[cfg(test)]
+mod gate_positions_tests;
+pub mod gate_shape_edit;
+#[cfg(test)]
+mod gate_shape_edit_tests;
 #[cfg(test)]
 mod gate_stats_tests;
 #[cfg(test)]

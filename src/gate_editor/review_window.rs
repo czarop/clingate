@@ -554,7 +554,6 @@ fn ReviewTile(
                 sample: Arc::from(entry.sample.id.as_str()),
                 gate: entry.gate.clone(),
                 sample_name: title.clone(),
-                choices: Vec::new(),
             }));
         }
     };

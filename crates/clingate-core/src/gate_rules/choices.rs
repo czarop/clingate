@@ -247,6 +247,41 @@ pub fn every_target(choices: &GateChoices) -> Vec<crate::gate_rules::rule_store:
     out
 }
 
+/// The gates `gate` under `parent` can be placed next to: beside it under
+/// the same parent, drawn on the same two parameters.
+pub fn beside(
+    choices: &GateChoices,
+    gate: &str,
+    parent: &str,
+) -> Vec<crate::gate_rules::rule_store::RuleTarget> {
+    let mut own: Vec<&Arc<str>> = choices.parameters_of(gate).iter().collect();
+    own.sort();
+    choices
+        .children_of(parent)
+        .iter()
+        .filter(|other| ***other != *gate)
+        .filter(|other| {
+            let mut theirs: Vec<&Arc<str>> = choices.parameters_of(other).iter().collect();
+            theirs.sort();
+            theirs == own
+        })
+        .map(|other| crate::gate_rules::rule_store::RuleTarget::under(other.clone(), parent))
+        .collect()
+}
+
+/// The gates a valley rule for `gate` under `parent` can fall back to: the
+/// same gate under every other parent.
+pub fn fallback_targets(
+    choices: &GateChoices,
+    gate: &str,
+    parent: &str,
+) -> Vec<crate::gate_rules::rule_store::RuleTarget> {
+    every_target(choices)
+        .into_iter()
+        .filter(|t| *t.gate == *gate && t.parent.as_deref() != Some(parent))
+        .collect()
+}
+
 /// One edge as the form holds it: text, until it is saved.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct EdgeForm {
@@ -260,7 +295,8 @@ pub struct EdgeForm {
     pub gap: String,
 }
 
-fn side_from(text: &str) -> Result<crate::gate_rules::rule::Side, String> {
+/// An edge as the form writes it, "Lower" or "Upper".
+pub fn side_from(text: &str) -> Result<crate::gate_rules::rule::Side, String> {
     use crate::gate_rules::rule::Side;
     match text {
         "Lower" => Ok(Side::Lower),
@@ -271,7 +307,8 @@ fn side_from(text: &str) -> Result<crate::gate_rules::rule::Side, String> {
     }
 }
 
-fn side_to(side: crate::gate_rules::rule::Side) -> String {
+/// An edge as the form writes it.
+pub fn side_to(side: crate::gate_rules::rule::Side) -> String {
     match side {
         crate::gate_rules::rule::Side::Lower => "Lower".into(),
         crate::gate_rules::rule::Side::Upper => "Upper".into(),

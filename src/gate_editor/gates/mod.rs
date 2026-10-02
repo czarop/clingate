@@ -3,3 +3,4 @@
 
 pub mod draw_gates;
 pub mod gate_buttons;
+pub mod shape_menu;

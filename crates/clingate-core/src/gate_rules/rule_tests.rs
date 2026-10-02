@@ -768,3 +768,64 @@ fn a_valley_rule_saved_with_the_old_depth_setting_still_loads() {
     let back: Rule = serde_json::from_value(json).expect("an old rules file loads");
     assert_eq!(back, rule);
 }
+
+#[test]
+fn a_valley_rule_falls_back_on_the_edge_it_would_have_set() {
+    use crate::gate_rules::rule_store::{Bound, RuleTarget};
+    use std::sync::Arc;
+    let anchor = RuleTarget::under("IFNy+", "CD4+");
+    let rule = ValleyRule {
+        fallback: Some(anchor.clone()),
+        ..ValleyRule::default()
+    };
+    let parameter: Arc<str> = Arc::from("BV421-A");
+    for (bound, side) in [(Bound::Above, Side::Lower), (Bound::Below, Side::Upper)] {
+        let from = rule.fallback_rule(&parameter, bound).unwrap();
+        assert_eq!(from.same_shape_as, None);
+        assert_eq!(
+            from.edges,
+            [EdgeFrom {
+                anchor: anchor.clone(),
+                parameter: parameter.clone(),
+                side,
+                anchor_side: side,
+                gap: 0.0,
+            }],
+            "{bound:?}"
+        );
+    }
+    assert_eq!(
+        ValleyRule::default().fallback_rule(&parameter, Bound::Above),
+        None
+    );
+    assert_eq!(Rule::InTheValley(rule.clone()).anchors(), [&anchor]);
+    assert!(
+        rule.describe()
+            .ends_with("; with no dip, where IFNy+ of CD4+ is"),
+        "{}",
+        rule.describe()
+    );
+}
+
+#[test]
+fn a_valley_rule_saved_before_the_fallback_loads_with_none() {
+    let json = serde_json::json!({"kind": "InTheValley", "smoothing": 1.5});
+    let back: Rule = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        back,
+        Rule::InTheValley(ValleyRule {
+            smoothing: 1.5,
+            ..ValleyRule::default()
+        })
+    );
+}
+
+#[test]
+fn how_a_gate_meets_another_is_written_as_the_rules_file_writes_it() {
+    for meet in Meet::ALL {
+        assert_eq!(serde_json::to_value(meet).unwrap(), meet.key());
+        assert_eq!(Meet::from_key(meet.key()), Some(meet));
+    }
+    assert_eq!(Meet::from_key("Sideways"), None);
+    assert_eq!(Meet::default(), Meet::GrowSide);
+}

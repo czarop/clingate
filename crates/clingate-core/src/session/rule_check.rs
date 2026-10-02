@@ -26,29 +26,20 @@ impl Session {
         // A gate that follows another has no parameter of its own and reads
         // its own sample: whatever was given there means nothing, so it is
         // not kept to confuse the list.
-        if let Rule::FromAnotherGate(from) = &mut rule.rule {
+        if rule.rule.reads_another_gate() {
             rule.parameter = Arc::from("");
             rule.measured_on = MeasuredOn::Itself;
+        }
+        if let Rule::NextToGate(next) = &mut rule.rule {
+            next.parameter = self.channel_noted(&next.parameter, &mut notes)?;
+        }
+        if let Rule::FromAnotherGate(from) = &mut rule.rule {
             for edge in &mut from.edges {
-                let channel = self.channel_named(&edge.parameter)?;
-                if *channel != *edge.parameter {
-                    notes.push(format!(
-                        "parameter {} is the channel {channel}",
-                        edge.parameter
-                    ));
-                }
-                edge.parameter = channel;
+                edge.parameter = self.channel_noted(&edge.parameter, &mut notes)?;
             }
         }
         if !rule.parameter.trim().is_empty() {
-            let channel = self.channel_named(&rule.parameter)?;
-            if *channel != *rule.parameter {
-                notes.push(format!(
-                    "parameter {} is the channel {channel}",
-                    rule.parameter
-                ));
-            }
-            rule.parameter = channel;
+            rule.parameter = self.channel_noted(&rule.parameter, &mut notes)?;
         }
         if let Rule::MatchThePhenotype(wanted) = &mut rule.rule {
             let mut markers = Vec::with_capacity(wanted.markers.len());
@@ -139,6 +130,9 @@ impl Session {
         if let Rule::FromAnotherGate(from) = &rule.rule {
             return self.check_follow(target, from);
         }
+        if let Rule::NextToGate(next) = &rule.rule {
+            return self.check_next_to(target, next);
+        }
         if let Rule::MatchThePhenotype(_) = &rule.rule {
             if !matches!(rule.measured_on, MeasuredOn::File(_)) {
                 return Err(failed(
@@ -155,6 +149,90 @@ impl Session {
                      those - not {}",
                     here.describe(),
                     rule.parameter
+                )));
+            }
+        }
+        if let Rule::InTheValley(dip) = &rule.rule
+            && let Some(fallback) = dip.fallback_rule(&rule.parameter, rule.bound)
+        {
+            return self.check_follow(target, &fallback);
+        }
+        Ok(())
+    }
+
+    /// Refuses a rule next to another gate that could never place its gate:
+    /// another gate that is not one gate, the gate itself, one not on the same
+    /// plot, a shape that cannot be brought up to it, or a parameter the gate
+    /// is not drawn on.
+    fn check_next_to(
+        &self,
+        target: &RuleTarget,
+        next: &crate::gate_rules::rule::NextToRule,
+    ) -> Result<(), Refusal> {
+        use crate::gate_rules::autogate::anchor_gate;
+        if let Some(problem) = crate::gate_rules::rule::gap_problem(next.gap) {
+            return Err(failed(problem.to_string()));
+        }
+        let anchor = anchor_gate(&self.gates, &next.anchor).map_err(failed)?;
+        let identity = |id: &crate::gates::gate_store::GateId| self.gates.gate_identity(id);
+        let anchor_gate = self
+            .gates
+            .registered_gate(&anchor)
+            .ok_or_else(|| failed(format!("{} has no gate", next.anchor.describe())))?;
+        let (nodes, _) = self.population_facts();
+        for node in &nodes {
+            let Some((here, id, (x, y))) = self.target_of(node) else {
+                continue;
+            };
+            if here.gate != target.gate || (target.parent.is_some() && target.parent != here.parent)
+            {
+                continue;
+            }
+            if identity(&id) == identity(&anchor) {
+                return Err(failed(format!(
+                    "{} cannot sit next to itself - name the gate beside it",
+                    target.describe()
+                )));
+            }
+            let shaped = self.gates.registered_gate(&id).and_then(|g| {
+                g.get_gate_ref(None).map(|inner| {
+                    matches!(
+                        inner.geometry,
+                        flow_gates::GateGeometry::Rectangle { .. }
+                            | flow_gates::GateGeometry::Polygon { .. }
+                    )
+                })
+            });
+            if shaped != Some(true) {
+                return Err(failed(format!(
+                    "{} is not a rectangle or a polygon, so it cannot be brought up to another gate",
+                    target.describe()
+                )));
+            }
+            if *next.parameter != *x && *next.parameter != *y {
+                return Err(failed(format!(
+                    "{} is drawn on {x} and {y}, so it does not move along {}",
+                    target.describe(),
+                    next.parameter
+                )));
+            }
+            let parent = self.gates.parent_node(node);
+            let anchor_axes = anchor_gate.get_params();
+            let beside = self
+                .gates
+                .nodes_for_gate(&anchor)
+                .iter()
+                .any(|at| self.gates.parent_node(at) == parent)
+                && crate::gates::gate_contact::same_axes(
+                    &anchor_axes,
+                    &(Arc::from(x.as_str()), Arc::from(y.as_str())),
+                );
+            if !beside {
+                return Err(failed(format!(
+                    "{} is not on the same plot as {} - the gate it sits next to is drawn \
+                     beside it, under the same parent and on the same two parameters",
+                    next.anchor.describe(),
+                    target.describe()
                 )));
             }
         }
@@ -185,14 +263,10 @@ impl Session {
             .collect();
         let anchor = |named: &RuleTarget| {
             let id = anchor_gate(&self.gates, named).map_err(failed)?;
-            // Compared as gates: a quadrant's corners are one gate.
-            let identity = |id: &crate::gates::gate_store::GateId| {
-                self.gates
-                    .registered_gate(id)
-                    .map(|g| g.get_id())
-                    .unwrap_or_else(|| id.clone())
-            };
-            if mine.iter().any(|(own, _)| identity(own) == identity(&id)) {
+            if mine
+                .iter()
+                .any(|(own, _)| self.gates.gate_identity(own) == self.gates.gate_identity(&id))
+            {
                 return Err(failed(format!(
                     "{} cannot follow itself - name the gate it takes its position from",
                     target.describe()
@@ -304,6 +378,16 @@ impl Session {
             }
         }
         problems
+    }
+
+    /// The channel `parameter` names, noting it in `notes` when the name
+    /// was not the channel's own.
+    fn channel_noted(&self, parameter: &str, notes: &mut Vec<String>) -> Result<Arc<str>, Refusal> {
+        let channel = self.channel_named(parameter)?;
+        if *channel != *parameter {
+            notes.push(format!("parameter {parameter} is the channel {channel}"));
+        }
+        Ok(channel)
     }
 
     fn channel_named(&self, name: &str) -> Result<Arc<str>, Refusal> {

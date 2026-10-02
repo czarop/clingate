@@ -510,7 +510,7 @@ pub(crate) fn solve(events: &KeptEvents, rules: &RuleStore) -> Solved {
             );
             continue;
         }
-        if matches!(rule.rule, Rule::FromAnotherGate(_)) {
+        if matches!(rule.rule, Rule::FromAnotherGate(_) | Rule::NextToGate(_)) {
             skipped.insert(
                 key,
                 "this gate follows another gate's position, which a replay does not place - \
@@ -533,7 +533,14 @@ pub(crate) fn solve(events: &KeptEvents, rules: &RuleStore) -> Solved {
             }
         };
         match measure_population(&file, &id, name, parent, &gate, rule, &frame) {
-            Ok(m) => measured.push(m),
+            Ok(mut m) => {
+                m.beside = sample
+                    .beside
+                    .iter()
+                    .map(|(name, outline)| (Arc::from(name.as_str()), outline.clone()))
+                    .collect();
+                measured.push(m);
+            }
             Err(u) => {
                 skipped.insert(key, u.reason.clone());
                 unmeasured.push(u);
@@ -737,6 +744,8 @@ fn starting_position_matters(rule: &GateRule) -> bool {
         Rule::PercentileOffset(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => false,
         // Where it goes is read from another gate, not from where it began.
         Rule::FromAnotherGate(_) => false,
+        // Grown up to another gate, its far side stays where it began.
+        Rule::NextToGate(_) => true,
     }
 }
 
@@ -1259,6 +1268,7 @@ mod tests {
             events: points.len(),
             points,
             gate: Some(gate),
+            beside: Vec::new(),
         }
     }
 

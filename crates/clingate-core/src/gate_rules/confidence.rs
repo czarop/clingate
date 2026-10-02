@@ -117,6 +117,8 @@ pub const PURITY: &str = "how much else the gate holds";
 pub const CAUGHT: &str = "how much of the population the gate holds";
 pub const ONE_CLOUD: &str = "whether the matched cells form one cloud";
 pub const ABUNDANCE: &str = "how common the population is, against the reference";
+pub const FALLBACK: &str = "no valley, so placed from another gate";
+pub const HELD_BACK: &str = "held back off another gate";
 
 /// Where each component stops being a concern.
 ///

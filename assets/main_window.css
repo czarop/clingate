@@ -128,6 +128,37 @@ button:hover {
     padding: 8px 0 0;
 }
 
+/* The right-click menu on a gate, at the click. */
+.shape-menu {
+    position: absolute;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    background: white;
+    border: 1px solid #999;
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    font-size: 0.8rem;
+}
+
+.shape-menu button {
+    border: none;
+    background: none;
+    padding: 4px 10px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.shape-menu button:hover {
+    background: #eee;
+}
+
+.keep-apart {
+    margin-left: 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
 .gate-window-container{
     display: flex; 
     flex-direction: row; 
@@ -270,4 +301,68 @@ button:hover {
     padding: 2px 8px;
     border: 1px solid hsl(35, 90%, 45%);
     border-radius: 4px;
+}
+
+/* A rules run waiting for gates to be placed by hand. */
+.paused-run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid #c98a00;
+    border-radius: 6px;
+    background: #fff4d6;
+    color: #4a3300;
+}
+.paused-run-text { flex: 1 1 24rem; }
+.paused-run-go-on { font-weight: 600; }
+
+/* The Position menu under each plot's title: its panel floats over the plot. */
+.gate-window_position {
+    position: relative;
+    box-sizing: border-box;
+    text-align: center;
+}
+
+.position-menu_button {
+    font-size: 0.75rem;
+    padding: 1px 8px;
+}
+
+.position-menu_panel {
+    position: absolute;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    top: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    text-align: left;
+    font-size: 0.8rem;
+    background: var(--primary-color, #fff);
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.position-menu_heading {
+    margin: 4px 0 0;
+    font-weight: 600;
+}
+
+.position-menu_picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.position-menu_samples {
+    max-height: 200px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }

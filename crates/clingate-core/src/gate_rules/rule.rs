@@ -19,6 +19,7 @@
 //! in one file.
 
 use crate::gate_rules::confidence::{Confidence, ConfidenceModel, CountAndSeparation};
+use crate::gate_rules::rule_store::Bound;
 use crate::gate_rules::threshold::{SolveError, Threshold, percentile_offset, tail_fraction};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -274,6 +275,7 @@ pub enum Rule {
     InTheValley(ValleyRule),
     MatchThePhenotype(PhenotypeRule),
     FromAnotherGate(FromGateRule),
+    NextToGate(NextToRule),
 }
 
 /// "Where I put it on the QC, relative to that sample's negative."
@@ -537,6 +539,11 @@ pub struct ValleyRule {
     pub smoothing: f64,
     #[serde(default)]
     pub confidence: CountAndSeparation,
+    /// Where the gate goes on a sample with no valley to find - a smear: the
+    /// edge of this gate there, usually the same gate under another parent.
+    /// A run places it first when a rule places it.
+    #[serde(default)]
+    pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
 }
 
 impl Default for ValleyRule {
@@ -544,6 +551,7 @@ impl Default for ValleyRule {
         Self {
             smoothing: 1.0,
             confidence: CountAndSeparation::default(),
+            fallback: None,
         }
     }
 }
@@ -601,11 +609,34 @@ impl ValleyRule {
         })
     }
 
+    /// The fallback as a rule from another gate: this gate's leading edge on
+    /// `parameter` - the one the valley would have set - where the fallback's
+    /// same edge is.
+    pub fn fallback_rule(&self, parameter: &Arc<str>, bound: Bound) -> Option<FromGateRule> {
+        let side = match bound {
+            Bound::Above => Side::Lower,
+            Bound::Below => Side::Upper,
+        };
+        Some(FromGateRule {
+            same_shape_as: None,
+            edges: vec![EdgeFrom {
+                anchor: self.fallback.clone()?,
+                parameter: parameter.clone(),
+                side,
+                anchor_side: side,
+                gap: 0.0,
+            }],
+        })
+    }
+
     pub fn describe(&self) -> String {
         let mut how =
             "in the dip between the negative and the positive, as on the reference".to_string();
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
+        }
+        if let Some(fallback) = &self.fallback {
+            how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
         }
         how
     }
@@ -625,7 +656,8 @@ impl Rule {
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -649,7 +681,9 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
-            Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) => return None,
+            Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
+                return None;
+            }
         })
     }
 
@@ -660,7 +694,8 @@ impl Rule {
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
         }
     }
 
@@ -672,6 +707,7 @@ impl Rule {
             Rule::InTheValley(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
             Rule::FromAnotherGate(r) => r.describe(),
+            Rule::NextToGate(r) => r.describe(),
         }
     }
 
@@ -696,7 +732,8 @@ impl Rule {
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
             | Rule::MatchThePhenotype(_)
-            | Rule::FromAnotherGate(_) => None,
+            | Rule::FromAnotherGate(_)
+            | Rule::NextToGate(_) => None,
         }
     }
 
@@ -717,6 +754,22 @@ impl Rule {
         }
     }
 
+    /// Whether the gate's place is read off another gate on the same sample,
+    /// not off the events: measured on its own sample, whatever it says.
+    pub fn reads_another_gate(&self) -> bool {
+        matches!(self, Rule::FromAnotherGate(_) | Rule::NextToGate(_))
+    }
+
+    /// The gates this rule reads a position from, which a run places first.
+    pub fn anchors(&self) -> Vec<&crate::gate_rules::rule_store::RuleTarget> {
+        match self {
+            Rule::FromAnotherGate(r) => r.anchors(),
+            Rule::InTheValley(r) => r.fallback.iter().collect(),
+            Rule::NextToGate(r) => vec![&r.anchor],
+            _ => Vec::new(),
+        }
+    }
+
     /// The name of the kind, for the Gate Rules tab's list.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -726,6 +779,7 @@ impl Rule {
             Rule::InTheValley(_) => "In the valley",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
+            Rule::NextToGate(_) => "Next to another gate",
         }
     }
 }
@@ -980,5 +1034,90 @@ impl FromGateRule {
                 .collect::<Vec<_>>()
                 .join("; "),
         }
+    }
+}
+
+/// How a gate placed next to another comes to meet it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Meet {
+    /// Its side facing the other gate moves, every point of it alike; the
+    /// side away stays. It shrinks back where it overlaps.
+    #[default]
+    GrowSide,
+    /// Where it lies alongside the other gate, its facing side takes the
+    /// other's outline - no gap anywhere along it. A polygon's only: a
+    /// rectangle grows its side.
+    FollowOutline,
+    /// The whole gate slides, its shape as it is.
+    Slide,
+}
+
+impl Meet {
+    pub const ALL: [Meet; 3] = [Meet::GrowSide, Meet::FollowOutline, Meet::Slide];
+
+    /// How the rules file writes it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Meet::GrowSide => "GrowSide",
+            Meet::FollowOutline => "FollowOutline",
+            Meet::Slide => "Slide",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Meet> {
+        Meet::ALL.into_iter().find(|meet| meet.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Meet::GrowSide => "growing its facing side",
+            Meet::FollowOutline => "following the other's outline",
+            Meet::Slide => "sliding whole",
+        }
+    }
+}
+
+/// "Next to that gate": against it along one axis, as close as it can be
+/// without overlapping - the CD19- gate grown up to the CD19+CD14- gate
+/// wherever a rule puts that one. The other gate is placed first; both are
+/// on the same plot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NextToRule {
+    /// The gate it sits next to, named as a rule names a gate.
+    pub anchor: crate::gate_rules::rule_store::RuleTarget,
+    /// The parameter it moves along.
+    pub parameter: Arc<str>,
+    /// Which side of the anchor it sits on: lower is to the left of it, or
+    /// below it.
+    pub side: Side,
+    #[serde(default)]
+    pub meet: Meet,
+    /// Left between the two, in the plot's units. 0 is touching.
+    #[serde(default)]
+    pub gap: f64,
+}
+
+/// Why `gap` cannot be a next-to rule's gap, if it cannot.
+pub fn gap_problem(gap: f64) -> Option<&'static str> {
+    (!gap.is_finite() || gap < 0.0).then_some("the gap must be a number, 0 or more")
+}
+
+impl NextToRule {
+    pub fn describe(&self) -> String {
+        let side = match self.side {
+            Side::Lower => "lower than",
+            Side::Upper => "higher than",
+        };
+        let gap = if self.gap == 0.0 {
+            String::new()
+        } else {
+            format!(", {} apart", self.gap)
+        };
+        format!(
+            "next to {}, {side} it on {}, {}{gap}",
+            self.anchor.describe(),
+            self.parameter,
+            self.meet.label()
+        )
     }
 }

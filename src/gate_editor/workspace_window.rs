@@ -315,6 +315,8 @@ impl Handles {
         .await;
         match flatten(result) {
             Ok(warnings) => {
+                let rows = self.metadata.metadata().peek().len();
+                say(&self.toasts, metadata_loaded(&path, rows));
                 self.set_part(Which::Metadata, Part::Loaded(path));
                 for warning in warnings {
                     warn(&self.toasts, warning);
@@ -356,6 +358,10 @@ impl Handles {
                 return false;
             }
         };
+        say(
+            &self.toasts,
+            format!("Loaded the scaling from {}", file_name(&path)),
+        );
         self.set_part(Which::Scaling, Part::Loaded(path));
 
         if self.gates_loaded() && !diff.changed.is_empty() {
@@ -394,11 +400,14 @@ impl Handles {
     }
 
     /// Import a gating file, or wait for what it needs.
-    async fn load_gating(self, path: PathBuf) -> bool {
+    async fn load_gating(self, path: PathBuf, why: GatingLoad) -> bool {
         let metadata = self.metadata.metadata().peek().clone();
         let axes = self.axes.settings().peek().clone();
         let needs = gating_needs(&metadata, &axes);
         if let Some(needs) = needs {
+            if why == GatingLoad::Chosen {
+                note(&self.toasts, gating_waiting(&path, needs));
+            }
             self.set_part(Which::Gating, Part::Waiting(path, needs));
             return false;
         }
@@ -420,10 +429,7 @@ impl Handles {
                 self.edits.loaded_fresh();
                 self.document_changed();
                 self.set_part(Which::Gating, Part::Loaded(path.clone()));
-                say(
-                    &self.toasts,
-                    format!("Loaded {count} gates from {}", file_name(&path)),
-                );
+                say(&self.toasts, gating_loaded(&path, count, why));
                 true
             }
             Err(e) => {
@@ -449,7 +455,7 @@ impl Handles {
     /// Import the chosen gating file if it was waiting for this.
     async fn gating_if_waiting(self) {
         if let Part::Waiting(path, _) = self.loaded.peek().gating.clone() {
-            self.load_gating(path).await;
+            self.load_gating(path, GatingLoad::Waited).await;
         }
     }
 
@@ -522,7 +528,7 @@ impl Handles {
             }
         }
         if let Some((_, path)) = chosen.iter().find(|(w, _)| *w == Which::Gating) {
-            self.load_gating(path.clone()).await;
+            self.load_gating(path.clone(), GatingLoad::Chosen).await;
         }
         self.edits.check_recovery();
         self.end();
@@ -575,7 +581,7 @@ impl Handles {
             self.load_scaling(path).await;
         }
         if let Some(path) = remembered.gating.clone() {
-            self.load_gating(path).await;
+            self.load_gating(path, GatingLoad::Chosen).await;
         }
         if !gone.is_empty() {
             warn(
@@ -945,7 +951,7 @@ impl Handles {
                     // key them again.
                     let gating = self.loaded.peek().gating.path().map(Path::to_path_buf);
                     if let Some(gating) = gating {
-                        self.load_gating(gating).await;
+                        self.load_gating(gating, GatingLoad::NewMetadata).await;
                     }
                 }
             }
@@ -961,7 +967,7 @@ impl Handles {
                 }
             }
             Which::Gating => {
-                self.load_gating(path).await;
+                self.load_gating(path, GatingLoad::Chosen).await;
             }
         }
         self.end();
@@ -1000,6 +1006,47 @@ fn flatten<T>(result: Result<anyhow::Result<T>, tokio::task::JoinError>) -> Resu
         Ok(Err(e)) => Err(e.to_string()),
         Err(e) => Err(format!("the worker thread failed: {e}")),
     }
+}
+
+/// Why a gating file is being imported, which is what its message says.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GatingLoad {
+    /// Chosen, or found in the folder.
+    Chosen,
+    /// Imported again so its per-specimen positions follow new metadata.
+    NewMetadata,
+    /// Chosen earlier, and waiting for the metadata or the scaling.
+    Waited,
+}
+
+fn metadata_loaded(path: &Path, rows: usize) -> String {
+    format!(
+        "Loaded the metadata from {}: {rows} file{}",
+        file_name(path),
+        if rows == 1 { "" } else { "s" }
+    )
+}
+
+fn gating_loaded(path: &Path, gates: usize, why: GatingLoad) -> String {
+    let name = file_name(path);
+    match why {
+        GatingLoad::Chosen => format!("Loaded {gates} gates from {name}"),
+        GatingLoad::NewMetadata => format!(
+            "Imported {name} again so its per-specimen positions follow the new metadata: {gates} gates"
+        ),
+        GatingLoad::Waited => {
+            format!(
+                "Loaded {gates} gates from {name}, which was waiting for the metadata and scaling"
+            )
+        }
+    }
+}
+
+fn gating_waiting(path: &Path, needs: &str) -> String {
+    format!(
+        "{} is not imported yet: it waits for {needs}, and is imported as soon as that is loaded",
+        file_name(path)
+    )
 }
 
 fn file_name(path: &Path) -> String {
@@ -1682,5 +1729,46 @@ mod tests {
     fn a_file_is_named_by_its_file_name() {
         assert_eq!(file_name(Path::new("/a/b/gates.omiqgt")), "gates.omiqgt");
         assert_eq!(file_name(Path::new("/")), "/");
+    }
+}
+
+#[cfg(test)]
+mod messages {
+    use super::*;
+
+    #[test]
+    fn loading_metadata_says_metadata_and_how_many_files() {
+        let path = PathBuf::from("/w/metadata_plate10.csv");
+        assert_eq!(
+            metadata_loaded(&path, 36),
+            "Loaded the metadata from metadata_plate10.csv: 36 files"
+        );
+        assert!(metadata_loaded(&path, 1).ends_with(": 1 file"));
+    }
+
+    #[test]
+    fn a_gating_file_says_why_it_was_imported() {
+        let path = PathBuf::from("/w/gating.omiqgt");
+        assert_eq!(
+            gating_loaded(&path, 40, GatingLoad::Chosen),
+            "Loaded 40 gates from gating.omiqgt"
+        );
+        let again = gating_loaded(&path, 40, GatingLoad::NewMetadata);
+        assert!(
+            again.contains("again") && again.contains("new metadata"),
+            "{again}"
+        );
+        let waited = gating_loaded(&path, 40, GatingLoad::Waited);
+        assert!(waited.contains("waiting"), "{waited}");
+    }
+
+    #[test]
+    fn a_gating_file_that_waits_says_what_for() {
+        let said = gating_waiting(&PathBuf::from("/w/gating.omiqgt"), "the scaling");
+        assert!(
+            said.starts_with("gating.omiqgt is not imported yet"),
+            "{said}"
+        );
+        assert!(said.contains("waits for the scaling"), "{said}");
     }
 }

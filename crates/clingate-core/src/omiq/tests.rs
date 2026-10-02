@@ -5250,3 +5250,49 @@ fn a_linked_gate_is_found_under_the_population_it_was_reported_on() {
     assert_eq!(node_named(&state, "no such gate", None), None);
     assert_eq!(node_under(&state, &Arc::from("no such gate"), None), None);
 }
+
+// ─── one mode of positioning per gate, on loading ─────────────────────────────
+
+#[test]
+fn a_gate_with_positions_for_some_samples_loads_with_one_for_every_sample() {
+    use crate::gates::gate_positions::{Mode, mode};
+    // IFny+ is positioned per file; here only sample1 keeps its filter.
+    let mut document: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture("quadrant_with_boolean_child.omiqgt")).unwrap(),
+    )
+    .unwrap();
+    let filters = document["tree"]["filterContainers"]["2PJQ"]["perFileFilters"]
+        .as_object_mut()
+        .unwrap();
+    assert!(filters.remove("sample2").is_some());
+    let path = std::env::temp_dir().join(format!("clingate-modes-{}.omiqgt", std::process::id()));
+    std::fs::write(&path, serde_json::to_string(&document).unwrap()).unwrap();
+    let loaded = GateState::from_gating_file(path.clone(), &fixture_metadata(), fixture_axes());
+    let _ = std::fs::remove_file(&path);
+    let loaded = loaded.unwrap();
+
+    let id: GateId = Arc::from("2PJQ");
+    assert_eq!(mode(&loaded, &id), Mode::PerSample);
+    assert!(loaded.has_sample_position(&id, &Arc::from("sample2")));
+    let shows = |file: &str| {
+        loaded
+            .gate_for_file(&id, &Arc::from(file), &fixture_metadata())
+            .unwrap()
+            .get_gate_ref(None)
+            .unwrap()
+            .geometry
+            .clone()
+    };
+    let drawn = loaded
+        .registered_gate(&id)
+        .unwrap()
+        .get_gate_ref(None)
+        .unwrap()
+        .geometry
+        .clone();
+    assert_eq!(
+        shows("sample2"),
+        drawn,
+        "sample2 still shows the gate as drawn"
+    );
+}

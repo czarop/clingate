@@ -15,7 +15,8 @@ Gates a gating guide places by another gate rather than by the data:
   same for CD3- and CD56-;
 - the MAIT CD4-CD8- gate "adjacent to the left edge of the CD4+CD8- gate and
   the bottom of the CD4-CD8+ gate";
-- one gate "adjacent to" another on the same plot, like 81b beside 81a.
+- one gate "adjacent to" another on the same plot, like 81b beside 81a, is
+  [Next to another gate](next-to-another-gate.md), which moves it to touch.
 
 Nothing is read from this gate's population to decide where it goes. The
 position is the anchor's, on the same sample.
@@ -35,7 +36,8 @@ position is the anchor's, on the same sample.
    `explain_gate_positioning`, section 2): this gate waits for every gate it
    follows that a rule places, and for every ruled gate above it. An anchor
    placed by hand, or not moved by any rule, is read as it stands. The order
-   the rules are listed in plays no part.
+   the rules are listed in plays no part, except between ruled gates on one
+   plot, which are placed in that order.
 2. **On each sample**, the anchor is read as it is on that sample - its
    per-specimen position when a rule or a person gave it one.
 3. **Same shape** (`same_shape_as`): this gate takes the anchor's shape

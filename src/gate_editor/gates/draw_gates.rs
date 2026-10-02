@@ -1,3 +1,5 @@
+use crate::components::toast::{use_toast, warn};
+use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, act, target_at};
 use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
 use clingate_core::axis_store::AxisStore;
 use clingate_core::axis_store::AxisStoreStoreExt;
@@ -43,6 +45,11 @@ impl Deref for GateList {
         &self.0
     }
 }
+
+/// Whether an edit or a move of a gate stops where it meets another gate on
+/// its plot. Drawing a new gate is never stopped.
+#[derive(Clone, Copy)]
+pub struct KeepGatesApart(pub Signal<bool>);
 
 /// The plot's size on screen, measured when a press starts, so a drag can
 /// turn window coordinates into the plot's own.
@@ -106,6 +113,7 @@ pub fn GateLayer(
     let mut draft_gate_coords = use_signal(Vec::<(f32, f32)>::new);
 
     let current_gate_type = use_context::<Signal<PrimaryGateType>>();
+    let keep_apart = try_use_context::<KeepGatesApart>();
 
     let plot_store = use_context::<Store<PlotStore>>();
     let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
@@ -120,6 +128,28 @@ pub fn GateLayer(
             .unwrap_or_default();
         GateList(g)
     });
+    let mut shape_menu = use_signal(|| Option::<ShapeMenu>::None);
+    let toasts = use_toast();
+    let menu_at = move |gates: &[Arc<dyn DrawableGate>], pixel: (f32, f32)| -> Option<ShapeMenu> {
+        let mapper = plot_map.peek().clone()?;
+        let at = mapper.pixel_to_data(pixel.0, pixel.1, None, None).ok()?;
+        let selected = gate_store.selected_gate().peek().cloned();
+        let (x, y) = (x_channel.peek().clone(), y_channel.peek().clone());
+        let (gate_id, target) = target_at(gates, selected.as_ref(), (&x, &y), &mapper, pixel)?;
+        Some(ShapeMenu {
+            gate_id,
+            target,
+            at_pixel: pixel,
+            at,
+        })
+    };
+    let apart_from = move || -> Vec<Arc<dyn DrawableGate>> {
+        if keep_apart.is_some_and(|keep| *keep.0.peek()) {
+            gates.peek().to_vec()
+        } else {
+            Vec::new()
+        }
+    };
 
     use_effect(move || {
         println!("matching gates to plot");
@@ -488,12 +518,13 @@ pub fn GateLayer(
                                             data_coords,
                                             &map,
                                             &current_resolver_move,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Gate(gate_drag_data) => {
                                     gate_store
-                                        .move_gate(gate_drag_data.clone(), &current_resolver_move)
+                                        .move_gate(gate_drag_data.clone(), &current_resolver_move, &apart_from())
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
                                 GateDragType::Rotation(rotation_data) => {
@@ -502,6 +533,7 @@ pub fn GateLayer(
                                             selected_gate_id.clone(),
                                             rotation_data.current_loc(),
                                             &current_resolver_move,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
@@ -541,6 +573,7 @@ pub fn GateLayer(
                                             data_coords,
                                             mapper,
                                             &current_resolver_up,
+                                            &apart_from(),
                                         )
                                         .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                                 }
@@ -548,7 +581,7 @@ pub fn GateLayer(
                             }
                             GateDragType::Gate(gate_drag_data) => {
                                 gate_store
-                                    .move_gate(gate_drag_data, &current_resolver_up)
+                                    .move_gate(gate_drag_data, &current_resolver_up, &apart_from())
                                     .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }
                             GateDragType::Rotation(rotation_data) => {
@@ -557,6 +590,7 @@ pub fn GateLayer(
                                         selected_gate_id.clone(),
                                         rotation_data.current_loc(),
                                         &current_resolver_up,
+                                        &apart_from(),
                                     )
                                     .unwrap_or_else(|e| println!("gate move failed: {e:?}"));
                             }
@@ -569,6 +603,7 @@ pub fn GateLayer(
 
                     match evt.trigger_button() {
                         Some(dioxus_elements::input_data::MouseButton::Primary) => {
+                            shape_menu.set(None);
                             let div_data = svg_data.read().clone();
                             spawn(async move {
                                 if let Some(mount) = div_data {
@@ -613,9 +648,15 @@ pub fn GateLayer(
                             }
                         }
                         Some(dioxus_elements::input_data::MouseButton::Secondary) => {
-                            let _ = gate_store.selected_gate().take();
-                            draft_gate_coords.write().clear();
-
+                            let local = evt.data.coordinates().element();
+                            let opened = draft_gate.peek().is_none()
+                                .then(|| menu_at(&gates.peek(), (local.x as f32, local.y as f32)))
+                                .flatten();
+                            if opened.is_none() {
+                                let _ = gate_store.selected_gate().take();
+                                draft_gate_coords.write().clear();
+                            }
+                            shape_menu.set(opened);
                         }
                         _ => {}
                     }
@@ -673,6 +714,38 @@ pub fn GateLayer(
                         }
                     }
                     None => rsx! {},
+                }
+            }
+            if let Some(menu) = shape_menu() {
+                div {
+                    class: "shape-menu",
+                    style: "left: {menu.at_pixel.0}px; top: {menu.at_pixel.1}px;",
+                    onmousedown: move |evt| evt.stop_propagation(),
+                    oncontextmenu: move |evt| evt.prevent_default(),
+                    for (action , label) in ShapeAction::offered(&menu.target).iter().copied() {
+                        button {
+                            onclick: {
+                                let menu = menu.clone();
+                                move |_| {
+                                    shape_menu.set(None);
+                                    let Some(resolver) = resolver.peek().clone() else { return };
+                                    let (x, y) = (x_channel.peek().clone(), y_channel.peek().clone());
+                                    if let Err(e) = act(
+                                        gate_store,
+                                        edits,
+                                        &resolver,
+                                        &apart_from(),
+                                        (&x, &y),
+                                        &menu,
+                                        action,
+                                    ) {
+                                        warn(&toasts, format!("{label}: {e}"));
+                                    }
+                                }
+                            },
+                            "{label}"
+                        }
+                    }
                 }
             }
         }
@@ -977,9 +1050,6 @@ fn RenderShape(
                                                 };
                                                 let point_drag_data = PointDragData::new(index, data_coords);
                                                 drag_data_signal.set(Some(GateDragType::Point(point_drag_data)));
-                                            }
-                                            Some(dioxus_elements::input_data::MouseButton::Secondary) => {
-                                                println!("make context menu to add or delete points");
                                             }
                                             _ => {}
                                         }

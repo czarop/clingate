@@ -46,10 +46,12 @@ show, not raw channel values.
    gate is placed. The ruled gates are put in levels by the tree: level 0 has
    no ruled gate above it, level 1 has one, and so on. Steps 1-6 run once per
    level, each measuring on the gates as the levels above left them, and the
-   next level reads through those placements. A gate whose rule is from
-   another gate also waits for every gate it follows that a rule places. The
-   order the rules are listed in plays no part. A rule from another gate
-   whose anchor is not one gate, is itself, or leads round in a loop back to
+   next level reads through those placements. A gate whose rule reads a
+   position from another gate (`Rule::anchors`: a rule from another gate, or
+   a valley rule's `fallback`) also waits for every such gate that a rule
+   places. The order the rules are listed in plays no part, except between
+   ruled gates on one plot, which are placed in that order (see step 5). A rule whose
+   anchor is not one gate, is itself, or leads round in a loop back to
    it is reported and left alone (`anchor_problems`). A run with no ruled gate under another is one level,
    and reads each file once; each further level reads every file again.
    Before any level: a rule that reaches no gate is reported
@@ -61,6 +63,22 @@ show, not raw channel values.
    a run would leave the levels above; a replay re-solves each gate on the
    events its run kept, so a changed parent rule does not re-filter the
    gates under it.
+   **Pausing** (`run_rules_pausing`, the Gate Rules tab's run). After a
+   level, a gate with a ruled gate anywhere under it that could not be
+   placed, or was placed with a confidence under 0.2 (`PAUSE_BELOW`), on any
+   specimen, stops the run before the next level: the gates under it would be
+   measured on the wrong cells. Everything placed so far is written; each such
+   gate is put in the mode of positions by specimen where it stands
+   (`hold_for_placing`), so a person can move it on one specimen without
+   moving it for anyone else; a file with no specimen shows it as drawn. The
+   editor shows the gates to place one at a time. Going on runs the
+   remaining levels on the gates as they are then, and the parts are kept as
+   one run (`RunOutcome::then`) - only while the rules, and the levels they
+   put the gates in, are those it paused with; otherwise it has to be stopped
+   and run again. Stopping keeps what it did with the rules it ran. A paused
+   run is dropped when another workspace is opened. A gate with nothing ruled under it never
+   pauses a run - the Review tab is for those. `run_rules`, which the tools
+   for Claude use, never pauses.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and
    every gate a rule names, the gate's parent population is filtered exactly
    as the plot filters it (same gate chain, same override resolution, same
@@ -95,11 +113,26 @@ show, not raw channel values.
    in the workspace; the specimen has no file of that type; the reference
    was read but could not be measured (and why); or it is in the metadata
    but was not loaded (`why_no_reference`).
-5. **Position** (`position_one`, section 3).
-6. **Write back** (`apply_placements`). The moved gate is written as a
-   per-specimen (group) override, so every file of the specimen - FMX and
-   full stain alike - shows the new position. A later per-file move by hand
-   wins over it (most recent wins).
+5. **Position** (`position_one`, section 3). Never over another gate on
+   the same plot - beside it under the same parent, on the same two
+   parameters - that no rule in the run moves, or that a rule listed first
+   has placed (`clearance`; ruled gates on one plot are placed in the order
+   their rules are listed, one level each, unless a chain of rules reading
+   other gates needs the other order). A rule that moves a line is held
+   back along it until its gate just touches the other, scored *held back
+   off another gate*; any other placement that would overlap - a phenotype
+   match, a copy of another gate, a run's pooled line - is left where it was
+   and the run says why. Quadrants are not kept clear of: one covers its
+   whole plot. Touching is not overlapping.
+6. **Write back** (`apply_placements`). A gate has one mode of positioning
+   for every sample (`gates::gate_positions`): as drawn, one position per
+   value of a metadata column, or one per sample. A gate a run places is put
+   in the mode of positions by the pairing's sample id column first
+   (`set_mode`): each specimen takes what its first file showed, so a gate
+   that was per sample keeps one position per specimen - its first file's,
+   on every file of it, placed or not - and the moved gate is written as
+   its specimen's position, which every file of the specimen - FMX and full
+   stain alike - shows.
 
 Every list in the report is then sorted by the pairing's sort column, with
 each placement kept beside its own line (`sort_report`).
@@ -238,6 +271,11 @@ Consequences worth knowing:
   deep enough).
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
+- No valley on the reference or the sample, and a `fallback` gate named
+  (`ValleyRule::fallback_rule`, `autogate::fall_back`): the gate's leading
+  edge - the lower for `Above`, the upper for `Below` - goes where the
+  fallback's same edge is on this sample, as a rule from another gate sets
+  an edge. Its confidence is one component at `FLAGGED_CONFIDENCE`, 0.25.
 
 Judged on the reference population; distance moved not scored. An extra
 component compares the dip's depth with the reference's (below).
@@ -271,6 +309,8 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
 | distance moved from the reference | band and percentile rules only: `1 - (abs(to - from) / IQR) / 0.5`, where `from` is the sample's line **before the run** (not the reference file's line) |
 | depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
+| no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
+| held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
 
@@ -339,8 +379,10 @@ as it was, so a rerun adds only its lists and the populations that changed.
 A replay (`review/replay.rs`, `replay_run`) rebuilds those populations and
 gates and runs the **real** solver (`measure_population` + `solve_all`) on
 them - with the run's own rules (the *baseline*) and with proposed rule
-changes. Each placement is judged against where the review says the gate
-belongs:
+changes. A run keeps, with each population, the outlines of the gates it
+kept that gate clear of (`EventSample::beside`), so a replay holds it back
+off the same gates, where they stood in the run. Each placement is judged
+against where the review says the gate belongs:
 
 | truth | right gate |
 |-------|-----------|
@@ -451,11 +493,14 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0}`
+- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}}` -
+  `fallback` is optional; it is placed first, like an anchor
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
   the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.
+- `{"kind": "NextToGate", "anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Lower" | "Upper", "meet": "GrowSide" | "FollowOutline" | "Slide", "gap": 0.0}` -
+  brought up against the anchor on the same plot (`next_to`); the anchor is placed first.
 
 `measured_on` is `"Itself"`, `{"Partner": "<sample type>"}` or
 `{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and

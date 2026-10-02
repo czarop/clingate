@@ -1,4 +1,5 @@
 use crate::components::toast::{use_toast, warn};
+use crate::gate_editor::gates::draw_gates::KeepGatesApart;
 use crate::gate_editor::gates::gate_buttons::NewGateButtons;
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
@@ -90,6 +91,8 @@ pub fn MainWindow() -> Element {
 
     let mut current_gate_type = use_signal(|| PrimaryGateType::Polygon);
     use_context_provider(|| current_gate_type);
+    let mut keep_gates_apart = use_signal(|| false);
+    use_context_provider(|| KeepGatesApart(keep_gates_apart));
 
     // On the NavBar layout with the others: the scaling belongs to the loaded
     // document, and the gate rules tab has to read events the same way the
@@ -379,6 +382,8 @@ pub fn MainWindow() -> Element {
 
             main { class: "main-content",
 
+                crate::gate_editor::paused_run::PausedBanner {}
+
                 // The top bar: axis controls on the left, sample selection on
                 // the right. Its own class - `gate-window` stacks a plot under
                 // its title, which is the opposite of what this row wants.
@@ -463,6 +468,16 @@ pub fn MainWindow() -> Element {
                     }
                     div { class: "new-gate-pane",
                         NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
+                        label {
+                            class: "keep-apart",
+                            title: "Moving or editing a gate stops where it meets another gate on its plot. Drawing is not stopped.",
+                            input {
+                                r#type: "checkbox",
+                                checked: keep_gates_apart(),
+                                onchange: move |evt| keep_gates_apart.set(evt.checked()),
+                            }
+                            "Keep gates apart"
+                        }
                     }
                     crate::gate_editor::edits::EditBar {}
                     }
@@ -585,6 +600,14 @@ pub fn MainWindow() -> Element {
                                                 title: "{name}",
                                                 "{name}"
                                                 crate::gate_editor::review::ReportButton {
+                                                    sample_name: sample_stub.name.clone(),
+                                                    parental_gate,
+                                                }
+                                            }
+                                            div {
+                                                class: "gate-window_position",
+                                                style: "margin-left: {PLOT_AREA.0}px; width: {PLOT_AREA.1}px;",
+                                                crate::gate_editor::position_menu::PositionMenu {
                                                     sample_name: sample_stub.name.clone(),
                                                     parental_gate,
                                                 }
