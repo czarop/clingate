@@ -1435,7 +1435,7 @@ pub fn GateRulesWindow() -> Element {
                 if kind() == "InTheValley" {
                     {calibrate_picker(calibrate_on, files)}
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
+                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own on some samples, use valley or smear instead."
                     }
 
                     p { class: "gate_rules-hint gate_rules-span",

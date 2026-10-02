@@ -451,7 +451,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 8);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
@@ -725,6 +725,62 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
         view.rules[0]
             .rule
             .contains(&format!("with no dip, where {} is", other.rule_target)),
+        "{:?}",
+        view.rules
+    );
+}
+
+#[test]
+fn a_valley_or_smear_rule_is_written_with_its_smear_example_over_the_protocol() {
+    let folder = workspace_with_rules("valley-or-smear");
+    let parameter = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let either = |measured_on: Value| {
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": parameter,
+                "bound": "Above",
+                "measured_on": measured_on,
+                "rule": {"kind": "ValleyOrSmear", "smear_example": "sample2_FS.fcs"}
+            }
+        })
+    };
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let guide = server.call("rule_guide", json!({"rule": "valley or smear"}));
+    assert_eq!(guide["result"]["kind"], "ValleyOrSmear", "{guide}");
+
+    let itself = server.call("update_rule", either(json!("Itself")));
+    assert_eq!(itself["outcome"], "failed", "{itself}");
+    assert!(
+        itself["reason"]
+            .as_str()
+            .unwrap()
+            .contains("measured on one named file"),
+        "{itself}"
+    );
+
+    let written = server.call("update_rule", either(json!({"File": "sample1_FMX.fcs"})));
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    // The metadata names sample2_FS.fcs sample2.
+    assert!(
+        view.rules[0]
+            .rule
+            .contains("on a smear, as far above the negative as on sample2"),
         "{:?}",
         view.rules
     );

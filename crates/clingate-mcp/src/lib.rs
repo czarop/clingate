@@ -130,10 +130,16 @@ since this gate copies wherever that one ends up. update_rule refuses a rule \
 that follows itself, a gate that is not there, or a loop. A gate the guide \
 places 'adjacent to' another on the same plot - grown or slid up to it, \
 touching but not overlapping - takes the kind NextToGate (rule_guide 'Next to \
-another gate'). An InTheValley rule \
-can name a fallback the same way - usually the same gate under another parent \
-- for samples where the positives smear with no dip: there its edge goes where \
-the fallback's is, placed first, and the placement comes up for review.
+another gate'). A marker that separates on some samples and smears on others \
+takes the kind ValleyOrSmear (rule_guide 'Valley or smear'), measured on a \
+hand-gated File: in the dip where a sample has one, and on a smear as far \
+above the negative as on its smear_example, a smear gated by hand - the \
+reference itself when the reference is a smear. With no example, a smear is \
+left unplaced: ask the user to gate one smear by hand, then name its file as \
+smear_example. It, and an InTheValley rule, can name a fallback the same way \
+- usually the same gate under another parent - for samples where the \
+positives smear with no dip: there its edge goes where the fallback's is, \
+placed first, and the placement comes up for review.
 
 Runs. The files analysed together - this workspace - are one run. A gating \
 guide that says 'per run in the first instance' means one line for all of \

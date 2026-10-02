@@ -51,6 +51,14 @@ pub const GUIDES: &[Guide] = &[
         text: include_str!("../../../../docs/rules/in-the-valley.md"),
     },
     Guide {
+        key: "ValleyOrSmear",
+        name: "Valley or smear",
+        summary: "in the dip where a sample has one, as in the valley; on a smear, as far above \
+                  the negative as on a smear gated by hand - markers clear on some samples and \
+                  smeared on others",
+        text: include_str!("../../../../docs/rules/valley-or-smear.md"),
+    },
+    Guide {
         key: "MatchThePhenotype",
         name: "Match the phenotype",
         summary: "find the cells that look like the reference gate's across chosen markers and \
@@ -94,7 +102,8 @@ mod tests {
     use super::*;
     use crate::gate_rules::rule::{
         AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, Meet, NegativeFinder, NextToRule,
-        PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
+        PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule,
+        ValleyOrSmearRule, ValleyRule,
     };
 
     fn every_rule() -> Vec<Rule> {
@@ -103,6 +112,7 @@ mod tests {
             Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.3)),
             Rule::AboveTheNegative(AboveTheNegativeRule::default()),
             Rule::InTheValley(ValleyRule::default()),
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
             Rule::MatchThePhenotype(PhenotypeRule::default()),
             Rule::FromAnotherGate(FromGateRule {
                 same_shape_as: Some(crate::gate_rules::rule_store::RuleTarget::named("CD4+")),

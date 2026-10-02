@@ -52,6 +52,15 @@ impl Session {
             }
             wanted.markers = markers;
         }
+        if let Rule::ValleyOrSmear(either) = &mut rule.rule
+            && let Some(named) = &either.smear_example
+        {
+            let id = self.metadata_row_named(named)?;
+            if *id != **named {
+                notes.push(format!("the smear example {named} is the file {id}"));
+            }
+            either.smear_example = Some(id);
+        }
         match &rule.measured_on {
             MeasuredOn::File(named) => {
                 let id = self.metadata_row_named(named)?;
@@ -141,6 +150,14 @@ impl Session {
                 ));
             }
             return Ok(());
+        }
+        if matches!(rule.rule, Rule::ValleyOrSmear(_))
+            && !matches!(rule.measured_on, MeasuredOn::File(_))
+        {
+            return Err(failed(
+                "a valley-or-smear rule places every sample from one gated by hand, so it is \
+                 measured on one named file: {\"File\": \"<sample>\"}",
+            ));
         }
         for (here, (x, y)) in &matched {
             if *rule.parameter != **x && *rule.parameter != **y {

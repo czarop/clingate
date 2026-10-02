@@ -77,8 +77,13 @@ show, not raw channel values.
    put the gates in, are those it paused with; otherwise it has to be stopped
    and run again. Stopping keeps what it did with the rules it ran. A paused
    run is dropped when another workspace is opened. A gate with nothing ruled under it never
-   pauses a run - the Review tab is for those. `run_rules`, which the tools
-   for Claude use, never pauses.
+   pauses a run - the Review tab is for those. A valley-or-smear rule that
+   meets a smear with no smear example to place it from stops the run too,
+   at that level, before anything of the level is kept: the first such
+   sample is shown to be gated by hand, the Gate Rules tab writes it into the
+   rule as the example, and going on runs the same level again (3.5);
+   stopping takes it out of the rule again. `run_rules`, which the tools for
+   Claude use, never pauses.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and
    every gate a rule names, the gate's parent population is filtered exactly
    as the plot filters it (same gate chain, same override resolution, same
@@ -280,7 +285,27 @@ Consequences worth knowing:
 Judged on the reference population; distance moved not scored. An extra
 component compares the dip's depth with the reference's (below).
 
-### 3.5 MatchThePhenotype
+### 3.5 ValleyOrSmear - "in the dip; on a smear, as on a smear gated by hand"
+
+`autogate::position_valley_or_smear`. The dip is looked for on the reference
+and on the sample as in 3.4 (`ValleyOrSmearRule::valley`). Both have one: the
+gate is placed as InTheValley places it, against the reference. Otherwise
+the sample is a smear, and:
+
+- with a `fallback`, its edge goes where the fallback's is, as in 3.4;
+- otherwise it is placed as AboveTheNegative places it
+  (`ValleyOrSmearRule::smear`, always `NegativePeak`: the events below a gate
+  on a smear include the dim cells), calibrated on the **smear example** - the
+  rule's `smear_example`, or the reference itself when the reference has no
+  dip;
+- with neither, it is left unplaced (`NO_SMEAR_EXAMPLE`).
+
+The smear example, like the reference, is never moved (step 3 of section
+2). A pausing run stops at the first such smear (`smears_to_gate`), before
+any of that level is kept, and goes on from the same level once it is gated
+by hand and written into the rule (`with_smear_examples`).
+
+### 3.6 MatchThePhenotype
 
 Does not move a line. It reads each chosen marker on each sample's own
 landmarks - 0 at the parent's negative peak, 1 at the valley above it, or a
@@ -306,7 +331,7 @@ Each placement gets components, each scored 0 to 1 (clamped; unmeasurable
 counts as 0). **The overall confidence is the minimum**, and the lowest
 component is reported as "weakest" (`Confidence::from_components`). The
 population the numbers are counted on is the one the placement is judged on
-(3.1-3.4). Limits (`ConfidenceLimits`, can be changed per rule in the rules
+(3.1-3.5). Limits (`ConfidenceLimits`, can be changed per rule in the rules
 file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 `displacement_limit = 0.5`.
 
@@ -511,6 +536,8 @@ Rule kinds and their fields:
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
 - `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}}` -
   `fallback` is optional; it is placed first, like an anchor
+- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>"}` -
+  `fallback` and `smear_example` are optional; measured on a `File`
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -

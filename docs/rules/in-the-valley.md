@@ -17,6 +17,8 @@ that broadens does not throw the gate out.
   `fallback`.
 - Datasets where some samples have a positive population and others only a
   smear: the smear samples will be refused, or placed by the `fallback`.
+  Valley or smear places them as on a smear gated by hand; the Gate Rules
+  tab offers it in place of this rule.
 
 ## How it works
 

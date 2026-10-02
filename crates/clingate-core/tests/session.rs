@@ -3095,6 +3095,189 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
     }
 }
 
+// ─── valley or smear ──────────────────────────────────────────────────────────
+
+fn valley_or_smear(example: Option<&str>) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
+            smear_example: example.map(Into::into),
+            ..Default::default()
+        },
+    )
+}
+
+/// On FSC-A, sample1 15,000 negatives at 1,000,000 and 5,000 positives at
+/// 3,000,000 with a dip between; sample2 the same negative with the 5,000
+/// trailing off it.
+fn a_dip_and_a_smear_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    let negative = Normal::new(1_000_000.0f32, 150_000.0).unwrap();
+    let positive = Normal::new(3_000_000.0f32, 150_000.0).unwrap();
+    let tail = rand_distr::Exp::new(1.0f32 / 400_000.0).unwrap();
+    for (seed, file) in [(1, "sample1_FMX.fcs"), (2, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 200);
+        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+            .into_iter()
+            .enumerate()
+            .map(|(at, mut row)| {
+                row[0] = match (at < 15_000, seed) {
+                    (true, _) => negative.sample(&mut rng),
+                    (false, 1) => positive.sample(&mut rng),
+                    (false, _) => 1_000_000.0 + tail.sample(&mut rng),
+                };
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+#[test]
+fn a_valley_or_smear_rule_is_read_on_a_file_and_names_its_example_as_a_file() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-written",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    let mut session = Session::open(&folder).unwrap();
+    let refused = session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            MeasuredOn::Itself,
+            valley_or_smear(None),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("measured on one named file"), "{refused}");
+
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1_FMX.fcs"),
+            valley_or_smear(Some("sample2_FS.fcs")),
+        ))
+        .unwrap();
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Pos"))
+        .unwrap()
+        .clone();
+    // The metadata names the files sample1 and sample2.
+    assert_eq!(stored.measured_on, file("sample1"));
+    assert_eq!(stored.rule, valley_or_smear(Some("sample2")));
+}
+
+/// Pos drawn from 2,000,000, in sample1's dip. Sample2 is a smear: with no
+/// example it is left unplaced, saying so; gated by hand and named the
+/// example, it is a reference too, and nothing is left unplaced.
+#[test]
+fn a_smear_waits_for_an_example_gated_by_hand() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-example",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    a_dip_and_a_smear_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview
+            .not_positioned
+            .iter()
+            .any(|n| n.reason.contains("no smear gated by hand")),
+        "{preview:?}"
+    );
+
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(Some("sample2")),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    let mut references: Vec<&str> = preview
+        .references
+        .iter()
+        .map(|r| r.specimen.as_str())
+        .collect();
+    references.sort();
+    assert_eq!(references, ["one", "two"]);
+}
+
+/// One peak on FSC-A and nothing else, 200,000 wide: at 2,000,000 on
+/// sample1 and 2,200,000 on sample2.
+fn one_peak_each_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    for (seed, file, centre) in [
+        (1, "sample1_FMX.fcs", 2_000_000.0f32),
+        (2, "sample2_FS.fcs", 2_200_000.0),
+    ] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 300);
+        let peak = Normal::new(centre, 200_000.0).unwrap();
+        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+            .into_iter()
+            .map(|mut row| {
+                row[0] = peak.sample(&mut rng);
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+/// No dip on the reference, sample1, so it is the example: Pos sits two
+/// widths above its peak, and goes two widths above sample2's, at 2,600,000 -
+/// to within half a width, the peak and width being read off a smoothed
+/// density, each good to a tenth or so.
+#[test]
+fn a_reference_that_is_a_smear_places_the_other_sample_from_itself() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-smeary-reference",
+        &[("p", "Pos", "", (2_400_000.0, 4_194_304.0))],
+    );
+    one_peak_each_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    session.apply_previewed_rules().unwrap();
+    let (lower, _) = fsc_span(&session, "Pos", "fs");
+    assert!((lower - 2_600_000.0).abs() < 100_000.0, "{lower}");
+    assert_eq!(
+        fsc_span(&session, "Pos", "fmx").0,
+        2_400_000.0,
+        "the reference"
+    );
+}
+
 /// A phenotype rule for Tmem, read on sample1: BUV805-A and BUV661-A
 /// positive, BV785-A negative.
 fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::RulesPreview {

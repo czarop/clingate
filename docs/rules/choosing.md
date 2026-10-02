@@ -12,9 +12,9 @@ rule will read (the FMX, the QC, the sample itself), across the dataset:
 
 | what you see | rule to try first |
 |--------------|-------------------|
-| A negative and a clearly separate positive, with a dip between them | **In the valley** - reads the dip directly |
+| A negative and a clearly separate positive, with a dip between them - on every sample, or only on some, the rest smears | **Valley or smear** - reads the dip where there is one, and cuts a smear as on one gated by hand |
 | A negative with positives smearing out of it, no dip, and a matching FMX for every sample | **Tail fraction** on the FMX - "0.2% to 0.5% of the FMX above the line" |
-| A negative with positives smearing out of it, no dip, no FMX - but a hand-gated QC or template | **Above the negative**, peak finder - "as far above the negative as on the QC" |
+| A negative with positives smearing out of it, no dip, no FMX - but a hand-gated QC or template | **Valley or smear**, the QC its reference - "as far above the negative as on the QC" |
 | A negative only (FMX, unstimulated), and you want the line a fixed step above its top | **Percentile offset** |
 | A population that does not separate on either axis alone, several clusters close together, or one that moves in both axes | **Match the phenotype** |
 | A gate the guide places by another gate: "the same position as", "aligned to the edge of" | **From another gate** - settle the other gate first |
@@ -26,9 +26,9 @@ Then check the harder questions:
   are fine for every rule. Changes in its width or skew are not: above the
   negative paces out in widths of the left side and assumes the right side
   mirrors it; its right-side check flags when that stops holding.
-- **Is there always a dip?** In the valley refuses a sample with no dip.
-  Mixed datasets - some samples with a positive population, some with only
-  a smear - often need above the negative or an FMX rule instead.
+- **Is there always a dip?** Valley or smear decides per sample: a sample
+  with no dip is cut as on a smear gated by hand. In the valley, written
+  before it, refuses such a sample.
 - **Is the FMX good?** An FMX rule is only as good as the FMX. A poorly
   stained or low-count FMX gives a noisy tail; the band rule's confidence
   says how many events decided it.
@@ -44,8 +44,8 @@ Then check the harder questions:
   to the specimen's full stain. The usual choice for band rules.
 - `{"File": "<id>"}` - one named file for every specimen: a QC or template
   sample gated by hand. That file's gate is never moved; every other
-  sample is calibrated against it. The usual choice for above the negative,
-  in the valley, and required for match the phenotype.
+  sample is calibrated against it. Required for valley or smear and match
+  the phenotype; the usual choice for above the negative and in the valley.
 - `"Itself"` - the sample being gated. For a band or percentile rule this is
   "that fraction of this sample's own population"; for the calibrated rules
   (above the negative, in the valley) it calibrates on the sample's own
@@ -65,10 +65,16 @@ for the whole specimen, so its FMX shows the same gate.
   file it reads, within a band.
 - **Percentile offset** - put the line a fixed step above (or below) a
   percentile of the file it reads.
+- **Valley or smear** - in the dip where a sample has one, as far from its
+  bottom as on the reference; on a smear, as many negative-widths above the
+  negative as on a smear gated by hand. The Gate Rules tab offers it in
+  place of the two below.
 - **Above the negative** - put the line as many negative-widths above each
-  sample's negative as it sits on the reference.
+  sample's negative as it sits on the reference. Rules written as this still
+  run.
 - **In the valley** - put the line in the dip between negative and
-  positive, as far from its bottom as on the reference.
+  positive, as far from its bottom as on the reference. Rules written as
+  this still run.
 - **Match the phenotype** - find the cells that look like the reference
   gate's across chosen markers, and fit the gate to them.
 - **From another gate** - take another gate's shape, or set an edge against

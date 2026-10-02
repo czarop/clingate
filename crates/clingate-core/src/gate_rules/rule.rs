@@ -866,7 +866,7 @@ impl Rule {
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
             Rule::InTheValley(_) => "In the valley",
-            Rule::ValleyOrSmear(_) => "Valley, or as on a smear",
+            Rule::ValleyOrSmear(_) => "Valley or smear",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
             Rule::NextToGate(_) => "Next to another gate",
