@@ -634,9 +634,13 @@ fn low_confidence_placements_are_the_ones_flagged() {
     let map = fs_and_fmx();
     let report = sweep(&mut state, &fmx_rule(), &map);
 
-    // Nothing is below a floor of zero, and everything is below a floor of one.
+    // Nothing is below a floor of zero, and everything is below a floor of
+    // one - but a placement trusted for its control is never flagged.
     assert_eq!(report.needs_review(0.0).count(), 0);
-    assert_eq!(report.needs_review(1.01).count(), report.positioned.len());
+    assert_eq!(
+        report.needs_review(1.01).count(),
+        report.positioned.iter().filter(|p| !p.trusted()).count()
+    );
 }
 
 #[test]

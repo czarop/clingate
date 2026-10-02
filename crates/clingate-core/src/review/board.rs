@@ -338,6 +338,7 @@ mod tests {
             above_the_line: None,
             reference_events: 0,
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,

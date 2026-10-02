@@ -245,7 +245,7 @@ pub fn try_rules(
             not_placed_because: Vec::new(),
         };
         for (p, placement) in report.positioned.iter().zip(&placements) {
-            let flagged = p.confidence < crate::review::assess::REVIEW_FLOOR || !p.in_band;
+            let flagged = p.needs_review(crate::review::assess::REVIEW_FLOOR);
             summary.flagged += usize::from(flagged);
             let holds = index_of(&p.gate_id, &p.file).and_then(|i| admitted_by(&placement.gate, i));
             row_for(&mut rows, &p.gate_id, &p.file, &new_row).candidates[at] = Cell {

@@ -183,7 +183,7 @@ impl Session {
             .positioned
             .iter()
             .map(|p| {
-                let review = p.confidence < REVIEW_FLOOR || !p.in_band;
+                let review = p.needs_review(REVIEW_FLOOR);
                 Move {
                     gate: describe(&p.gate, p.parent_gate.as_deref()),
                     specimen: p.specimen.to_string(),

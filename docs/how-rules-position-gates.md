@@ -323,7 +323,11 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
 
-The Gate Rules tab and the Review tab flag a placement below 0.30.
+The Gate Rules tab and the Review tab flag a placement below 0.30 - unless
+its rule read a control (the specimen's FMX, or the run's) of more than 300
+events and it landed in its band: a control's confidence is held down by its
+count, and that many is plenty to set a band on (`TRUSTED_CONTROL_EVENTS`). A
+run does not pause on such a placement either.
 
 ## 5. The review (what "looks wrong" means)
 
@@ -342,6 +346,9 @@ notable, 3 or more is flagged - on:
 - the distribution: median shift (weight 0.6) and spread (weight 0.5);
 - the rule's confidence (below 0.30 is flagged whatever the peers say), and
   whether it reached its band.
+
+A placement read on a control of more than 300 events that reached its band
+is not flagged on any of these.
 
 Each z has a floor on the peer spread, so near-identical peers do not make a
 hair's difference look enormous (`Measure::floor`). The "typical peer" shown

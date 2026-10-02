@@ -568,7 +568,7 @@ pub(crate) fn needing_a_person(
     let doubtful = level
         .positioned
         .iter()
-        .filter(|p| p.confidence < PAUSE_BELOW && parents.contains(&p.gate_id))
+        .filter(|p| p.confidence < PAUSE_BELOW && !p.trusted() && parents.contains(&p.gate_id))
         .map(|p| NeedsPlacing {
             gate_id: p.gate_id.clone(),
             gate: p.gate.clone(),

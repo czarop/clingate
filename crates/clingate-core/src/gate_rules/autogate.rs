@@ -1151,6 +1151,9 @@ pub struct Positioned {
     pub reference_events: usize,
     /// Whether that landed inside the band the rule asked for.
     pub in_band: bool,
+    /// Whether the rule read a control - the specimen's FMX, or the run's -
+    /// rather than the sample itself or one named file.
+    pub read_on_control: bool,
     /// For a rule that places against the negative: what it read on the
     /// reference, and what it read on this sample. The two side by side are
     /// the only way to tell a gate that moved because the negative moved from
@@ -1348,13 +1351,38 @@ pub struct Report {
     pub unplaced: Vec<Unplaced>,
 }
 
+/// More events than this in the control a placement was read on, and a
+/// placement in its band is trusted however low its confidence: the count is
+/// what holds a control's confidence down, and this many is plenty to set a
+/// band on.
+pub const TRUSTED_CONTROL_EVENTS: usize = 300;
+
+/// Whether a placement read on a control of `events`, in its band or not, is
+/// trusted without review.
+pub fn trusted_control(read_on_control: bool, events: usize, in_band: bool) -> bool {
+    read_on_control && in_band && events > TRUSTED_CONTROL_EVENTS
+}
+
+impl Positioned {
+    /// Read on a control big enough to trust, and in its band: see
+    /// [`TRUSTED_CONTROL_EVENTS`].
+    pub fn trusted(&self) -> bool {
+        trusted_control(self.read_on_control, self.reference_events, self.in_band)
+    }
+
+    /// Whether it is worth opening by hand: outside its band, or under
+    /// `floor` and not [`trusted`](Self::trusted).
+    pub fn needs_review(&self, floor: f64) -> bool {
+        !self.in_band || (self.confidence < floor && !self.trusted())
+    }
+}
+
 impl Report {
-    /// Gates worth opening by hand: a weak placement, or one that could not be
-    /// brought inside the band at all.
+    /// Gates worth opening by hand - see [`Positioned::needs_review`].
     pub fn needs_review(&self, floor: f64) -> impl Iterator<Item = &Positioned> {
         self.positioned
             .iter()
-            .filter(move |p| p.confidence < floor || !p.in_band)
+            .filter(move |p| p.needs_review(floor))
     }
 }
 
@@ -2010,7 +2038,8 @@ pub fn solve_all_reporting(
                 &mut pooled,
             )
             .and_then(|line| line.for_specimen(state, measured, &specimen, metadata))
-            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside));
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside))
+            .map(|outcome| read_on(rule, outcome));
             steps.push((measured, Step::Pooled(outcome, specimen)));
             continue;
         }
@@ -2144,11 +2173,21 @@ fn place_side_by_side(
             let outcome = position_one(
                 state, rule, measured, reference, specimen, metadata, beside, &described,
             )
-            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside));
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside))
+            .map(|outcome| read_on(rule, outcome));
             progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
             Some(outcome)
         })
         .collect()
+}
+
+/// `outcome`, marked as read on a control where `rule` reads the specimen's
+/// partner file.
+fn read_on(rule: &GateRule, mut outcome: Outcome) -> Outcome {
+    if let Outcome::Moved(positioned, _) = &mut outcome {
+        positioned.read_on_control = matches!(rule.measured_on, MeasuredOn::Partner(_));
+    }
+    outcome
 }
 
 impl Report {
@@ -2363,6 +2402,7 @@ impl PooledLine {
                 above_the_line: beyond_the_line(&self.values, self.bound, self.to),
                 reference_events: self.events,
                 in_band: self.in_band,
+                read_on_control: false,
                 negative: None,
                 valley: None,
                 phenotype: None,
@@ -2899,6 +2939,7 @@ fn position_one(
             above_the_line: beyond_the_line(&judged_line.values, line.bound, to),
             reference_events: parent_events,
             in_band,
+            read_on_control: false,
             negative: reading,
             valley,
             phenotype: None,
@@ -3217,6 +3258,7 @@ fn position_by_phenotype(
             above_the_line: f64::NAN,
             reference_events: measured.index.event_index.len(),
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: Some(PhenotypeRead {
@@ -3720,6 +3762,7 @@ fn read_from_another(
             above_the_line: f64::NAN,
             reference_events: measured.index.event_index.len(),
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,

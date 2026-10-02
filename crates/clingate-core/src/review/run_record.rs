@@ -146,6 +146,9 @@ pub struct PlacedRecord {
     pub above_the_line: Option<f64>,
     pub reference_events: usize,
     pub in_band: bool,
+    /// Whether the rule read a control rather than the sample or a named file.
+    #[serde(default)]
+    pub read_on_control: bool,
     /// For a rule placed against the negative: on the reference, then here.
     pub negative: Option<(NegativeRecord, NegativeRecord)>,
     /// For a rule placed in the valley: on the reference, then here.
@@ -309,6 +312,7 @@ impl RunRecord {
                 above_the_line: finite(p.above_the_line),
                 reference_events: p.reference_events,
                 in_band: p.in_band,
+                read_on_control: p.read_on_control,
                 negative: p.negative.as_ref().map(|(reference, here)| {
                     let read = |r: &crate::gate_rules::rule::NegativeRead| NegativeRecord {
                         centre: r.centre,
@@ -545,6 +549,7 @@ mod tests {
                 above_the_line: None,
                 reference_events: 1200,
                 in_band: false,
+                read_on_control: false,
                 negative: None,
                 valley: Some((
                     ValleyRecord {

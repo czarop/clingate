@@ -139,6 +139,8 @@ struct Item<'a> {
     in_band: bool,
     /// Kept for being a reference, not for meeting the rule.
     reference: bool,
+    /// Read on a control big enough to trust, and in its band: never flagged.
+    trusted: bool,
     line: Option<f64>,
     beyond: Option<f64>,
     shape: Option<&'a Shape>,
@@ -218,6 +220,11 @@ fn from_placed(p: &super::run_record::PlacedRecord) -> Item<'_> {
         weakest: p.weakest.as_deref(),
         in_band: p.in_band,
         reference: false,
+        trusted: crate::gate_rules::autogate::trusted_control(
+            p.read_on_control,
+            p.reference_events,
+            p.in_band,
+        ),
         line: p.to,
         beyond: p.above_the_line,
         shape: p.shape.as_ref(),
@@ -237,6 +244,7 @@ fn from_kept(k: &super::run_record::KeptRecord) -> Item<'_> {
         weakest: None,
         in_band: true,
         reference: !k.met_rule,
+        trusted: false,
         line: k.line,
         beyond: k.above_the_line,
         shape: k.shape.as_ref(),
@@ -408,9 +416,10 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
     for members in groups.values() {
         for &i in members {
             let item = &items[i];
-            if item.reference {
+            if item.reference || item.trusted {
                 // A reference is what the others are calibrated from, not a
-                // placement to judge.
+                // placement to judge; a trusted one has met its rule on
+                // plenty of control events.
                 continue;
             }
             let others: Vec<&Item> = members
@@ -809,6 +818,7 @@ pub fn compare_to_peers(
         weakest: weakest.as_deref(),
         in_band: true,
         reference: false,
+        trusted: false,
         line,
         beyond,
         shape: shape.as_ref(),
@@ -916,6 +926,7 @@ mod tests {
             above_the_line: None,
             reference_events: 1000,
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,
@@ -1356,6 +1367,23 @@ mod tests {
         let a = assess(&run_with(Some(odd)), None);
         assert_eq!(a.flags.len(), 1);
         assert_eq!(a.flags[0].reasons[0].measure, "low_confidence");
+    }
+
+    /// Weak only for its count, read on a control of more than 300 events
+    /// and in its band: not flagged, for its confidence or against its peers.
+    /// At 300 events, or out of its band, or not read on a control, it is.
+    #[test]
+    fn a_placement_in_band_on_a_control_of_over_300_events_is_not_flagged() {
+        let on_control = |events: usize, in_band: bool, read_on_control: bool| {
+            let mut odd = placed(99, 2.9, population(3.0, 99), 0.1);
+            (odd.reference_events, odd.in_band, odd.read_on_control) =
+                (events, in_band, read_on_control);
+            assess(&run_with(Some(odd)), None).flags.len()
+        };
+        assert_eq!(on_control(301, true, true), 0);
+        assert_eq!(on_control(300, true, true), 1);
+        assert_eq!(on_control(301, false, true), 1);
+        assert_eq!(on_control(301, true, false), 1);
     }
 
     #[test]

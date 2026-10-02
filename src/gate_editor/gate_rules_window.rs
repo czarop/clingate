@@ -1720,7 +1720,7 @@ pub fn GateRulesWindow() -> Element {
                             tbody {
                                 for placed in run.positioned.iter().filter(|p| p.phenotype.is_none()) {
                                     tr {
-                                        class: if placed.confidence < REVIEW_FLOOR || !placed.in_band { "gate_rules-weak" } else { "" },
+                                        class: if placed.needs_review(REVIEW_FLOOR) { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
                                         td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
                                         td { "{name_of(&files.read(), &placed.measured_on)}" }
