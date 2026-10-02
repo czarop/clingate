@@ -2415,3 +2415,38 @@ fn a_gate_that_never_comes_level_with_the_other_is_left_and_says_so() {
         "{said:?}"
     );
 }
+
+/// Lymph cannot be measured on either of DONOR-A's files: the specimen is
+/// named on its full stain, read second, not on its FMX, read first.
+#[test]
+fn a_gate_measured_on_no_file_of_a_specimen_is_named_on_its_full_stain() {
+    let files = files_named("unmeasured-named", &["a_1", "a_2"]);
+    let mut metadata = im::HashMap::with_hasher(FxBuildHasher);
+    for (file, kind) in [("a_1", "FMX"), ("a_2", "FS")] {
+        metadata.insert(
+            Arc::from(file) as Arc<str>,
+            row(&[("SampleID", "DONOR-A"), ("SampleType", kind)]),
+        );
+    }
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -1.0, -BIG), None);
+    let rules = store(&[(
+        RuleTarget::named("Lymph"),
+        top("No-Such-Channel", (0.49, 0.51)),
+    )]);
+
+    let outcome = run_rules(
+        &state,
+        &inputs_for(&files, metadata, rules),
+        |_| {},
+        &AtomicBool::new(false),
+    );
+
+    let named: Vec<String> = outcome
+        .report
+        .unplaced
+        .iter()
+        .map(|u| u.file.to_string())
+        .collect();
+    assert_eq!(named, ["a_2"]);
+}

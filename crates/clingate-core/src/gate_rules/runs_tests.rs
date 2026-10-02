@@ -364,3 +364,47 @@ fn a_run_with_none_of_the_kind_it_reads_says_so() {
         "{said:?}"
     );
 }
+
+/// CD69+ gated on both Lymph and Mono, neither with an FMO to read: a line
+/// for each, the two told apart by their parents.
+#[test]
+fn a_run_failing_one_marker_on_two_parents_says_so_for_each() {
+    let written = write("runs-pooled-two-parents", &FILES);
+    let mut state = gates();
+    for (id, name, parent) in [("mono", "Mono", None), ("mono_cd69", "CD69+", Some("mono"))] {
+        state.place_gate(&[Arc::from(id)], &rect(id, name, 0.0), &GateSource::Global);
+        state
+            .place_new_gate(parent.map(Arc::from), Arc::from(id))
+            .unwrap();
+    }
+    let mut rules = store(band(Pool::Run, MeasuredOn::Partner(Arc::from("FMO"))));
+    rules.insert(
+        RuleTarget::under("CD69+", "Mono"),
+        band(Pool::Run, MeasuredOn::Partner(Arc::from("FMO"))),
+    );
+    let outcome = run(&state, &written, &FILES, rules);
+    let mut said: Vec<(String, String)> = outcome
+        .report
+        .skipped
+        .iter()
+        .map(|s| {
+            (
+                format!("{} on {:?}", s.gate, s.parent_gate),
+                s.reason.clone(),
+            )
+        })
+        .collect();
+    said.sort();
+    assert_eq!(
+        said.iter()
+            .map(|(gate, _)| gate.as_str())
+            .collect::<Vec<_>>(),
+        ["CD69+ on Some(\"Lymph\")", "CD69+ on Some(\"Mono\")"],
+        "{said:?}"
+    );
+    assert!(
+        said.iter()
+            .all(|(_, reason)| reason.ends_with("and the same on 3 other specimens")),
+        "{said:?}"
+    );
+}
