@@ -2833,21 +2833,22 @@ fn matched_cells_in_two_places_leave_the_gate_where_it_is() {
     assert!(left_where_it_was(&state, &gate_id));
 }
 
-/// The population spreads 2.4 times as far on both axes: the 160 by 160
-/// rectangle grows by 1.3 in area, to 33,280, not 5.8 times.
+/// The population spreads 2.4 times as far on both axes, which the rule does
+/// not read - it finds the cells by CD161: the 160 by 160 rectangle slides
+/// onto them, the same size, not grown with them.
 #[test]
-fn a_kept_shape_grows_by_no_more_than_the_area_limit() {
+fn a_kept_shape_slides_its_size_kept_on_axes_the_rule_does_not_read() {
     use crate::gate_rules::rule::ShapeFit;
     let sample = populations(2, 1800, &[(200, (300.0, 650.0, 800.0), 60.0)]);
     let (report, state, gate_id) = match_against(ShapeFit::KeepShape, sample);
     assert_eq!(report.positioned.len(), 1, "{:?}", reasons(&report));
-    let area = rectangle_area(&state, &gate_id);
-    assert!((area - 33_280.0).abs() < 50.0, "area {area}");
-    assert!(report.positioned[0].phenotype.as_ref().unwrap().clamped);
+    assert!((rectangle_area(&state, &gate_id) - 25_600.0).abs() < 0.1);
+    assert!(!report.positioned[0].phenotype.as_ref().unwrap().clamped);
 }
 
 /// The outline round a population spreading 2.4 times as far would be over
-/// five times the reference's: the shape is kept instead, grown by 1.3.
+/// five times the reference's: the shape is kept instead, slid, its size
+/// kept.
 #[test]
 fn a_polygon_that_would_change_the_area_too_much_keeps_the_shape_instead() {
     use crate::gate_rules::rule::ShapeFit;
@@ -2860,8 +2861,7 @@ fn a_polygon_that_would_change_the_area_too_much_keeps_the_shape_instead() {
         "{:?}",
         read.refused_outline
     );
-    let area = rectangle_area(&state, &gate_id);
-    assert!((area - 33_280.0).abs() < 50.0, "area {area}");
+    assert!((rectangle_area(&state, &gate_id) - 25_600.0).abs() < 0.1);
 }
 
 #[test]

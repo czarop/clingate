@@ -316,11 +316,17 @@ of the valley as a population wholly above or below it, however bright, or
 within the range of one across it. When fewer than 50
 match, they are under a fifth as common as on the reference, they are
 scattered over the plot, or a marker's middle has drifted from the
-reference's, the gate is left where it is (not placed). Otherwise it either
-moves and resizes the drawn shape onto them (`KeepShape`, alike on both
-axes, area within 30%) or
-traces a new polygon round them (`DrawPolygon`, keeping the shape instead
-when the polygon's area is more than 30% from the reference's). It must be measured on one named,
+reference's, the gate is left where it is (not placed). A side the reference
+gate leaves open on a marker - nothing beyond its edge but under 1% of the
+gate's events and at most 20 - sets no limit there. Otherwise the gate is
+placed axis by axis (`carries`, `phenotype_gate`): on an axis the rule reads,
+each edge goes where it sits on the reference in that marker's frame, a side
+left open never pulled in; on an axis it does not read, the gate slides as far
+as the matched cells' middle moved. `KeepShape` carries every edge so, and
+slides instead where the area would change by more than 30%; `MoveOnly`
+slides as far as the edges move on average, its size kept; `DrawPolygon`
+traces a new polygon round the matched cells, keeping the shape instead when
+the polygon's area is more than 30% from the reference's. It must be measured on one named,
 hand-gated file (`File(id)`). See `gate_rules/phenotype.rs` and
 `position_by_phenotype`. It is **not replayable** (runs keep only the gate's
 two axes, and it reads the whole marker panel).
@@ -538,7 +544,7 @@ Rule kinds and their fields:
   `fallback` is optional; it is placed first, like an anchor
 - `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>"}` -
   `fallback` and `smear_example` are optional; measured on a `File`
-- `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
+- `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
   the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.

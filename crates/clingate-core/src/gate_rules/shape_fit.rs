@@ -607,48 +607,7 @@ fn perpendicular((x, y): (f64, f64), (x1, y1): (f64, f64), (x2, y2): (f64, f64))
     ((x - x1) * dy - (y - y1) * dx).abs() / length
 }
 
-// ── keeping the shape ────────────────────────────────────────────────────
-
-/// Where a population sits and how far it spreads, on the two plot axes.
-///
-/// Median and MAD rather than mean and standard deviation, for the reason
-/// [`phenotype`](super::phenotype) gives: a handful of cells the signature
-/// caught by mistake should not set the size of the gate.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Extent {
-    pub centre: (f64, f64),
-    pub spread: (f64, f64),
-}
-
-/// The smallest spread an axis may report, so a population that is flat on one
-/// axis cannot make the scale infinite.
-const MIN_SPREAD: f64 = 1e-9;
-
-impl Extent {
-    pub fn of(points: &[(f64, f64)]) -> Self {
-        let xs: Vec<f64> = points.iter().map(|p| p.0).collect();
-        let ys: Vec<f64> = points.iter().map(|p| p.1).collect();
-        let (cx, sx) = middle_and_spread(&xs);
-        let (cy, sy) = middle_and_spread(&ys);
-        Self {
-            centre: (cx, cy),
-            spread: (sx, sy),
-        }
-    }
-}
-
-fn middle_and_spread(values: &[f64]) -> (f64, f64) {
-    if values.is_empty() {
-        return (0.0, MIN_SPREAD);
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let middle = sorted[sorted.len() / 2];
-    let mut deviations: Vec<f64> = sorted.iter().map(|v| (v - middle).abs()).collect();
-    deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let spread = (deviations[deviations.len() / 2] * 1.482_602_218_505_602).max(MIN_SPREAD);
-    (middle, spread)
-}
+// ── the area limit ───────────────────────────────────────────────────────
 
 /// How much a phenotype rule may change a gate's area, either way.
 pub const MAX_AREA_CHANGE: f64 = 0.3;
@@ -657,61 +616,4 @@ pub const MAX_AREA_CHANGE: f64 = 0.3;
 /// [`MAX_AREA_CHANGE`].
 pub fn within_area_limit(ratio: f64) -> bool {
     (1.0 - MAX_AREA_CHANGE..=1.0 + MAX_AREA_CHANGE).contains(&ratio)
-}
-
-/// Moving and resizing a shape onto a population, without reshaping it.
-///
-/// The alternative to drawing a new boundary, and the right one when the
-/// outline carries meaning the data does not - a rectangle that means "this
-/// quadrant", a shape agreed with somebody else, a gate that has to stay
-/// comparable with how it was drawn last year. The population decides where
-/// the shape goes and how big it is; the person keeps what it looks like.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Reshape {
-    /// The reference population's extent, which the shape was drawn around.
-    pub from: Extent,
-    /// This sample's, which it is being moved onto.
-    pub to: Extent,
-    /// The same on both axes, so the shape is kept as drawn: the square root
-    /// of how much more area the population covers, held to
-    /// [`MAX_AREA_CHANGE`].
-    pub scale: f64,
-    /// Whether the limit bit.
-    pub clamped: bool,
-}
-
-impl Reshape {
-    /// Work out the move and resize between two populations.
-    ///
-    /// One scale rather than one per axis: a population smeared further
-    /// along one axis would otherwise stretch the gate that way, and a far
-    /// edge drawn well clear of the cells would be thrown out across the plot.
-    pub fn between(from: &[(f64, f64)], to: &[(f64, f64)]) -> Self {
-        let (from, to) = (Extent::of(from), Extent::of(to));
-        let area = (to.spread.0 / from.spread.0) * (to.spread.1 / from.spread.1);
-        let allowed = area.clamp(1.0 - MAX_AREA_CHANGE, 1.0 + MAX_AREA_CHANGE);
-        Self {
-            from,
-            to,
-            scale: allowed.sqrt(),
-            clamped: allowed != area,
-        }
-    }
-
-    /// Put one point through it.
-    ///
-    /// Scaling happens about the *population's* centre rather than the
-    /// origin, so a shape drawn off to one side does not fly away when its
-    /// population turns out to be wider.
-    pub fn moved(&self, (x, y): (f64, f64)) -> (f64, f64) {
-        (
-            (x - self.from.centre.0) * self.scale + self.to.centre.0,
-            (y - self.from.centre.1) * self.scale + self.to.centre.1,
-        )
-    }
-
-    /// Put a whole outline through it.
-    pub fn apply(&self, points: &[(f64, f64)]) -> Vec<(f64, f64)> {
-        points.iter().map(|p| self.moved(*p)).collect()
-    }
 }

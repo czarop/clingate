@@ -47,14 +47,35 @@ const PURE_ENOUGH: f64 = 0.70;
 
 /// How a phenotype rule fitted the gate, for the verification table.
 fn fitted(read: &PhenotypeRead) -> String {
-    let limited = if read.clamped { " (size limited)" } else { "" };
+    let limited = if read.clamped {
+        " (slid: resizing would pass the area limit)"
+    } else {
+        ""
+    };
     match (read.reshaped, read.refused_outline) {
         (Some((dx, dy)), Some(area)) => format!(
-            "shape kept: the polygon was {area:.1}x the area; moved {dx:+.0}, {dy:+.0}{limited}"
+            "shape kept: the polygon was {area:.1}x the area; moved {}, {}{limited}",
+            signed(dx),
+            signed(dy)
         ),
-        (Some((dx, dy)), None) => format!("moved {dx:+.0}, {dy:+.0}{limited}"),
+        (Some((dx, dy)), None) => format!("moved {}, {}{limited}", signed(dx), signed(dy)),
         (None, _) => "new polygon".to_string(),
     }
+}
+
+/// A distance moved, to a precision that reads on a linear axis and on an
+/// arcsinh one alike.
+fn signed(distance: f64) -> String {
+    if distance.abs() >= 100.0 {
+        format!("{distance:+.0}")
+    } else {
+        format!("{distance:+.2}")
+    }
+}
+
+/// The fit the form's menu names by `key`.
+fn fit_chosen(key: &str) -> ShapeFit {
+    ShapeFit::from_key(key).unwrap_or_default()
 }
 
 /// The frame a marker was read in, for its tooltip.
@@ -714,10 +735,7 @@ pub fn GateRulesWindow() -> Element {
                 }
                 Rule::MatchThePhenotype(PhenotypeRule {
                     markers: markers().iter().map(|m| Arc::from(m.as_str())).collect(),
-                    fit: match fit().as_str() {
-                        "DrawPolygon" => ShapeFit::DrawPolygon,
-                        _ => ShapeFit::KeepShape,
-                    },
+                    fit: fit_chosen(&fit()),
                     // Typed as a percentage, stored as a fraction.
                     keep: k / 100.0,
                     smoothing: sm,
@@ -1373,9 +1391,13 @@ pub fn GateRulesWindow() -> Element {
                         p { class: "gate_rules-hint gate_rules-span",
                             "A gate with two hundred points is a different kind of object from one drawn by hand, however well it fits."
                         }
+                    } else if fit() == ShapeFit::MoveOnly.key() {
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gate slides as far as its edges would move, its size and shape unchanged, and stays the kind of gate it is."
+                        }
                     } else {
                         p { class: "gate_rules-hint gate_rules-span",
-                            "The gate is moved and resized onto the matched cells and keeps its shape and its kind - a rectangle stays a rectangle. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                            "On each marker the rule reads, every edge goes where it sits on the reference against this sample's own negative and valley, so the gate can grow or shrink with them; on an axis it does not read, the gate slides with the matched cells. A side drawn past every cell is never pulled in. The gate keeps its shape and its kind - a rectangle stays a rectangle - and if its area would change by more than 30% it slides instead. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
                         }
                     }
                 }
@@ -2103,16 +2125,24 @@ mod tests {
         assert_eq!(fitted(&read(None, false, None)), "new polygon");
         assert_eq!(
             fitted(&read(Some((12.0, -3.0)), false, None)),
-            "moved +12, -3"
+            "moved +12.00, -3.00"
         );
         assert_eq!(
-            fitted(&read(Some((12.0, -3.0)), true, None)),
-            "moved +12, -3 (size limited)"
+            fitted(&read(Some((1200.0, -0.3)), true, None)),
+            "moved +1200, -0.30 (slid: resizing would pass the area limit)"
         );
         assert_eq!(
             fitted(&read(Some((12.0, -3.0)), true, Some(2.44))),
-            "shape kept: the polygon was 2.4x the area; moved +12, -3 (size limited)"
+            "shape kept: the polygon was 2.4x the area; moved +12.00, -3.00 (slid: resizing would pass the area limit)"
         );
+    }
+
+    #[test]
+    fn every_fit_the_menu_offers_is_saved_as_itself() {
+        for fit in ShapeFit::ALL {
+            assert_eq!(fit_chosen(fit.key()), fit);
+        }
+        assert_eq!(fit_chosen("MoveOnly"), ShapeFit::MoveOnly);
     }
 
     #[test]

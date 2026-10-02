@@ -268,7 +268,18 @@ mod tests {
         assert_eq!(crate::gate_rules::phenotype::ONE_CLOUD, 0.8);
         assert!(text("MatchThePhenotype").contains("at least 80% of them"));
         assert_eq!(crate::gate_rules::shape_fit::MAX_AREA_CHANGE, 0.3);
-        assert!(text("MatchThePhenotype").contains("at most 30% either way"));
+        assert!(text("MatchThePhenotype").contains("more than 30% either way"));
+        assert_eq!(
+            (
+                crate::gate_rules::phenotype::STRAY_SHARE,
+                crate::gate_rules::phenotype::STRAY_EVENTS
+            ),
+            (0.01, 20)
+        );
+        assert!(
+            text("MatchThePhenotype")
+                .contains("fewer\n   than 1% of the events in the gate, and no more than 20")
+        );
         // Above the negative's defaults.
         let above = AboveTheNegativeRule::default();
         assert_eq!(

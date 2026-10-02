@@ -45,6 +45,12 @@ them.
    - with no valley, read in spreads: a population above the parent's middle
      may be brighter but not dimmer than its range, one below it dimmer but
      not brighter, one across the middle within its range.
+
+   Where the reference gate is drawn on the marker and leaves a side open -
+   drawn past every cell, or with nothing beyond its edge but dust (fewer
+   than 1% of the events in the gate, and no more than 20) - that side sets
+   no limit: the person who drew it meant "everything beyond here", so a
+   cell brighter than any on the reference is still one of them.
 4. **Decide whether the population was found.** All four must hold, or the
    gate is left where it is and the run says which failed:
    - at least 50 cells match;
@@ -57,13 +63,27 @@ them.
 
    A gate left where it is counts as not placed, so when it has ruled gates
    under it the run pauses for it to be placed by hand.
-5. **Fit the gate** to the matched cells on the plot's two axes:
-   - `fit: KeepShape` - move and resize the drawn shape onto them, by the
-     same amount on both axes so the shape stays as drawn. Its area changes
-     by at most 30% either way. The gate stays the kind it was.
-   - `fit: DrawPolygon` - trace a new polygon round them on a smoothed
-     density, holding `keep` of them, with about `vertices` points. If its
-     area is more than 30% from the one drawn the same way round the
+5. **Place the gate**, axis by axis:
+   - on an axis that is one of the rule's markers, each edge goes where it
+     sits on the reference in that marker's frame - against the parent's
+     negative and valley, or its middle and spread - not to wherever the
+     matched cells' middle is, which moves with how many there are and how
+     bright. An edge on a side the gate leaves open is never pulled in: it
+     moves out with the frame, or stays where it was drawn;
+   - on an axis the rule does not read, only the matched cells say where the
+     population is: the gate slides as far as their middle moved, its size
+     kept.
+
+   Then, by `fit`:
+   - `KeepShape` - each edge as above, so the gate may grow or shrink with
+     the frames. A gate whose area would change by more than 30% either way
+     slides instead, its size kept, and the run says so. The gate stays the
+     kind it was.
+   - `MoveOnly` - the gate slides as far as its edges move on average, its
+     size and shape unchanged.
+   - `DrawPolygon` - trace a new polygon round the matched cells on a
+     smoothed density, holding `keep` of them, with about `vertices` points.
+     If its area is more than 30% from the one drawn the same way round the
      reference's cells, the shape is kept instead (as `KeepShape`), and the
      run says so.
 6. The reference file must be one named, hand-gated sample
@@ -76,7 +96,7 @@ them.
   every marker on the panel: a reasonable start, rarely the finish - every
   marker must match, so one that is silent about the population only loses
   cells to its noise.
-- `fit` - `KeepShape` or `DrawPolygon` (above).
+- `fit` - `KeepShape`, `MoveOnly` or `DrawPolygon` (above).
 - `keep` - the fraction of matched cells the gate should hold (0.95 by
   default); the last few percent are the ones the signature is least sure
   about.
@@ -91,6 +111,10 @@ them.
   rule reads the whole panel.
 - **Purity is about the two plot axes.** A gate that holds other cells may be
   right about the population but unable to separate it on this plot.
+- **An axis the rule does not read moves with the cells.** A gate drawn on
+  CD3 against CD56, matched on CD56 alone, slides on CD3 as far as the
+  matched cells' CD3 middle moved. Add the marker to the rule to tie the
+  gate's CD3 edges to the parent's CD3 negative instead.
 - **A population much rarer than on the reference is left alone**, not
   gated: under a fifth as common, most of what matches is near misses. Pick
   a reference where the population is typical, not unusually large.

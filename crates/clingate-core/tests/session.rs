@@ -3352,6 +3352,50 @@ fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::Rules
     session.preview_rules().unwrap()
 }
 
+/// Tmem's span on each axis it is bounded on, on `sample`.
+fn tmem_spans(session: &Session, sample: &str) -> Vec<(String, f64)> {
+    session
+        .gate("Tmem", Some(sample))
+        .unwrap()
+        .extent
+        .iter()
+        .filter_map(|e| Some((e.parameter.clone(), e.upper? - e.lower?)))
+        .collect()
+}
+
+/// A phenotype rule that only moves the gate: sample2's Tmem is placed on
+/// the cells found there, the same size on every axis as sample1's, the
+/// reference.
+#[test]
+fn a_phenotype_rule_that_moves_only_keeps_the_gate_s_size() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        fit: ShapeFit::MoveOnly,
+        ..Default::default()
+    });
+    let folder = tmem_workspace_beside_teff_naive("session-phenotype-move-only");
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    let written = session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    assert!(written.now.contains("move it only"), "{}", written.now);
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.would_move.iter().any(|m| m.specimen == "two"),
+        "{preview:?}"
+    );
+    session.apply_previewed_rules().unwrap();
+    let (reference, moved) = (tmem_spans(&session, "fmx"), tmem_spans(&session, "fs"));
+    assert!(!reference.is_empty());
+    for ((axis, drawn), (_, placed)) in reference.iter().zip(&moved) {
+        assert!(
+            (drawn - placed).abs() <= 1e-3 * drawn.abs(),
+            "{axis}: {drawn} then {placed}"
+        );
+    }
+}
+
 /// Both samples a third positive: the same cells are found on sample2 and
 /// its gate is moved onto them.
 #[test]

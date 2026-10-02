@@ -879,17 +879,20 @@ impl Rule {
 /// What to do with the outline once the population has been found.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeFit {
-    /// Move and resize the gate as drawn, without changing its shape.
+    /// Carry the gate as drawn edge by edge, without changing its shape.
     ///
     /// For an outline that carries meaning the data does not: a rectangle that
     /// stands for a quadrant, a shape agreed with a collaborator, a gate that
-    /// has to stay comparable with how it was drawn before. The population
-    /// decides where it sits and how big it is; what it looks like is kept.
+    /// has to stay comparable with how it was drawn before. Each edge goes
+    /// where it sits on the reference against the sample's own negative and
+    /// valley, so the gate may grow or shrink; what it looks like is kept.
     ///
     /// Also the only option that preserves the *kind* of gate - a rectangle
     /// stays a rectangle, an ellipse an ellipse.
     #[default]
     KeepShape,
+    /// Slide the gate as drawn, its size and shape unchanged.
+    MoveOnly,
     /// Draw a fresh polygon round the matched cells on every sample.
     ///
     /// For a population whose shape genuinely differs between donors, where
@@ -903,6 +906,7 @@ impl ShapeFit {
     pub fn label(self) -> &'static str {
         match self {
             ShapeFit::KeepShape => "keep the shape, move and resize it",
+            ShapeFit::MoveOnly => "move it only, the same size",
             ShapeFit::DrawPolygon => "draw a new polygon round the cells",
         }
     }
@@ -912,18 +916,28 @@ impl ShapeFit {
             ShapeFit::KeepShape => {
                 "keep the shape - move and resize it, and stay the kind of gate it is"
             }
+            ShapeFit::MoveOnly => "move only - slide it, the same size and shape",
             ShapeFit::DrawPolygon => {
                 "draw a new polygon - follow the cells, whatever shape they make"
             }
         }
     }
 
-    pub const ALL: [ShapeFit; 2] = [ShapeFit::KeepShape, ShapeFit::DrawPolygon];
+    pub const ALL: [ShapeFit; 3] = [
+        ShapeFit::KeepShape,
+        ShapeFit::MoveOnly,
+        ShapeFit::DrawPolygon,
+    ];
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|fit| fit.key() == key)
+    }
 
     /// The serialised name, which is also what the menu round-trips on.
     pub fn key(self) -> &'static str {
         match self {
             ShapeFit::KeepShape => "KeepShape",
+            ShapeFit::MoveOnly => "MoveOnly",
             ShapeFit::DrawPolygon => "DrawPolygon",
         }
     }

@@ -211,7 +211,7 @@ fn spread_about(values: &[f64], middle: f64) -> f64 {
     (median_of_mut(&mut deviations) * MAD_TO_SIGMA).max(MIN_SPREAD)
 }
 
-fn median_of(values: &[f64]) -> f64 {
+pub(crate) fn median_of(values: &[f64]) -> f64 {
     let mut copy = values.to_vec();
     median_of_mut(&mut copy)
 }
@@ -308,6 +308,49 @@ pub struct Profile {
     /// Its median and robust spread.
     pub middle: f64,
     pub spread: f64,
+    /// The sides the reference gate leaves open on this marker.
+    pub open: Open,
+}
+
+/// Beyond a gate's edge, fewer events than this share of the gate's own, and
+/// no more than [`STRAY_EVENTS`], leave that side of the gate open - see
+/// [`Open`].
+pub const STRAY_SHARE: f64 = 0.01;
+pub const STRAY_EVENTS: usize = 20;
+
+/// Which sides of its range on one marker a gate leaves open: drawn to the end
+/// of the axis, or with nothing beyond its edge but a few stray events - dust,
+/// a bright doublet. A person who drew it there meant "everything beyond this",
+/// so a cell beyond it in another sample, however far, is still one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Open {
+    pub low: bool,
+    pub high: bool,
+}
+
+impl Open {
+    /// From the gate's extent on one marker, `(lower, upper)`, holding `held`
+    /// events, and its parent's `values` on that marker.
+    pub fn beyond(
+        values: impl Iterator<Item = f64>,
+        (lower, upper): (f64, f64),
+        held: usize,
+    ) -> Self {
+        let (mut below, mut above) = (0, 0);
+        for value in values {
+            if value < lower {
+                below += 1;
+            } else if value > upper {
+                above += 1;
+            }
+        }
+        let stray =
+            |count: usize| count <= STRAY_EVENTS && (count as f64) < STRAY_SHARE * held as f64;
+        Self {
+            low: stray(below),
+            high: stray(above),
+        }
+    }
 }
 
 impl Profile {
@@ -324,6 +367,7 @@ impl Profile {
             widened(self.high, 1.0),
             frame.by_landmarks,
         )
+        .opened(self.open)
     }
 }
 
@@ -342,6 +386,8 @@ pub enum Identity {
     Below(f64),
     /// Between these.
     Between(f64, f64),
+    /// Anything: the gate leaves both sides open.
+    Any,
 }
 
 impl Identity {
@@ -361,12 +407,29 @@ impl Identity {
         }
     }
 
+    /// The same with no limit on the sides `open` names.
+    pub fn opened(self, open: Open) -> Self {
+        let (low, high) = match self {
+            Identity::Above(line) => (Some(line), None),
+            Identity::Below(line) => (None, Some(line)),
+            Identity::Between(low, high) => (Some(low), Some(high)),
+            Identity::Any => (None, None),
+        };
+        match (low.filter(|_| !open.low), high.filter(|_| !open.high)) {
+            (Some(low), Some(high)) => Identity::Between(low, high),
+            (Some(low), None) => Identity::Above(low),
+            (None, Some(high)) => Identity::Below(high),
+            (None, None) => Identity::Any,
+        }
+    }
+
     /// Whether `value` is one of the population on this marker.
     pub fn holds(&self, value: f64) -> bool {
         match *self {
             Identity::Above(line) => value > line,
             Identity::Below(line) => value < line,
             Identity::Between(low, high) => (low..=high).contains(&value),
+            Identity::Any => true,
         }
     }
 
@@ -378,6 +441,7 @@ impl Identity {
             Identity::Between(low, high) => {
                 Identity::Between(frame.value_at(low), frame.value_at(high))
             }
+            Identity::Any => Identity::Any,
         }
     }
 }
@@ -422,6 +486,7 @@ impl Signature {
                     high: quantile_of_sorted(column, 1.0 - tail),
                     middle,
                     spread: spread_about(column, middle),
+                    open: Open::default(),
                 }
             })
             .collect();
@@ -430,6 +495,15 @@ impl Signature {
             profiles,
             members: members.len(),
         })
+    }
+
+    /// The same, with the sides of each marker's range the reference gate
+    /// leaves `open`, in marker order.
+    pub fn with_open(mut self, open: &[Open]) -> Self {
+        for (profile, open) in self.profiles.iter_mut().zip(open) {
+            profile.open = *open;
+        }
+        self
     }
 
     /// Which of `parent`'s events are these cells: one of them on every
@@ -573,6 +647,7 @@ impl MarkerRead {
     /// allowing for the noise in the frames.
     pub fn drifted(&self) -> bool {
         match self.identity {
+            Identity::Any => false,
             Identity::Between(..) => {
                 let allowed = self.reference_spread + BASELINE_SLIP * self.reference_middle.abs();
                 !((self.middle - self.reference_middle).abs() <= allowed)

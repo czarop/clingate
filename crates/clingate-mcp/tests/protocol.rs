@@ -947,3 +947,42 @@ fn a_phenotype_too_few_cells_match_is_left_alone_over_the_protocol() {
         "{guide}"
     );
 }
+
+#[test]
+fn a_phenotype_rule_that_moves_only_is_written_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype-move-only");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": {"File": "sample1"},
+                "rule": {
+                    "kind": "MatchThePhenotype",
+                    "markers": ["BUV805-A"],
+                    "fit": "MoveOnly"
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules.iter().any(|r| r.rule.contains("move it only")),
+        "{:?}",
+        view.rules
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert!(guide.to_string().contains("`MoveOnly`"), "{guide}");
+}

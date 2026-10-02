@@ -2999,6 +2999,8 @@ struct Described {
     inner: flow_gates::Gate,
     inside: Vec<usize>,
     signature: crate::gate_rules::phenotype::Signature,
+    /// The sides the gate leaves open on each of its two axes.
+    open: [crate::gate_rules::phenotype::Open; 2],
 }
 
 /// Describe the population `gate_id` holds on `reference`.
@@ -3012,7 +3014,7 @@ fn describe_reference(
     reference: &Reference<'_>,
     metadata: &MetaDataFileMap,
 ) -> Result<Described, String> {
-    use crate::gate_rules::phenotype::{Rows, Signature};
+    use crate::gate_rules::phenotype::{Open, Rows, Signature};
     let there = reference
         .measurement
         .phenotype
@@ -3043,14 +3045,103 @@ fn describe_reference(
     let members = there_panel.select(&inside);
     let members = Rows::new(&members, there.markers.len())
         .ok_or_else(|| "the reference members do not form a matrix".to_string())?;
+    let params = &reference.measurement.params;
+    let open = open_sides(&inner.geometry, params, &there.points, inside.len());
+    let open_on_markers: Vec<Open> = there
+        .markers
+        .iter()
+        .map(|marker| match marker {
+            m if *m == params.0 => open[0],
+            m if *m == params.1 => open[1],
+            _ => Open::default(),
+        })
+        .collect();
     let signature = Signature::describe(there.markers.clone(), members, there_panel)
-        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?;
+        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?
+        .with_open(&open_on_markers);
     Ok(Described {
         gate,
         inner,
         inside,
         signature,
+        open,
     })
+}
+
+/// How each of the gate's two axes is carried from the reference, `there`, to
+/// this sample, `here`, each with the cells matched on it; the sides the gate
+/// leaves `open` are never pulled in.
+///
+/// On an axis that is one of the rule's `markers`, the gate's edges go where
+/// they sit on the reference in that marker's frame - by the parent's negative
+/// and valley, not by where the matched cells' middle happens to be, which
+/// moves with how many there are and how bright. On any other axis the cells
+/// were found by other markers, and only they say where the population is: the
+/// gate slides as far as their middle moved, its size kept.
+fn carries(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    markers: &[Arc<str>],
+    (there, matched_there): (&PhenotypeReading, &[(f64, f64)]),
+    (here, matched_here): (&PhenotypeReading, &[(f64, f64)]),
+    open: &[crate::gate_rules::phenotype::Open; 2],
+) -> [crate::gate_rules::phenotype_gate::Carry; 2] {
+    use crate::gate_rules::phenotype::{Frame, Frames, Open, median_of};
+    let on_axis = |param: &str, value: fn(&(f64, f64)) -> f64, open| {
+        let values = |points: &[(f64, f64)]| points.iter().map(value).collect::<Vec<_>>();
+        let read = markers.iter().any(|m| **m == *param);
+        let (from, to) = if read {
+            Frames::of(&values(&there.points)).shared_with(&Frames::of(&values(&here.points)))
+        } else {
+            let middle = |cells: &[(f64, f64)]| Frame {
+                origin: median_of(&values(cells)),
+                unit: 1.0,
+                by_landmarks: false,
+            };
+            (middle(matched_there), middle(matched_here))
+        };
+        let extent = extent_on(geometry, param)
+            .map(|(lower, upper)| (lower as f64, upper as f64))
+            .or_else(|| ellipse_centre(geometry, param).map(|c| (c, c)))
+            .unwrap_or((f64::NAN, f64::NAN));
+        crate::gate_rules::phenotype_gate::Carry {
+            from,
+            to,
+            extent,
+            open: if read { open } else { Open::default() },
+        }
+    };
+    [
+        on_axis(&params.0, |p| p.0, open[0]),
+        on_axis(&params.1, |p| p.1, open[1]),
+    ]
+}
+
+/// An ellipse's centre on `param`, where `geometry` is one.
+fn ellipse_centre(geometry: &GateGeometry, param: &str) -> Option<f64> {
+    match geometry {
+        GateGeometry::Ellipse { center, .. } => center.get_coordinate(param).map(f64::from),
+        _ => None,
+    }
+}
+
+/// The sides `geometry` leaves open on each of its two axes, `params`, over
+/// its parent's `points`, with `held` of them inside it.
+fn open_sides(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    points: &[(f64, f64)],
+    held: usize,
+) -> [crate::gate_rules::phenotype::Open; 2] {
+    use crate::gate_rules::phenotype::Open;
+    let on_axis = |param: &str, value: fn(&(f64, f64)) -> f64| {
+        extent_on(geometry, param)
+            .map(|(lower, upper)| {
+                Open::beyond(points.iter().map(value), (lower as f64, upper as f64), held)
+            })
+            .unwrap_or_default()
+    };
+    [on_axis(&params.0, |p| p.0), on_axis(&params.1, |p| p.1)]
 }
 
 /// The reference populations the phenotype rules among `steps` look for,
@@ -3107,7 +3198,7 @@ fn position_by_phenotype(
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
     use crate::gate_rules::rule::ShapeFit;
-    use crate::gate_rules::shape_fit::{Reshape, contour_around, fit, within_area_limit};
+    use crate::gate_rules::shape_fit::{contour_around, fit, within_area_limit};
 
     let here = measured
         .phenotype
@@ -3134,6 +3225,7 @@ fn position_by_phenotype(
         inner,
         inside,
         signature,
+        open,
     } = described;
 
     let found = signature.find_in(here_panel);
@@ -3161,11 +3253,23 @@ fn position_by_phenotype(
             .collect()
     };
 
-    let keep_shape = || -> Result<_, String> {
-        let moved = Reshape::between(&matched_there, &matched_here);
-        let geometry =
-            crate::gate_rules::phenotype_gate::reshaped(&inner.geometry, &measured.params, &moved)
-                .map_err(|e| e.to_string())?;
+    let [x, y] = carries(
+        &inner.geometry,
+        &measured.params,
+        &signature.markers,
+        (there, &matched_there),
+        (here, &matched_here),
+        open,
+    );
+    let moved = |resize: bool| -> Result<_, String> {
+        use crate::gate_rules::phenotype_gate::{carried, slid};
+        let resized = resize && within_area_limit(x.stretch() * y.stretch());
+        let geometry = if resized {
+            carried(&inner.geometry, &measured.params, &x, &y)
+        } else {
+            slid(&inner.geometry, &measured.params, &x, &y)
+        }
+        .map_err(|e| e.to_string())?;
         // Purity and catch are measured on the gate that will actually be
         // written, not on an idealised boundary: a kept shape may hold the
         // population loosely, and that is exactly what wants reporting.
@@ -3173,11 +3277,8 @@ fn position_by_phenotype(
         let (purity, caught) = hold(&outline, &matched_here, &others_here);
         Ok(Fitted {
             geometry,
-            reshaped: Some((
-                moved.to.centre.0 - moved.from.centre.0,
-                moved.to.centre.1 - moved.from.centre.1,
-            )),
-            clamped: moved.clamped,
+            reshaped: Some((x.shift(), y.shift())),
+            clamped: resize && !resized,
             refused_outline: None,
             purity,
             caught,
@@ -3185,7 +3286,8 @@ fn position_by_phenotype(
         })
     };
     let fitted = match wanted.fit {
-        ShapeFit::KeepShape => keep_shape()?,
+        ShapeFit::KeepShape => moved(true)?,
+        ShapeFit::MoveOnly => moved(false)?,
         ShapeFit::DrawPolygon => {
             let drawn = fit(
                 &matched_here,
@@ -3221,7 +3323,7 @@ fn position_by_phenotype(
             } else {
                 Fitted {
                     refused_outline: Some(area),
-                    ..keep_shape()?
+                    ..moved(true)?
                 }
             }
         }

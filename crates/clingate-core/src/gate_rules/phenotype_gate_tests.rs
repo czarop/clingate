@@ -2,8 +2,9 @@
 
 #![cfg(test)]
 
+use super::phenotype::{Frame, Open};
 use super::phenotype_gate::*;
-use super::shape_fit::{Extent, Outline, Reshape};
+use super::shape_fit::Outline;
 use flow_gates::{GateGeometry, GateNode};
 use std::sync::Arc;
 
@@ -20,93 +21,184 @@ fn node(id: &str, x: f32, y: f32) -> GateNode {
         .with_coordinate(Arc::from(Y) as Arc<str>, y)
 }
 
-/// A reshape that moves a population from one centre to another and scales it.
-fn moving(from: (f64, f64), to: (f64, f64), scale: f64) -> Reshape {
-    Reshape {
-        from: Extent {
-            centre: from,
-            spread: (1.0, 1.0),
-        },
-        to: Extent {
-            centre: to,
-            spread: (scale, scale),
-        },
-        scale,
-        clamped: false,
+fn frame(origin: f64, unit: f64) -> Frame {
+    Frame {
+        origin,
+        unit,
+        by_landmarks: true,
     }
 }
 
-#[test]
-fn a_rectangle_is_moved_and_stays_a_rectangle() {
-    let was = GateGeometry::Rectangle {
-        min: node("a", 100.0, 100.0),
-        max: node("b", 300.0, 300.0),
-    };
-    let moved = reshaped(
-        &was,
-        &params(),
-        &moving((200.0, 200.0), (600.0, 500.0), 1.0),
-    )
-    .expect("a rectangle can be reshaped");
-    let GateGeometry::Rectangle { min, max } = moved else {
+/// An axis read from origin 0 in units of 100 on the reference, and from 50 in
+/// units of 200 on the sample: 100 on the reference is 250 on the sample, 300
+/// is 650.
+fn doubling(extent: (f64, f64), open: Open) -> Carry {
+    Carry {
+        from: frame(0.0, 100.0),
+        to: frame(50.0, 200.0),
+        extent,
+        open,
+    }
+}
+
+/// An axis that reads the same on both.
+fn standing(extent: (f64, f64)) -> Carry {
+    Carry {
+        from: frame(0.0, 1.0),
+        to: frame(0.0, 1.0),
+        extent,
+        open: Open::default(),
+    }
+}
+
+/// An axis on which the gate slides `by`, its size kept.
+fn shifting(by: f64) -> Carry {
+    Carry {
+        from: frame(0.0, 1.0),
+        to: frame(by, 1.0),
+        extent: (0.0, 0.0),
+        open: Open::default(),
+    }
+}
+
+fn rectangle(x: (f32, f32), y: (f32, f32)) -> GateGeometry {
+    GateGeometry::Rectangle {
+        min: node("a", x.0, y.0),
+        max: node("b", x.1, y.1),
+    }
+}
+
+fn x_span(geometry: &GateGeometry) -> (f32, f32) {
+    let GateGeometry::Rectangle { min, max } = geometry else {
         panic!("a rectangle must stay a rectangle");
     };
-    assert_eq!(min.get_coordinate(X), Some(500.0));
-    assert_eq!(max.get_coordinate(X), Some(700.0));
-    assert_eq!(min.get_coordinate(Y), Some(400.0));
-    assert_eq!(max.get_coordinate(Y), Some(600.0));
+    (
+        min.get_coordinate(X).unwrap(),
+        max.get_coordinate(X).unwrap(),
+    )
 }
 
 #[test]
-fn a_rectangle_is_resized_about_the_population_not_the_origin() {
-    // Scaling about the origin would send a gate drawn far from zero a long way
-    // off when its population turned out wider.
-    let was = GateGeometry::Rectangle {
-        min: node("a", 900.0, 100.0),
-        max: node("b", 1100.0, 300.0),
-    };
-    let moved = reshaped(
-        &was,
+fn a_rectangle_is_carried_edge_by_edge_and_stays_a_rectangle() {
+    let x = doubling((100.0, 300.0), Open::default());
+    let moved = carried(
+        &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &moving((1000.0, 200.0), (1000.0, 200.0), 2.0),
+        &x,
+        &standing((10.0, 20.0)),
     )
-    .expect("reshaped");
+    .expect("a rectangle can be carried");
+    assert_eq!(x_span(&moved), (250.0, 650.0));
     let GateGeometry::Rectangle { min, max } = moved else {
-        panic!("not a rectangle");
+        unreachable!()
     };
-    // Twice as wide, still centred on 1000.
-    assert_eq!(min.get_coordinate(X), Some(800.0));
-    assert_eq!(max.get_coordinate(X), Some(1200.0));
+    assert_eq!(
+        (min.get_coordinate(Y), max.get_coordinate(Y)),
+        (Some(10.0), Some(20.0))
+    );
+}
+
+/// An axis read from 0 in units of 100 on the reference and of 50 on the
+/// sample: 100 goes to 50, 300 to 150.
+fn halving(extent: (f64, f64), open: Open) -> Carry {
+    Carry {
+        from: frame(0.0, 100.0),
+        to: frame(0.0, 50.0),
+        extent,
+        open,
+    }
+}
+
+const OPEN_ABOVE: Open = Open {
+    low: false,
+    high: true,
+};
+
+#[test]
+fn a_side_the_gate_leaves_open_is_never_pulled_in() {
+    let moved = carried(
+        &rectangle((100.0, 300.0), (10.0, 20.0)),
+        &params(),
+        &halving((100.0, 300.0), OPEN_ABOVE),
+        &standing((10.0, 20.0)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&moved), (50.0, 300.0));
+    let closed = carried(
+        &rectangle((100.0, 300.0), (10.0, 20.0)),
+        &params(),
+        &halving((100.0, 300.0), Open::default()),
+        &standing((10.0, 20.0)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&closed), (50.0, 150.0));
+}
+
+#[test]
+fn a_side_the_gate_leaves_open_moves_out_with_the_frame() {
+    let moved = carried(
+        &rectangle((100.0, 300.0), (10.0, 20.0)),
+        &params(),
+        &doubling((100.0, 300.0), OPEN_ABOVE),
+        &standing((10.0, 20.0)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&moved), (250.0, 650.0));
+}
+
+#[test]
+fn a_gate_slides_by_how_far_its_closed_edges_move() {
+    // Both closed: 100 moves 150 and 300 moves 350, 250 on average.
+    assert_eq!(doubling((100.0, 300.0), Open::default()).shift(), 250.0);
+    // The far side open: only the near edge counts.
+    assert_eq!(doubling((100.0, 300.0), OPEN_ABOVE).shift(), 150.0);
+    let both = Open {
+        low: true,
+        high: true,
+    };
+    assert_eq!(doubling((100.0, 300.0), both).shift(), 0.0);
+}
+
+#[test]
+fn a_slid_gate_never_pulls_in_a_side_it_leaves_open() {
+    // The near edge moves -50, as carried; the far one would follow it in.
+    let moved = slid(
+        &rectangle((100.0, 300.0), (10.0, 20.0)),
+        &params(),
+        &halving((100.0, 300.0), OPEN_ABOVE),
+        &standing((10.0, 20.0)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&moved), (50.0, 300.0));
+}
+
+#[test]
+fn a_gate_stretches_by_the_units_only_where_both_its_edges_are_carried() {
+    assert_eq!(doubling((100.0, 300.0), Open::default()).stretch(), 2.0);
+    assert_eq!(doubling((100.0, 300.0), OPEN_ABOVE).stretch(), 1.0);
 }
 
 #[test]
 fn an_unbounded_edge_stays_unbounded() {
-    // 1e16 is Omiq's "this side does not close". Scaling it would turn a
+    // 1e16 is Omiq's "this side does not close". Moving it would turn a
     // half-open gate into one with an arbitrary far edge that exports as a
     // real coordinate.
-    let was = GateGeometry::Rectangle {
-        min: node("a", 500.0, -1e16),
-        max: node("b", 1e16, 1e16),
-    };
-    let moved =
-        reshaped(&was, &params(), &moving((600.0, 0.0), (900.0, 0.0), 2.0)).expect("reshaped");
-    let GateGeometry::Rectangle { min, max } = moved else {
-        panic!("not a rectangle");
-    };
-    assert_eq!(
-        max.get_coordinate(X),
-        Some(1e16),
-        "the open side must stay open"
-    );
-    assert_eq!(min.get_coordinate(Y), Some(-1e16));
-    assert_eq!(max.get_coordinate(Y), Some(1e16));
-    // The closed side moved.
-    assert!((min.get_coordinate(X).unwrap() - 700.0).abs() < 1e-3);
+    let was = rectangle((100.0, 1e16), (-1e16, 1e16));
+    let moved = carried(
+        &was,
+        &params(),
+        &doubling((100.0, 1e16), Open::default()),
+        &standing((-1e16, 1e16)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&moved), (250.0, 1e16));
+    let slid = slid(&was, &params(), &shifting(500.0), &shifting(500.0)).unwrap();
+    assert_eq!(x_span(&slid), (600.0, 1e16));
 }
 
 #[test]
-fn a_polygon_keeps_its_shape_when_it_is_moved() {
-    let was = GateGeometry::Polygon {
+fn a_slid_gate_keeps_its_size_and_shape() {
+    let triangle = GateGeometry::Polygon {
         nodes: vec![
             node("a", 100.0, 100.0),
             node("b", 300.0, 100.0),
@@ -114,49 +206,44 @@ fn a_polygon_keeps_its_shape_when_it_is_moved() {
         ],
         closed: true,
     };
-    let moved = reshaped(
-        &was,
-        &params(),
-        &moving((200.0, 166.0), (700.0, 166.0), 1.0),
-    )
-    .expect("reshaped");
-    let GateGeometry::Polygon { nodes, .. } = moved else {
+    let GateGeometry::Polygon { nodes, .. } =
+        slid(&triangle, &params(), &shifting(500.0), &shifting(-50.0)).unwrap()
+    else {
         panic!("not a polygon");
     };
-    // Still a triangle with the same proportions, 500 to the right.
-    let xs: Vec<f32> = nodes.iter().map(|n| n.get_coordinate(X).unwrap()).collect();
-    assert_eq!(xs, vec![600.0, 800.0, 700.0]);
-    let ys: Vec<f32> = nodes.iter().map(|n| n.get_coordinate(Y).unwrap()).collect();
-    assert_eq!(ys[0], ys[1], "the base must stay level");
+    let at = |n: &GateNode| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap());
+    assert_eq!(
+        nodes.iter().map(at).collect::<Vec<_>>(),
+        vec![(600.0, 50.0), (800.0, 50.0), (700.0, 250.0)]
+    );
 }
 
 #[test]
-fn an_ellipse_keeps_being_an_ellipse_and_its_radii_scale_alike() {
+fn an_ellipse_stays_an_ellipse_its_radii_scaled_by_each_axis_s_units() {
     let was = GateGeometry::Ellipse {
-        center: node("c", 200.0, 200.0),
+        center: node("c", 100.0, 200.0),
         radius_x: 50.0,
         radius_y: 20.0,
         angle: 0.0,
     };
-    let moved = reshaped(
-        &was,
-        &params(),
-        &moving((200.0, 200.0), (500.0, 400.0), 2.0),
-    )
-    .expect("reshaped");
     let GateGeometry::Ellipse {
         center,
         radius_x,
         radius_y,
         ..
-    } = moved
+    } = carried(
+        &was,
+        &params(),
+        &doubling((100.0, 100.0), Open::default()),
+        &standing((200.0, 200.0)),
+    )
+    .unwrap()
     else {
         panic!("an ellipse must stay an ellipse");
     };
-    assert_eq!(center.get_coordinate(X), Some(500.0));
-    assert_eq!(center.get_coordinate(Y), Some(400.0));
-    assert_eq!(radius_x, 100.0);
-    assert_eq!(radius_y, 40.0);
+    assert_eq!(center.get_coordinate(X), Some(250.0));
+    assert_eq!(center.get_coordinate(Y), Some(200.0));
+    assert_eq!((radius_x, radius_y), (100.0, 20.0));
 }
 
 #[test]
@@ -170,13 +257,9 @@ fn a_coordinate_on_a_third_channel_is_left_alone() {
         min,
         max: node("b", 300.0, 300.0),
     };
-    let moved = reshaped(
-        &was,
-        &params(),
-        &moving((200.0, 200.0), (900.0, 900.0), 3.0),
-    )
-    .expect("reshaped");
-    let GateGeometry::Rectangle { min, .. } = moved else {
+    let GateGeometry::Rectangle { min, .. } =
+        slid(&was, &params(), &shifting(900.0), &shifting(900.0)).unwrap()
+    else {
         panic!("not a rectangle");
     };
     assert_eq!(min.get_coordinate("CD4"), Some(42.0));
@@ -189,7 +272,7 @@ fn a_boolean_gate_has_no_shape_to_fit() {
         operands: vec![Arc::from("one"), Arc::from("two")],
     };
     assert_eq!(
-        reshaped(&was, &params(), &moving((0.0, 0.0), (1.0, 1.0), 1.0)),
+        slid(&was, &params(), &shifting(1.0), &shifting(1.0)),
         Err(NoGeometry::NotAShape)
     );
 }

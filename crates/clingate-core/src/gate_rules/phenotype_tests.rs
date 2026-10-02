@@ -629,6 +629,7 @@ fn a_positive_population_dimmer_than_on_the_reference_is_still_found() {
             high: 14.0,
             middle: 13.0,
             spread: 0.5,
+            open: Open::default(),
         }],
         members: 200,
     };
@@ -639,4 +640,79 @@ fn a_positive_population_dimmer_than_on_the_reference_is_still_found() {
     assert_eq!(found.members, (800..1000).collect::<Vec<_>>());
     assert_eq!(found.reads[0].identity, Identity::Above(1.0));
     assert!(!found.reads[0].drifted());
+}
+
+// ── the sides a gate leaves open ─────────────────────────────────────────
+
+fn beyond(below: usize, above: usize, held: usize) -> Open {
+    let values = std::iter::repeat_n(-1.0, below)
+        .chain(std::iter::repeat_n(5.0, held))
+        .chain(std::iter::repeat_n(11.0, above));
+    Open::beyond(values, (0.0, 10.0), held)
+}
+
+#[test]
+fn a_gate_with_nothing_beyond_an_edge_leaves_that_side_open() {
+    assert_eq!(
+        beyond(0, 0, 3_000),
+        Open {
+            low: true,
+            high: true
+        }
+    );
+    assert_eq!(
+        beyond(500, 0, 3_000),
+        Open {
+            low: false,
+            high: true
+        }
+    );
+}
+
+/// 3,000 in the gate: up to 20 strays beyond an edge - under 1% of them - is
+/// dust; 21 is something.
+#[test]
+fn twenty_stray_events_beyond_an_edge_are_dust_and_twenty_one_are_not() {
+    assert!(beyond(0, 20, 3_000).high);
+    assert!(!beyond(0, 21, 3_000).high);
+}
+
+/// 500 in the gate: 10 strays are 2% of them, too many to be dust.
+#[test]
+fn strays_as_many_as_a_hundredth_of_the_gate_are_not_dust() {
+    assert!(beyond(0, 4, 500).high);
+    assert!(!beyond(0, 5, 500).high);
+    assert!(!beyond(0, 10, 500).high);
+}
+
+#[test]
+fn a_side_left_open_asks_nothing_of_a_cell() {
+    let above = Open {
+        low: false,
+        high: true,
+    };
+    assert_eq!(
+        Identity::Between(1.0, 4.0).opened(above),
+        Identity::Above(1.0)
+    );
+    assert_eq!(
+        Identity::Between(1.0, 4.0).opened(Open {
+            low: true,
+            high: false
+        }),
+        Identity::Below(4.0)
+    );
+    assert_eq!(
+        Identity::Above(1.0).opened(Open {
+            low: true,
+            high: true
+        }),
+        Identity::Any
+    );
+    let below = Open {
+        low: true,
+        high: false,
+    };
+    assert_eq!(Identity::Below(2.0).opened(below), Identity::Below(2.0));
+    assert!(Identity::Any.holds(1e9) && Identity::Any.holds(-1e9));
 }

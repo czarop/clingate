@@ -43,6 +43,8 @@ mod harness_tests;
 #[cfg(test)]
 mod levels_tests;
 #[cfg(test)]
+mod phenotype_edges_tests;
+#[cfg(test)]
 mod phenotype_gate_tests;
 #[cfg(test)]
 mod phenotype_tests;
