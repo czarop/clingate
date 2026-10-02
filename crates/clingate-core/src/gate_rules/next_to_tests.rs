@@ -329,3 +329,46 @@ fn following_an_outline_with_no_side_facing_the_gate_is_refused() {
     .expect("refused");
     assert!(refused.contains("no side facing it"), "{refused}");
 }
+
+/// A, from 6 to 20 and 0 to 5, has moved onto G, from 0 to 10 and 1 to 10.
+/// G's right side follows A's left edge from G's bottom, 1, up to A's top, 5,
+/// and steps back out to where it was above A; its bottom stops at A's edge
+/// rather than running on inside A to where G's side was.
+#[test]
+fn following_an_outline_the_other_has_moved_onto_stays_clear_of_it() {
+    let gate = polygon(&[(0.0, 1.0), (10.0, 1.0), (10.0, 10.0), (0.0, 10.0)]);
+    let against = boxed((6.0, 20.0), (0.0, 5.0));
+    let got = placed(
+        &gate,
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    );
+    assert!(
+        !crate::gates::gate_contact::overlaps(&got, &against),
+        "{got:?}"
+    );
+    assert_near(
+        &got,
+        &[
+            (6.0, 1.0),
+            (6.0, 5.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 1.0),
+        ],
+    );
+    // G from 1 to 4, within A's height at both ends: its right side is A's
+    // edge all the way.
+    let short = polygon(&[(0.0, 1.0), (10.0, 1.0), (10.0, 4.0), (0.0, 4.0)]);
+    let got = placed(
+        &short,
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    );
+    assert!(
+        !crate::gates::gate_contact::overlaps(&got, &against),
+        "{got:?}"
+    );
+    assert_near(&got, &[(6.0, 1.0), (6.0, 4.0), (0.0, 4.0), (0.0, 1.0)]);
+}

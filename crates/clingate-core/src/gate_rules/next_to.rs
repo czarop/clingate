@@ -378,16 +378,22 @@ fn follow_outline(
         .collect();
     levels.sort_by(f64::total_cmp);
     levels.dedup();
+    let followed_at = |v: f64| Some(nearest_at(theirs, v)?.min(reach) - gap);
     let along: Vec<Point> = levels
         .iter()
-        .filter_map(|v| Some((nearest_at(theirs, *v)?.min(reach) - gap, *v)))
+        .filter_map(|v| Some((followed_at(*v)?, *v)))
         .collect();
 
     let (near, far) = sides(mine);
+    // Where the other's edge begins and ends, the step back to the gate's own
+    // side: along the other's top or bottom, or, at a level within it - the
+    // gate's own top or bottom, where the other has moved onto the gate - no
+    // further than its edge.
     let at = |v: f64| {
-        furthest_at(&near, v)
-            .map(|u| (u, v))
-            .ok_or_else(|| never_level(other))
+        let own = furthest_at(&near, v).ok_or_else(|| never_level(other))?;
+        let within = v > their_lo && v < their_hi;
+        let edge = followed_at(v).filter(|_| within);
+        Ok::<Point, String>((edge.map_or(own, |edge| own.min(edge)), v))
     };
     let mut followed: Vec<Point> = near.iter().copied().filter(|p| p.1 < lo).collect();
     followed.push(at(lo)?);
