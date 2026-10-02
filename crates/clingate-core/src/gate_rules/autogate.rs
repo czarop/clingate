@@ -1824,7 +1824,7 @@ pub fn solve_all_reporting(
     measurements: &[Measurement],
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
-    progress: impl Fn(usize, usize),
+    progress: impl Fn(usize, usize) + Sync,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
@@ -1928,13 +1928,15 @@ pub fn solve_all_reporting(
         metadata,
     ));
 
+    // Decided in order, then placed side by side - placing is the slow part
+    // - then recorded in order, so the report reads as if done one by one.
+    let mut steps: Vec<(&Measurement, Step<'_>)> = Vec::new();
     for (seen, measured) in measurements.iter().enumerate() {
         // Stopped: nothing half-done is handed back. The caller sees the flag
         // and writes nothing.
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return (Report::default(), Vec::new());
         }
-        progress(seen + 1, measurements.len());
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
             continue;
         };
@@ -1943,13 +1945,7 @@ pub fn solve_all_reporting(
                 "no {} for this file, so there is no specimen to position",
                 store.pairing.sample_id_column
             );
-            report.unplaced.push(Unplaced::of(measured, None, &reason));
-            report.skipped.push(Skipped {
-                file: measured.file.clone(),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                reason,
-            });
+            steps.push((measured, Step::Unplaced(None, reason)));
             continue;
         };
         // One answer per specimen, read from the file that is actually gated.
@@ -1970,28 +1966,31 @@ pub fn solve_all_reporting(
                 .gate_for_file(&measured.gate_id, &measured.file, metadata)
                 .and_then(|gate| admitted_by(&gate, &measured.index))
                 .unwrap_or(f64::NAN);
-            report.reference.push(Unchanged {
-                gate_id: measured.gate_id.clone(),
-                file: measured.file.clone(),
-                measured_on: None,
-                line: measured.line.as_ref().map(|l| l.current),
-                shape: measured
-                    .line
-                    .as_ref()
-                    .and_then(|l| crate::review::shape::summarise(&l.values)),
-                bound: measured.line.as_ref().map(|l| l.bound),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                specimen: specimen.group.clone(),
-                achieved: holds,
-                // A phenotype rule has no line, so there is nothing a bare
-                // threshold would have taken to report beside it.
-                above_the_line: measured
-                    .line
-                    .as_ref()
-                    .map(|line| beyond_the_line(&line.values, line.bound, line.current))
-                    .unwrap_or(f64::NAN),
-            });
+            steps.push((
+                measured,
+                Step::Reference(Unchanged {
+                    gate_id: measured.gate_id.clone(),
+                    file: measured.file.clone(),
+                    measured_on: None,
+                    line: measured.line.as_ref().map(|l| l.current),
+                    shape: measured
+                        .line
+                        .as_ref()
+                        .and_then(|l| crate::review::shape::summarise(&l.values)),
+                    bound: measured.line.as_ref().map(|l| l.bound),
+                    gate: measured.gate.clone(),
+                    parent_gate: measured.parent_gate.clone(),
+                    specimen: specimen.group.clone(),
+                    achieved: holds,
+                    // A phenotype rule has no line, so there is nothing a bare
+                    // threshold would have taken to report beside it.
+                    above_the_line: measured
+                        .line
+                        .as_ref()
+                        .map(|line| beyond_the_line(&line.values, line.bound, line.current))
+                        .unwrap_or(f64::NAN),
+                }),
+            ));
             continue;
         }
 
@@ -2012,72 +2011,64 @@ pub fn solve_all_reporting(
             )
             .and_then(|line| line.for_specimen(state, measured, &specimen, metadata))
             .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside));
-            match outcome {
-                Ok(Outcome::Moved(p, placed)) => {
-                    report.positioned.push(p);
-                    placements.push(placed);
-                }
-                Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-                // The run's line failed for every specimen alike: said once,
-                // naming the first and counting the rest.
-                Err(reason) => {
-                    report
-                        .unplaced
-                        .push(Unplaced::of(measured, Some(&specimen), &reason));
-                    match pooled_failures.iter_mut().find(|(s, _)| {
-                        s.gate == measured.gate && s.parent_gate == measured.parent_gate
-                    }) {
-                        Some((_, count)) => *count += 1,
-                        None => pooled_failures.push((
-                            Skipped {
-                                file: measured.file.clone(),
-                                gate: measured.gate.clone(),
-                                parent_gate: measured.parent_gate.clone(),
-                                reason,
-                            },
-                            1,
-                        )),
-                    }
-                }
-            }
+            steps.push((measured, Step::Pooled(outcome, specimen)));
             continue;
         }
 
         let Some(reference) = resolve_reference(store, measured, measurements, metadata) else {
             let reason = why_no_reference(store, measured, unmeasured, metadata);
-            report
-                .unplaced
-                .push(Unplaced::of(measured, Some(&specimen), &reason));
-            report.skipped.push(Skipped {
-                file: measured.file.clone(),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                reason,
-            });
+            steps.push((measured, Step::Unplaced(Some(specimen), reason)));
             continue;
         };
+        steps.push((
+            measured,
+            Step::Place {
+                rule,
+                reference,
+                specimen,
+            },
+        ));
+    }
 
-        let beside = &measured.beside;
-        let outcome = position_one(
-            state, rule, measured, &reference, &specimen, metadata, beside,
-        )
-        .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside));
-        match outcome {
-            Ok(Outcome::Moved(p, placed)) => {
-                report.positioned.push(p);
-                placements.push(placed);
+    let placed = place_side_by_side(state, &steps, metadata, &progress, cancel);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return (Report::default(), Vec::new());
+    }
+
+    for ((measured, step), placed) in steps.into_iter().zip(placed) {
+        match (step, placed) {
+            (Step::Unplaced(specimen, reason), _) => {
+                report.unplace(measured, specimen.as_ref(), reason)
             }
-            Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-            Err(reason) => {
+            (Step::Reference(kept), _) => report.reference.push(kept),
+            (Step::Place { specimen, .. }, Some(Err(reason))) => {
+                report.unplace(measured, Some(&specimen), reason)
+            }
+            (Step::Place { .. }, Some(Ok(outcome))) | (Step::Pooled(Ok(outcome), _), _) => {
+                report.record(&mut placements, outcome)
+            }
+            (Step::Place { .. }, None) => {}
+            // The run's line failed for every specimen alike: said once,
+            // naming the first and counting the rest.
+            (Step::Pooled(Err(reason), specimen), _) => {
                 report
                     .unplaced
                     .push(Unplaced::of(measured, Some(&specimen), &reason));
-                report.skipped.push(Skipped {
-                    file: measured.file.clone(),
-                    gate: measured.gate.clone(),
-                    parent_gate: measured.parent_gate.clone(),
-                    reason,
-                });
+                match pooled_failures
+                    .iter_mut()
+                    .find(|(s, _)| s.gate == measured.gate && s.parent_gate == measured.parent_gate)
+                {
+                    Some((_, count)) => *count += 1,
+                    None => pooled_failures.push((
+                        Skipped {
+                            file: measured.file.clone(),
+                            gate: measured.gate.clone(),
+                            parent_gate: measured.parent_gate.clone(),
+                            reason,
+                        },
+                        1,
+                    )),
+                }
             }
         }
     }
@@ -2099,6 +2090,90 @@ pub fn solve_all_reporting(
     // either order.
     sort_report(&mut report, &mut placements, &store.pairing, metadata);
     (report, placements)
+}
+
+/// What a run does with one measurement, decided in order before the
+/// placing that runs side by side.
+enum Step<'a> {
+    /// Not placed, and why; with its specimen where it has one.
+    Unplaced(Option<MetaDataKey>, String),
+    /// The reference, left where a person drew it.
+    Reference(Unchanged),
+    /// Placed on a line pooled across the run, already worked out.
+    Pooled(Result<Outcome, String>, MetaDataKey),
+    /// To be placed by its rule.
+    Place {
+        rule: &'a GateRule,
+        reference: Reference<'a>,
+        specimen: MetaDataKey,
+    },
+}
+
+/// Every [`Step::Place`] among `steps` placed, side by side; `None` for the
+/// other steps, and for any left when the run is stopped.
+fn place_side_by_side(
+    state: &GateState,
+    steps: &[(&Measurement, Step<'_>)],
+    metadata: &MetaDataFileMap,
+    progress: &(impl Fn(usize, usize) + Sync),
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Option<Result<Outcome, String>>> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let described = describe_references(state, steps, metadata);
+    let total = steps
+        .iter()
+        .filter(|(_, step)| matches!(step, Step::Place { .. }))
+        .count();
+    let done = AtomicUsize::new(0);
+    steps
+        .par_iter()
+        .map(|(measured, step)| {
+            let Step::Place {
+                rule,
+                reference,
+                specimen,
+            } = step
+            else {
+                return None;
+            };
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let beside = &measured.beside;
+            let outcome = position_one(
+                state, rule, measured, reference, specimen, metadata, beside, &described,
+            )
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside));
+            progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+            Some(outcome)
+        })
+        .collect()
+}
+
+impl Report {
+    /// A placement made: moved, or found already where its rule wants it.
+    fn record(&mut self, placements: &mut Vec<Placement>, outcome: Outcome) {
+        match outcome {
+            Outcome::Moved(p, placed) => {
+                self.positioned.push(p);
+                placements.push(placed);
+            }
+            Outcome::Kept(u) => self.unchanged.push(u),
+        }
+    }
+
+    /// `measured` not placed, and why.
+    fn unplace(&mut self, measured: &Measurement, specimen: Option<&MetaDataKey>, reason: String) {
+        self.unplaced
+            .push(Unplaced::of(measured, specimen, &reason));
+        self.skipped.push(Skipped {
+            file: measured.file.clone(),
+            gate: measured.gate.clone(),
+            parent_gate: measured.parent_gate.clone(),
+            reason,
+        });
+    }
 }
 
 /// Put every list in the report into the pairing's sample order.
@@ -2490,6 +2565,7 @@ fn kept_clear(
     Ok(outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn position_one(
     state: &GateState,
     rule: &GateRule,
@@ -2498,11 +2574,19 @@ fn position_one(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
     beside: &[crate::gate_rules::clearance::Neighbour],
+    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
 ) -> Result<Outcome, String> {
     // A rule that identifies a population does not move an edge, so none of
     // what follows applies to it.
     if let Rule::MatchThePhenotype(wanted) = &rule.rule {
-        return position_by_phenotype(state, wanted, measured, reference, specimen, metadata);
+        let described = described
+            .get(&(measured.gate_id.clone(), reference.id.clone()))
+            .ok_or_else(|| "the reference population was not described".to_string())?
+            .as_ref()
+            .map_err(String::clone)?;
+        return position_by_phenotype(
+            state, wanted, measured, reference, described, specimen, metadata,
+        );
     }
     if let Rule::FromAnotherGate(wanted) = &rule.rule {
         return position_from_gate(state, wanted, measured, specimen, metadata);
@@ -2847,6 +2931,99 @@ fn bracket_for(values: &[f64], current: f64) -> (f64, f64) {
 
 // ── positioning by phenotype ─────────────────────────────────────────────
 
+/// The reference population a phenotype rule looks for: its gate, the
+/// events inside it, and their signature.
+struct Described {
+    gate: Arc<dyn DrawableGate>,
+    inner: flow_gates::Gate,
+    inside: Vec<usize>,
+    signature: crate::gate_rules::phenotype::Signature,
+}
+
+/// Describe the population `gate_id` holds on `reference`.
+///
+/// Which events the reference gate holds is asked of the gate through the
+/// same index the on-screen percentage is counted from, so the population
+/// described is the one a person sees inside the outline.
+fn describe_reference(
+    state: &GateState,
+    gate_id: &GateId,
+    reference: &Reference<'_>,
+    metadata: &MetaDataFileMap,
+) -> Result<Described, String> {
+    use crate::gate_rules::phenotype::{Rows, Signature};
+    let there = reference
+        .measurement
+        .phenotype
+        .as_ref()
+        .ok_or_else(|| "the reference was not measured across any markers".to_string())?;
+    let there_panel = there
+        .matrix()
+        .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?;
+    let gate = state
+        .gate_for_file(gate_id, &reference.id, metadata)
+        .ok_or_else(|| "the reference has no gate to describe".to_string())?;
+    let inner = gate
+        .get_gate_ref(None)
+        .ok_or_else(|| "the reference gate has no geometry".to_string())?
+        .clone();
+    let inside = reference
+        .measurement
+        .index
+        .event_index
+        .filter_by_gate(&inner)
+        .map_err(|e| format!("the reference gate could not be read: {e}"))?;
+    if inside.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
+        return Err(format!(
+            "the reference gate holds {} events, too few to describe a population",
+            inside.len()
+        ));
+    }
+    let members = there_panel.select(&inside);
+    let members = Rows::new(&members, there.markers.len())
+        .ok_or_else(|| "the reference members do not form a matrix".to_string())?;
+    let signature = Signature::describe(there.markers.clone(), members, there_panel)
+        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?;
+    Ok(Described {
+        gate,
+        inner,
+        inside,
+        signature,
+    })
+}
+
+/// The reference populations the phenotype rules among `steps` look for,
+/// each described once, side by side, rather than again for every sample.
+fn describe_references(
+    state: &GateState,
+    steps: &[(&Measurement, Step<'_>)],
+    metadata: &MetaDataFileMap,
+) -> FxHashMap<(GateId, FileId), Result<Described, String>> {
+    use rayon::prelude::*;
+    let mut wanted: Vec<(&GateId, &Reference<'_>)> = Vec::new();
+    for (measured, step) in steps {
+        if let Step::Place {
+            rule, reference, ..
+        } = step
+            && matches!(rule.rule, Rule::MatchThePhenotype(_))
+            && !wanted
+                .iter()
+                .any(|(id, held)| **id == measured.gate_id && held.id == reference.id)
+        {
+            wanted.push((&measured.gate_id, reference));
+        }
+    }
+    wanted
+        .par_iter()
+        .map(|(gate_id, reference)| {
+            (
+                ((*gate_id).clone(), reference.id.clone()),
+                describe_reference(state, gate_id, reference, metadata),
+            )
+        })
+        .collect()
+}
+
 /// Fit a gate to the cells that match the reference population's phenotype.
 ///
 /// The shape of it: describe the reference gate's contents across the chosen
@@ -2864,10 +3041,10 @@ fn position_by_phenotype(
     wanted: &crate::gate_rules::rule::PhenotypeRule,
     measured: &Measurement,
     reference: &Reference<'_>,
+    described: &Described,
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    use crate::gate_rules::phenotype::{Rows, Signature};
     use crate::gate_rules::rule::ShapeFit;
     use crate::gate_rules::shape_fit::{Reshape, contour_around, fit, within_area_limit};
 
@@ -2888,41 +3065,15 @@ fn position_by_phenotype(
             there.markers.len()
         ));
     }
-    let (here_panel, there_panel) = (
-        here.matrix()
-            .ok_or_else(|| "this file's markers do not form a matrix".to_string())?,
-        there
-            .matrix()
-            .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?,
-    );
-
-    // Which events the reference gate holds. Asked of the gate through the
-    // same index the on-screen percentage is counted from, so the population
-    // described here is the one a person sees inside the outline.
-    let reference_gate = state
-        .gate_for_file(&measured.gate_id, &reference.id, metadata)
-        .ok_or_else(|| "the reference has no gate to describe".to_string())?;
-    let inner = reference_gate
-        .get_gate_ref(None)
-        .ok_or_else(|| "the reference gate has no geometry".to_string())?;
-    let inside = reference
-        .measurement
-        .index
-        .event_index
-        .filter_by_gate(inner)
-        .map_err(|e| format!("the reference gate could not be read: {e}"))?;
-    if inside.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
-        return Err(format!(
-            "the reference gate holds {} events, too few to describe a population",
-            inside.len()
-        ));
-    }
-
-    let members = there_panel.select(&inside);
-    let members = Rows::new(&members, there.markers.len())
-        .ok_or_else(|| "the reference members do not form a matrix".to_string())?;
-    let signature = Signature::describe(here.markers.clone(), members, there_panel)
-        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?;
+    let here_panel = here
+        .matrix()
+        .ok_or_else(|| "this file's markers do not form a matrix".to_string())?;
+    let Described {
+        gate: reference_gate,
+        inner,
+        inside,
+        signature,
+    } = described;
 
     let found = signature.find_in(here_panel);
     let reference_share = inside.len() as f64 / there.points.len().max(1) as f64;
@@ -3026,7 +3177,7 @@ fn position_by_phenotype(
 
     let mut rebuilt = inner.clone();
     rebuilt.geometry = geometry;
-    let placed = rebuild(&reference_gate, rebuilt).map_err(|e| e.to_string())?;
+    let placed = rebuild(reference_gate, rebuilt).map_err(|e| e.to_string())?;
 
     let achieved = admitted_by(&placed, &measured.index).unwrap_or(f64::NAN);
     // Scored on its own evidence - see `assess_match`. There is no threshold

@@ -2898,6 +2898,12 @@ fn the_report_says_what_was_matched_and_where_it_sat() {
         cd161.middle
     );
     assert!(read.purity > 0.5, "purity {:.2}", read.purity);
+    // The cells moved from (700, 700) to (300, 650): the gate with them.
+    let (dx, dy) = read.reshaped.expect("the shape was kept");
+    assert!(
+        (dx + 400.0).abs() < 15.0 && (dy + 50.0).abs() < 15.0,
+        "moved {dx:.0}, {dy:.0}"
+    );
 }
 
 #[test]
