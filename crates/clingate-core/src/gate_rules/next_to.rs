@@ -369,3 +369,7 @@ fn follow_outline(
     }
     Ok(followed)
 }
+
+#[cfg(test)]
+#[path = "next_to_tests.rs"]
+mod tests;

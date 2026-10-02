@@ -80,11 +80,10 @@ pub(crate) fn settled_beside(
             let Some(other) = state.registered_gate(id) else {
                 return false;
             };
-            let later = match (mine, rule_index(state, store, names, beside)) {
-                (Some(mine), Some(theirs)) => theirs > mine,
-                (None, Some(_)) => true,
-                _ => false,
-            };
+            let later = matches!(
+                (mine, rule_index(state, store, names, beside)),
+                (Some(mine), Some(theirs)) if theirs > mine
+            );
             state.gate_identity(id) != own
                 && !other.is_composite()
                 && same_axes(&other.get_params(), &params)

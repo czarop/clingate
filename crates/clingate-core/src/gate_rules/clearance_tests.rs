@@ -182,3 +182,53 @@ fn a_long_move_cannot_jump_over_a_thin_gate() {
 
     assert_near(&kept, &square_at(430.0));
 }
+
+/// Both gates 2 wide: the moving one, from 10 to 1,010, has a window of
+/// only 4 across which it overlaps the other - stepped a 1 at a time, as
+/// the narrowest gate asks, it cannot miss it.
+#[test]
+fn a_thin_gate_moved_far_cannot_jump_another_thin_gate() {
+    let from = rectangle("a", (10.0, 0.0), (12.0, 100.0));
+    let moved = rectangle("a", (1010.0, 0.0), (1012.0, 100.0));
+    let thin = rectangle("b", (530.5, 0.0), (532.5, 100.0));
+
+    let kept = kept_apart(&from, &moved, &"a".into(), &[thin]);
+
+    assert_near(
+        &kept,
+        &[(528.5, 0.0), (530.5, 0.0), (530.5, 100.0), (528.5, 100.0)],
+    );
+}
+
+/// The notch at (50, 40) filled by deleting its point would cover the gate
+/// sitting in it. A change of how many points the gate has cannot be made
+/// part way, so the gate stays as it was.
+#[test]
+fn a_point_deleted_into_a_gate_kept_apart_leaves_the_gate_as_it_was() {
+    let notched = [
+        (0.0, 0.0),
+        (100.0, 0.0),
+        (100.0, 100.0),
+        (60.0, 100.0),
+        (50.0, 40.0),
+        (40.0, 100.0),
+        (0.0, 100.0),
+    ];
+    let from = polygon("p", &notched);
+    let filled = polygon(
+        "p",
+        &[
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (60.0, 100.0),
+            (40.0, 100.0),
+            (0.0, 100.0),
+        ],
+    );
+    let in_the_notch = rectangle("n", (48.0, 70.0), (52.0, 95.0));
+
+    let kept = kept_apart(&from, &filled, &"p".into(), &[in_the_notch]);
+
+    assert!(Arc::ptr_eq(&kept, &from));
+}
