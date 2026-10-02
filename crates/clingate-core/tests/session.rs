@@ -892,24 +892,25 @@ fn tmem_workspace(name: &str) -> std::path::PathBuf {
 /// [`tmem_workspace`] with teff_naive where it is drawn: beside Tmem on its
 /// plot, to the left of it on BUV805-A.
 fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
-    tmem_workspace_positive_one_in(name, [3, 3])
+    tmem_workspace_positive_one_in(name, [(20_000, 3), (20_000, 3)])
 }
 
-/// [`tmem_workspace_beside_teff_naive`], with BUV805-A positive on one event
-/// in `one_in[0]` of sample1 and `one_in[1]` of sample2: a multiple of 3, so
-/// those events are all positive on BUV661-A and negative on BV785-A too.
-fn tmem_workspace_positive_one_in(name: &str, one_in: [usize; 2]) -> std::path::PathBuf {
+/// [`tmem_workspace_beside_teff_naive`], with sample1 and sample2 each
+/// `(events, one_in)`: BUV805-A positive on one event in `one_in`, a multiple
+/// of 3, so those events are all positive on BUV661-A and negative on
+/// BV785-A too.
+fn tmem_workspace_positive_one_in(name: &str, files: [(usize, usize); 2]) -> std::path::PathBuf {
     let dir = workspace(name);
     let mut channels = vec!["FSC-A", "SSC-A"];
     channels.extend(FLUORESCENCE);
     let at = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
-    for ((seed, file), every) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
+    for ((seed, file), (count, every)) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
         .into_iter()
-        .zip(one_in)
+        .zip(files)
     {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let high = Normal::new(400_000.0f32, 40_000.0).unwrap();
-        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+        let rows: Vec<Vec<f32>> = events(seed, count)
             .into_iter()
             .enumerate()
             .map(|(i, mut row)| {
@@ -3114,10 +3115,7 @@ fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::Rules
 /// its gate is moved onto them.
 #[test]
 fn a_phenotype_found_on_another_sample_moves_its_gate() {
-    let preview = phenotype_run_in(tmem_workspace_positive_one_in(
-        "session-phenotype-found",
-        [3, 3],
-    ));
+    let preview = phenotype_run_in(tmem_workspace_beside_teff_naive("session-phenotype-found"));
     assert_eq!(preview.not_positioned.len(), 0, "{preview:?}");
     assert!(
         preview.would_move.iter().any(|m| m.specimen == "two"),
@@ -3125,15 +3123,15 @@ fn a_phenotype_found_on_another_sample_moves_its_gate() {
     );
 }
 
-/// Sample2 one in 21 positive against one in three on sample1: a seventh as
-/// common, under the fifth a match needs - 78 cells in Tmem's parent of about
-/// 1,150 - though over the 50 it needs. Its gate is left alone and the
-/// preview says why.
+/// Sample2 one in 30 positive against one in three on sample1: a tenth as
+/// common, under the fifth a match needs, though Tmem's parent - about 5,700
+/// of sample2's 100,000 events - holds some 190 of them, well over the 50 it
+/// needs. Its gate is left alone and the preview says why.
 #[test]
 fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
     let preview = phenotype_run_in(tmem_workspace_positive_one_in(
         "session-phenotype-rare",
-        [3, 21],
+        [(20_000, 3), (100_000, 30)],
     ));
     assert!(
         preview.would_move.iter().all(|m| m.specimen != "two"),

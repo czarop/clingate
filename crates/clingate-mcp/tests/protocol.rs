@@ -829,3 +829,65 @@ fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
         "grown towards Tmem: {upper} -> {now_upper}"
     );
 }
+
+/// IL18a's cells are Vio Bright 423-A and BV785-A positive and BUV661-A
+/// negative, but it is drawn under teff_naive, which holds only a few dozen
+/// of these small files' events: written over the protocol, the rule's
+/// preview leaves IL18a on sample2 where it is, says why, and the guide says
+/// what a match needs.
+#[test]
+fn a_phenotype_too_few_cells_match_is_left_alone_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "IL18a",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": {"File": "sample1"},
+                "rule": {
+                    "kind": "MatchThePhenotype",
+                    "markers": ["Vio Bright 423-A", "BV785-A", "BUV661-A"]
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let preview = server.call("preview_rules", json!({}));
+    assert_eq!(preview["outcome"], "ok", "{preview}");
+    let il18a = |row: &Value| row["gate"].as_str().unwrap().starts_with("IL18a");
+    assert!(
+        !preview["result"]["would_move"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(il18a),
+        "{preview}"
+    );
+    let left = preview["result"]["not_positioned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| il18a(row))
+        .unwrap_or_else(|| panic!("{preview}"))
+        .clone();
+    assert_eq!(left["sample"], "sample2_FS.fcs");
+    let reason = left["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("50 are needed") && reason.contains("left where it is"),
+        "{reason}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert_eq!(guide["outcome"], "ok", "{guide}");
+    assert!(
+        guide.to_string().contains("at least 50 cells match"),
+        "{guide}"
+    );
+}

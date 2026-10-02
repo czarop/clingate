@@ -1991,6 +1991,59 @@ pub fn GateRulesWindow() -> Element {
 mod tests {
     use super::*;
 
+    fn read(reshaped: Option<(f64, f64)>, clamped: bool, refused: Option<f64>) -> PhenotypeRead {
+        PhenotypeRead {
+            markers: Vec::new(),
+            matched: 0,
+            parent: 0,
+            reference_matched: 0,
+            reference_parent: 0,
+            purity: 1.0,
+            caught: 1.0,
+            pieces: 1,
+            centres: Vec::new(),
+            reshaped,
+            clamped,
+            refused_outline: refused,
+        }
+    }
+
+    #[test]
+    fn the_table_says_how_the_phenotype_rule_fitted_the_gate() {
+        assert_eq!(fitted(&read(None, false, None)), "new polygon");
+        assert_eq!(
+            fitted(&read(Some((12.0, -3.0)), false, None)),
+            "moved +12, -3"
+        );
+        assert_eq!(
+            fitted(&read(Some((12.0, -3.0)), true, None)),
+            "moved +12, -3 (size limited)"
+        );
+        assert_eq!(
+            fitted(&read(Some((12.0, -3.0)), true, Some(2.44))),
+            "shape kept: the polygon was 2.4x the area; moved +12, -3 (size limited)"
+        );
+    }
+
+    #[test]
+    fn a_marker_says_which_frame_it_was_read_in() {
+        let marker = |by_landmarks| MarkerRead {
+            marker: Arc::from("CD4"),
+            by_landmarks,
+            reference_middle: 0.0,
+            reference_spread: 0.2,
+            middle: 0.1,
+        };
+        assert_eq!(
+            frame_of(&marker(true)),
+            "0 at the negative's peak, 1 at the valley above it"
+        );
+        assert_eq!(
+            frame_of(&marker(false)),
+            "in spreads from the parent's middle"
+        );
+    }
+
     /// B-RUN-1: a run must stop when anything it read changes. Driven through
     /// the real hook, in a headless `VirtualDom` holding the same stores and
     /// signals the app provides.
