@@ -189,6 +189,7 @@ impl App {
             clingate_core::omiq::serialise::to_omiq_document(
                 &held.gates.peek(),
                 &held.metadata.metadata().peek(),
+                &Default::default(),
                 &held.axes.peek().settings,
             )
             .unwrap()
@@ -234,6 +235,7 @@ fn working(session: &Session) -> serde_json::Value {
     clingate_core::omiq::serialise::to_omiq_document(
         session.gates(),
         session.metadata().metadata(),
+        &Default::default(),
         &session.axes().settings,
     )
     .unwrap()
@@ -293,6 +295,62 @@ fn a_workspace_opens_the_same_for_the_tools_and_the_app() {
     );
     assert!(!session.edit_state().earlier_unsaved_changes);
     assert!(!app.offers_earlier_changes());
+}
+
+/// `folder`'s gating file with no position for any one sample: every gate as
+/// drawn, as a template is.
+fn without_sample_positions(folder: &Path) {
+    let path = folder.join("gating.omiqgt");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for container in document["tree"]["filterContainers"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        if let Some(container) = container.as_object_mut() {
+            container.remove("perFileFilters");
+            container.remove("md");
+        }
+    }
+    std::fs::write(&path, document.to_string()).unwrap();
+}
+
+#[test]
+fn a_run_on_a_file_with_no_sample_positions_is_exported_with_them_the_same() {
+    let (tools, ours) = twins("parity-template");
+    without_sample_positions(&tools);
+    without_sample_positions(&ours);
+    let mut session = Session::open(&tools).unwrap();
+    let mut app = App::new();
+    app.open(&ours);
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    app.run_rules();
+    session.save().unwrap();
+    app.with(|h| h.edits.save()).unwrap();
+    let exported = session.export("template", false).unwrap();
+    app.with(|h| h.workspace.write_gating(Path::new("template")));
+    assert_eq!(
+        bytes(exported.file.clone()),
+        bytes(ours.join("template.omiqgt")),
+        "the exports differ"
+    );
+
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&exported.file).unwrap()).unwrap();
+    let positioned: Vec<&str> = document["tree"]["filterContainers"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter_map(|c| c["perFileFilters"].as_object())
+        .flat_map(|files| files.keys().map(String::as_str))
+        .collect();
+    assert!(
+        !positioned.is_empty(),
+        "the run's positions are not in the export"
+    );
 }
 
 #[test]

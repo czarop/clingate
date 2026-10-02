@@ -72,9 +72,16 @@ impl Session {
             wanted,
             &self.working_state(),
             self.metadata.metadata(),
+            &self.held_files(),
         ) {
             tracing::warn!("the recovery copy could not be written: {e}");
         }
+    }
+
+    /// The gating ids of the files this workspace holds.
+    fn held_files(&self) -> rustc_hash::FxHashSet<crate::gates::gate_store::FileId> {
+        self.files
+            .gating_ids(self.metadata.file_name_to_gating_id())
     }
 
     pub fn edit_state(&self) -> EditState {
@@ -135,7 +142,12 @@ impl Session {
         let folder = self.folder.clone();
         let files = self
             .working
-            .save(&folder, &current, self.metadata.metadata())
+            .save(
+                &folder,
+                &current,
+                self.metadata.metadata(),
+                &self.held_files(),
+            )
             .map_err(failed)?;
         self.parts.gating = super::PartState::Loaded {
             file: files.gating.clone(),
@@ -172,7 +184,7 @@ impl Session {
         }
         let left_out = self
             .working
-            .export(&path, self.metadata.metadata())
+            .export(&path, self.metadata.metadata(), &self.held_files())
             .map_err(failed)?;
         Ok(Exported {
             file: path,

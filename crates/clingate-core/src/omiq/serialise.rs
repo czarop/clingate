@@ -412,7 +412,7 @@ fn container_for(
     // Omiq stores one entry per file, even when a metadata column is what
     // actually drives the position. So write the files this container already
     // listed, plus any the session has since given a position of its own - but
-    // only files the *document* knows about.
+    // only files the document names or the workspace holds.
     //
     // That last clause is the whole lesson. A metadata export describes the
     // experiment; a gating task covers part of one. In a real workflow the
@@ -540,9 +540,13 @@ fn container_ids(state: &GateState) -> Vec<GateId> {
 /// Built from scratch: the geometry comes from the gates, the document identity
 /// from what was captured on import, and anything unreachable is passed through
 /// verbatim.
+///
+/// `held` are the files the workspace holds - the gating task's - which a
+/// position given to one of them is written for.
 pub fn to_omiq_document(
     state: &GateState,
     metadata: &MetaDataFileMap,
+    held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
     axes: &AxisSettings,
 ) -> anyhow::Result<serde_json::Value> {
     let header = state.omiq_rebuild().header.clone().ok_or_else(|| {
@@ -552,7 +556,7 @@ pub fn to_omiq_document(
              call to_omiq_document_with_header with the ids Omiq expects."
         )
     })?;
-    to_omiq_document_with_header(state, metadata, axes, header)
+    to_omiq_document_with_header(state, metadata, held, axes, header)
 }
 
 /// As [`to_omiq_document`], but with the document header supplied rather than
@@ -560,21 +564,23 @@ pub fn to_omiq_document(
 pub fn to_omiq_document_with_header(
     state: &GateState,
     metadata: &MetaDataFileMap,
+    held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
     axes: &AxisSettings,
     header: OmiqDocumentHeader,
 ) -> anyhow::Result<serde_json::Value> {
     let rebuild = state.omiq_rebuild();
     let ids = container_ids(state);
 
-    // Every file this document has ever named. A gating task covers part of an
-    // experiment, and the metadata export describes all of it, so this - not
-    // the metadata - is the set a new per-file position may be written against.
-    // A file the task does not hold is one Omiq cannot resolve on the way back
-    // in.
+    // Every file this document has ever named, and every file the workspace
+    // holds. A gating task covers part of an experiment, and the metadata
+    // export describes all of it, so this - not the metadata - is the set a
+    // new per-file position may be written against. A file the task does not
+    // hold is one Omiq cannot resolve on the way back in.
     let known_files: rustc_hash::FxHashSet<crate::gates::gate_store::FileId> = rebuild
         .gates
         .values()
         .flat_map(|g| g.per_file_ids.iter().cloned())
+        .chain(held.iter().cloned())
         .collect();
 
     let mut containers: HashMap<Arc<str>, FilterContainer> = HashMap::new();

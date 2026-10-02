@@ -119,6 +119,7 @@ pub(crate) fn provide_document() {
             gate_store,
             axis_store,
             metadata_store,
+            filehandler,
             loaded,
             generation,
         )

@@ -284,9 +284,14 @@ fn whatever_the_edits_left_is_written_and_read_back_as_the_same_document() {
     for seed in 0..150 {
         let (state, log) = random_edits(seed, 20);
         let header = state.omiq_rebuild().header.clone().unwrap_or_else(header);
-        let written =
-            to_omiq_document_with_header(&state, &Default::default(), &fixture_axes(), header)
-                .unwrap_or_else(|e| panic!("seed {seed}: export failed: {e}\n{}", log.join("\n")));
+        let written = to_omiq_document_with_header(
+            &state,
+            &Default::default(),
+            &Default::default(),
+            &fixture_axes(),
+            header,
+        )
+        .unwrap_or_else(|e| panic!("seed {seed}: export failed: {e}\n{}", log.join("\n")));
         let path = scratch(&format!("fuzz-{seed}")).join("doc.omiqgt");
         std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
 

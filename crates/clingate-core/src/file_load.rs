@@ -120,6 +120,21 @@ impl FcsFiles {
         &self.file_list
     }
 
+    /// The gating ids of the files held, by `names` - the metadata's.
+    pub fn gating_ids(
+        &self,
+        names: &std::collections::HashMap<
+            std::sync::Arc<str>,
+            crate::gates::gate_store::FileId,
+            rustc_hash::FxBuildHasher,
+        >,
+    ) -> rustc_hash::FxHashSet<crate::gates::gate_store::FileId> {
+        self.file_list
+            .iter()
+            .filter_map(|stub| names.get(&stub.name).cloned())
+            .collect()
+    }
+
     pub fn unread(&self) -> &[Unread] {
         &self.unread
     }

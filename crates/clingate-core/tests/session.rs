@@ -3278,6 +3278,64 @@ fn a_reference_that_is_a_smear_places_the_other_sample_from_itself() {
     );
 }
 
+/// A gating file with no position for any one sample - a template, every
+/// gate as drawn - takes the positions a run gives each specimen into the
+/// save and the export, and opens on them again.
+#[test]
+fn positions_a_run_gives_are_saved_and_exported_from_a_file_with_none() {
+    let folder = workspace_of_rectangles(
+        "session-run-positions-exported",
+        &[("p", "Pos", "", (2_400_000.0, 4_194_304.0))],
+    );
+    one_peak_each_on_fsc(&folder);
+    // sample3 is in the metadata, of sample2's specimen, but not in the
+    // workspace: not part of this gating task, so never written.
+    write_metadata(
+        &folder.join("metadata.csv"),
+        &["test", "Type", "SampleType"],
+        &[
+            ("sample1", "sample1_FMX.fcs", &["one", "one", "FMX"]),
+            ("sample2", "sample2_FS.fcs", &["two", "two", "FS"]),
+            ("sample3", "sample3_U.fcs", &["two", "two", "U"]),
+        ],
+    );
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let placed = fsc_span(&session, "Pos", "fs").0;
+    assert!(
+        (placed - 2_400_000.0).abs() > 100_000.0,
+        "{placed}: the run moved it"
+    );
+
+    session.save().unwrap();
+    let exported = session.export("positions.omiqgt", false).unwrap();
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&exported.file).unwrap()).unwrap();
+    let pos = &document["tree"]["filterContainers"]["p"];
+    assert_eq!(pos["defaultFilter"]["min"]["f1Val"], 2_400_000.0, "{pos}");
+    let for_sample2 = pos["perFileFilters"]["sample2"]["min"]["f1Val"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no position for sample2: {pos}"));
+    assert!(
+        (for_sample2 - placed).abs() < 1.0,
+        "{for_sample2} against {placed}"
+    );
+    assert!(pos["perFileFilters"].get("sample3").is_none(), "{pos}");
+
+    let reopened = Session::open(&folder).unwrap();
+    assert!((fsc_span(&reopened, "Pos", "fs").0 - placed).abs() < 1.0);
+}
+
 /// A phenotype rule for Tmem, read on sample1: BUV805-A and BUV661-A
 /// positive, BV785-A negative.
 fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::RulesPreview {

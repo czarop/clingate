@@ -32,8 +32,13 @@ fn import(path: &std::path::Path) -> GateState {
 
 /// Save the state and open what was saved.
 fn saved_and_reopened(state: &GateState, name: &str) -> GateState {
-    let written = to_omiq_document(state, &fixture_metadata(), &fixture_axes())
-        .expect("an imported document can be written");
+    let written = to_omiq_document(
+        state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+    )
+    .expect("an imported document can be written");
     let path = scratch(name).join("saved.omiqgt");
     std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
     import(&path)
@@ -140,7 +145,9 @@ fn saving_twice_changes_nothing_the_second_time() {
 
     let once = saved_and_reopened(&state, "twice-a");
     let twice = saved_and_reopened(&once, "twice-b");
-    let write = |s: &GateState| to_omiq_document(s, &fixture_metadata(), &fixture_axes()).unwrap();
+    let write = |s: &GateState| {
+        to_omiq_document(s, &fixture_metadata(), &Default::default(), &fixture_axes()).unwrap()
+    };
     assert_eq!(write(&once)["tree"], write(&twice)["tree"]);
 }
 
@@ -630,7 +637,8 @@ fn the_export_names_a_grouping_column_only_if_it_holds_every_files_position() {
     assert!(close(edge(&state, "sample1"), specimen), "the premise");
     assert!(close(edge(&state, "sample2"), donor), "the premise");
 
-    let written = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let written =
+        to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
     let path = scratch("grouping-column").join("saved.omiqgt");
     std::fs::write(&path, serde_json::to_string(&written).unwrap()).unwrap();
     let mut back = GateState::default();
@@ -660,7 +668,7 @@ fn the_export_names_a_grouping_column_only_if_it_holds_every_files_position() {
 fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
     let mut state = import(&fixture(FIXTURE));
     let metadata = fixture_metadata();
-    let before = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let before = to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
 
     let (x, y): (Arc<str>, Arc<str>) = (Arc::from("Alexa Fluor 700-A"), Arc::from("BUV737-A"));
     let id: GateId = Arc::from("0lmI");
@@ -696,7 +704,7 @@ fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
         "the premise: the global position is not"
     );
 
-    let after = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let after = to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
     assert_eq!(
         after["tree"]["filterContainers"], before["tree"]["filterContainers"],
         "viewing on swapped axes changed what is saved"
@@ -729,7 +737,7 @@ fn a_samples_position_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
 fn every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
     let mut state = import(&fixture(FIXTURE));
     let metadata = fixture_metadata();
-    let before = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let before = to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
 
     let mut pairs: Vec<(Arc<str>, Arc<str>)> = state
         .registered_ids()
@@ -757,7 +765,7 @@ fn every_gate_viewed_on_swapped_axes_is_saved_as_the_file_had_it() {
         }
     }
 
-    let after = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let after = to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
     let (before, after) = (
         before["tree"]["filterContainers"].as_object().unwrap(),
         after["tree"]["filterContainers"].as_object().unwrap(),
@@ -820,7 +828,7 @@ fn a_moved_label_is_saved_and_comes_back() {
     );
     state.move_label(&id, put, &axes).unwrap();
 
-    let written = to_omiq_document(&state, &metadata, &axes_of).unwrap();
+    let written = to_omiq_document(&state, &metadata, &Default::default(), &axes_of).unwrap();
     let loc = &written["tree"]["filterContainers"][id.as_ref()]["defaultFilter"]["labelLoc"];
     assert!(
         loc["f1Val"].is_number() && loc["f2Val"].is_number(),
@@ -886,11 +894,13 @@ fn a_saved_working_copy_opens_again_as_it_was_saved() {
     }
     state.rescale_channel(&channel, &old, &new).unwrap();
     axes.insert(channel.clone(), new);
-    let before = to_omiq_document(&state, &metadata, &axes).unwrap();
+    let before = to_omiq_document(&state, &metadata, &Default::default(), &axes).unwrap();
 
     let dir = scratch("saved-working-copy");
     let files = GatingFiles::saved(&dir);
-    files.write(&state, &metadata, &axes).unwrap();
+    files
+        .write(&state, &metadata, &Default::default(), &axes)
+        .unwrap();
 
     let mut reread = clingate_core::axis_store::AxisStore::default();
     reread.replace_axis_configs(
@@ -899,7 +909,8 @@ fn a_saved_working_copy_opens_again_as_it_was_saved() {
     let reopened =
         GateState::from_gating_file(files.gating.clone(), &metadata, reread.settings.clone())
             .unwrap();
-    let after = to_omiq_document(&reopened, &metadata, &reread.settings).unwrap();
+    let after =
+        to_omiq_document(&reopened, &metadata, &Default::default(), &reread.settings).unwrap();
     assert_eq!(
         after["tree"]["filterContainers"], before["tree"]["filterContainers"],
         "the saved copy opened as something other than what was saved"

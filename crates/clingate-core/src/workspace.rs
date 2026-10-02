@@ -380,9 +380,10 @@ impl GatingFiles {
         &self,
         gates: &crate::gates::GateState,
         metadata: &crate::omiq::metadata::MetaDataFileMap,
+        held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
         axes: &crate::omiq::serialise::AxisSettings,
     ) -> anyhow::Result<()> {
-        let document = crate::omiq::serialise::to_omiq_document(gates, metadata, axes)?;
+        let document = crate::omiq::serialise::to_omiq_document(gates, metadata, held, axes)?;
         let text = serde_json::to_string_pretty(&document)?;
         crate::axis_store::write_axis_configs(axes.values(), &self.scaling)?;
         let temporary = self.gating.with_extension("omiqgt.tmp");
