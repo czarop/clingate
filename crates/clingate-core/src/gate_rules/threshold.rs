@@ -636,8 +636,29 @@ pub struct Valley {
     pub depth: f64,
 }
 
-/// A dip this shallow is noise on a shoulder rather than a boundary.
-const VALLEY_FLOOR: f64 = 0.02;
+/// How many standard errors a dip must fall below its peak to be more than
+/// chance - the same bar as a three-sigma result anywhere else.
+const DIP_STANDARD_ERRORS: f64 = 3.0;
+
+/// How far a smoothed density wanders by chance: it was read from `events`
+/// events, each spread over `bandwidth`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CountingNoise {
+    pub events: usize,
+    pub bandwidth: f64,
+}
+
+impl CountingNoise {
+    /// Whether `low` lies below `high` by more than the counting noise in the
+    /// two would put it: a dip, rather than a wobble in too few events.
+    ///
+    /// A Gaussian kernel estimate that reads `f` at a point varies by
+    /// `f / (n h 2 sqrt(pi))` from one sample of `n` events to the next.
+    pub fn dips(&self, high: f64, low: f64) -> bool {
+        let per_density = self.events as f64 * self.bandwidth * 2.0 * std::f64::consts::PI.sqrt();
+        high - low > DIP_STANDARD_ERRORS * ((high + low) / per_density).sqrt()
+    }
+}
 /// How tall the far side of a dip must be, against the tallest peak, to count
 /// as a population rather than a wobble in the tail.
 ///
@@ -669,8 +690,8 @@ const FAR_SIDE_PROMINENCE: f64 = 0.05;
 /// noise; above 1 smooths shallow ones away. It is exposed because which of
 /// those is wanted depends on the marker, and no automatic rule knows that.
 pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> {
-    let (xs, density, events) = smoothed(values, smoothing)?;
-    valley_in(&xs, &density).map_err(|why| counted(why, events))
+    let (xs, density, noise) = smoothed(values, smoothing)?;
+    valley_in(&xs, &density, noise).map_err(|why| counted(why, noise.events))
 }
 
 /// [`first_valley`], or failing that the dip below a small negative when the
@@ -681,14 +702,17 @@ pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> 
 /// height, so [`first_valley`] takes the positives for the negative and finds
 /// nothing beyond them. The gate says which side the positives are on.
 pub fn valley_for_gate(values: &[f64], smoothing: f64, gate: f64) -> Result<Valley, NoValley> {
-    let (xs, density, events) = smoothed(values, smoothing)?;
-    valley_in(&xs, &density)
-        .or_else(|why| small_negative_below(&xs, &density, gate, events).ok_or(why))
-        .map_err(|why| counted(why, events))
+    let (xs, density, noise) = smoothed(values, smoothing)?;
+    valley_in(&xs, &density, noise)
+        .or_else(|why| small_negative_below(&xs, &density, gate, noise).ok_or(why))
+        .map_err(|why| counted(why, noise.events))
 }
 
-/// The density [`first_valley`] reads, and how many events made it.
-fn smoothed(values: &[f64], smoothing: f64) -> Result<(Vec<f64>, Vec<f64>, usize), NoValley> {
+/// The density [`first_valley`] reads, and the noise in it.
+fn smoothed(
+    values: &[f64],
+    smoothing: f64,
+) -> Result<(Vec<f64>, Vec<f64>, CountingNoise), NoValley> {
     if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
         return Err(NoValley::NoPopulation);
     }
@@ -703,7 +727,7 @@ fn smoothed(values: &[f64], smoothing: f64) -> Result<(Vec<f64>, Vec<f64>, usize
     }
     let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
     let events = values.iter().filter(|v| v.is_finite()).count();
-    Ok((xs, density, events))
+    Ok((xs, density, CountingNoise { events, bandwidth }))
 }
 
 /// The density alone does not know how many events made it; the caller does.
@@ -732,7 +756,7 @@ pub(crate) fn small_negative_below(
     xs: &[f64],
     density: &[f64],
     gate: f64,
-    events: usize,
+    noise: CountingNoise,
 ) -> Option<Valley> {
     let n = density.len().min(xs.len());
     let tallest = (0..n).max_by(|&a, &b| density[a].total_cmp(&density[b]))?;
@@ -751,15 +775,17 @@ pub(crate) fn small_negative_below(
 
     let total: f64 = density[..n].iter().sum();
     let below = density[..=bottom].iter().sum::<f64>() / total;
-    if !(below >= SMALL_NEGATIVE_SHARE) || below * (events as f64) < SMALL_NEGATIVE_EVENTS {
+    if !(below >= SMALL_NEGATIVE_SHARE) || below * (noise.events as f64) < SMALL_NEGATIVE_EVENTS {
         return None;
     }
     let depth = (density[negative] - density[bottom]) / density[negative];
-    (depth >= VALLEY_FLOOR).then(|| Valley {
-        peak: xs[negative],
-        bottom: xs[bottom],
-        depth,
-    })
+    noise
+        .dips(density[negative], density[bottom])
+        .then(|| Valley {
+            peak: xs[negative],
+            bottom: xs[bottom],
+            depth,
+        })
 }
 
 /// The lowest point of `density` from `from` to `to`, taking the middle of a
@@ -827,7 +853,8 @@ impl std::fmt::Display for NoValley {
             } => write!(
                 f,
                 "peak at {peak:.3}, but the best dip ({best_at:.3}) is only {:.1}% deep with a far \
-                 side {:.1}% of the tallest - not a boundary between two populations",
+                 side {:.1}% of the tallest - not a boundary: no deeper than chance, or not \
+                 between two populations",
                 best_depth * 100.0,
                 far_side * 100.0
             ),
@@ -835,11 +862,12 @@ impl std::fmt::Display for NoValley {
     }
 }
 
-/// The valley-finding itself, over a density already computed.
+/// The valley-finding itself, over a density already computed, with the
+/// `noise` in it: a dip counts only where it is deeper than that.
 ///
 /// Split out so it can be exercised on a density built by hand, where the
 /// answer is known, rather than only through a kernel estimate.
-pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
+pub fn valley_in(xs: &[f64], density: &[f64], noise: CountingNoise) -> Result<Valley, NoValley> {
     let n = density.len().min(xs.len());
     if n < 3 {
         return Err(NoValley::NoPopulation);
@@ -906,7 +934,8 @@ pub fn valley_in(xs: &[f64], density: &[f64]) -> Result<Valley, NoValley> {
         if best.is_none_or(|(_, d, _)| depth > d) {
             best = Some((xs[bottom], depth, far_side));
         }
-        if depth >= VALLEY_FLOOR && density[right] >= tallest * FAR_SIDE_PROMINENCE {
+        if noise.dips(flanking, density[bottom]) && density[right] >= tallest * FAR_SIDE_PROMINENCE
+        {
             return Ok(Valley {
                 peak: xs[left],
                 bottom: xs[bottom],

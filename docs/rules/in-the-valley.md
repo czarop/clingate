@@ -28,16 +28,20 @@ that broadens does not throw the gate out.
 2. **The negative** is the leftmost peak at least a quarter as tall as the
    tallest.
 3. **The dip.** Walking right from it: down into a dip, up to whatever is on
-   the far side. The first dip that is at least 2% deep (against the lower of
-   the two peaks either side) and whose far side reaches at least 5% of the
-   tallest peak is the valley. A wobble in a sparse tail is not a valley,
+   the far side. The first dip that is deeper than chance and whose far side
+   reaches at least 5% of the tallest peak is the valley. Deeper than chance:
+   the lower of the two peaks either side stands above the bottom by more
+   than three standard errors of the difference, the error a density smoothed
+   from that many events at that bandwidth carries (`f / (n h 2 sqrt(pi))`
+   for a height `f`, `n` events, bandwidth `h`). So the same dip is a
+   boundary in 50,000 events and noise in 500. A wobble in a sparse tail is not a valley,
    however deep it looks against a tiny far side.
    **A small negative.** If that finds nothing and the tallest peak stands
    above where the gate is now, the tallest peak is the positives - a
    stimulated sample that is almost all positive. The highest bump below it
    is then the negative, and the lowest point between them is the valley, if
    at least 1% of the events and at least 30 of them lie below it and the dip
-   is at least 2% deep against the bump. Judged by events rather than height,
+   is deeper than chance below the bump. Judged by events rather than height,
    so a thin negative counts and a few stray events do not.
 4. **Calibrate** on the reference: the offset from the bottom of its dip to
    its gate. **Place** on each sample: the bottom of its dip plus the same

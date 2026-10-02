@@ -397,7 +397,7 @@ fn a_population_too_small_to_read_is_declined() {
 
 // ─── finding the valley ──────────────────────────────────────────────────────
 
-use crate::gate_rules::threshold::{first_valley, valley_for_gate, valley_in};
+use crate::gate_rules::threshold::{CountingNoise, first_valley, valley_for_gate, valley_in};
 
 /// A density built by hand, so the right answer is known rather than estimated.
 fn density(heights: &[f64]) -> (Vec<f64>, Vec<f64>) {
@@ -405,10 +405,62 @@ fn density(heights: &[f64]) -> (Vec<f64>, Vec<f64>) {
     (xs, heights.to_vec())
 }
 
+/// The noise in a density read from 100 events at a bandwidth of 1: a
+/// height `f` varies by `f / 354.49` (100 x 2 sqrt(pi)), so 10 against 9 must
+/// be 3 sqrt(19 / 354.49) = 0.69 apart to be a dip.
+fn noise() -> CountingNoise {
+    CountingNoise {
+        events: 100,
+        bandwidth: 1.0,
+    }
+}
+
+#[test]
+fn a_dip_counts_where_it_is_deeper_than_three_standard_errors_of_the_counts() {
+    // 10 against 9 is 1 apart, past 0.69; against 9.5 only 0.5, short of
+    // 3 sqrt(19.5 / 354.49) = 0.70.
+    assert!(noise().dips(10.0, 9.0));
+    assert!(!noise().dips(10.0, 9.5));
+    // Four times the events halve the noise, to 0.35.
+    let more = CountingNoise {
+        events: 400,
+        ..noise()
+    };
+    assert!(more.dips(10.0, 9.5));
+}
+
+#[test]
+fn a_dip_in_few_events_is_noise_and_the_same_dip_in_many_is_a_boundary() {
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use rand_distr::{Distribution, Normal};
+
+    // Two populations two-thirds overlapping: the dip between them is
+    // shallow, and only enough events show it is there.
+    let mixture = |events: usize| -> Vec<f64> {
+        let mut rng = StdRng::seed_from_u64(7);
+        let (neg, pos) = (
+            Normal::new(0.0, 0.5).unwrap(),
+            Normal::new(1.8, 0.5).unwrap(),
+        );
+        (0..events)
+            .map(|at| {
+                if at % 3 == 0 {
+                    pos.sample(&mut rng)
+                } else {
+                    neg.sample(&mut rng)
+                }
+            })
+            .collect()
+    };
+    assert!(first_valley(&mixture(30_000), 1.0).is_ok());
+    assert!(first_valley(&mixture(300), 1.0).is_err());
+}
+
 #[test]
 fn the_dip_between_two_peaks_is_the_boundary() {
     let (xs, d) = density(&[1.0, 5.0, 10.0, 4.0, 1.0, 4.0, 9.0, 3.0, 1.0]);
-    let found = valley_in(&xs, &d).expect("two peaks with a dip between them");
+    let found = valley_in(&xs, &d, noise()).expect("two peaks with a dip between them");
     assert_eq!(found.peak, 2.0, "the negative is the leftmost peak");
     assert_eq!(found.bottom, 4.0, "the gate belongs at the lowest point");
     // The dip falls to 1 from a flanking height of 9, so it is 8/9 deep.
@@ -424,7 +476,7 @@ fn a_shallow_dip_is_still_a_boundary() {
     // The case this rule exists for: the two populations have blurred together
     // but there is still a lowest point, and it is still where the gate goes.
     let (xs, d) = density(&[1.0, 5.0, 10.0, 9.0, 8.5, 9.0, 9.5, 4.0, 1.0]);
-    let found = valley_in(&xs, &d).expect("a shallow dip is a dip");
+    let found = valley_in(&xs, &d, noise()).expect("a shallow dip is a dip");
     assert_eq!(found.bottom, 4.0);
     assert!(
         found.depth > 0.02 && found.depth < 0.2,
@@ -438,7 +490,7 @@ fn a_single_population_has_no_boundary_to_find() {
     // The EOMES failure. Two populations merged into one hump - so there is no
     // dip, and the honest answer is to refuse rather than place something.
     let (xs, d) = density(&[1.0, 4.0, 9.0, 10.0, 9.0, 6.0, 3.0, 1.0]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     assert!(matches!(why, NoValley::OnlyOnePeak { .. }), "{why:?}");
 }
 
@@ -447,7 +499,7 @@ fn a_smear_off_the_negative_has_no_boundary_either() {
     // Monotone decline from the negative into a tail. No second population, so
     // nothing to sit between - this is what above-the-negative is for.
     let (xs, d) = density(&[1.0, 6.0, 10.0, 7.0, 5.0, 3.5, 2.0, 1.0, 0.5]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     assert!(
         matches!(why, NoValley::OnlyOnePeak { peak, .. } if peak == 2.0),
         "{why:?}"
@@ -456,10 +508,11 @@ fn a_smear_off_the_negative_has_no_boundary_either() {
 
 #[test]
 fn a_wobble_on_the_shoulder_is_not_a_boundary() {
-    // A dip of a few percent is noise on a shoulder. Taking it as a boundary
-    // would put the gate wherever the estimate happened to wobble.
+    // 7 down to 6.95 and up to 6.98: 0.03, where the counts behind it wander
+    // by 3 sqrt(13.93 / 354.49) = 0.59. Taking it as a boundary would put the
+    // gate wherever the estimate happened to wobble.
     let (xs, d) = density(&[1.0, 5.0, 10.0, 7.0, 6.95, 6.98, 4.0, 1.0]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     // The wobble was seen and judged too shallow - not missed.
     let NoValley::NothingDeepEnough {
         best_at,
@@ -478,7 +531,7 @@ fn the_first_dip_is_taken_when_there_are_several() {
     // Three populations. The boundary that matters is the one next to the
     // negative, not the deepest one further out.
     let (xs, d) = density(&[1.0, 8.0, 10.0, 3.0, 1.0, 7.0, 9.0, 0.5, 0.2, 6.0, 8.0]);
-    let found = valley_in(&xs, &d).expect("several dips");
+    let found = valley_in(&xs, &d, noise()).expect("several dips");
     assert_eq!(found.bottom, 4.0, "the first one, next to the negative");
 }
 
@@ -541,7 +594,7 @@ fn a_ripple_in_the_tail_is_not_a_valley() {
     let (xs, d) = density(&[
         1.0, 20.0, 100.0, 60.0, 20.0, 5.0, 1.0, 0.4, 0.9, 0.5, 0.2, 0.1,
     ]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     assert!(
         matches!(why, NoValley::NothingDeepEnough { best_at, .. } if best_at == 7.0),
         "the far side must be a population, not a ripple: {why:?}"
@@ -553,7 +606,7 @@ fn a_small_but_real_second_population_is_still_a_valley() {
     // The other side of that bar: a positive a tenth the height of the negative
     // is a population, and the dip before it is a boundary.
     let (xs, d) = density(&[1.0, 20.0, 100.0, 40.0, 5.0, 2.0, 8.0, 12.0, 6.0, 1.0]);
-    let found = valley_in(&xs, &d).expect("a small population is still a population");
+    let found = valley_in(&xs, &d, noise()).expect("a small population is still a population");
     assert_eq!(found.bottom, 5.0);
 }
 
@@ -563,7 +616,7 @@ fn a_refusal_says_what_the_density_looked_like() {
 
     // One hump: the message should name the peak rather than just refusing.
     let (xs, d) = density(&[1.0, 4.0, 9.0, 10.0, 9.0, 6.0, 3.0, 1.0]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     assert!(
         matches!(why, NoValley::OnlyOnePeak { peak, .. } if peak == 3.0),
         "{why:?}"
@@ -575,7 +628,7 @@ fn a_refusal_says_what_the_density_looked_like() {
     let (xs, d) = density(&[
         1.0, 20.0, 100.0, 60.0, 20.0, 5.0, 1.0, 0.4, 0.9, 0.5, 0.2, 0.1,
     ]);
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     let NoValley::NothingDeepEnough { far_side, .. } = why else {
         panic!("{why:?}");
     };
@@ -618,7 +671,7 @@ fn a_single_peak_in_a_bare_density_claims_no_event_count() {
         .iter()
         .map(|x| (-(x - 10.0).powi(2) / 20.0).exp())
         .collect();
-    let why = valley_in(&xs, &d).unwrap_err();
+    let why = valley_in(&xs, &d, noise()).unwrap_err();
     assert!(
         matches!(why, NoValley::OnlyOnePeak { events: None, .. }),
         "{why:?}"
@@ -642,9 +695,9 @@ fn a_valley_refuses_a_bad_smoothing_or_too_little_data() {
         Err(NoValley::NoPopulation)
     );
     let (xs, d) = density(&[1.0, 2.0]);
-    assert_eq!(valley_in(&xs, &d), Err(NoValley::NoPopulation));
+    assert_eq!(valley_in(&xs, &d, noise()), Err(NoValley::NoPopulation));
     let (xs, d) = density(&[0.0, 0.0, 0.0, 0.0]);
-    assert_eq!(valley_in(&xs, &d), Err(NoValley::NoPopulation));
+    assert_eq!(valley_in(&xs, &d, noise()), Err(NoValley::NoPopulation));
 }
 
 // ─── the negative read from below a gate ─────────────────────────────────────
@@ -903,15 +956,26 @@ fn bump_under_the_positives(bottom: f64) -> (Vec<f64>, Vec<f64>) {
     density(&[1.0, 5.0, 10.0, bottom, 9.95, 50.0, 100.0, 50.0, 5.0])
 }
 
+/// `events` read at a bandwidth of `bandwidth`.
+fn counted(events: usize, bandwidth: f64) -> CountingNoise {
+    CountingNoise { events, bandwidth }
+}
+
 #[test]
-fn a_small_negative_needs_a_dip_at_least_two_percent_deep() {
+fn a_small_negative_needs_a_dip_deeper_than_counting_noise() {
     use crate::gate_rules::threshold::small_negative_below;
-    // 10 down to 9.9: a 1% dip, a shoulder rather than a boundary.
-    let (xs, d) = bump_under_the_positives(9.9);
-    assert_eq!(small_negative_below(&xs, &d, 5.0, 10_000), None);
+    // 10 down to 9: 1 apart. Over 1,000 events at a bandwidth of 1 the
+    // heights wander by 3 sqrt(19 / 3544.9) = 0.22, so it is a dip; at a
+    // bandwidth of 0.01, by 2.2, and it is not.
+    let (xs, d) = bump_under_the_positives(9.0);
+    assert!(small_negative_below(&xs, &d, 5.0, counted(1_000, 1.0)).is_some());
+    assert_eq!(
+        small_negative_below(&xs, &d, 5.0, counted(1_000, 0.01)),
+        None
+    );
     // 10 down to 2: 80% deep.
     let (xs, d) = bump_under_the_positives(2.0);
-    let found = small_negative_below(&xs, &d, 5.0, 10_000).expect("a clear dip");
+    let found = small_negative_below(&xs, &d, 5.0, counted(10_000, 1.0)).expect("a clear dip");
     assert_eq!((found.peak, found.bottom), (2.0, 3.0));
     assert!((found.depth - 0.8).abs() < 1e-12, "{}", found.depth);
 }
@@ -921,6 +985,6 @@ fn a_small_negative_needs_thirty_events_as_well_as_one_percent() {
     use crate::gate_rules::threshold::small_negative_below;
     // Near 8% of the events lie below the dip: 15 of 200, 77 of 1,000.
     let (xs, d) = bump_under_the_positives(2.0);
-    assert_eq!(small_negative_below(&xs, &d, 5.0, 200), None);
-    assert!(small_negative_below(&xs, &d, 5.0, 1_000).is_some());
+    assert_eq!(small_negative_below(&xs, &d, 5.0, counted(200, 1.0)), None);
+    assert!(small_negative_below(&xs, &d, 5.0, counted(1_000, 1.0)).is_some());
 }

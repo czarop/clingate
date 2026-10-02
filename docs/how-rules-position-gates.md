@@ -264,14 +264,17 @@ Consequences worth knowing:
 - The negative is the leftmost local maximum at least 25% of the tallest.
 - Walk right: descend to the bottom of a dip, climb to the summit on its far
   side. `depth = (min(left peak, right summit) - bottom) / min(...)`. The
-  first dip with `depth >= 0.02` **and** a far-side summit at least 5% of the
-  tallest is the valley.
+  first dip deeper than chance **and** with a far-side summit at least 5% of
+  the tallest is the valley. Deeper than chance (`CountingNoise::dips`):
+  `min(...) - bottom > 3 * sqrt((min(...) + bottom) / (n h 2 sqrt(pi)))`, three
+  standard errors of a Gaussian kernel estimate from `n` events at bandwidth
+  `h`.
 - Fallback, when that finds nothing and the tallest peak is above the gate
   (the reference's gate when calibrating, the sample's current gate when
   placing): the negative is the highest point below the first dip under the
   tallest peak; the bottom is the lowest point between the two (the middle of
   a flat stretch). Accepted when the events below the bottom are at least 1%
-  of all and at least 30, and `depth = (negative - bottom) / negative >= 0.02`.
+  of all and at least 30, and the dip is deeper than chance (as above).
   None -> refused with what the density looked like (one peak only / nothing
   deep enough).
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
