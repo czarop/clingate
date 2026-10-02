@@ -63,24 +63,29 @@ them.
 
    A gate left where it is counts as not placed, so when it has ruled gates
    under it the run pauses for it to be placed by hand.
-5. **Place the gate**, axis by axis:
-   - on an axis that is one of the rule's markers, each edge goes where it
-     sits on the reference in that marker's frame - against the parent's
-     negative and valley, or its middle and spread - not to wherever the
-     matched cells' middle is, which moves with how many there are and how
-     bright. An edge on a side the gate leaves open is never pulled in: it
-     moves out with the frame, or stays where it was drawn;
-   - on an axis the rule does not read, only the matched cells say where the
-     population is: the gate slides as far as their middle moved, its size
-     kept.
+5. **Place the gate**, edge by edge. Each edge keeps its place in the gap
+   between the population and the cells beyond it, as a person would put
+   it: on the reference, how far it sits from the near boundary of the
+   cells beyond it (their 5% nearest the population) to the population's
+   own boundary (its 5% nearest the edge); on the sample, the same share of
+   the way across the same gap. The population is the cells that match, on
+   the reference as on the sample, and the cells beyond are those that do
+   not, within the gate's span on the plot's other axis. Where no more than
+   dust lies beyond the population, on either, the edge moves as far as the
+   population's boundary did. It is the gap, not the matched cells' middle,
+   which moves with how many there are and how bright, nor the parent's
+   negative and valley, which know nothing of the cells either side of the
+   edge. Carried so, an edge on a side the gate leaves open is never pulled
+   in.
 
    Then, by `fit`:
    - `KeepShape` - each edge as above, so the gate may grow or shrink with
-     the frames. A gate whose area would change by more than 30% either way
-     slides instead, its size kept, and the run says so. The gate stays the
-     kind it was.
-   - `MoveOnly` - the gate slides as far as its edges move on average, its
-     size and shape unchanged.
+     the gaps, and everything between them kept in proportion: a polygon
+     keeps its shape, stretched between its new edges. A gate whose area
+     would change by more than 30% either way slides instead, its size kept,
+     and the run says so. The gate stays the kind it was.
+   - `MoveOnly` - the gate slides as far as its closed edges move on
+     average, its size and shape unchanged, open sides and all.
    - `DrawPolygon` - trace a new polygon round the matched cells on a
      smoothed density, holding `keep` of them, with about `vertices` points.
      If its area is more than 30% from the one drawn the same way round the

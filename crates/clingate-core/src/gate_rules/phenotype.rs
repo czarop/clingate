@@ -509,12 +509,27 @@ impl Signature {
     /// Which of `parent`'s events are these cells: one of them on every
     /// marker, each read in the frame this sample shares with the reference.
     pub fn find_in(&self, parent: Rows<'_>) -> Matched {
+        self.find_in_both(None, parent).1
+    }
+
+    /// The same, with which of the `reference`'s own events pass the same
+    /// test read in its own frame - the cells to set against those matched,
+    /// rather than the reference gate's, which need not be cut where the
+    /// test is.
+    pub fn find_in_both(
+        &self,
+        reference: Option<Rows<'_>>,
+        parent: Rows<'_>,
+    ) -> (Vec<usize>, Matched) {
         if self.markers.len() != parent.markers() {
-            return Matched {
-                members: Vec::new(),
-                parent: parent.len(),
-                reads: Vec::new(),
-            };
+            return (
+                Vec::new(),
+                Matched {
+                    members: Vec::new(),
+                    parent: parent.len(),
+                    reads: Vec::new(),
+                },
+            );
         }
         let shared: Vec<(Frame, Frame)> = self
             .profiles
@@ -528,21 +543,17 @@ impl Signature {
             .zip(&shared)
             .map(|(profile, (there, _))| profile.identity(there))
             .collect();
-        let accepted: Vec<Identity> = identities
-            .iter()
-            .zip(&shared)
-            .map(|(identity, (_, here))| identity.in_values(here))
-            .collect();
-        let members: Vec<usize> = parent
-            .rows()
-            .enumerate()
-            .filter(|(_, row)| {
-                row.iter()
-                    .zip(&accepted)
-                    .all(|(value, identity)| identity.holds(f64::from(*value)))
-            })
-            .map(|(at, _)| at)
-            .collect();
+        let accepted_in = |frame: fn(&(Frame, Frame)) -> &Frame| -> Vec<Identity> {
+            identities
+                .iter()
+                .zip(&shared)
+                .map(|(identity, frames)| identity.in_values(frame(frames)))
+                .collect()
+        };
+        let on_reference = reference
+            .map(|rows| holding(rows, &accepted_in(|(there, _)| there)))
+            .unwrap_or_default();
+        let members = holding(parent, &accepted_in(|(_, here)| here));
         let reads = self
             .markers
             .iter()
@@ -568,12 +579,28 @@ impl Signature {
                 }
             })
             .collect();
-        Matched {
-            members,
-            parent: parent.len(),
-            reads,
-        }
+        (
+            on_reference,
+            Matched {
+                members,
+                parent: parent.len(),
+                reads,
+            },
+        )
     }
+}
+
+/// Which of `rows` hold every one of `identities`, marker by marker.
+fn holding(rows: Rows<'_>, identities: &[Identity]) -> Vec<usize> {
+    rows.rows()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.iter()
+                .zip(identities)
+                .all(|(value, identity)| identity.holds(f64::from(*value)))
+        })
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// The share of each marker's two tails left out so that `keep` of the

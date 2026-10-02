@@ -1397,7 +1397,7 @@ pub fn GateRulesWindow() -> Element {
                         }
                     } else {
                         p { class: "gate_rules-hint gate_rules-span",
-                            "On each marker the rule reads, every edge goes where it sits on the reference against this sample's own negative and valley, so the gate can grow or shrink with them; on an axis it does not read, the gate slides with the matched cells. A side drawn past every cell is never pulled in. The gate keeps its shape and its kind - a rectangle stays a rectangle - and if its area would change by more than 30% it slides instead. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                            "Every edge keeps its place in the gap between the matched cells and the cells beyond it, so the gate can grow or shrink with them. A side drawn past every cell is never pulled in. The gate keeps its shape and its kind - a rectangle stays a rectangle, a polygon is stretched between its new edges - and if its area would change by more than 30% it slides instead. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
                         }
                     }
                 }

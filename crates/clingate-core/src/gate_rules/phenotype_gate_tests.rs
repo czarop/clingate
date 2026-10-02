@@ -2,8 +2,9 @@
 
 #![cfg(test)]
 
-use super::phenotype::{Frame, Open};
+use super::phenotype::Open;
 use super::phenotype_gate::*;
+use super::rule::Side;
 use super::shape_fit::Outline;
 use flow_gates::{GateGeometry, GateNode};
 use std::sync::Arc;
@@ -21,45 +22,46 @@ fn node(id: &str, x: f32, y: f32) -> GateNode {
         .with_coordinate(Arc::from(Y) as Arc<str>, y)
 }
 
-fn frame(origin: f64, unit: f64) -> Frame {
-    Frame {
-        origin,
-        unit,
-        by_landmarks: true,
-    }
-}
-
-/// An axis read from origin 0 in units of 100 on the reference, and from 50 in
-/// units of 200 on the sample: 100 on the reference is 250 on the sample, 300
-/// is 650.
-fn doubling(extent: (f64, f64), open: Open) -> Carry {
+/// The edges at 100 and 300 carried to 250 and 650: the gate twice as wide.
+fn doubling(open: Open) -> Carry {
     Carry {
-        from: frame(0.0, 100.0),
-        to: frame(50.0, 200.0),
-        extent,
+        extent: (100.0, 300.0),
         open,
+        to: (250.0, 650.0),
     }
 }
 
-/// An axis that reads the same on both.
+/// The edges at 100 and 300 carried to 50 and 150: the gate half as wide.
+fn halving(open: Open) -> Carry {
+    Carry {
+        extent: (100.0, 300.0),
+        open,
+        to: (50.0, 150.0),
+    }
+}
+
+/// An axis whose edges stay where they are.
 fn standing(extent: (f64, f64)) -> Carry {
     Carry {
-        from: frame(0.0, 1.0),
-        to: frame(0.0, 1.0),
         extent,
         open: Open::default(),
+        to: extent,
     }
 }
 
 /// An axis on which the gate slides `by`, its size kept.
 fn shifting(by: f64) -> Carry {
     Carry {
-        from: frame(0.0, 1.0),
-        to: frame(by, 1.0),
         extent: (0.0, 0.0),
         open: Open::default(),
+        to: (by, by),
     }
 }
+
+const OPEN_ABOVE: Open = Open {
+    low: false,
+    high: true,
+};
 
 fn rectangle(x: (f32, f32), y: (f32, f32)) -> GateGeometry {
     GateGeometry::Rectangle {
@@ -78,13 +80,140 @@ fn x_span(geometry: &GateGeometry) -> (f32, f32) {
     )
 }
 
+fn vertices(geometry: &GateGeometry) -> Vec<(f32, f32)> {
+    let GateGeometry::Polygon { nodes, .. } = geometry else {
+        panic!("a polygon must stay a polygon");
+    };
+    nodes
+        .iter()
+        .map(|n| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap()))
+        .collect()
+}
+
+fn triangle() -> GateGeometry {
+    GateGeometry::Polygon {
+        nodes: vec![
+            node("a", 100.0, 100.0),
+            node("b", 300.0, 100.0),
+            node("c", 200.0, 300.0),
+        ],
+        closed: true,
+    }
+}
+
+/// 0 to 100, one apart: its 5th percentile is 5 and its 95th 95.
+fn population() -> Vec<f64> {
+    (0..=100).map(f64::from).collect()
+}
+
+/// `count` cells one apart, ending at `last`.
+fn cells_ending_at(last: f64, count: usize) -> Vec<f64> {
+    (0..count).map(|at| last - at as f64).collect()
+}
+
+#[test]
+fn a_gap_runs_from_the_population_s_boundary_to_the_near_boundary_of_the_cells_beyond() {
+    // 100 cells from -200 to -101; their 95th percentile, nearest the
+    // population, is the 95th of 100 sorted: index 94, -106.
+    let below = cells_ending_at(-101.0, 100);
+    assert_eq!(
+        Gap::of(&population(), &below, Side::Lower),
+        Some(Gap {
+            inside: 5.0,
+            beyond: Some(-106.0)
+        })
+    );
+    // Mirrored above: 200 to 299, nearest boundary at index 5, 205.
+    let above: Vec<f64> = (200..300).map(f64::from).collect();
+    assert_eq!(
+        Gap::of(&population(), &above, Side::Upper),
+        Some(Gap {
+            inside: 95.0,
+            beyond: Some(205.0)
+        })
+    );
+}
+
+#[test]
+fn cells_on_the_other_side_of_the_population_are_not_beyond_it() {
+    let above: Vec<f64> = (200..300).map(f64::from).collect();
+    assert_eq!(
+        Gap::of(&population(), &above, Side::Lower).unwrap().beyond,
+        None
+    );
+}
+
+#[test]
+fn dust_beyond_a_population_leaves_no_gap() {
+    let beyond = |count| {
+        Gap::of(&population(), &cells_ending_at(-101.0, count), Side::Lower)
+            .unwrap()
+            .beyond
+    };
+    assert_eq!(beyond(20), None, "20 cells are dust");
+    assert!(beyond(21).is_some(), "21 of 101 are more than a hundredth");
+    let thousands: Vec<f64> = (0..3000).map(f64::from).collect();
+    assert_eq!(
+        Gap::of(&thousands, &cells_ending_at(-101.0, 29), Side::Lower)
+            .unwrap()
+            .beyond,
+        None,
+        "29 against 3000 are under a hundredth"
+    );
+}
+
+#[test]
+fn a_population_with_no_cells_has_no_gap() {
+    assert_eq!(Gap::of(&[], &[1.0, 2.0], Side::Lower), None);
+}
+
+#[test]
+fn an_edge_keeps_its_place_in_the_gap() {
+    // Halfway from the cells beyond, at 500, to the population, at 700; on
+    // the sample the gap runs from 600 to 1000, and halfway is 800.
+    let there = Gap {
+        inside: 700.0,
+        beyond: Some(500.0),
+    };
+    let here = Gap {
+        inside: 1000.0,
+        beyond: Some(600.0),
+    };
+    assert_eq!(edge_in_gap(600.0, there, here), 800.0);
+}
+
+#[test]
+fn with_nothing_beyond_an_edge_moves_as_far_as_the_population_s_boundary() {
+    let crowded = |inside, beyond| Gap {
+        inside,
+        beyond: Some(beyond),
+    };
+    let alone = |inside| Gap {
+        inside,
+        beyond: None,
+    };
+    // The boundary moves from 700 to 750: the edge, 50 further.
+    assert_eq!(
+        edge_in_gap(600.0, alone(700.0), crowded(750.0, 100.0)),
+        650.0
+    );
+    assert_eq!(
+        edge_in_gap(600.0, crowded(700.0, 500.0), alone(750.0)),
+        650.0
+    );
+    assert_eq!(
+        edge_in_gap(600.0, crowded(700.0, 700.0), crowded(750.0, 100.0)),
+        650.0,
+        "a gap of nothing has no place in it to keep"
+    );
+}
+
 #[test]
 fn a_rectangle_is_carried_edge_by_edge_and_stays_a_rectangle() {
-    let x = doubling((100.0, 300.0), Open::default());
     let moved = carried(
         &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &x,
+        &doubling(Open::default()),
         &standing((10.0, 20.0)),
     )
     .expect("a rectangle can be carried");
@@ -98,28 +227,29 @@ fn a_rectangle_is_carried_edge_by_edge_and_stays_a_rectangle() {
     );
 }
 
-/// An axis read from 0 in units of 100 on the reference and of 50 on the
-/// sample: 100 goes to 50, 300 to 150.
-fn halving(extent: (f64, f64), open: Open) -> Carry {
-    Carry {
-        from: frame(0.0, 100.0),
-        to: frame(0.0, 50.0),
-        extent,
-        open,
-    }
+#[test]
+fn a_carried_polygon_keeps_its_shape_stretched_between_its_new_edges() {
+    // x from 100..300 to 250..650: each vertex as far between the new edges
+    // as it was between the old - 100 to 250, 300 to 650, 200 halfway, 450.
+    let moved = carried(
+        &triangle(),
+        &params(),
+        &doubling(Open::default()),
+        &standing((100.0, 300.0)),
+    )
+    .unwrap();
+    assert_eq!(
+        vertices(&moved),
+        vec![(250.0, 100.0), (650.0, 100.0), (450.0, 300.0)]
+    );
 }
-
-const OPEN_ABOVE: Open = Open {
-    low: false,
-    high: true,
-};
 
 #[test]
 fn a_side_the_gate_leaves_open_is_never_pulled_in() {
     let moved = carried(
         &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &halving((100.0, 300.0), OPEN_ABOVE),
+        &halving(OPEN_ABOVE),
         &standing((10.0, 20.0)),
     )
     .unwrap();
@@ -127,7 +257,7 @@ fn a_side_the_gate_leaves_open_is_never_pulled_in() {
     let closed = carried(
         &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &halving((100.0, 300.0), Open::default()),
+        &halving(Open::default()),
         &standing((10.0, 20.0)),
     )
     .unwrap();
@@ -135,11 +265,11 @@ fn a_side_the_gate_leaves_open_is_never_pulled_in() {
 }
 
 #[test]
-fn a_side_the_gate_leaves_open_moves_out_with_the_frame() {
+fn a_side_the_gate_leaves_open_moves_out() {
     let moved = carried(
         &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &doubling((100.0, 300.0), OPEN_ABOVE),
+        &doubling(OPEN_ABOVE),
         &standing((10.0, 20.0)),
     )
     .unwrap();
@@ -149,33 +279,33 @@ fn a_side_the_gate_leaves_open_moves_out_with_the_frame() {
 #[test]
 fn a_gate_slides_by_how_far_its_closed_edges_move() {
     // Both closed: 100 moves 150 and 300 moves 350, 250 on average.
-    assert_eq!(doubling((100.0, 300.0), Open::default()).shift(), 250.0);
+    assert_eq!(doubling(Open::default()).shift(), 250.0);
     // The far side open: only the near edge counts.
-    assert_eq!(doubling((100.0, 300.0), OPEN_ABOVE).shift(), 150.0);
+    assert_eq!(doubling(OPEN_ABOVE).shift(), 150.0);
     let both = Open {
         low: true,
         high: true,
     };
-    assert_eq!(doubling((100.0, 300.0), both).shift(), 0.0);
+    assert_eq!(doubling(both).shift(), 0.0);
 }
 
 #[test]
-fn a_slid_gate_never_pulls_in_a_side_it_leaves_open() {
-    // The near edge moves -50, as carried; the far one would follow it in.
+fn a_slid_gate_keeps_its_size_even_where_a_side_is_open() {
+    // The near edge moves -50, as carried, and the far one follows it in.
     let moved = slid(
         &rectangle((100.0, 300.0), (10.0, 20.0)),
         &params(),
-        &halving((100.0, 300.0), OPEN_ABOVE),
+        &halving(OPEN_ABOVE),
         &standing((10.0, 20.0)),
     )
     .unwrap();
-    assert_eq!(x_span(&moved), (50.0, 300.0));
+    assert_eq!(x_span(&moved), (50.0, 250.0));
 }
 
 #[test]
-fn a_gate_stretches_by_the_units_only_where_both_its_edges_are_carried() {
-    assert_eq!(doubling((100.0, 300.0), Open::default()).stretch(), 2.0);
-    assert_eq!(doubling((100.0, 300.0), OPEN_ABOVE).stretch(), 1.0);
+fn a_gate_stretches_only_where_both_its_edges_are_carried() {
+    assert_eq!(doubling(Open::default()).stretch(), 2.0);
+    assert_eq!(doubling(OPEN_ABOVE).stretch(), 1.0);
 }
 
 #[test]
@@ -184,13 +314,12 @@ fn an_unbounded_edge_stays_unbounded() {
     // half-open gate into one with an arbitrary far edge that exports as a
     // real coordinate.
     let was = rectangle((100.0, 1e16), (-1e16, 1e16));
-    let moved = carried(
-        &was,
-        &params(),
-        &doubling((100.0, 1e16), Open::default()),
-        &standing((-1e16, 1e16)),
-    )
-    .unwrap();
+    let x = Carry {
+        extent: (100.0, 1e16),
+        open: Open::default(),
+        to: (250.0, 2e16),
+    };
+    let moved = carried(&was, &params(), &x, &standing((-1e16, 1e16))).unwrap();
     assert_eq!(x_span(&moved), (250.0, 1e16));
     let slid = slid(&was, &params(), &shifting(500.0), &shifting(500.0)).unwrap();
     assert_eq!(x_span(&slid), (600.0, 1e16));
@@ -198,30 +327,17 @@ fn an_unbounded_edge_stays_unbounded() {
 
 #[test]
 fn a_slid_gate_keeps_its_size_and_shape() {
-    let triangle = GateGeometry::Polygon {
-        nodes: vec![
-            node("a", 100.0, 100.0),
-            node("b", 300.0, 100.0),
-            node("c", 200.0, 300.0),
-        ],
-        closed: true,
-    };
-    let GateGeometry::Polygon { nodes, .. } =
-        slid(&triangle, &params(), &shifting(500.0), &shifting(-50.0)).unwrap()
-    else {
-        panic!("not a polygon");
-    };
-    let at = |n: &GateNode| (n.get_coordinate(X).unwrap(), n.get_coordinate(Y).unwrap());
+    let moved = slid(&triangle(), &params(), &shifting(500.0), &shifting(-50.0)).unwrap();
     assert_eq!(
-        nodes.iter().map(at).collect::<Vec<_>>(),
+        vertices(&moved),
         vec![(600.0, 50.0), (800.0, 50.0), (700.0, 250.0)]
     );
 }
 
 #[test]
-fn an_ellipse_stays_an_ellipse_its_radii_scaled_by_each_axis_s_units() {
+fn an_ellipse_stays_an_ellipse_its_radii_scaled_by_each_axis_s_stretch() {
     let was = GateGeometry::Ellipse {
-        center: node("c", 100.0, 200.0),
+        center: node("c", 200.0, 200.0),
         radius_x: 50.0,
         radius_y: 20.0,
         angle: 0.0,
@@ -234,14 +350,15 @@ fn an_ellipse_stays_an_ellipse_its_radii_scaled_by_each_axis_s_units() {
     } = carried(
         &was,
         &params(),
-        &doubling((100.0, 100.0), Open::default()),
-        &standing((200.0, 200.0)),
+        &doubling(Open::default()),
+        &standing((180.0, 220.0)),
     )
     .unwrap()
     else {
         panic!("an ellipse must stay an ellipse");
     };
-    assert_eq!(center.get_coordinate(X), Some(250.0));
+    // 200, halfway between 100 and 300, goes halfway between 250 and 650.
+    assert_eq!(center.get_coordinate(X), Some(450.0));
     assert_eq!(center.get_coordinate(Y), Some(200.0));
     assert_eq!((radius_x, radius_y), (100.0, 20.0));
 }

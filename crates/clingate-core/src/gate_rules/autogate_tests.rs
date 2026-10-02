@@ -7,7 +7,9 @@
 
 #![cfg(test)]
 
-use crate::gate_rules::autogate::{ApplyError, boundary_at, specimen_of, translate_edge_to};
+use crate::gate_rules::autogate::{
+    ApplyError, boundary_at, ellipse_extent, specimen_of, translate_edge_to,
+};
 use crate::gate_rules::rule_store::{Bound, SamplePairing};
 use crate::gates::gate_single::rectangle_gate::RectangleGate;
 use crate::gates::gate_traits::DrawableGate;
@@ -192,6 +194,30 @@ fn an_ellipse_is_refused_rather_than_moved_wrongly() {
         translate_edge_to(&ellipse, X, Bound::Above, 150.0),
         Err(ApplyError::UnsupportedShape(_))
     ));
+}
+
+#[test]
+fn an_ellipse_reaches_its_radius_along_an_axis_and_the_other_across_it() {
+    let at = |angle: f32| GateGeometry::Ellipse {
+        center: flow_gates::GateNode::new("c")
+            .with_coordinate(Arc::from(X) as Arc<str>, 100.0)
+            .with_coordinate(Arc::from(Y) as Arc<str>, 200.0),
+        radius_x: 50.0,
+        radius_y: 20.0,
+        angle,
+    };
+    let reach = |geometry: &GateGeometry, param, across| {
+        let (low, high) = ellipse_extent(geometry, param, across).unwrap();
+        ((low * 1e3).round() / 1e3, (high * 1e3).round() / 1e3)
+    };
+    assert_eq!(reach(&at(0.0), X, true), (50.0, 150.0));
+    assert_eq!(reach(&at(0.0), Y, false), (180.0, 220.0));
+    let turned = at(std::f32::consts::FRAC_PI_2);
+    assert_eq!(reach(&turned, X, true), (80.0, 120.0));
+    assert_eq!(reach(&turned, Y, false), (150.0, 250.0));
+    // An eighth of a turn: sqrt((50 cos 45)^2 + (20 sin 45)^2) = sqrt(1450) = 38.079.
+    let diagonal = at(std::f32::consts::FRAC_PI_4);
+    assert_eq!(reach(&diagonal, X, true), (61.921, 138.079));
 }
 
 #[test]
@@ -2834,16 +2860,17 @@ fn matched_cells_in_two_places_leave_the_gate_where_it_is() {
 }
 
 /// The population spreads 2.4 times as far on both axes, which the rule does
-/// not read - it finds the cells by CD161: the 160 by 160 rectangle slides
-/// onto them, the same size, not grown with them.
+/// not read - it finds the cells by CD161. The edges follow its boundaries
+/// all the same, and the gate would grow past the area limit: the 160 by 160
+/// rectangle slides onto them instead, the same size, and says so.
 #[test]
-fn a_kept_shape_slides_its_size_kept_on_axes_the_rule_does_not_read() {
+fn a_kept_shape_that_would_grow_with_a_spreading_population_slides_instead() {
     use crate::gate_rules::rule::ShapeFit;
     let sample = populations(2, 1800, &[(200, (300.0, 650.0, 800.0), 60.0)]);
     let (report, state, gate_id) = match_against(ShapeFit::KeepShape, sample);
     assert_eq!(report.positioned.len(), 1, "{:?}", reasons(&report));
     assert!((rectangle_area(&state, &gate_id) - 25_600.0).abs() < 0.1);
-    assert!(!report.positioned[0].phenotype.as_ref().unwrap().clamped);
+    assert!(report.positioned[0].phenotype.as_ref().unwrap().clamped);
 }
 
 /// The outline round a population spreading 2.4 times as far would be over

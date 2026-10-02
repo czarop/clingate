@@ -1,8 +1,9 @@
 //! Turning a fitted population into a gate's geometry.
 //!
 //! The ways a phenotype rule can end, as geometry rather than as points: the
-//! drawn shape carried edge by edge onto the sample, or slid there whole, or a
-//! fresh polygon traced round the matched cells.
+//! drawn shape carried edge by edge onto the sample - each edge kept at the
+//! same point of the gap between the population and the cells beyond it - or
+//! slid there whole, or a fresh polygon traced round the matched cells.
 //!
 //! Kept apart from [`autogate`](super::autogate) because it is arithmetic over
 //! geometry and knows nothing about rules, reports or stores - the same split
@@ -12,7 +13,8 @@ use std::sync::Arc;
 
 use flow_gates::{GateGeometry, GateNode};
 
-use super::phenotype::{Frame, Open};
+use super::phenotype::{Open, STRAY_EVENTS, STRAY_SHARE};
+use super::rule::Side;
 use super::shape_fit::Outline;
 
 /// Why a geometry could not be made.
@@ -38,54 +40,119 @@ impl std::fmt::Display for NoGeometry {
     }
 }
 
-/// How one of a gate's axes is carried from the reference to a sample.
+/// The share of a population at each end of an axis that lies past its
+/// boundary there: its last few cells are the ones the match is least sure of.
+pub const BOUNDARY: f64 = 0.05;
+
+/// Where a population ends on one side of an axis, and where the cells beyond
+/// it begin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gap {
+    pub inside: f64,
+    /// `None` where no more than dust lies beyond - see [`Open`].
+    pub beyond: Option<f64>,
+}
+
+impl Gap {
+    /// On `side`, from the population's values on the axis and the rest of
+    /// the parent's within the gate's span on the other axis. `None` for a
+    /// population with no cells.
+    pub fn of(inside: &[f64], rest: &[f64], side: Side) -> Option<Self> {
+        let low = side == Side::Lower;
+        let edge = quantile(inside, if low { BOUNDARY } else { 1.0 - BOUNDARY })?;
+        let beyond: Vec<f64> = rest
+            .iter()
+            .copied()
+            .filter(|v| if low { *v < edge } else { *v > edge })
+            .collect();
+        let enough =
+            beyond.len() > STRAY_EVENTS && beyond.len() as f64 >= STRAY_SHARE * inside.len() as f64;
+        Some(Self {
+            inside: edge,
+            beyond: enough
+                .then(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
+                .flatten(),
+        })
+    }
+}
+
+/// Where `edge`, drawn between a population and the cells beyond it on the
+/// reference (`there`), goes on the sample (`here`): at the same point of the
+/// gap between them, as a person would put it. Where either has nothing
+/// beyond, as far as the population's own boundary moved.
+pub fn edge_in_gap(edge: f64, there: Gap, here: Gap) -> f64 {
+    match (there.beyond, here.beyond) {
+        (Some(beyond), Some(beyond_here)) if (there.inside - beyond).abs() > f64::EPSILON => {
+            let at = (edge - beyond) / (there.inside - beyond);
+            beyond_here + at * (here.inside - beyond_here)
+        }
+        _ => edge + here.inside - there.inside,
+    }
+}
+
+/// The value `share` of the way through `values`, or `None` for none.
+fn quantile(values: &[f64], share: f64) -> Option<f64> {
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    Some(sorted[((sorted.len() - 1) as f64 * share).round() as usize])
+}
+
+/// How one of a gate's axes is carried from the reference to a sample: its
+/// two edges moved, and everything between them kept in proportion, so a
+/// polygon keeps its shape.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Carry {
-    /// The axis read on the reference's parent, and on the sample's.
-    pub from: Frame,
-    pub to: Frame,
     /// The gate's extent on the axis on the reference, and the sides of it
     /// the gate leaves open.
     pub extent: (f64, f64),
     pub open: Open,
+    /// Where its edges go on the sample.
+    pub to: (f64, f64),
 }
 
 impl Carry {
-    /// Where `value` on the reference goes on the sample: the same reading in
-    /// the sample's frame - see [`Carry::never_in`] for a side left open.
-    pub fn value(&self, value: f64) -> f64 {
-        self.never_in(value, self.to.value_at(self.from.read(value)))
+    /// The extent its edges are carried to - see [`Carry::never_in`].
+    pub fn carried(&self) -> (f64, f64) {
+        self.never_in(self.to)
     }
 
-    /// Where `value` goes when the gate slides by [`Carry::shift`], keeping
-    /// its size - see [`Carry::never_in`] for a side left open.
-    pub fn slid(&self, value: f64) -> f64 {
-        self.never_in(value, value + self.shift())
+    /// The extent slid by [`Carry::shift`], its size kept.
+    pub fn slid(&self) -> (f64, f64) {
+        let by = self.shift();
+        (self.extent.0 + by, self.extent.1 + by)
     }
 
-    /// `moved`, unless `value` is an edge on a side the gate leaves open and
-    /// `moved` pulls it in: nothing lay beyond it on the reference, so on a
-    /// sample brighter or dimmer there is nothing it should cut off.
-    fn never_in(&self, value: f64, moved: f64) -> f64 {
-        if self.open.high && value >= self.extent.1 {
-            moved.max(value)
-        } else if self.open.low && value <= self.extent.0 {
-            moved.min(value)
-        } else {
-            moved
-        }
+    /// `edges`, with a side the gate leaves open never pulled in: nothing lay
+    /// beyond it on the reference, so on a sample brighter or dimmer there is
+    /// nothing it should cut off.
+    fn never_in(&self, (low, high): (f64, f64)) -> (f64, f64) {
+        (
+            if self.open.low {
+                low.min(self.extent.0)
+            } else {
+                low
+            },
+            if self.open.high {
+                high.max(self.extent.1)
+            } else {
+                high
+            },
+        )
     }
 
     /// How far the gate's closed edges move, on average - how far a gate
     /// that keeps its size slides. Nothing where both sides are open.
     pub fn shift(&self) -> f64 {
         let moves: Vec<f64> = [
-            (self.extent.0, self.open.low),
-            (self.extent.1, self.open.high),
+            (self.to.0 - self.extent.0, self.open.low),
+            (self.to.1 - self.extent.1, self.open.high),
         ]
         .into_iter()
         .filter(|(_, open)| !open)
-        .map(|(edge, _)| self.value(edge) - edge)
+        .map(|(by, _)| by)
         .collect();
         if moves.is_empty() {
             0.0
@@ -94,32 +161,47 @@ impl Carry {
         }
     }
 
-    /// How much the gate stretches along the axis: the sample's unit against
-    /// the reference's where both edges are carried, 1 where one stays.
+    /// How much the gate stretches along the axis: its carried extent against
+    /// its own where both edges are carried, 1 where a side is open.
     pub fn stretch(&self) -> f64 {
         if self.open.low || self.open.high {
             1.0
         } else {
-            self.to.unit / self.from.unit
+            ratio(self.carried(), self.extent)
+        }
+    }
+
+    /// `value` put as far between the ends of `onto` as it lies between the
+    /// gate's ends on the reference.
+    fn within(&self, onto: (f64, f64), value: f64) -> f64 {
+        let width = self.extent.1 - self.extent.0;
+        if width.abs() < f64::EPSILON {
+            value + ((onto.0 - self.extent.0) + (onto.1 - self.extent.1)) / 2.0
+        } else {
+            onto.0 + (value - self.extent.0) / width * (onto.1 - onto.0)
         }
     }
 }
 
-/// The same shape with every coordinate on the two plot axes carried as `x`
-/// and `y` say.
+/// How much wider `to` is than `from`; 1 for a point.
+fn ratio(to: (f64, f64), from: (f64, f64)) -> f64 {
+    let width = from.1 - from.0;
+    if width.abs() < f64::EPSILON {
+        1.0
+    } else {
+        (to.1 - to.0) / width
+    }
+}
+
+/// The same shape with its edges on the two plot axes carried as `x` and `y`
+/// say, and everything between them kept in proportion.
 pub fn carried(
     geometry: &GateGeometry,
     params: &(Arc<str>, Arc<str>),
     x: &Carry,
     y: &Carry,
 ) -> Result<GateGeometry, NoGeometry> {
-    transformed(
-        geometry,
-        params,
-        |v| x.value(v),
-        |v| y.value(v),
-        (x.to.unit / x.from.unit, y.to.unit / y.from.unit),
-    )
+    onto(geometry, params, (x, x.carried()), (y, y.carried()))
 }
 
 /// The same shape slid along the two plot axes as `x` and `y` say, its size
@@ -130,7 +212,23 @@ pub fn slid(
     x: &Carry,
     y: &Carry,
 ) -> Result<GateGeometry, NoGeometry> {
-    transformed(geometry, params, |v| x.slid(v), |v| y.slid(v), (1.0, 1.0))
+    onto(geometry, params, (x, x.slid()), (y, y.slid()))
+}
+
+/// `geometry` with each axis's extent put onto the one given beside it.
+fn onto(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    (x, to_x): (&Carry, (f64, f64)),
+    (y, to_y): (&Carry, (f64, f64)),
+) -> Result<GateGeometry, NoGeometry> {
+    transformed(
+        geometry,
+        params,
+        |v| x.within(to_x, v),
+        |v| y.within(to_y, v),
+        (ratio(to_x, x.extent), ratio(to_y, y.extent)),
+    )
 }
 
 /// `geometry` with each coordinate on the two plot axes put through `x` and

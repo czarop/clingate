@@ -319,13 +319,16 @@ scattered over the plot, or a marker's middle has drifted from the
 reference's, the gate is left where it is (not placed). A side the reference
 gate leaves open on a marker - nothing beyond its edge but under 1% of the
 gate's events and at most 20 - sets no limit there. Otherwise the gate is
-placed axis by axis (`carries`, `phenotype_gate`): on an axis the rule reads,
-each edge goes where it sits on the reference in that marker's frame, a side
-left open never pulled in; on an axis it does not read, the gate slides as far
-as the matched cells' middle moved. `KeepShape` carries every edge so, and
-slides instead where the area would change by more than 30%; `MoveOnly`
-slides as far as the edges move on average, its size kept; `DrawPolygon`
-traces a new polygon round the matched cells, keeping the shape instead when
+placed edge by edge (`carries`, `phenotype_gate`): each edge keeps its share
+of the way across the gap from the cells beyond it (their 5% nearest) to the
+population's boundary (its 5% nearest), the population being the matched
+cells on the reference as on the sample, and the cells beyond the unmatched
+within the gate's span on the other axis; with only dust beyond on either,
+the edge moves as far as the population's boundary. A side left open is never
+pulled in by a carried edge. `KeepShape` carries every edge so, a polygon's vertices kept in
+proportion between its new edges, and slides instead where the area would
+change by more than 30%; `MoveOnly` slides as far as its closed edges move
+on average, its size kept exactly; `DrawPolygon` traces a new polygon round the matched cells, keeping the shape instead when
 the polygon's area is more than 30% from the reference's. It must be measured on one named,
 hand-gated file (`File(id)`). See `gate_rules/phenotype.rs` and
 `position_by_phenotype`. It is **not replayable** (runs keep only the gate's

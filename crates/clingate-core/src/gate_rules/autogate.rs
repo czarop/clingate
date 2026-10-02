@@ -3069,60 +3069,104 @@ fn describe_reference(
 }
 
 /// How each of the gate's two axes is carried from the reference, `there`, to
-/// this sample, `here`, each with the cells matched on it; the sides the gate
-/// leaves `open` are never pulled in.
+/// this sample, `here`, each with the indices of the cells the rule's
+/// signature matches in it; the sides the gate leaves `open` on the axes the rule reads are never
+/// pulled in.
 ///
-/// On an axis that is one of the rule's `markers`, the gate's edges go where
-/// they sit on the reference in that marker's frame - by the parent's negative
-/// and valley, not by where the matched cells' middle happens to be, which
-/// moves with how many there are and how bright. On any other axis the cells
-/// were found by other markers, and only they say where the population is: the
-/// gate slides as far as their middle moved, its size kept.
+/// Each edge keeps its place in the gap between the population and the cells
+/// beyond it, as a person would put it: not by where the matched cells' middle
+/// happens to be, which moves with how many there are and how bright, nor by
+/// the parent's frame, which knows nothing of the populations either side.
 fn carries(
     geometry: &GateGeometry,
     params: &(Arc<str>, Arc<str>),
     markers: &[Arc<str>],
-    (there, matched_there): (&PhenotypeReading, &[(f64, f64)]),
-    (here, matched_here): (&PhenotypeReading, &[(f64, f64)]),
+    there: (&[(f64, f64)], &[usize]),
+    here: (&[(f64, f64)], &[usize]),
     open: &[crate::gate_rules::phenotype::Open; 2],
 ) -> [crate::gate_rules::phenotype_gate::Carry; 2] {
-    use crate::gate_rules::phenotype::{Frame, Frames, Open, median_of};
-    let on_axis = |param: &str, value: fn(&(f64, f64)) -> f64, open| {
-        let values = |points: &[(f64, f64)]| points.iter().map(value).collect::<Vec<_>>();
-        let read = markers.iter().any(|m| **m == *param);
-        let (from, to) = if read {
-            Frames::of(&values(&there.points)).shared_with(&Frames::of(&values(&here.points)))
-        } else {
-            let middle = |cells: &[(f64, f64)]| Frame {
-                origin: median_of(&values(cells)),
-                unit: 1.0,
-                by_landmarks: false,
-            };
-            (middle(matched_there), middle(matched_here))
-        };
-        let extent = extent_on(geometry, param)
+    use crate::gate_rules::phenotype::Open;
+    use crate::gate_rules::phenotype_gate::{Carry, edge_in_gap};
+    use crate::gate_rules::rule::Side;
+    let extent = |param: &str| {
+        extent_on(geometry, param)
             .map(|(lower, upper)| (lower as f64, upper as f64))
-            .or_else(|| ellipse_centre(geometry, param).map(|c| (c, c)))
-            .unwrap_or((f64::NAN, f64::NAN));
-        crate::gate_rules::phenotype_gate::Carry {
-            from,
-            to,
-            extent,
-            open: if read { open } else { Open::default() },
+            .or_else(|| ellipse_extent(geometry, param, param == &*params.0))
+            .unwrap_or((f64::NAN, f64::NAN))
+    };
+    let extents = [extent(&params.0), extent(&params.1)];
+    let on_axis = |axis: usize, open: Open| {
+        let (lower, upper) = extents[axis];
+        let gaps = |side| {
+            Option::zip(
+                gap_on(there, axis, extents[1 - axis], side),
+                gap_on(here, axis, extents[1 - axis], side),
+            )
+        };
+        let carry = |edge, side| gaps(side).map_or(edge, |(from, to)| edge_in_gap(edge, from, to));
+        let param = if axis == 0 { &params.0 } else { &params.1 };
+        Carry {
+            extent: extents[axis],
+            open: if markers.contains(param) {
+                open
+            } else {
+                Open::default()
+            },
+            to: (carry(lower, Side::Lower), carry(upper, Side::Upper)),
         }
     };
-    [
-        on_axis(&params.0, |p| p.0, open[0]),
-        on_axis(&params.1, |p| p.1, open[1]),
-    ]
+    [on_axis(0, open[0]), on_axis(1, open[1])]
 }
 
-/// An ellipse's centre on `param`, where `geometry` is one.
-fn ellipse_centre(geometry: &GateGeometry, param: &str) -> Option<f64> {
-    match geometry {
-        GateGeometry::Ellipse { center, .. } => center.get_coordinate(param).map(f64::from),
-        _ => None,
+/// The [`Gap`](crate::gate_rules::phenotype_gate::Gap) on `side` of `axis`
+/// between the population at `members` among `points` and the rest of them
+/// within `span` on the other axis.
+fn gap_on(
+    (points, members): (&[(f64, f64)], &[usize]),
+    axis: usize,
+    span: (f64, f64),
+    side: crate::gate_rules::rule::Side,
+) -> Option<crate::gate_rules::phenotype_gate::Gap> {
+    let on = |point: &(f64, f64), axis: usize| if axis == 0 { point.0 } else { point.1 };
+    let mut is_member = vec![false; points.len()];
+    for at in members {
+        is_member[*at] = true;
     }
+    let (inside, rest): (Vec<_>, Vec<_>) = points
+        .iter()
+        .zip(&is_member)
+        .filter(|(point, member)| **member || (span.0..=span.1).contains(&on(point, 1 - axis)))
+        .partition(|(_, member)| **member);
+    let values = |cells: Vec<(&(f64, f64), &bool)>| -> Vec<f64> {
+        cells
+            .into_iter()
+            .map(|(point, _)| on(point, axis))
+            .collect()
+    };
+    crate::gate_rules::phenotype_gate::Gap::of(&values(inside), &values(rest), side)
+}
+
+/// How far an ellipse reaches on `param`, the plot's horizontal axis if
+/// `across`, where `geometry` is one.
+pub(crate) fn ellipse_extent(
+    geometry: &GateGeometry,
+    param: &str,
+    across: bool,
+) -> Option<(f64, f64)> {
+    let GateGeometry::Ellipse {
+        center,
+        radius_x,
+        radius_y,
+        angle,
+    } = geometry
+    else {
+        return None;
+    };
+    let centre = f64::from(center.get_coordinate(param)?);
+    let (sin, cos) = f64::from(*angle).sin_cos();
+    let (along, crossing) = if across { (cos, sin) } else { (sin, cos) };
+    let reach = (f64::from(*radius_x) * along).hypot(f64::from(*radius_y) * crossing);
+    Some((centre - reach, centre + reach))
 }
 
 /// The sides `geometry` leaves open on each of its two axes, `params`, over
@@ -3228,7 +3272,10 @@ fn position_by_phenotype(
         open,
     } = described;
 
-    let found = signature.find_in(here_panel);
+    let there_panel = there
+        .matrix()
+        .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?;
+    let (alike_there, found) = signature.find_in_both(Some(there_panel), here_panel);
     let reference_share = inside.len() as f64 / there.points.len().max(1) as f64;
     if let Some(weak) = found.weak(reference_share) {
         return Err(format!("{weak}, so the gate is left where it is"));
@@ -3257,8 +3304,8 @@ fn position_by_phenotype(
         &inner.geometry,
         &measured.params,
         &signature.markers,
-        (there, &matched_there),
-        (here, &matched_here),
+        (&there.points, &alike_there),
+        (&here.points, &found.members),
         open,
     );
     let moved = |resize: bool| -> Result<_, String> {
