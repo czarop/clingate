@@ -70,50 +70,21 @@ impl Gap {
         Some(Self {
             inside: edge,
             beyond: enough
-                .then(|| {
-                    near_boundary(&beyond, side)
-                        .or_else(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
-                })
+                .then(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
                 .flatten(),
         })
     }
 }
 
-/// How many widths from its peak a symmetric population's 95th percentile
-/// sits.
-const NEAR_BOUNDARY_WIDTHS: f64 = 1.645;
-
-/// Where the cells `beyond` a population on `side` of it end towards it:
-/// their peak, as a negative's is found, plus 1.645 widths of their far side -
-/// where their 95th percentile would be were they as wide towards the
-/// population. Not their percentile itself: towards the population is where
-/// its dim tail trails into them, and a percentile moves with the tail.
-fn near_boundary(beyond: &[f64], side: Side) -> Option<f64> {
-    // Turned so the population lies above them, their far side below.
-    let toward = if side == Side::Lower { 1.0 } else { -1.0 };
-    let turned: Vec<f64> = beyond.iter().map(|value| value * toward).collect();
-    let peak = crate::gate_rules::threshold::negative_peak(&turned)?;
-    Some(toward * (peak.centre + NEAR_BOUNDARY_WIDTHS * peak.spread))
-}
-
 /// Where `edge`, drawn between a population and the cells beyond it on the
 /// reference (`there`), goes on the sample (`here`): at the same point of the
-/// gap between them, as a person would put it. An edge drawn outside the gap
-/// - into the top of the cells beyond, or into the population - goes as far as
-/// the boundary it sits past moved: scaled by the gap, a wider one would
-/// carry it further in. Where either has nothing beyond, as far as the
-/// population's own boundary moved.
+/// gap between them, as a person would put it. Where either has nothing
+/// beyond, as far as the population's own boundary moved.
 pub fn edge_in_gap(edge: f64, there: Gap, here: Gap) -> f64 {
     match (there.beyond, here.beyond) {
         (Some(beyond), Some(beyond_here)) if (there.inside - beyond).abs() > f64::EPSILON => {
             let at = (edge - beyond) / (there.inside - beyond);
-            if at < 0.0 {
-                edge + beyond_here - beyond
-            } else if at > 1.0 {
-                edge + here.inside - there.inside
-            } else {
-                beyond_here + at * (here.inside - beyond_here)
-            }
+            beyond_here + at * (here.inside - beyond_here)
         }
         _ => edge + here.inside - there.inside,
     }

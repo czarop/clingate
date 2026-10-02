@@ -111,48 +111,27 @@ fn cells_ending_at(last: f64, count: usize) -> Vec<f64> {
     (0..count).map(|at| last - at as f64).collect()
 }
 
-/// 20,000 cells, N(`centre`, 50).
-fn normal_cells(centre: f64, seed: u64) -> Vec<f64> {
-    use rand::SeedableRng;
-    use rand_distr::{Distribution, Normal};
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-    let cells = Normal::new(centre, 50.0).unwrap();
-    (0..20_000).map(|_| cells.sample(&mut rng)).collect()
-}
-
 #[test]
 fn a_gap_runs_from_the_population_s_boundary_to_the_near_boundary_of_the_cells_beyond() {
-    // Below, N(-300, 50): their near boundary is 1.645 widths above their
-    // peak, -300 + 82.2 = -217.8 - give or take the 10 or so that reading a
-    // peak and a width off 20,000 cells wanders by.
-    let below = Gap::of(&population(), &normal_cells(-300.0, 1), Side::Lower).unwrap();
-    assert_eq!(below.inside, 5.0);
-    let beyond = below.beyond.unwrap();
-    assert!((beyond + 217.8).abs() < 12.0, "{beyond}");
-    // Mirrored above, N(400, 50): 400 - 82.2 = 317.8; the population's own
-    // boundary there is its 95th percentile, 95.
-    let above = Gap::of(&population(), &normal_cells(400.0, 2), Side::Upper).unwrap();
-    assert_eq!(above.inside, 95.0);
-    let beyond = above.beyond.unwrap();
-    assert!((beyond - 317.8).abs() < 12.0, "{beyond}");
-}
-
-#[test]
-fn a_tail_trailing_into_the_cells_beyond_does_not_move_their_boundary() {
-    // 2,000 more cells spread from -200 to 0, between the cells beyond and the
-    // population: their 95th percentile would rise from about -218 to about
-    // -110, but their peak and far side do not move.
-    let beyond = |cells: &[f64]| {
-        Gap::of(&population(), cells, Side::Lower)
-            .unwrap()
-            .beyond
-            .unwrap()
-    };
-    let alone = normal_cells(-300.0, 1);
-    let mut tailed = alone.clone();
-    tailed.extend((0..2_000).map(|at| -200.0 + at as f64 / 10.0));
-    let (without, with) = (beyond(&alone), beyond(&tailed));
-    assert!((with - without).abs() < 5.0, "{without} then {with}");
+    // 100 cells from -200 to -101; their 95th percentile, nearest the
+    // population, is the 95th of 100 sorted: index 94, -106.
+    let below = cells_ending_at(-101.0, 100);
+    assert_eq!(
+        Gap::of(&population(), &below, Side::Lower),
+        Some(Gap {
+            inside: 5.0,
+            beyond: Some(-106.0)
+        })
+    );
+    // Mirrored above: 200 to 299, nearest boundary at index 5, 205.
+    let above: Vec<f64> = (200..300).map(f64::from).collect();
+    assert_eq!(
+        Gap::of(&population(), &above, Side::Upper),
+        Some(Gap {
+            inside: 95.0,
+            beyond: Some(205.0)
+        })
+    );
 }
 
 #[test]
@@ -201,37 +180,6 @@ fn an_edge_keeps_its_place_in_the_gap() {
         beyond: Some(600.0),
     };
     assert_eq!(edge_in_gap(600.0, there, here), 800.0);
-}
-
-#[test]
-fn an_edge_drawn_into_the_cells_beyond_moves_with_them() {
-    // 450 is a quarter of the gap past the cells beyond, at 500, towards
-    // them. They move to 600, the population to 1000: the edge goes to 550,
-    // not a quarter of the wider gap past them, 500.
-    let there = Gap {
-        inside: 700.0,
-        beyond: Some(500.0),
-    };
-    let here = Gap {
-        inside: 1000.0,
-        beyond: Some(600.0),
-    };
-    assert_eq!(edge_in_gap(450.0, there, here), 550.0);
-}
-
-#[test]
-fn an_edge_drawn_into_the_population_moves_with_it() {
-    // 750 is past the population's boundary, at 700; it moves to 1000, and
-    // the edge to 1050 - not to 1100, a quarter of the wider gap past it.
-    let there = Gap {
-        inside: 700.0,
-        beyond: Some(500.0),
-    };
-    let here = Gap {
-        inside: 1000.0,
-        beyond: Some(600.0),
-    };
-    assert_eq!(edge_in_gap(750.0, there, here), 1050.0);
 }
 
 #[test]

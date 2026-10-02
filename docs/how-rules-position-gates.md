@@ -320,15 +320,13 @@ reference's, the gate is left where it is (not placed). A side the reference
 gate leaves open on a marker - nothing beyond its edge but under 1% of the
 gate's events and at most 20 - sets no limit there. Otherwise the gate is
 placed edge by edge (`carries`, `phenotype_gate`): each edge keeps its share
-of the way across the gap from the cells beyond it (their peak, as
-`negative_peak` reads it, plus 1.645 widths of their far side) to the
+of the way across the gap from the cells beyond it (their 5% nearest) to the
 population's boundary (its 5% nearest), the population being the matched
 cells on the reference as on the sample, and the cells beyond the unmatched
 within the gate's span on the other axis - or, on an axis the rule reads,
 those within that span split at the valley among them (`split_at_valley`,
 `valley_for_gate`), where both samples have one on the edge's side of the
-population. An edge outside the gap moves as far as the boundary it sits
-past; with only dust beyond on either,
+population; with only dust beyond on either,
 the edge moves as far as the population's boundary. A side left open is never
 pulled in by a carried edge. `KeepShape` carries every edge so, a polygon's vertices kept in
 proportion between its new edges, and slides instead where the area would
