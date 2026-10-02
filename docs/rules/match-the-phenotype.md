@@ -32,19 +32,28 @@ them.
 2. **Describe the reference population marker by marker.** For each marker,
    the range its cells inside the reference gate sit in - ranges that
    together hold 95% of them - and its middle and spread.
-3. **Find them in each sample.** A cell matches only if it is within the
-   range on **every** marker (each widened by a tenth of how far out its ends
-   sit, for the noise in the landmarks). One marker out is no match: CD8 T
-   cells that are CD4-positive are not CD8 T cells, however well the rest
-   agree.
+3. **Find them in each sample.** A cell matches only if it is one of the
+   population on **every** marker; one marker out is no match - CD8 T cells
+   that are CD4-positive are not CD8 T cells, however well the rest agree.
+   What "one of them" means on a marker comes from the reference's range
+   (each end widened by a tenth of how far out it sits, for the noise in the
+   landmarks):
+   - wholly above the valley: positive - any cell above the valley, however
+     bright or dim;
+   - wholly below it: negative - any cell below the valley;
+   - across it, a dim population: within the range;
+   - with no valley, read in spreads: a population above the parent's middle
+     may be brighter but not dimmer than its range, one below it dimmer but
+     not brighter, one across the middle within its range.
 4. **Decide whether the population was found.** All four must hold, or the
    gate is left where it is and the run says which failed:
    - at least 50 cells match;
    - they are at least a fifth as common, as a share of the parent, as the
      reference's population is of its own;
    - they form one cloud on the plot: the largest holds at least 80% of them;
-   - on every marker their middle is within the reference population's own
-     spread of the reference's middle.
+   - on every marker their middle is still one of the population - and,
+     for a dim one, within the reference population's own spread of the
+     reference's middle.
 
    A gate left where it is counts as not placed, so when it has ruled gates
    under it the run pauses for it to be placed by hand.

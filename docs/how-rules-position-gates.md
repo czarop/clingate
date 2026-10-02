@@ -286,7 +286,9 @@ Does not move a line. It reads each chosen marker on each sample's own
 landmarks - 0 at the parent's negative peak, 1 at the valley above it, or a
 robust z where either sample has no valley - and describes the cells inside
 the reference gate by the range they sit in on every marker. A cell in the
-sample matches only if it is in range on every marker. When fewer than 50
+sample matches only if it is one of them on every marker: on the same side
+of the valley as a population wholly above or below it, however bright, or
+within the range of one across it. When fewer than 50
 match, they are under a fifth as common as on the reference, they are
 scattered over the plot, or a marker's middle has drifted from the
 reference's, the gate is left where it is (not placed). Otherwise it either

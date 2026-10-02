@@ -9,9 +9,11 @@
 //!
 //! This module answers the question those rules cannot ask: *are these the same
 //! cells?* A population is described marker by marker - where its cells sit on
-//! each - and a cell in another sample is the same only if it sits within the
-//! population's range on **every** marker. Brightness may drift between
-//! samples; which markers are positive and which negative may not. A CD8 T cell
+//! each - and a cell in another sample is the same only if it is one of the
+//! population on **every** marker: on the same side of the valley, if the
+//! population is wholly positive or negative there, or within its range if it
+//! is dim. Brightness may drift between samples; which markers are positive
+//! and which negative may not. A CD8 T cell
 //! that is CD4-positive is a different cell, however well the other markers
 //! agree, so no marker can be outvoted by the rest.
 //!
@@ -308,6 +310,78 @@ pub struct Profile {
     pub spread: f64,
 }
 
+impl Profile {
+    /// What the population is on this marker, read in `frame`: its range
+    /// widened by [`BASELINE_SLIP`] of how far out each end sits, then as
+    /// [`Identity::of`] says.
+    fn identity(&self, frame: &Frame) -> Identity {
+        let widened = |end: f64, outwards: f64| {
+            let read = frame.read(end);
+            read + outwards * BASELINE_SLIP * read.abs()
+        };
+        Identity::of(
+            widened(self.low, -1.0),
+            widened(self.high, 1.0),
+            frame.by_landmarks,
+        )
+    }
+}
+
+/// What a cell must be on one marker to be one of a population.
+///
+/// Which side of the line between negative and positive a population is on
+/// is what it is; how bright it is drifts from donor to donor. So a
+/// population wholly on one side asks only that a cell be on that side too,
+/// however bright or dim; one across the line - dim, or in the middle of a
+/// parent with no valley - asks that it be within the population's range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Identity {
+    /// Above this.
+    Above(f64),
+    /// Below this.
+    Below(f64),
+    /// Between these.
+    Between(f64, f64),
+}
+
+impl Identity {
+    /// From a population's range, `low` to `high`, read in a frame: by its
+    /// landmarks, the line is the valley at 1, and a population wholly above
+    /// or below it is positive or negative. Without them there is no such
+    /// line, and only the far side is let go: a population above the
+    /// parent's middle may be brighter, one below it dimmer.
+    pub fn of(low: f64, high: f64, by_landmarks: bool) -> Self {
+        let line = if by_landmarks { 1.0 } else { 0.0 };
+        match (low > line, high < line, by_landmarks) {
+            (true, _, true) => Identity::Above(line),
+            (_, true, true) => Identity::Below(line),
+            (true, _, false) => Identity::Above(low),
+            (_, true, false) => Identity::Below(high),
+            _ => Identity::Between(low, high),
+        }
+    }
+
+    /// Whether `value` is one of the population on this marker.
+    pub fn holds(&self, value: f64) -> bool {
+        match *self {
+            Identity::Above(line) => value > line,
+            Identity::Below(line) => value < line,
+            Identity::Between(low, high) => (low..=high).contains(&value),
+        }
+    }
+
+    /// The same, read in `frame` and given in its values.
+    fn in_values(&self, frame: &Frame) -> Self {
+        match *self {
+            Identity::Above(line) => Identity::Above(frame.value_at(line)),
+            Identity::Below(line) => Identity::Below(frame.value_at(line)),
+            Identity::Between(low, high) => {
+                Identity::Between(frame.value_at(low), frame.value_at(high))
+            }
+        }
+    }
+}
+
 /// A population marker by marker: what a cell must be to be one of them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Signature {
@@ -358,7 +432,7 @@ impl Signature {
         })
     }
 
-    /// Which of `parent`'s events are these cells: within range on every
+    /// Which of `parent`'s events are these cells: one of them on every
     /// marker, each read in the frame this sample shares with the reference.
     pub fn find_in(&self, parent: Rows<'_>) -> Matched {
         if self.markers.len() != parent.markers() {
@@ -374,25 +448,24 @@ impl Signature {
             .zip(frames(parent))
             .map(|(profile, here)| profile.frames.shared_with(&here))
             .collect();
-        let ranges: Vec<(f64, f64)> = self
+        let identities: Vec<Identity> = self
             .profiles
             .iter()
             .zip(&shared)
-            .map(|(profile, (there, here))| {
-                let widened = |end: f64, outwards: f64| {
-                    let read = there.read(end);
-                    here.value_at(read + outwards * BASELINE_SLIP * read.abs())
-                };
-                (widened(profile.low, -1.0), widened(profile.high, 1.0))
-            })
+            .map(|(profile, (there, _))| profile.identity(there))
+            .collect();
+        let accepted: Vec<Identity> = identities
+            .iter()
+            .zip(&shared)
+            .map(|(identity, (_, here))| identity.in_values(here))
             .collect();
         let members: Vec<usize> = parent
             .rows()
             .enumerate()
             .filter(|(_, row)| {
                 row.iter()
-                    .zip(&ranges)
-                    .all(|(value, (low, high))| (*low..=*high).contains(&f64::from(*value)))
+                    .zip(&accepted)
+                    .all(|(value, identity)| identity.holds(f64::from(*value)))
             })
             .map(|(at, _)| at)
             .collect();
@@ -410,6 +483,7 @@ impl Signature {
                 MarkerRead {
                     marker: marker.clone(),
                     by_landmarks: there.by_landmarks,
+                    identity: identities[at],
                     reference_middle: there.read(profile.middle),
                     reference_spread: profile.spread / there.unit,
                     middle: if values.is_empty() {
@@ -484,6 +558,8 @@ fn quantile_of_sorted(values: &[f64], q: f64) -> f64 {
 pub struct MarkerRead {
     pub marker: Arc<str>,
     pub by_landmarks: bool,
+    /// What a cell had to be on this marker to be matched.
+    pub identity: Identity,
     pub reference_middle: f64,
     pub reference_spread: f64,
     /// NaN where nothing matched.
@@ -492,11 +568,17 @@ pub struct MarkerRead {
 
 impl MarkerRead {
     /// Whether the matched cells' middle has left the reference population:
-    /// further from its middle than its own spread, allowing for the noise in
-    /// the frames.
+    /// on the wrong side of the line for a positive or negative population;
+    /// for one across it, further from its middle than its own spread,
+    /// allowing for the noise in the frames.
     pub fn drifted(&self) -> bool {
-        let allowed = self.reference_spread + BASELINE_SLIP * self.reference_middle.abs();
-        !((self.middle - self.reference_middle).abs() <= allowed)
+        match self.identity {
+            Identity::Between(..) => {
+                let allowed = self.reference_spread + BASELINE_SLIP * self.reference_middle.abs();
+                !((self.middle - self.reference_middle).abs() <= allowed)
+            }
+            identity => !identity.holds(self.middle),
+        }
     }
 }
 

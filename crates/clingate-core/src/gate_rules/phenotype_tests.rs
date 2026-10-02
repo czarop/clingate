@@ -489,10 +489,13 @@ fn the_ranges_hold_the_share_of_the_reference_population_asked_for() {
     assert!((KEEP..KEEP + 0.02).contains(&held), "held {held}");
 }
 
+/// A marker read across the valley - the population dim - so held to its
+/// spread.
 fn read(reference_middle: f64, reference_spread: f64, middle: f64) -> MarkerRead {
     MarkerRead {
         marker: Arc::from("CD4"),
         by_landmarks: true,
+        identity: Identity::Between(0.5, 3.5),
         reference_middle,
         reference_spread,
         middle,
@@ -501,7 +504,7 @@ fn read(reference_middle: f64, reference_spread: f64, middle: f64) -> MarkerRead
 
 /// Middle 2, spread 0.5: allowed 0.5 + a tenth of 2 = 0.7 either way.
 #[test]
-fn matched_cells_have_drifted_when_further_than_the_populations_spread() {
+fn matched_cells_of_a_dim_population_have_drifted_when_further_than_its_spread() {
     assert!(!read(2.0, 0.5, 2.69).drifted());
     assert!(!read(2.0, 0.5, 1.31).drifted());
     assert!(read(2.0, 0.5, 2.71).drifted());
@@ -547,4 +550,93 @@ fn a_marker_the_matched_cells_drifted_on_is_named() {
         weak.contains("on CD4 the matched cells sit at 1.40 against 0.00"),
         "{weak}"
     );
+}
+
+// ── what a cell must be on each marker ───────────────────────────────────
+
+#[test]
+fn on_its_landmarks_a_population_above_or_below_the_valley_is_positive_or_negative() {
+    assert_eq!(Identity::of(1.3, 3.0, true), Identity::Above(1.0));
+    assert_eq!(Identity::of(-0.4, 0.6, true), Identity::Below(1.0));
+    assert_eq!(Identity::of(0.2, 1.5, true), Identity::Between(0.2, 1.5));
+}
+
+/// With no valley there is no line between negative and positive: a
+/// population above the parent's middle may be brighter, one below it
+/// dimmer, but not the other way.
+#[test]
+fn without_landmarks_only_the_far_side_of_a_population_is_let_go() {
+    assert_eq!(Identity::of(2.0, 9.0, false), Identity::Above(2.0));
+    assert_eq!(Identity::of(-9.0, -2.0, false), Identity::Below(-2.0));
+    assert_eq!(Identity::of(-1.0, 1.0, false), Identity::Between(-1.0, 1.0));
+}
+
+#[test]
+fn a_value_is_one_of_the_population_on_the_right_side_of_its_line() {
+    assert!(Identity::Above(1.0).holds(1.01) && !Identity::Above(1.0).holds(1.0));
+    assert!(Identity::Below(1.0).holds(0.99) && !Identity::Below(1.0).holds(1.0));
+    assert!(Identity::Between(0.0, 2.0).holds(2.0) && !Identity::Between(0.0, 2.0).holds(2.01));
+}
+
+/// The run that was too strict: CD161 at 1.43 against 2.36 on the reference,
+/// both above the valley - dimmer, still positive; and a marker with no
+/// valley at 14.42 against 10.80, both far above the parent's middle -
+/// brighter, still the same cells.
+#[test]
+fn a_population_dimmer_or_brighter_on_the_same_side_has_not_drifted() {
+    let dimmer = MarkerRead {
+        identity: Identity::Above(1.0),
+        ..read(2.36, 0.3, 1.43)
+    };
+    assert!(!dimmer.drifted());
+    let brighter = MarkerRead {
+        by_landmarks: false,
+        identity: Identity::Above(8.0),
+        ..read(10.8, 1.0, 14.42)
+    };
+    assert!(!brighter.drifted());
+    let crossed = MarkerRead {
+        identity: Identity::Above(1.0),
+        ..read(2.36, 0.3, 0.8)
+    };
+    assert!(crossed.drifted(), "below the valley is not positive");
+}
+
+/// A reference population at 12 to 14 on a marker whose valley sits at 5:
+/// 2.4 to 2.8 on its landmarks, positive. In the sample its cells sit at 9
+/// to 11, the valley at 5.5 - 1.6 to 2.0, dimmer than any on the reference
+/// but above the valley. Held to the reference's range they would all be
+/// lost; as positive cells they are all found, and the negatives are not.
+#[test]
+fn a_positive_population_dimmer_than_on_the_reference_is_still_found() {
+    let landmarks = Frame {
+        origin: 0.0,
+        unit: 5.0,
+        by_landmarks: true,
+    };
+    let signature = Signature {
+        markers: markers(&["CD161"]),
+        profiles: vec![Profile {
+            frames: Frames {
+                landmarks: Some(landmarks),
+                spread: Frame {
+                    origin: 0.0,
+                    unit: 1.0,
+                    by_landmarks: false,
+                },
+            },
+            low: 12.0,
+            high: 14.0,
+            middle: 13.0,
+            spread: 0.5,
+        }],
+        members: 200,
+    };
+    let mut rng = Cloud(21);
+    let mut sample = rng.around(&[0.0], 1.0, 800);
+    sample.extend_from_slice(&rng.around(&[10.0], 1.0, 200));
+    let found = signature.find_in(rows(&sample, 1));
+    assert_eq!(found.members, (800..1000).collect::<Vec<_>>());
+    assert_eq!(found.reads[0].identity, Identity::Above(1.0));
+    assert!(!found.reads[0].drifted());
 }

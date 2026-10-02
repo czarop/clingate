@@ -1749,7 +1749,7 @@ pub fn GateRulesWindow() -> Element {
                     if run.positioned.iter().any(|p| p.phenotype.is_some()) {
                         h3 { "Matched by phenotype" }
                         p { class: "gate_rules-hint",
-                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, read the same way on both: 0 at the negative's peak and 1 at the valley above it, or in spreads from the parent's middle where a sample has no valley. The two should agree, because they are supposed to be the same cells - a sample where they do not, or where the cells are too few, too rare or scattered, is left where it was and listed with the reason."
+                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, read the same way on both: 0 at the negative's peak and 1 at the valley above it, or in spreads from the parent's middle where a sample has no valley. A marker the population is positive or negative on only has to stay on the same side of the valley, however much brighter or dimmer; a dim one has to stay close. A sample where it does not, or where the cells are too few, too rare or scattered, is left where it was and listed with the reason."
                         }
                         div { class: "gate_rules-verify",
                             table { class: "gate_rules-table",
@@ -2030,6 +2030,7 @@ mod tests {
         let marker = |by_landmarks| MarkerRead {
             marker: Arc::from("CD4"),
             by_landmarks,
+            identity: clingate_core::gate_rules::phenotype::Identity::Between(-0.6, 0.6),
             reference_middle: 0.0,
             reference_spread: 0.2,
             middle: 0.1,
