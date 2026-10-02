@@ -556,6 +556,22 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
         "every event is in the histogram"
     );
     assert!(report.data.events_subsample.len() <= 5_000);
+    let kept = report
+        .data
+        .gate
+        .as_ref()
+        .expect("the gate's outline is kept");
+    assert_eq!(&*kept.name, "Tmem");
+    for at in &report.data.gate_at {
+        let (lower, upper) =
+            clingate_core::gate_rules::autogate::extent_on(&kept.geometry, &at.parameter).unwrap();
+        assert_eq!(
+            (Some(f64::from(lower)), Some(f64::from(upper))),
+            (at.lower, at.upper),
+            "{}",
+            at.parameter
+        );
+    }
     assert!(report.correction.is_none(), "not fixed yet");
 
     // Reviewed: the reported one, and the other accepted as placed.

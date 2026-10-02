@@ -162,6 +162,10 @@ pub struct PopulationData {
     pub events_subsample: Vec<(f32, f32)>,
     /// Where the gate sat on this sample when it was reported.
     pub gate_at: Vec<ExtentRecord>,
+    /// The gate itself as it sat there - its outline, not only its extent.
+    /// Absent in reports made before it was kept.
+    #[serde(default)]
+    pub gate: Option<flow_gates::Gate>,
 }
 
 /// What the rules decided for the reported gate on the reported sample, in
@@ -414,10 +418,7 @@ fn population_data(
     let ys: Vec<f32> = points.iter().map(|p| p.1).collect();
     let xr = axis_range(axes, &x, &xs);
     let yr = axis_range(axes, &y, &ys);
-    let here = state
-        .gate_for_file(&gate_id, sample, &inputs.metadata)
-        .map(|g| extent_of(g.as_ref()))
-        .unwrap_or_default();
+    let held = state.gate_for_file(&gate_id, sample, &inputs.metadata);
 
     Ok(PopulationData {
         sample: samples.sample(sample),
@@ -428,7 +429,11 @@ fn population_data(
         ),
         density: density(&x, &y, &points, xr, yr),
         events_subsample: super::events::subsample(&points),
-        gate_at: here,
+        gate_at: held
+            .as_ref()
+            .map(|g| extent_of(g.as_ref()))
+            .unwrap_or_default(),
+        gate: held.and_then(|g| g.get_gate_ref(None).cloned()),
     })
 }
 
@@ -1069,6 +1074,7 @@ mod tests {
             density: density("x", "y", &[(1.0, 1.0)], (0.0, 1.0), (0.0, 1.0)),
             events_subsample: vec![(1.0, 1.0)],
             gate_at: Vec::new(),
+            gate: None,
         };
         PlacementReport {
             format: FORMAT,
