@@ -247,8 +247,6 @@ mod tests {
         assert!(text("MatchThePhenotype").contains("(24 by default)"));
         assert_eq!(crate::gate_rules::phenotype::TRIM, 4.0);
         assert!(text("MatchThePhenotype").contains("more than 4 spreads out"));
-        assert_eq!(crate::gate_rules::shape_fit::MAX_STRETCH, 4.0);
-        assert!(text("MatchThePhenotype").contains("more than 4 times"));
         assert_eq!(crate::gate_rules::phenotype::KEEP, 0.95);
         assert!(text("MatchThePhenotype").contains("together hold 95%"));
         assert_eq!(crate::gate_rules::phenotype::BASELINE_SLIP, 0.1);

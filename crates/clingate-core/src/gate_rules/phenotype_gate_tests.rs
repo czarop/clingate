@@ -21,7 +21,7 @@ fn node(id: &str, x: f32, y: f32) -> GateNode {
 }
 
 /// A reshape that moves a population from one centre to another and scales it.
-fn moving(from: (f64, f64), to: (f64, f64), scale: (f64, f64)) -> Reshape {
+fn moving(from: (f64, f64), to: (f64, f64), scale: f64) -> Reshape {
     Reshape {
         from: Extent {
             centre: from,
@@ -29,7 +29,7 @@ fn moving(from: (f64, f64), to: (f64, f64), scale: (f64, f64)) -> Reshape {
         },
         to: Extent {
             centre: to,
-            spread: (scale.0, scale.1),
+            spread: (scale, scale),
         },
         scale,
         clamped: false,
@@ -45,7 +45,7 @@ fn a_rectangle_is_moved_and_stays_a_rectangle() {
     let moved = reshaped(
         &was,
         &params(),
-        &moving((200.0, 200.0), (600.0, 500.0), (1.0, 1.0)),
+        &moving((200.0, 200.0), (600.0, 500.0), 1.0),
     )
     .expect("a rectangle can be reshaped");
     let GateGeometry::Rectangle { min, max } = moved else {
@@ -68,7 +68,7 @@ fn a_rectangle_is_resized_about_the_population_not_the_origin() {
     let moved = reshaped(
         &was,
         &params(),
-        &moving((1000.0, 200.0), (1000.0, 200.0), (2.0, 1.0)),
+        &moving((1000.0, 200.0), (1000.0, 200.0), 2.0),
     )
     .expect("reshaped");
     let GateGeometry::Rectangle { min, max } = moved else {
@@ -88,12 +88,8 @@ fn an_unbounded_edge_stays_unbounded() {
         min: node("a", 500.0, -1e16),
         max: node("b", 1e16, 1e16),
     };
-    let moved = reshaped(
-        &was,
-        &params(),
-        &moving((600.0, 0.0), (900.0, 0.0), (2.0, 2.0)),
-    )
-    .expect("reshaped");
+    let moved =
+        reshaped(&was, &params(), &moving((600.0, 0.0), (900.0, 0.0), 2.0)).expect("reshaped");
     let GateGeometry::Rectangle { min, max } = moved else {
         panic!("not a rectangle");
     };
@@ -121,7 +117,7 @@ fn a_polygon_keeps_its_shape_when_it_is_moved() {
     let moved = reshaped(
         &was,
         &params(),
-        &moving((200.0, 166.0), (700.0, 166.0), (1.0, 1.0)),
+        &moving((200.0, 166.0), (700.0, 166.0), 1.0),
     )
     .expect("reshaped");
     let GateGeometry::Polygon { nodes, .. } = moved else {
@@ -135,7 +131,7 @@ fn a_polygon_keeps_its_shape_when_it_is_moved() {
 }
 
 #[test]
-fn an_ellipse_keeps_being_an_ellipse_and_its_radii_scale() {
+fn an_ellipse_keeps_being_an_ellipse_and_its_radii_scale_alike() {
     let was = GateGeometry::Ellipse {
         center: node("c", 200.0, 200.0),
         radius_x: 50.0,
@@ -145,7 +141,7 @@ fn an_ellipse_keeps_being_an_ellipse_and_its_radii_scale() {
     let moved = reshaped(
         &was,
         &params(),
-        &moving((200.0, 200.0), (500.0, 400.0), (2.0, 0.5)),
+        &moving((200.0, 200.0), (500.0, 400.0), 2.0),
     )
     .expect("reshaped");
     let GateGeometry::Ellipse {
@@ -160,7 +156,7 @@ fn an_ellipse_keeps_being_an_ellipse_and_its_radii_scale() {
     assert_eq!(center.get_coordinate(X), Some(500.0));
     assert_eq!(center.get_coordinate(Y), Some(400.0));
     assert_eq!(radius_x, 100.0);
-    assert_eq!(radius_y, 10.0);
+    assert_eq!(radius_y, 40.0);
 }
 
 #[test]
@@ -177,7 +173,7 @@ fn a_coordinate_on_a_third_channel_is_left_alone() {
     let moved = reshaped(
         &was,
         &params(),
-        &moving((200.0, 200.0), (900.0, 900.0), (3.0, 3.0)),
+        &moving((200.0, 200.0), (900.0, 900.0), 3.0),
     )
     .expect("reshaped");
     let GateGeometry::Rectangle { min, .. } = moved else {
@@ -193,7 +189,7 @@ fn a_boolean_gate_has_no_shape_to_fit() {
         operands: vec![Arc::from("one"), Arc::from("two")],
     };
     assert_eq!(
-        reshaped(&was, &params(), &moving((0.0, 0.0), (1.0, 1.0), (1.0, 1.0))),
+        reshaped(&was, &params(), &moving((0.0, 0.0), (1.0, 1.0), 1.0)),
         Err(NoGeometry::NotAShape)
     );
 }

@@ -97,8 +97,8 @@ pub fn reshaped(
             center: move_node(center),
             // The radii are lengths on each axis, so they take the scale
             // without the shift.
-            radius_x: (*radius_x as f64 * reshape.scale.0) as f32,
-            radius_y: (*radius_y as f64 * reshape.scale.1) as f32,
+            radius_x: (*radius_x as f64 * reshape.scale) as f32,
+            radius_y: (*radius_y as f64 * reshape.scale) as f32,
             angle: *angle,
         },
         GateGeometry::Boolean { .. } => return Err(NoGeometry::NotAShape),

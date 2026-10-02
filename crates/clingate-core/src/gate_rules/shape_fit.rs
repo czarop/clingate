@@ -650,13 +650,6 @@ fn middle_and_spread(values: &[f64]) -> (f64, f64) {
     (middle, spread)
 }
 
-/// How far a shape may be stretched or shrunk before the fit is doubted.
-///
-/// A gate four times the size it was drawn is not the same gate. The limit
-/// does not refuse - it clamps and says so, because a population really can
-/// change size between donors and a flagged answer beats no answer.
-pub const MAX_STRETCH: f64 = 4.0;
-
 /// How much a phenotype rule may change a gate's area, either way.
 pub const MAX_AREA_CHANGE: f64 = 0.3;
 
@@ -679,29 +672,29 @@ pub struct Reshape {
     pub from: Extent,
     /// This sample's, which it is being moved onto.
     pub to: Extent,
-    /// Per axis, clamped to [`MAX_STRETCH`] either way, and together to
+    /// The same on both axes, so the shape is kept as drawn: the square root
+    /// of how much more area the population covers, held to
     /// [`MAX_AREA_CHANGE`].
-    pub scale: (f64, f64),
-    /// Whether either clamp bit.
+    pub scale: f64,
+    /// Whether the limit bit.
     pub clamped: bool,
 }
 
 impl Reshape {
     /// Work out the move and resize between two populations.
+    ///
+    /// One scale rather than one per axis: a population smeared further
+    /// along one axis would otherwise stretch the gate that way, and a far
+    /// edge drawn well clear of the cells would be thrown out across the plot.
     pub fn between(from: &[(f64, f64)], to: &[(f64, f64)]) -> Self {
         let (from, to) = (Extent::of(from), Extent::of(to));
-        let raw = (to.spread.0 / from.spread.0, to.spread.1 / from.spread.1);
-        let limit = |v: f64| v.clamp(1.0 / MAX_STRETCH, MAX_STRETCH);
-        let stretched = (limit(raw.0), limit(raw.1));
-        let area = stretched.0 * stretched.1;
+        let area = (to.spread.0 / from.spread.0) * (to.spread.1 / from.spread.1);
         let allowed = area.clamp(1.0 - MAX_AREA_CHANGE, 1.0 + MAX_AREA_CHANGE);
-        let both = (allowed / area).sqrt();
-        let scale = (stretched.0 * both, stretched.1 * both);
         Self {
             from,
             to,
-            scale,
-            clamped: scale != raw,
+            scale: allowed.sqrt(),
+            clamped: allowed != area,
         }
     }
 
@@ -712,8 +705,8 @@ impl Reshape {
     /// population turns out to be wider.
     pub fn moved(&self, (x, y): (f64, f64)) -> (f64, f64) {
         (
-            (x - self.from.centre.0) * self.scale.0 + self.to.centre.0,
-            (y - self.from.centre.1) * self.scale.1 + self.to.centre.1,
+            (x - self.from.centre.0) * self.scale + self.to.centre.0,
+            (y - self.from.centre.1) * self.scale + self.to.centre.1,
         )
     }
 

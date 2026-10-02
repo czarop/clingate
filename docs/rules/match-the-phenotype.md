@@ -49,10 +49,9 @@ them.
    A gate left where it is counts as not placed, so when it has ruled gates
    under it the run pauses for it to be placed by hand.
 5. **Fit the gate** to the matched cells on the plot's two axes:
-   - `fit: KeepShape` - move and resize the drawn shape onto them. Its area
-     changes by at most 30% either way, in the population's proportions
-     (and no axis stretches more than 4 times). The gate stays the kind it
-     was.
+   - `fit: KeepShape` - move and resize the drawn shape onto them, by the
+     same amount on both axes so the shape stays as drawn. Its area changes
+     by at most 30% either way. The gate stays the kind it was.
    - `fit: DrawPolygon` - trace a new polygon round them on a smoothed
      density, holding `keep` of them, with about `vertices` points. If its
      area is more than 30% from the one drawn the same way round the

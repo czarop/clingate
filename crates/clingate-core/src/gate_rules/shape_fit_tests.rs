@@ -256,24 +256,15 @@ fn a_shape_follows_its_population_across() {
     let to = rng.blob((5.0, -3.0), (1.0, 1.0), 2000);
     let moved = Reshape::between(&from, &to);
     // Same size, new place.
-    assert!(
-        (moved.scale.0 - 1.0).abs() < 0.15,
-        "x scale {}",
-        moved.scale.0
-    );
-    assert!(
-        (moved.scale.1 - 1.0).abs() < 0.15,
-        "y scale {}",
-        moved.scale.1
-    );
+    assert!((moved.scale - 1.0).abs() < 0.15, "scale {}", moved.scale);
     let centre = moved.moved((0.0, 0.0));
     assert!((centre.0 - 5.0).abs() < 0.3, "x centre {}", centre.0);
     assert!((centre.1 + 3.0).abs() < 0.3, "y centre {}", centre.1);
 }
 
 /// The population grew 2.5 times on x: the gate grows as far as the area
-/// limit lets it, 1.3 times, in the population's proportions - x 2.5 times
-/// y, so x by sqrt(1.3 * 2.5) and y by sqrt(1.3 / 2.5).
+/// limit lets it, 1.3 times, the same on both axes - sqrt(1.3) each - so it
+/// keeps its shape.
 #[test]
 fn a_shape_grows_with_a_population_that_spread_out_as_far_as_the_area_limit() {
     let mut rng = Cloud(12);
@@ -282,12 +273,10 @@ fn a_shape_grows_with_a_population_that_spread_out_as_far_as_the_area_limit() {
     let moved = Reshape::between(&from, &to);
     assert!(moved.clamped);
     assert!(
-        (moved.scale.0 * moved.scale.1 - 1.3).abs() < 1e-9,
-        "{:?}",
+        (moved.scale - 1.3f64.sqrt()).abs() < 1e-9,
+        "{}",
         moved.scale
     );
-    assert!((moved.scale.0 - 1.803).abs() < 0.2, "x {}", moved.scale.0);
-    assert!((moved.scale.1 - 0.721).abs() < 0.1, "y {}", moved.scale.1);
 }
 
 /// Shrunk to a third on both axes: the area is held at 0.7, sqrt(0.7) each.
@@ -299,13 +288,8 @@ fn a_shape_shrinks_with_a_population_no_further_than_the_area_limit() {
     let moved = Reshape::between(&from, &to);
     assert!(moved.clamped);
     assert!(
-        (moved.scale.0 - 0.7f64.sqrt()).abs() < 0.02,
-        "{:?}",
-        moved.scale
-    );
-    assert!(
-        (moved.scale.1 - 0.7f64.sqrt()).abs() < 0.02,
-        "{:?}",
+        (moved.scale - 0.7f64.sqrt()).abs() < 1e-9,
+        "{}",
         moved.scale
     );
 }
@@ -316,12 +300,30 @@ fn a_shape_grown_within_the_area_limit_is_not_clamped() {
     let from = rng.blob((0.0, 0.0), (1.0, 1.0), 3000);
     let to = rng.blob((0.0, 0.0), (1.1, 1.1), 3000);
     let moved = Reshape::between(&from, &to);
-    assert!(!moved.clamped, "{:?}", moved.scale);
+    assert!(!moved.clamped, "{}", moved.scale);
+    assert!((moved.scale - 1.1).abs() < 0.08, "{}", moved.scale);
+}
+
+/// CD19+ on the plot that showed the fault, in plot units: the sample's
+/// cells smeared 1.6 times as far along CD19 and 0.8 times as far on CD14.
+/// Area 1.28, within the limit, so both axes take sqrt(1.28) = 1.131. The
+/// gate's right edge, drawn 2.22 right of the reference cells' centre, lands
+/// 2.22 * 1.131 = 2.51 right of the sample's - not 2.22 * 1.6 = 3.55, which
+/// threw it out to 5.5e5.
+#[test]
+fn a_population_smeared_along_one_axis_does_not_stretch_the_gate_that_way() {
+    let mut rng = Cloud(20);
+    let from = rng.blob((2.2, 0.2), (1.0, 1.0), 4000);
+    let to = rng.blob((1.65, 0.2), (1.6, 0.8), 4000);
+    let moved = Reshape::between(&from, &to);
+    assert!(!moved.clamped);
     assert!(
-        (moved.scale.0 * moved.scale.1 - 1.21).abs() < 0.15,
-        "{:?}",
+        (moved.scale - 1.28f64.sqrt()).abs() < 0.04,
+        "{}",
         moved.scale
     );
+    let right_edge = moved.moved((2.2 + 2.22, 0.2)).0 - moved.to.centre.0;
+    assert!((right_edge - 2.51).abs() < 0.1, "{right_edge}");
 }
 
 #[test]
@@ -374,6 +376,8 @@ fn a_shape_off_to_one_side_does_not_fly_away_when_resized() {
     );
 }
 
+/// A thousandfold stretch along one axis: held to the area limit, sqrt(1.3)
+/// on both axes, and said so.
 #[test]
 fn an_absurd_stretch_is_clamped_and_said_so() {
     let mut rng = Cloud(15);
@@ -382,9 +386,9 @@ fn an_absurd_stretch_is_clamped_and_said_so() {
     let moved = Reshape::between(&from, &to);
     assert!(moved.clamped, "a 1000x stretch was not flagged");
     assert!(
-        moved.scale.0 <= MAX_STRETCH + 1e-9,
-        "scale {}",
-        moved.scale.0
+        (moved.scale - 1.3f64.sqrt()).abs() < 1e-9,
+        "{}",
+        moved.scale
     );
 }
 
@@ -408,10 +412,8 @@ fn a_stray_cell_does_not_set_the_size_of_the_gate() {
     to.push((-500.0, -500.0));
     let with_strays = Reshape::between(&from, &to).scale;
     assert!(
-        (with_strays.0 - honest.0).abs() < 0.05,
-        "two strays moved the scale from {} to {}",
-        honest.0,
-        with_strays.0
+        (with_strays - honest).abs() < 0.05,
+        "two strays moved the scale from {honest} to {with_strays}"
     );
 }
 

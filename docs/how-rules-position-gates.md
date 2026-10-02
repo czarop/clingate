@@ -290,7 +290,8 @@ sample matches only if it is in range on every marker. When fewer than 50
 match, they are under a fifth as common as on the reference, they are
 scattered over the plot, or a marker's middle has drifted from the
 reference's, the gate is left where it is (not placed). Otherwise it either
-moves and resizes the drawn shape onto them (`KeepShape`, area within 30%) or
+moves and resizes the drawn shape onto them (`KeepShape`, alike on both
+axes, area within 30%) or
 traces a new polygon round them (`DrawPolygon`, keeping the shape instead
 when the polygon's area is more than 30% from the reference's). It must be measured on one named,
 hand-gated file (`File(id)`). See `gate_rules/phenotype.rs` and

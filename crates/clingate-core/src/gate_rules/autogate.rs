@@ -1197,11 +1197,11 @@ pub struct PhenotypeRead {
     /// Per marker, where the matched cells sit on this sample against where
     /// they sat on the reference, both in the frame the two samples share.
     pub centres: Vec<crate::gate_rules::phenotype::MarkerRead>,
-    /// How far the gate had to be moved and stretched, where the shape was
+    /// How far the gate had to be moved, where the shape was
     /// kept. `None` where a new polygon was drawn, which has no before to
     /// compare against.
     pub reshaped: Option<(f64, f64)>,
-    /// Whether the stretch hit its limit and was clamped.
+    /// Whether the change of size hit the area limit and was held to it.
     pub clamped: bool,
     /// Where a polygon was asked for and the one drawn changed the area by
     /// more than the limit allows: its area against the reference's. The
