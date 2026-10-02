@@ -246,10 +246,21 @@ mod tests {
         assert!(text("MatchThePhenotype").contains("(0.95 by\n  default)"));
         assert!(text("MatchThePhenotype").contains("(24 by default)"));
         assert_eq!(crate::gate_rules::phenotype::TRIM, 4.0);
-        assert!(text("MatchThePhenotype").contains("more than 4\n   spreads out"));
+        assert!(text("MatchThePhenotype").contains("more than 4 spreads out"));
         assert_eq!(crate::gate_rules::shape_fit::MAX_STRETCH, 4.0);
-        assert!(text("MatchThePhenotype").contains("at most 4 times"));
+        assert!(text("MatchThePhenotype").contains("more than 4 times"));
         assert_eq!(crate::gate_rules::phenotype::KEEP, 0.95);
+        assert!(text("MatchThePhenotype").contains("together hold 95%"));
+        assert_eq!(crate::gate_rules::phenotype::BASELINE_SLIP, 0.1);
+        assert!(text("MatchThePhenotype").contains("widened by a tenth"));
+        assert_eq!(crate::gate_rules::phenotype::FEWEST_MATCHED, 50);
+        assert!(text("MatchThePhenotype").contains("at least 50 cells match"));
+        assert_eq!(crate::gate_rules::phenotype::LEAST_SHARE, 0.2);
+        assert!(text("MatchThePhenotype").contains("at least a fifth as common"));
+        assert_eq!(crate::gate_rules::phenotype::ONE_CLOUD, 0.8);
+        assert!(text("MatchThePhenotype").contains("at least 80% of them"));
+        assert_eq!(crate::gate_rules::shape_fit::MAX_AREA_CHANGE, 0.3);
+        assert!(text("MatchThePhenotype").contains("at most 30% either way"));
         // Above the negative's defaults.
         let above = AboveTheNegativeRule::default();
         assert_eq!(

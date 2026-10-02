@@ -22,33 +22,52 @@ them.
 
 ## How it works
 
-1. **Describe the reference population.** The cells inside the reference
-   gate, on the chosen markers, each expressed as a robust z against the
-   reference's own parent population: how many spreads from the parent's
-   middle, with the median and MAD taken after dropping values more than 4
-   spreads out (so the population itself does not set the scale). Their
-   centre and covariance are the signature.
-2. **The cut.** The distance (Mahalanobis, allowing for markers that move
-   together) that holds 95% of the reference's own cells - or what the
-   statistics imply for that many markers, whichever is larger.
-3. **Find them in each sample.** Each event of the sample's parent, in z
-   against that sample's own parent, is matched if it is within the cut.
-   Nothing is rescaled between samples: each is its own frame.
-4. **Fit the gate** to the matched cells on the plot's two axes:
-   - `fit: KeepShape` - move and resize the drawn shape onto them (stretched
-     at most 4 times either way; clamped beyond, and said). The gate stays
-     the kind it was.
+1. **Read each marker on each sample's own landmarks.** On the parent
+   population: 0 at the negative's peak, 1 at the valley above it - where a
+   person would put a positive gate. A marker with no valley on either the
+   reference or the sample (all negative, or a smear) is read on both as a
+   robust z instead: spreads from the parent's middle (median and MAD, with
+   values more than 4 spreads out dropped first). Nothing is rescaled between
+   samples: each is its own frame, so brightness may drift.
+2. **Describe the reference population marker by marker.** For each marker,
+   the range its cells inside the reference gate sit in - ranges that
+   together hold 95% of them - and its middle and spread.
+3. **Find them in each sample.** A cell matches only if it is within the
+   range on **every** marker (each widened by a tenth of how far out its ends
+   sit, for the noise in the landmarks). One marker out is no match: CD8 T
+   cells that are CD4-positive are not CD8 T cells, however well the rest
+   agree.
+4. **Decide whether the population was found.** All four must hold, or the
+   gate is left where it is and the run says which failed:
+   - at least 50 cells match;
+   - they are at least a fifth as common, as a share of the parent, as the
+     reference's population is of its own;
+   - they form one cloud on the plot: the largest holds at least 80% of them;
+   - on every marker their middle is within the reference population's own
+     spread of the reference's middle.
+
+   A gate left where it is counts as not placed, so when it has ruled gates
+   under it the run pauses for it to be placed by hand.
+5. **Fit the gate** to the matched cells on the plot's two axes:
+   - `fit: KeepShape` - move and resize the drawn shape onto them. Its area
+     changes by at most 30% either way, in the population's proportions
+     (and no axis stretches more than 4 times). The gate stays the kind it
+     was.
    - `fit: DrawPolygon` - trace a new polygon round them on a smoothed
-     density, holding `keep` of them, with about `vertices` points.
-5. The reference file must be one named, hand-gated sample
+     density, holding `keep` of them, with about `vertices` points. If its
+     area is more than 30% from the one drawn the same way round the
+     reference's cells, the shape is kept instead (as `KeepShape`), and the
+     run says so.
+6. The reference file must be one named, hand-gated sample
    (`measured_on: {"File": ...}`); an FMX would describe cells with no signal
    in the marker being matched.
 
 ## Settings
 
 - `markers` - the markers that say what the population is. Empty means
-  every marker on the panel: a reasonable start, rarely the finish - a
-  marker that is silent about the population adds noise to the distance.
+  every marker on the panel: a reasonable start, rarely the finish - every
+  marker must match, so one that is silent about the population only loses
+  cells to its noise.
 - `fit` - `KeepShape` or `DrawPolygon` (above).
 - `keep` - the fraction of matched cells the gate should hold (0.95 by
   default); the last few percent are the ones the signature is least sure
@@ -64,6 +83,9 @@ them.
   rule reads the whole panel.
 - **Purity is about the two plot axes.** A gate that holds other cells may be
   right about the population but unable to separate it on this plot.
+- **A population much rarer than on the reference is left alone**, not
+  gated: under a fifth as common, most of what matches is near misses. Pick
+  a reference where the population is typical, not unusually large.
 
 ## What its confidence says
 

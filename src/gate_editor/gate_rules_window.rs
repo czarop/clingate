@@ -8,11 +8,12 @@ use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
-use clingate_core::gate_rules::autogate::{Report, describe};
+use clingate_core::gate_rules::autogate::{PhenotypeRead, Report, describe};
 use clingate_core::gate_rules::choices::{
     EdgeForm, beside, carry_over, choices, describe_phenotype, every_target, fallback_targets,
     follow_from_form, follow_to_form, marker_label, side_from, side_to,
 };
+use clingate_core::gate_rules::phenotype::MarkerRead;
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
     PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
@@ -44,14 +45,26 @@ const REVIEW_FLOOR: f64 = 0.30;
 /// the reason to doubt the gate", which is what a person scanning a run needs.
 const PURE_ENOUGH: f64 = 0.70;
 
-/// How far a marker's centre may differ between the reference and a sample
-/// before the table marks it.
-///
-/// In spreads of each sample's own parent, so it is already comparable. Three
-/// is generous - a population really does shift between donors - and it is
-/// there to catch the case that matters: a marker reading +8 on the reference
-/// and +1 here has not been matched on, whatever the overall distance said.
-const MARKER_DISAGREEMENT: f64 = 3.0;
+/// How a phenotype rule fitted the gate, for the verification table.
+fn fitted(read: &PhenotypeRead) -> String {
+    let limited = if read.clamped { " (size limited)" } else { "" };
+    match (read.reshaped, read.refused_outline) {
+        (Some((dx, dy)), Some(area)) => format!(
+            "shape kept: the polygon was {area:.1}x the area; moved {dx:+.0}, {dy:+.0}{limited}"
+        ),
+        (Some((dx, dy)), None) => format!("moved {dx:+.0}, {dy:+.0}{limited}"),
+        (None, _) => "new polygon".to_string(),
+    }
+}
+
+/// The frame a marker was read in, for its tooltip.
+fn frame_of(marker: &MarkerRead) -> &'static str {
+    if marker.by_landmarks {
+        "0 at the negative's peak, 1 at the valley above it"
+    } else {
+        "in spreads from the parent's middle"
+    }
+}
 
 /// A count as a percentage of its whole, for the report's tables.
 fn fraction(part: usize, whole: usize) -> String {
@@ -1736,7 +1749,7 @@ pub fn GateRulesWindow() -> Element {
                     if run.positioned.iter().any(|p| p.phenotype.is_some()) {
                         h3 { "Matched by phenotype" }
                         p { class: "gate_rules-hint",
-                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, both in spreads of their own parent - the two should agree, because they are supposed to be the same cells."
+                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, read the same way on both: 0 at the negative's peak and 1 at the valley above it, or in spreads from the parent's middle where a sample has no valley. The two should agree, because they are supposed to be the same cells - a sample where they do not, or where the cells are too few, too rare or scattered, is left where it was and listed with the reason."
                         }
                         div { class: "gate_rules-verify",
                             table { class: "gate_rules-table",
@@ -1785,22 +1798,16 @@ pub fn GateRulesWindow() -> Element {
                                                     "{read.pieces}"
                                                 }
                                                 td {
-                                                    match read.reshaped {
-                                                        Some((dx, dy)) => format!(
-                                                            "moved {dx:+.0}, {dy:+.0}{}",
-                                                            if read.clamped { " (stretch clamped)" } else { "" },
-                                                        ),
-                                                        None => "new polygon".to_string(),
-                                                    }
+                                                    {fitted(read)}
                                                 }
                                                 td {
-                                                    for (marker , there , here) in read.centres.iter() {
+                                                    for marker in read.centres.iter() {
                                                         span {
-                                                            class: if (there - here).abs() > MARKER_DISAGREEMENT { "gate_rules-doubt" } else { "" },
-                                                            title: "{marker}: {there:+.1} spreads on the reference, {here:+.1} here",
+                                                            class: if marker.drifted() { "gate_rules-doubt" } else { "" },
+                                                            title: "{marker.marker}: {marker.reference_middle:+.2} on the reference, {marker.middle:+.2} here, {frame_of(marker)}",
                                                             // The marker as it was ticked, not the
                                                             // column it was read from.
-                                                            "{marker_label(marker, &panel.read())} {there:+.1}→{here:+.1}  "
+                                                            "{marker_label(&marker.marker, &panel.read())} {marker.reference_middle:+.1}→{marker.middle:+.1}  "
                                                         }
                                                     }
                                                 }

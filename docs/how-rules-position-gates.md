@@ -282,11 +282,17 @@ component compares the dip's depth with the reference's (below).
 
 ### 3.5 MatchThePhenotype
 
-Does not move a line. It describes the cells inside the reference gate by a
-robust z (median and MAD, with the far tail trimmed) of each chosen marker
-against their own parent, finds the cells in the sample that match, and
-either moves and resizes the drawn shape onto them (`KeepShape`) or traces a
-new polygon round them (`DrawPolygon`). It must be measured on one named,
+Does not move a line. It reads each chosen marker on each sample's own
+landmarks - 0 at the parent's negative peak, 1 at the valley above it, or a
+robust z where either sample has no valley - and describes the cells inside
+the reference gate by the range they sit in on every marker. A cell in the
+sample matches only if it is in range on every marker. When fewer than 50
+match, they are under a fifth as common as on the reference, they are
+scattered over the plot, or a marker's middle has drifted from the
+reference's, the gate is left where it is (not placed). Otherwise it either
+moves and resizes the drawn shape onto them (`KeepShape`, area within 30%) or
+traces a new polygon round them (`DrawPolygon`, keeping the shape instead
+when the polygon's area is more than 30% from the reference's). It must be measured on one named,
 hand-gated file (`File(id)`). See `gate_rules/phenotype.rs` and
 `position_by_phenotype`. It is **not replayable** (runs keep only the gate's
 two axes, and it reads the whole marker panel).
