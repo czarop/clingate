@@ -183,6 +183,37 @@ fn an_edge_keeps_its_place_in_the_gap() {
 }
 
 #[test]
+fn an_edge_drawn_into_the_cells_beyond_moves_with_them() {
+    // 450 is a quarter of the gap past the cells beyond, at 500, towards
+    // them. They move to 600, the population to 1000: the edge goes to 550,
+    // not a quarter of the wider gap past them, 500.
+    let there = Gap {
+        inside: 700.0,
+        beyond: Some(500.0),
+    };
+    let here = Gap {
+        inside: 1000.0,
+        beyond: Some(600.0),
+    };
+    assert_eq!(edge_in_gap(450.0, there, here), 550.0);
+}
+
+#[test]
+fn an_edge_drawn_into_the_population_moves_with_it() {
+    // 750 is past the population's boundary, at 700; it moves to 1000, and
+    // the edge to 1050 - not to 1100, a quarter of the wider gap past it.
+    let there = Gap {
+        inside: 700.0,
+        beyond: Some(500.0),
+    };
+    let here = Gap {
+        inside: 1000.0,
+        beyond: Some(600.0),
+    };
+    assert_eq!(edge_in_gap(750.0, there, here), 1050.0);
+}
+
+#[test]
 fn with_nothing_beyond_an_edge_moves_as_far_as_the_population_s_boundary() {
     let crowded = |inside, beyond| Gap {
         inside,

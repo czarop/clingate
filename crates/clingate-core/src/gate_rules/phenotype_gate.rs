@@ -78,13 +78,22 @@ impl Gap {
 
 /// Where `edge`, drawn between a population and the cells beyond it on the
 /// reference (`there`), goes on the sample (`here`): at the same point of the
-/// gap between them, as a person would put it. Where either has nothing
-/// beyond, as far as the population's own boundary moved.
+/// gap between them, as a person would put it. An edge drawn outside the gap
+/// - into the top of the cells beyond, or into the population - goes as far as
+/// the boundary it sits past moved: scaled by the gap, a wider one would
+/// carry it further in. Where either has nothing beyond, as far as the
+/// population's own boundary moved.
 pub fn edge_in_gap(edge: f64, there: Gap, here: Gap) -> f64 {
     match (there.beyond, here.beyond) {
         (Some(beyond), Some(beyond_here)) if (there.inside - beyond).abs() > f64::EPSILON => {
             let at = (edge - beyond) / (there.inside - beyond);
-            beyond_here + at * (here.inside - beyond_here)
+            if at < 0.0 {
+                edge + beyond_here - beyond
+            } else if at > 1.0 {
+                edge + here.inside - there.inside
+            } else {
+                beyond_here + at * (here.inside - beyond_here)
+            }
         }
         _ => edge + here.inside - there.inside,
     }

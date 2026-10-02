@@ -326,7 +326,8 @@ cells on the reference as on the sample, and the cells beyond the unmatched
 within the gate's span on the other axis - or, on an axis the rule reads,
 those within that span split at the valley among them (`split_at_valley`,
 `valley_for_gate`), where both samples have one on the edge's side of the
-population; with only dust beyond on either,
+population. An edge outside the gap moves as far as the boundary it sits
+past; with only dust beyond on either,
 the edge moves as far as the population's boundary. A side left open is never
 pulled in by a carried edge. `KeepShape` carries every edge so, a polygon's vertices kept in
 proportion between its new edges, and slides instead where the area would

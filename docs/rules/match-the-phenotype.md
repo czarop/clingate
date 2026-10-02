@@ -75,7 +75,10 @@ them.
    them, where the reference and the sample both have one beside the edge:
    the line a cell is matched by is read off the whole parent, and on a
    marker most of the parent smears along - CD161 across T cells, say - it
-   can fall in the middle of the population. Where no more than
+   can fall in the middle of the population. An edge drawn outside the gap
+   - into the top of the cells beyond, or into the population - moves as
+   far as the boundary it sits past: scaled by the gap, a wider gap would
+   carry it further in. Where no more than
    dust lies beyond the population, on either, the edge moves as far as the
    population's boundary did. It is the gap, not the matched cells' middle,
    which moves with how many there are and how bright, nor the parent's
