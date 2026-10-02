@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use crate::gate_rules::autogate::{
-    ApplyError, boundary_at, ellipse_extent, specimen_of, translate_edge_to,
+    ApplyError, boundary_at, ellipse_extent, specimen_of, split_at_valley, translate_edge_to,
 };
 use crate::gate_rules::rule_store::{Bound, SamplePairing};
 use crate::gates::gate_single::rectangle_gate::RectangleGate;
@@ -218,6 +218,42 @@ fn an_ellipse_reaches_its_radius_along_an_axis_and_the_other_across_it() {
     // An eighth of a turn: sqrt((50 cos 45)^2 + (20 sin 45)^2) = sqrt(1450) = 38.079.
     let diagonal = at(std::f32::consts::FRAC_PI_4);
     assert_eq!(reach(&diagonal, X, true), (61.921, 138.079));
+}
+
+/// 400 cells about 0 and 1,000 about 10 on the horizontal axis, every one at
+/// 5 on the other; the population is the cells about 10.
+fn two_clusters() -> (Vec<(f64, f64)>, Vec<usize>) {
+    let spread = |centre: f64, count: usize| {
+        (0..count).map(move |at| (centre + (at as f64 / count as f64 - 0.5), 5.0))
+    };
+    let points: Vec<(f64, f64)> = spread(0.0, 400).chain(spread(10.0, 1_000)).collect();
+    (points, (400..1_400).collect())
+}
+
+#[test]
+fn a_population_is_split_from_the_cells_beside_it_at_the_valley_between() {
+    use crate::gate_rules::rule::Side;
+    let (points, members) = two_clusters();
+    let (inside, rest) =
+        split_at_valley((&points, &members), 0, (0.0, 10.0), Side::Lower, 7.0).expect("a valley");
+    assert_eq!((inside.len(), rest.len()), (1_000, 400));
+    assert!(inside.iter().all(|v| *v > 9.0));
+    // Cells outside the gate's span on the other axis are not beside it.
+    assert_eq!(
+        split_at_valley((&points, &members), 0, (6.0, 10.0), Side::Lower, 7.0),
+        None
+    );
+}
+
+#[test]
+fn a_valley_on_the_far_side_of_the_population_does_not_split_its_edge() {
+    use crate::gate_rules::rule::Side;
+    let (points, members) = two_clusters();
+    // The valley lies below the population, nowhere near its upper edge.
+    assert_eq!(
+        split_at_valley((&points, &members), 0, (0.0, 10.0), Side::Upper, 11.0),
+        None
+    );
 }
 
 #[test]

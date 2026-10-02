@@ -70,7 +70,12 @@ them.
    own boundary (its 5% nearest the edge); on the sample, the same share of
    the way across the same gap. The population is the cells that match, on
    the reference as on the sample, and the cells beyond are those that do
-   not, within the gate's span on the plot's other axis. Where no more than
+   not, within the gate's span on the plot's other axis. On an axis the rule
+   reads, the cells within that span are split instead at the valley among
+   them, where the reference and the sample both have one beside the edge:
+   the line a cell is matched by is read off the whole parent, and on a
+   marker most of the parent smears along - CD161 across T cells, say - it
+   can fall in the middle of the population. Where no more than
    dust lies beyond the population, on either, the edge moves as far as the
    population's boundary did. It is the gap, not the matched cells' middle,
    which moves with how many there are and how bright, nor the parent's

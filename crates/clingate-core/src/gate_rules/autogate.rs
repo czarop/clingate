@@ -3077,6 +3077,11 @@ fn describe_reference(
 /// beyond it, as a person would put it: not by where the matched cells' middle
 /// happens to be, which moves with how many there are and how bright, nor by
 /// the parent's frame, which knows nothing of the populations either side.
+/// On an axis the rule reads, the two are told apart by the valley between
+/// them among the cells in the gate's span on the other axis, where both
+/// samples have one beside the edge: the line the signature matches by is
+/// read off the whole parent, and on a marker most of the parent smears along
+/// it says little about where this population starts.
 fn carries(
     geometry: &GateGeometry,
     params: &(Arc<str>, Arc<str>),
@@ -3086,7 +3091,7 @@ fn carries(
     open: &[crate::gate_rules::phenotype::Open; 2],
 ) -> [crate::gate_rules::phenotype_gate::Carry; 2] {
     use crate::gate_rules::phenotype::Open;
-    use crate::gate_rules::phenotype_gate::{Carry, edge_in_gap};
+    use crate::gate_rules::phenotype_gate::{Carry, Gap, edge_in_gap};
     use crate::gate_rules::rule::Side;
     let extent = |param: &str| {
         extent_on(geometry, param)
@@ -3097,37 +3102,44 @@ fn carries(
     let extents = [extent(&params.0), extent(&params.1)];
     let on_axis = |axis: usize, open: Open| {
         let (lower, upper) = extents[axis];
-        let gaps = |side| {
-            Option::zip(
-                gap_on(there, axis, extents[1 - axis], side),
-                gap_on(here, axis, extents[1 - axis], side),
-            )
-        };
-        let carry = |edge, side| gaps(side).map_or(edge, |(from, to)| edge_in_gap(edge, from, to));
         let param = if axis == 0 { &params.0 } else { &params.1 };
+        let read = markers.contains(param);
+        let span = extents[1 - axis];
+        let gaps = |edge, side| {
+            let at_valley = |cells| {
+                read.then(|| split_at_valley(cells, axis, span, side, edge))
+                    .flatten()
+            };
+            let (from, to) = match (at_valley(there), at_valley(here)) {
+                (Some(from), Some(to)) => (from, to),
+                _ => (
+                    split_by_match(there, axis, span),
+                    split_by_match(here, axis, span),
+                ),
+            };
+            Option::zip(Gap::of(&from.0, &from.1, side), Gap::of(&to.0, &to.1, side))
+        };
+        let carry =
+            |edge, side| gaps(edge, side).map_or(edge, |(from, to)| edge_in_gap(edge, from, to));
         Carry {
             extent: extents[axis],
-            open: if markers.contains(param) {
-                open
-            } else {
-                Open::default()
-            },
+            open: if read { open } else { Open::default() },
             to: (carry(lower, Side::Lower), carry(upper, Side::Upper)),
         }
     };
     [on_axis(0, open[0]), on_axis(1, open[1])]
 }
 
-/// The [`Gap`](crate::gate_rules::phenotype_gate::Gap) on `side` of `axis`
-/// between the population at `members` among `points` and the rest of them
-/// within `span` on the other axis.
-fn gap_on(
+/// One axis's values: the population's cells, and the rest beside them.
+pub(crate) type Split = (Vec<f64>, Vec<f64>);
+
+/// The population at `members` among `points` on `axis`, and the rest of the
+/// cells within `span` on the other axis.
+fn split_by_match(
     (points, members): (&[(f64, f64)], &[usize]),
     axis: usize,
     span: (f64, f64),
-    side: crate::gate_rules::rule::Side,
-) -> Option<crate::gate_rules::phenotype_gate::Gap> {
-    let on = |point: &(f64, f64), axis: usize| if axis == 0 { point.0 } else { point.1 };
+) -> Split {
     let mut is_member = vec![false; points.len()];
     for at in members {
         is_member[*at] = true;
@@ -3135,15 +3147,53 @@ fn gap_on(
     let (inside, rest): (Vec<_>, Vec<_>) = points
         .iter()
         .zip(&is_member)
-        .filter(|(point, member)| **member || (span.0..=span.1).contains(&on(point, 1 - axis)))
+        .filter(|(point, member)| {
+            **member || (span.0..=span.1).contains(&coordinate(point, 1 - axis))
+        })
         .partition(|(_, member)| **member);
     let values = |cells: Vec<(&(f64, f64), &bool)>| -> Vec<f64> {
         cells
             .into_iter()
-            .map(|(point, _)| on(point, axis))
+            .map(|(point, _)| coordinate(point, axis))
             .collect()
     };
-    crate::gate_rules::phenotype_gate::Gap::of(&values(inside), &values(rest), side)
+    (values(inside), values(rest))
+}
+
+/// The cells within `span` on the other axis split on `axis` at the valley
+/// among them, the population's side of it first - where there is a valley
+/// on `side` of the population at `members`, as an `edge` there would sit.
+pub(crate) fn split_at_valley(
+    (points, members): (&[(f64, f64)], &[usize]),
+    axis: usize,
+    span: (f64, f64),
+    side: crate::gate_rules::rule::Side,
+    edge: f64,
+) -> Option<Split> {
+    use crate::gate_rules::rule::Side;
+    let candidates: Vec<f64> = points
+        .iter()
+        .filter(|point| (span.0..=span.1).contains(&coordinate(point, 1 - axis)))
+        .map(|point| coordinate(point, axis))
+        .collect();
+    let bottom = crate::gate_rules::threshold::valley_for_gate(&candidates, 1.0, edge)
+        .ok()?
+        .bottom;
+    let population: Vec<f64> = members
+        .iter()
+        .map(|at| coordinate(&points[*at], axis))
+        .collect();
+    let middle = crate::gate_rules::phenotype::median_of(&population);
+    let inside = |value: f64| match side {
+        Side::Lower => value > bottom,
+        Side::Upper => value < bottom,
+    };
+    inside(middle).then(|| candidates.into_iter().partition(|value| inside(*value)))
+}
+
+/// A point's value on the plot's horizontal axis, 0, or its vertical one.
+fn coordinate(point: &(f64, f64), axis: usize) -> f64 {
+    if axis == 0 { point.0 } else { point.1 }
 }
 
 /// How far an ellipse reaches on `param`, the plot's horizontal axis if

@@ -107,6 +107,11 @@ fn specimens() -> crate::omiq::metadata::MetaDataFileMap {
 }
 
 fn rule(fit: ShapeFit) -> RuleStore {
+    rule_reading(fit, &[X])
+}
+
+/// The phenotype rule for CD3+CD56+, reading `markers`.
+fn rule_reading(fit: ShapeFit, markers: &[&str]) -> RuleStore {
     let mut store = RuleStore::default();
     store.insert(
         RuleTarget::named("CD3+CD56+"),
@@ -115,7 +120,7 @@ fn rule(fit: ShapeFit) -> RuleStore {
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("reference")),
             rule: Rule::MatchThePhenotype(PhenotypeRule {
-                markers: vec![Arc::from(X)],
+                markers: markers.iter().map(|m| Arc::from(*m)).collect(),
                 fit,
                 ..Default::default()
             }),
@@ -132,16 +137,26 @@ fn run(
     reference: &polars::prelude::DataFrame,
     sample: &polars::prelude::DataFrame,
 ) -> (Report, (f32, f32), (f32, f32)) {
+    run_rules(&rule(fit), x, reference, sample)
+}
+
+/// [`run`], with `rules`.
+fn run_rules(
+    rules: &RuleStore,
+    x: (f32, f32),
+    reference: &polars::prelude::DataFrame,
+    sample: &polars::prelude::DataFrame,
+) -> (Report, (f32, f32), (f32, f32)) {
     let (mut state, id) = gated(x);
-    let (map, rules) = (specimens(), rule(fit));
+    let map = specimens();
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
     for (file, frame) in [("reference", reference), ("sample", sample)] {
-        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, &rules).unwrap();
+        let (m, u) = measure_file(&state, &Arc::from(file), frame, &map, rules).unwrap();
         measured.extend(m);
         unmeasured.extend(u);
     }
-    let report = position_all(&mut state, &rules, &measured, &unmeasured, &map);
+    let report = position_all(&mut state, rules, &measured, &unmeasured, &map);
     let gate = state
         .gate_for_file(&id, &Arc::from("sample"), &map)
         .expect("the sample has a gate");
@@ -283,4 +298,56 @@ fn a_kept_shape_grows_with_its_axis_within_the_area_limit() {
     assert!(!report.positioned[0].phenotype.as_ref().unwrap().clamped);
     let (_, _, (lower, upper)) = run(ShapeFit::MoveOnly, (600.0, 3_000.0), &reference, &wider);
     assert!(((upper - lower) - 400.0).abs() < 0.5, "{lower}..{upper}");
+}
+
+/// MAIT cells, CD161+Va7.2+, with CD161 on X and Va7.2 on Y, and a rule that
+/// reads both: 10,000 Va7.2- cells, N(100, 30) on Y, negative on X at
+/// N(300, 50) with 300 more trailing off it to a mean of 300 above; and the
+/// Va7.2+ cells, N(500, 40) on Y - 400 CD161-, N(300, 50) on X, and 1,000
+/// MAIT cells, N(1000, 80).
+fn mait(seed: u64) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let negative = Normal::new(300.0, 50.0).unwrap();
+    let trailing = Exp::new(1.0 / 300.0).unwrap();
+    let (va72_negative, va72_positive) = (
+        Normal::new(100.0, 30.0).unwrap(),
+        Normal::new(500.0, 40.0).unwrap(),
+    );
+    let mut cells: Vec<(f64, f64)> = Vec::new();
+    for _ in 0..10_000 {
+        cells.push((negative.sample(&mut rng), va72_negative.sample(&mut rng)));
+    }
+    for _ in 0..300 {
+        cells.push((
+            300.0 + trailing.sample(&mut rng),
+            va72_negative.sample(&mut rng),
+        ));
+    }
+    for _ in 0..400 {
+        cells.push((negative.sample(&mut rng), va72_positive.sample(&mut rng)));
+    }
+    let positive = Normal::new(1_000.0, 80.0).unwrap();
+    for _ in 0..1_000 {
+        cells.push((positive.sample(&mut rng), va72_positive.sample(&mut rng)));
+    }
+    let xs: Vec<f32> = cells.iter().map(|c| c.0 as f32).collect();
+    let ys: Vec<f32> = cells.iter().map(|c| c.1 as f32).collect();
+    df![X => xs, Y => ys].unwrap()
+}
+
+/// The gate's CD161 edge at 650 sits between the Va7.2+ CD161- cells, whose
+/// 95th percentile is 300 + 1.645 x 50 = 382, and the MAIT cells, whose 5th is
+/// 1000 - 1.645 x 80 = 868. The sample is another draw of the same cells.
+/// Across the whole parent CD161 splits where the Va7.2- cells thin out, which
+/// moves from draw to draw, and on this one falls among the MAIT cells: placed
+/// by that split, the edge went to 881, through them. Placed against the
+/// cells beside it, it stays at 650.
+#[test]
+fn an_edge_is_placed_against_the_cells_beside_it_not_the_whole_parent_s_split() {
+    let rules = rule_reading(ShapeFit::KeepShape, &[X, Y]);
+    let (report, (lower, _), _) = run_rules(&rules, (650.0, 1_600.0), &mait(10), &mait(11));
+    let why: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
+    assert_eq!(report.positioned.len(), 1, "{why:?}");
+    assert!((lower - 650.0).abs() < 20.0, "{lower}");
 }
