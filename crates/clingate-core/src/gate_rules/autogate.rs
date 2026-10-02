@@ -1195,19 +1195,18 @@ pub struct PhenotypeRead {
     /// than one means a single outline is not the whole story.
     pub pieces: usize,
     /// Per marker, where the matched cells sit on this sample against where
-    /// they sat on the reference, both in spreads of their own parent.
-    ///
-    /// This is the check that the rule has found the same cells rather than a
-    /// different population that happened to be nearest: a marker that reads
-    /// +8 on the reference and +1 here has not been matched on, whatever the
-    /// distance said.
-    pub centres: Vec<(Arc<str>, f64, f64)>,
+    /// they sat on the reference, both in the frame the two samples share.
+    pub centres: Vec<crate::gate_rules::phenotype::MarkerRead>,
     /// How far the gate had to be moved and stretched, where the shape was
     /// kept. `None` where a new polygon was drawn, which has no before to
     /// compare against.
     pub reshaped: Option<(f64, f64)>,
     /// Whether the stretch hit its limit and was clamped.
     pub clamped: bool,
+    /// Where a polygon was asked for and the one drawn changed the area by
+    /// more than the limit allows: its area against the reference's. The
+    /// shape was kept instead.
+    pub refused_outline: Option<f64>,
 }
 
 /// A gate no rule could even be tried against, and why.
@@ -2870,7 +2869,7 @@ fn position_by_phenotype(
 ) -> Result<Outcome, String> {
     use crate::gate_rules::phenotype::{Rows, Signature};
     use crate::gate_rules::rule::ShapeFit;
-    use crate::gate_rules::shape_fit::{Reshape, fit};
+    use crate::gate_rules::shape_fit::{Reshape, contour_around, fit, within_area_limit};
 
     let here = measured
         .phenotype
@@ -2926,18 +2925,17 @@ fn position_by_phenotype(
         .ok_or_else(|| "the reference population has no describable phenotype".to_string())?;
 
     let found = signature.find_in(here_panel);
-    if found.members.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
-        return Err(format!(
-            "only {} events match the reference population, too few to place a gate \
-             ({} matched on the reference)",
-            found.members.len(),
-            inside.len()
-        ));
+    let reference_share = inside.len() as f64 / there.points.len().max(1) as f64;
+    if let Some(weak) = found.weak(reference_share) {
+        return Err(format!("{weak}, so the gate is left where it is"));
     }
 
     // Where those cells sit on the two axes the gate is drawn on.
     let matched_here: Vec<(f64, f64)> = found.members.iter().map(|at| here.points[*at]).collect();
     let matched_there: Vec<(f64, f64)> = inside.iter().map(|at| there.points[*at]).collect();
+    if let Some(scattered) = scattered(&matched_here) {
+        return Err(format!("{scattered}, so the gate is left where it is"));
+    }
     let others_here: Vec<(f64, f64)> = {
         let mut is_member = vec![false; here.points.len()];
         for at in &found.members {
@@ -2951,32 +2949,31 @@ fn position_by_phenotype(
             .collect()
     };
 
-    let (geometry, reshaped, clamped, purity, caught, pieces) = match wanted.fit {
-        ShapeFit::KeepShape => {
-            let moved = Reshape::between(&matched_there, &matched_here);
-            let geometry = crate::gate_rules::phenotype_gate::reshaped(
-                &inner.geometry,
-                &measured.params,
-                &moved,
-            )
-            .map_err(|e| e.to_string())?;
-            // Purity and catch are measured on the gate that will actually be
-            // written, not on an idealised boundary: a kept shape may hold the
-            // population loosely, and that is exactly what wants reporting.
-            let outline = outline_of(&geometry, &measured.params);
-            let (purity, caught) = hold(&outline, &matched_here, &others_here);
-            (
-                geometry,
-                Some((
-                    moved.to.centre.0 - moved.from.centre.0,
-                    moved.to.centre.1 - moved.from.centre.1,
-                )),
-                moved.clamped,
-                purity,
-                caught,
-                1,
-            )
-        }
+    let keep_shape = || -> Result<_, String> {
+        let moved = Reshape::between(&matched_there, &matched_here);
+        let geometry =
+            crate::gate_rules::phenotype_gate::reshaped(&inner.geometry, &measured.params, &moved)
+                .map_err(|e| e.to_string())?;
+        // Purity and catch are measured on the gate that will actually be
+        // written, not on an idealised boundary: a kept shape may hold the
+        // population loosely, and that is exactly what wants reporting.
+        let outline = outline_of(&geometry, &measured.params);
+        let (purity, caught) = hold(&outline, &matched_here, &others_here);
+        Ok(Fitted {
+            geometry,
+            reshaped: Some((
+                moved.to.centre.0 - moved.from.centre.0,
+                moved.to.centre.1 - moved.from.centre.1,
+            )),
+            clamped: moved.clamped,
+            refused_outline: None,
+            purity,
+            caught,
+            pieces: 1,
+        })
+    };
+    let fitted = match wanted.fit {
+        ShapeFit::KeepShape => keep_shape()?,
         ShapeFit::DrawPolygon => {
             let drawn = fit(
                 &matched_here,
@@ -2986,36 +2983,50 @@ fn position_by_phenotype(
                 wanted.vertices,
             )
             .map_err(|e| e.to_string())?;
-            let geometry = crate::gate_rules::phenotype_gate::polygon(
-                &drawn.outline,
-                &measured.params,
-                &measured.gate_id,
+            let (on_the_reference, _) = contour_around(
+                &matched_there,
+                wanted.keep,
+                wanted.smoothing,
+                wanted.vertices,
             )
-            .map_err(|e| e.to_string())?;
-            (
-                geometry,
-                None,
-                false,
-                drawn.purity,
-                drawn.caught,
-                drawn.pieces,
-            )
+            .map_err(|e| format!("on the reference, {e}"))?;
+            let area = drawn.outline.area() / on_the_reference.area();
+            if within_area_limit(area) {
+                Fitted {
+                    geometry: crate::gate_rules::phenotype_gate::polygon(
+                        &drawn.outline,
+                        &measured.params,
+                        &measured.gate_id,
+                    )
+                    .map_err(|e| e.to_string())?,
+                    reshaped: None,
+                    clamped: false,
+                    refused_outline: None,
+                    purity: drawn.purity,
+                    caught: drawn.caught,
+                    pieces: drawn.pieces,
+                }
+            } else {
+                Fitted {
+                    refused_outline: Some(area),
+                    ..keep_shape()?
+                }
+            }
         }
     };
+    let Fitted {
+        geometry,
+        reshaped,
+        clamped,
+        refused_outline,
+        purity,
+        caught,
+        pieces,
+    } = fitted;
 
     let mut rebuilt = inner.clone();
     rebuilt.geometry = geometry;
     let placed = rebuild(&reference_gate, rebuilt).map_err(|e| e.to_string())?;
-
-    // Where the matched cells sit on each marker, here and on the reference,
-    // each against its own parent - the check that these are the same cells.
-    let centres = marker_centres(
-        &signature.markers,
-        here_panel,
-        &found.members,
-        there_panel,
-        &inside,
-    );
 
     let achieved = admitted_by(&placed, &measured.index).unwrap_or(f64::NAN);
     // Scored on its own evidence - see `assess_match`. There is no threshold
@@ -3066,9 +3077,10 @@ fn position_by_phenotype(
                 purity,
                 caught,
                 pieces,
-                centres,
+                centres: found.reads,
                 reshaped,
                 clamped,
+                refused_outline,
             }),
         },
         Placement {
@@ -3077,6 +3089,38 @@ fn position_by_phenotype(
             gate: placed,
         },
     ))
+}
+
+/// A gate's new geometry from a phenotype rule, and what it holds.
+struct Fitted {
+    geometry: GateGeometry,
+    reshaped: Option<(f64, f64)>,
+    clamped: bool,
+    refused_outline: Option<f64>,
+    purity: f64,
+    caught: f64,
+    pieces: usize,
+}
+
+/// Why the matched cells are not one population on the plot, if they are not:
+/// the largest cloud they form holds under [`ONE_CLOUD`] of them.
+///
+/// [`ONE_CLOUD`]: crate::gate_rules::phenotype::ONE_CLOUD
+fn scattered(points: &[(f64, f64)]) -> Option<String> {
+    use crate::gate_rules::phenotype::{KEEP, ONE_CLOUD};
+    let (outline, pieces) =
+        match crate::gate_rules::shape_fit::contour_around(points, KEEP, 1.0, usize::MAX) {
+            Ok(traced) => traced,
+            Err(e) => return Some(e.to_string()),
+        };
+    let held = points.iter().filter(|p| outline.holds(**p)).count() as f64 / points.len() as f64;
+    (held < ONE_CLOUD).then(|| {
+        format!(
+            "the matched cells sit in {pieces} separate clouds on this plot, the largest \
+             holding {:.0}% of them",
+            held * 100.0
+        )
+    })
 }
 
 /// What the gate held on this sample before the rule touched it.
@@ -3161,45 +3205,6 @@ fn hold(
             inside_population as f64 / population.len() as f64
         },
     )
-}
-
-/// Where a matched population sits on each marker, here and on the reference.
-///
-/// Both in robust z against their own parent, which is the only way the two
-/// are comparable without normalising between samples.
-fn marker_centres(
-    markers: &[Arc<str>],
-    here: crate::gate_rules::phenotype::Rows<'_>,
-    here_members: &[usize],
-    there: crate::gate_rules::phenotype::Rows<'_>,
-    there_members: &[usize],
-) -> Vec<(Arc<str>, f64, f64)> {
-    use crate::gate_rules::phenotype::baselines;
-    let (here_base, there_base) = (baselines(here), baselines(there));
-    markers
-        .iter()
-        .enumerate()
-        .map(|(at, marker)| {
-            let middle = |rows: crate::gate_rules::phenotype::Rows<'_>,
-                          members: &[usize],
-                          base: &crate::gate_rules::phenotype::Baseline| {
-                if members.is_empty() {
-                    return f64::NAN;
-                }
-                let mut values: Vec<f64> = members
-                    .iter()
-                    .map(|event| base.z(rows.row(*event)[at] as f64))
-                    .collect();
-                values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                values[values.len() / 2]
-            };
-            (
-                marker.clone(),
-                middle(there, there_members, &there_base[at]),
-                middle(here, here_members, &here_base[at]),
-            )
-        })
-        .collect()
 }
 
 // ── following another gate ────────────────────────────────────────────────

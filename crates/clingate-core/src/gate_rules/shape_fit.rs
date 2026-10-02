@@ -657,6 +657,15 @@ fn middle_and_spread(values: &[f64]) -> (f64, f64) {
 /// change size between donors and a flagged answer beats no answer.
 pub const MAX_STRETCH: f64 = 4.0;
 
+/// How much a phenotype rule may change a gate's area, either way.
+pub const MAX_AREA_CHANGE: f64 = 0.3;
+
+/// Whether `ratio`, a gate's new area against its old, is within
+/// [`MAX_AREA_CHANGE`].
+pub fn within_area_limit(ratio: f64) -> bool {
+    (1.0 - MAX_AREA_CHANGE..=1.0 + MAX_AREA_CHANGE).contains(&ratio)
+}
+
 /// Moving and resizing a shape onto a population, without reshaping it.
 ///
 /// The alternative to drawing a new boundary, and the right one when the
@@ -670,9 +679,10 @@ pub struct Reshape {
     pub from: Extent,
     /// This sample's, which it is being moved onto.
     pub to: Extent,
-    /// Per axis, clamped to [`MAX_STRETCH`] either way.
+    /// Per axis, clamped to [`MAX_STRETCH`] either way, and together to
+    /// [`MAX_AREA_CHANGE`].
     pub scale: (f64, f64),
-    /// Whether the clamp bit.
+    /// Whether either clamp bit.
     pub clamped: bool,
 }
 
@@ -682,7 +692,11 @@ impl Reshape {
         let (from, to) = (Extent::of(from), Extent::of(to));
         let raw = (to.spread.0 / from.spread.0, to.spread.1 / from.spread.1);
         let limit = |v: f64| v.clamp(1.0 / MAX_STRETCH, MAX_STRETCH);
-        let scale = (limit(raw.0), limit(raw.1));
+        let stretched = (limit(raw.0), limit(raw.1));
+        let area = stretched.0 * stretched.1;
+        let allowed = area.clamp(1.0 - MAX_AREA_CHANGE, 1.0 + MAX_AREA_CHANGE);
+        let both = (allowed / area).sqrt();
+        let scale = (stretched.0 * both, stretched.1 * both);
         Self {
             from,
             to,

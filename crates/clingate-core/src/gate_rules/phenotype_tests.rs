@@ -84,60 +84,6 @@ fn a_marker_with_no_spread_does_not_make_every_cell_infinite() {
     assert!(base.z(4.0).is_finite());
 }
 
-#[test]
-fn inverting_a_covariance_returns_its_inverse() {
-    // A 2x2 with a known inverse, checked by multiplying back to the identity.
-    let m = vec![4.0, 1.0, 1.0, 3.0];
-    let inv = invert_spd(&m, 2, 0.0).expect("positive definite");
-    let mut product = vec![0.0; 4];
-    for i in 0..2 {
-        for j in 0..2 {
-            for k in 0..2 {
-                product[i * 2 + j] += m[i * 2 + k] * inv[k * 2 + j];
-            }
-        }
-    }
-    for (at, expected) in [1.0, 0.0, 0.0, 1.0].iter().enumerate() {
-        assert!(
-            (product[at] - expected).abs() < 1e-9,
-            "entry {at} was {}",
-            product[at]
-        );
-    }
-}
-
-#[test]
-fn two_markers_that_move_together_do_not_blow_up_the_inverse() {
-    // Panels are full of near-duplicate markers, which make the covariance
-    // singular. Without the ridge this has no inverse at all.
-    let singular = vec![1.0, 1.0, 1.0, 1.0];
-    assert!(
-        invert_spd(&singular, 2, 0.0).is_none(),
-        "singular without a ridge"
-    );
-    let inv = invert_spd(&singular, 2, RIDGE).expect("the ridge makes it invertible");
-    assert!(inv.iter().all(|v| v.is_finite()));
-}
-
-#[test]
-fn distance_is_measured_in_the_populations_own_shape() {
-    // A population wide in the first marker and narrow in the second. The same
-    // step should count for much less along the wide direction.
-    let signature = Signature {
-        markers: markers(&["wide", "narrow"]),
-        centre: vec![0.0, 0.0],
-        precision: invert_spd(&[100.0, 0.0, 0.0, 1.0], 2, 0.0).expect("invertible"),
-        cut: f64::INFINITY,
-        members: 100,
-    };
-    let along_wide = distance_squared(&signature, &[1.0, 0.0]);
-    let along_narrow = distance_squared(&signature, &[0.0, 1.0]);
-    assert!(
-        along_narrow > along_wide * 50.0,
-        "wide {along_wide}, narrow {along_narrow}"
-    );
-}
-
 // ── describing and finding a population ──────────────────────────────────
 
 #[test]
@@ -298,46 +244,6 @@ fn a_signature_remembers_how_many_cells_described_it() {
     assert_eq!(signature.members, 17);
 }
 
-// ── the numerical helpers ────────────────────────────────────────────────
-
-#[test]
-fn the_normal_quantile_matches_the_table() {
-    for (p, expected) in [
-        (0.5, 0.0),
-        (0.95, 1.644_854),
-        (0.975, 1.959_964),
-        (0.99, 2.326_348),
-        (0.025, -1.959_964),
-    ] {
-        let got = normal_quantile(p);
-        assert!(
-            (got - expected).abs() < 1e-5,
-            "quantile at {p} was {got}, expected {expected}"
-        );
-    }
-}
-
-#[test]
-fn the_chi_squared_quantile_matches_the_table() {
-    // Wilson-Hilferty is an approximation; it is weakest at one degree of
-    // freedom and improves quickly. Within a percent or two is far inside what
-    // the covariance it is applied to can claim.
-    for (k, expected) in [
-        (1, 3.841),
-        (2, 5.991),
-        (3, 7.815),
-        (5, 11.070),
-        (10, 18.307),
-    ] {
-        let got = chi_squared_quantile(k, 0.95);
-        let error = (got - expected).abs() / expected;
-        assert!(
-            error < 0.03,
-            "chi2({k}, 0.95) was {got}, expected {expected}"
-        );
-    }
-}
-
 // ── the headline claim ───────────────────────────────────────────────────
 
 /// How common a population is must not change where it is found.
@@ -355,7 +261,7 @@ fn how_common_the_population_is_does_not_move_where_it_sits() {
         let members = (total as f64 * fraction) as usize;
         let mut parent = rng.around(&[0.0], 1.0, total - members);
         parent.extend_from_slice(&rng.around(&[6.0], 0.4, members));
-        let base = &baselines(rows(&parent, 1))[0];
+        let base = Baseline::of(&column(&parent, 1, 0));
         base.z(6.0)
     };
 
@@ -462,19 +368,183 @@ fn rows_are_copied_out_in_the_order_asked_for() {
     assert!(rows.select(&[]).is_empty());
 }
 
+// ── each marker on its own landmarks ─────────────────────────────────────
+
+/// A negative of `negatives` at 0 and a positive of `positives` at 10, both
+/// spread 1, on one marker.
+fn two_peaks(rng: &mut Cloud, negatives: usize, positives: usize) -> Vec<f32> {
+    let mut values = rng.around(&[0.0], 1.0, negatives);
+    values.extend_from_slice(&rng.around(&[10.0], 1.0, positives));
+    values
+}
+
+/// The clouds end a spread from their centre, so the valley is the middle of
+/// the empty stretch between 1 and 9: 0 at the negative's peak, 5 between.
 #[test]
-fn an_event_is_put_into_z_space_marker_by_marker() {
-    let bases = [
-        Baseline {
-            median: 1.0,
-            spread: 2.0,
-        },
-        Baseline {
-            median: -3.0,
-            spread: 0.5,
-        },
-    ];
-    let mut out = vec![99.0; 7];
-    z_into(&[5.0, -2.0], &bases, &mut out);
-    assert_eq!(out, vec![2.0, 2.0], "the buffer is cleared, then filled");
+fn a_marker_with_a_negative_and_a_positive_is_read_from_its_landmarks() {
+    let values = column(&two_peaks(&mut Cloud(11), 700, 300), 1, 0);
+    let landmarks = Frames::of(&values).landmarks.expect("there is a valley");
+    assert!(landmarks.by_landmarks);
+    assert!(landmarks.origin.abs() < 0.3, "{landmarks:?}");
+    assert!((landmarks.unit - 5.0).abs() < 0.5, "{landmarks:?}");
+}
+
+#[test]
+fn a_marker_with_one_population_has_no_landmarks() {
+    let values = column(&Cloud(12).around(&[0.0], 1.0, 1000), 1, 0);
+    assert_eq!(Frames::of(&values).landmarks, None);
+}
+
+/// Landmarks only where both samples have them: a marker read one way on
+/// the reference and another here would compare two different scales.
+#[test]
+fn two_samples_share_landmarks_only_when_both_have_them() {
+    let both = Frames::of(&column(&two_peaks(&mut Cloud(13), 700, 300), 1, 0));
+    let one = Frames::of(&column(&Cloud(14).around(&[0.0], 1.0, 1000), 1, 0));
+    let (mine, theirs) = both.shared_with(&both);
+    assert!(mine.by_landmarks && theirs.by_landmarks);
+    let (mine, theirs) = both.shared_with(&one);
+    assert!(!mine.by_landmarks && !theirs.by_landmarks);
+    assert_eq!((mine, theirs), (both.spread, one.spread));
+}
+
+/// The positives are half the parent on the reference and a tenth here. Read
+/// against the parent's middle they would sit in different places - the
+/// middle of a parent half positive is between the peaks - but the negative's
+/// peak and the valley do not move, so the same cells are found.
+#[test]
+fn a_population_is_found_however_much_of_its_parent_it_is() {
+    let mut rng = Cloud(15);
+    let reference = two_peaks(&mut rng, 500, 500);
+    let positives: Vec<f32> = reference[500..].to_vec();
+    let signature = Signature::describe(markers(&["a"]), rows(&positives, 1), rows(&reference, 1))
+        .expect("described");
+    let sample = two_peaks(&mut rng, 900, 100);
+    let found = signature.find_in(rows(&sample, 1));
+    assert!(
+        (95..=100).contains(&found.members.len()) && found.members.iter().all(|at| *at >= 900),
+        "found {} cells, the positives are 900..1000",
+        found.members.len()
+    );
+    assert!(found.reads[0].by_landmarks && !found.reads[0].drifted());
+}
+
+/// Seven markers, and cells that are the population on six and out on one -
+/// CD8 T cells that are CD4-positive. They are not the population. Out by
+/// 0.6 where the population spreads 0.4 at most: one combined distance over
+/// all seven would have let them in (3.7 of the population's standard
+/// deviations, under the 3.75 seven markers allow), so no marker may be
+/// outvoted by the rest.
+#[test]
+fn a_cell_out_on_one_marker_is_not_a_match_however_well_the_rest_agree() {
+    let centre = [6.0, 0.0, -4.0, 2.0, 0.0, 3.0, -2.0];
+    let mut rng = Cloud(16);
+    let mut parent = rng.around(&[0.0; 7], 1.0, 1000);
+    let population = rng.around(&centre, 0.4, 300);
+    parent.extend_from_slice(&population);
+    let signature = Signature::describe(
+        markers(&["CD3", "CD4", "CD8", "gdTCR", "CD56", "CD161", "Va7.2"]),
+        rows(&population, 7),
+        rows(&parent, 7),
+    )
+    .expect("described");
+
+    let mut impostor = centre.map(|v| v as f32);
+    impostor[1] += 0.6;
+    let mut sample = parent.clone();
+    let first_impostor = sample.len() / 7;
+    for _ in 0..100 {
+        sample.extend_from_slice(&impostor);
+    }
+    let found = signature.find_in(rows(&sample, 7));
+    assert!(
+        found.members.iter().all(|at| *at < first_impostor),
+        "an impostor was matched"
+    );
+    assert!(found.members.len() >= 280, "found {}", found.members.len());
+}
+
+/// The ranges hold the reference's own cells - all markers at once - and no
+/// more than they need to.
+#[test]
+fn the_ranges_hold_the_share_of_the_reference_population_asked_for() {
+    let mut rng = Cloud(17);
+    let parent = rng.around(&[0.0, 0.0, 0.0], 1.0, 600);
+    let population = rng.around(&[5.0, -3.0, 2.0], 0.5, 400);
+    let signature = Signature::describe(
+        markers(&["a", "b", "c"]),
+        rows(&population, 3),
+        rows(&parent, 3),
+    )
+    .expect("described");
+    let held = rows(&population, 3)
+        .rows()
+        .filter(|row| {
+            row.iter()
+                .zip(&signature.profiles)
+                .all(|(v, profile)| (profile.low..=profile.high).contains(&f64::from(*v)))
+        })
+        .count() as f64
+        / 400.0;
+    assert!((KEEP..KEEP + 0.02).contains(&held), "held {held}");
+}
+
+fn read(reference_middle: f64, reference_spread: f64, middle: f64) -> MarkerRead {
+    MarkerRead {
+        marker: Arc::from("CD4"),
+        by_landmarks: true,
+        reference_middle,
+        reference_spread,
+        middle,
+    }
+}
+
+/// Middle 2, spread 0.5: allowed 0.5 + a tenth of 2 = 0.7 either way.
+#[test]
+fn matched_cells_have_drifted_when_further_than_the_populations_spread() {
+    assert!(!read(2.0, 0.5, 2.69).drifted());
+    assert!(!read(2.0, 0.5, 1.31).drifted());
+    assert!(read(2.0, 0.5, 2.71).drifted());
+    assert!(read(2.0, 0.5, 1.29).drifted());
+    assert!(read(2.0, 0.5, f64::NAN).drifted(), "nothing matched");
+}
+
+fn matched(members: usize, parent: usize, reads: Vec<MarkerRead>) -> Matched {
+    Matched {
+        members: (0..members).collect(),
+        parent,
+        reads,
+    }
+}
+
+#[test]
+fn fewer_than_fifty_matched_cells_are_a_weak_match() {
+    assert!(
+        matched(49, 1000, vec![])
+            .weak(0.05)
+            .unwrap()
+            .contains("only 49 cells")
+    );
+    assert_eq!(matched(50, 1000, vec![]).weak(0.05), None);
+}
+
+/// The reference's population was half its parent: 10% here is a fifth.
+#[test]
+fn a_population_under_a_fifth_as_common_as_the_reference_is_a_weak_match() {
+    assert_eq!(matched(100, 1000, vec![]).weak(0.5), None);
+    let weak = matched(99, 1000, vec![]).weak(0.5).expect("weak");
+    assert!(
+        weak.contains("9.900% of the parent matched against 50.000%"),
+        "{weak}"
+    );
+}
+
+#[test]
+fn a_marker_the_matched_cells_drifted_on_is_named() {
+    let reads = vec![read(2.0, 0.5, 2.1), read(0.0, 0.2, 1.4)];
+    let weak = matched(500, 1000, reads).weak(0.5).expect("weak");
+    assert!(
+        weak.contains("on CD4 the matched cells sit at 1.40 against 0.00"),
+        "{weak}"
+    );
 }

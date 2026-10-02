@@ -8,11 +8,12 @@
 //! defeats every one of them.
 //!
 //! This module answers the question those rules cannot ask: *are these the same
-//! cells?* A population is described by where it sits across every marker on
-//! the panel - its phenotype - and that description is then used to find the
-//! same cells in another sample. Where they turn out to be on the plot is an
-//! answer rather than an assumption, so the gate can be moved and reshaped to
-//! fit them rather than pushed along one axis and hoped for.
+//! cells?* A population is described marker by marker - where its cells sit on
+//! each - and a cell in another sample is the same only if it sits within the
+//! population's range on **every** marker. Brightness may drift between
+//! samples; which markers are positive and which negative may not. A CD8 T cell
+//! that is CD4-positive is a different cell, however well the other markers
+//! agree, so no marker can be outvoted by the rest.
 //!
 //! ## Each sample is its own reference frame
 //!
@@ -20,25 +21,17 @@
 //! on the same scale, which is run-to-run normalisation - explicitly not wanted
 //! here, because it flattens the donor differences that are the entire point.
 //!
-//! So nothing is compared in raw units. Every marker is expressed as a robust
-//! z against *the parent population of the same sample*: how far this cell sits
-//! from the middle of the population it was gated out of, in units of that
-//! population's own spread. A signature says "high for CD161 relative to its
-//! parent, middling for CD4", which is a statement about the cell's place among
-//! its own neighbours, and means the same thing in every sample without
-//! anything being rescaled across samples.
+//! So every marker is read against landmarks of *the parent population of the
+//! same sample*: 0 at its negative's peak and 1 at the valley above it, where a
+//! person would put a positive gate. "CD8 at 3, CD4 at 0" means the same thing
+//! in every sample, whichever way the stain drifted, and does not move with how
+//! many cells are positive - which is what differs between donors.
 //!
-//! Median and MAD rather than mean and standard deviation, because the parent
-//! contains the very population being described - a bright 5% would drag a mean
-//! and inflate a standard deviation, and shrink the z of the cells that caused
-//! it.
-//!
-//! ## The baseline is measured with the tail cut off
-//!
-//! Robust is not enough on its own. A MAD is contaminated by the population it
-//! is about to measure, and the contamination scales with how common that
-//! population is - which is precisely what differs between samples. Measured on
-//! a population sitting 14 parent-widths out:
+//! A marker with no valley in one of the two samples - all negative, or a
+//! smear - is read in robust z instead, on both: spreads from the parent's
+//! middle. Median and MAD, with the tail cut off before measuring them; see
+//! [`TRIM`]. That frame does move with abundance, measured on a population
+//! sitting 14 parent-widths out:
 //!
 //! | population is | z of the population, plain MAD | tail excluded |
 //! |---------------|-------------------------------|---------------|
@@ -46,15 +39,9 @@
 //! | 7%            | 12.53                         | 13.81         |
 //! | 20%           |  9.82                         | 13.78         |
 //!
-//! Untreated, the same cells read four widths lower in a sample that has more
-//! of them, which would put the gate somewhere else for no reason but abundance
-//! - the 7%-against-1% case. Excluding everything past [`TRIM`] spreads before
-//! taking the median and the MAD removes the dependence completely. The same
-//! estimator runs on the reference and on every sample, so whatever bias
-//! truncation leaves is the same bias on both sides.
-//!
-//! What remains is sampling noise, about 0.5 of a width at that distance, and
-//! that is what [`BASELINE_SLIP`] is for.
+//! Cutting the tail removes the dependence for a population that is a small
+//! part of its parent; one that is half of it moves the parent's middle, which
+//! is why landmarks come first.
 
 use std::sync::Arc;
 
@@ -127,54 +114,16 @@ impl<'a> Rows<'a> {
     }
 }
 
-/// The markers a phenotype is measured in, and where a population sits in them.
-///
-/// Both the centre and the spread are needed. A population is not a point: it
-/// is elongated in some directions and tight in others, and markers move
-/// together - a cell high for one activation marker is usually high for the
-/// next. Scoring each marker on its own would count those twice and would treat
-/// a wide direction as strictly as a narrow one. The covariance is what makes
-/// the distance below an honest measure of "unlike these cells".
-#[derive(Clone, Debug, PartialEq)]
-pub struct Signature {
-    /// The channels, in the order every vector here uses.
-    pub markers: Vec<Arc<str>>,
-    /// The population's centre, in robust-z units against its own parent.
-    pub centre: Vec<f64>,
-    /// The inverse of the population's covariance in that space, row-major.
-    pub precision: Vec<f64>,
-    /// The distance that takes in [`KEEP`] of the reference population's own
-    /// members - the radius that describes these cells, measured rather than
-    /// assumed.
-    pub cut: f64,
-    /// How many events the signature was built from. A signature drawn from a
-    /// handful of cells is a guess, and the report says so rather than the
-    /// solver silently trusting it.
-    pub members: usize,
-}
-
-/// The fraction of a population the distance cut takes in.
+/// The fraction of a population its ranges take in, every marker together.
 ///
 /// Not all of it: the last few percent of any gated population are the events
 /// nearest the line the person drew, and half of them are there because a hand
-/// drawn boundary has to fall somewhere. Taking the radius that holds 95%
-/// describes the population rather than the edge of the drawing.
+/// drawn boundary has to fall somewhere. Ranges holding 95% describe the
+/// population rather than the edge of the drawing.
 pub const KEEP: f64 = 0.95;
 
-/// Added to the covariance diagonal before inverting it.
-///
-/// Two markers that move together almost perfectly - and panels are full of
-/// them - make the covariance singular or nearly so, and its inverse then has
-/// enormous entries in the direction with no spread. A cell a hair off that
-/// direction scores as infinitely unlike the population. A small ridge is the
-/// standard answer: it says "no direction is narrower than this", which is
-/// honest about what a finite sample can resolve.
-pub const RIDGE: f64 = 1e-3;
-
 /// A population's middle and spread on one marker, from its parent.
-///
-/// The pair a robust z is taken against. Held per marker for one sample.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Baseline {
     pub median: f64,
     /// The median absolute deviation, scaled so it estimates a standard
@@ -201,17 +150,15 @@ const MIN_SPREAD: f64 = 1e-6;
 /// scale everything else is measured against. See the module comment.
 pub const TRIM: f64 = 4.0;
 
-/// How much of a population's distance from the middle is uncertainty.
+/// How much of a population's distance from the origin of its frame is
+/// uncertainty.
 ///
-/// A baseline is estimated from a finite sample, so its spread carries a few
-/// percent of noise, and that noise multiplies with distance: a population
-/// sitting 14 widths out moves half a width when the estimate moves 3%. Tight
-/// populations far from the middle are therefore known less precisely than
-/// their own spread suggests, and a signature that believed its own spread
-/// would reject the very cells it describes in the next sample.
-///
-/// So each marker's variance gains `(centre * BASELINE_SLIP)^2`. It is a
-/// statement about what a finite sample can resolve, not a fudge factor.
+/// Landmarks and baselines are estimated from a finite sample, so the unit
+/// they set carries a few percent of noise, and that noise multiplies with
+/// distance: a population sitting 14 units out moves more than one unit when
+/// the unit moves 10%. Each range is widened by this share of how far out its
+/// ends sit, so the same cells are not rejected in the next sample for the
+/// noise in where its frame was measured.
 pub const BASELINE_SLIP: f64 = 0.10;
 
 impl Baseline {
@@ -225,9 +172,7 @@ impl Baseline {
     ///
     /// A value that is not a number - NaN or infinite, from a corrupt event or
     /// a transform gone wrong - is no measurement of the population and is
-    /// left out, as the threshold solvers leave it out. It used to go into the
-    /// sort, which has no order for NaN, and one such event could make the
-    /// whole marker's baseline NaN and drop it from the match (B-PHEN-1).
+    /// left out, as the threshold solvers leave it out (B-PHEN-1).
     pub fn of(values: &[f64]) -> Self {
         let values: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
         let rough = Self::untrimmed(&values);
@@ -246,9 +191,10 @@ impl Baseline {
 
     fn untrimmed(values: &[f64]) -> Self {
         let median = median_of(values);
-        let mut deviations: Vec<f64> = values.iter().map(|v| (v - median).abs()).collect();
-        let spread = (median_of_mut(&mut deviations) * MAD_TO_SIGMA).max(MIN_SPREAD);
-        Self { median, spread }
+        Self {
+            median,
+            spread: spread_about(values, median),
+        }
     }
 
     /// Where one value sits, in spreads from the middle.
@@ -257,25 +203,10 @@ impl Baseline {
     }
 }
 
-/// The baseline for every marker of one sample's parent population.
-pub fn baselines(rows: Rows<'_>) -> Vec<Baseline> {
-    (0..rows.markers())
-        .map(|at| Baseline::of(&rows.column(at).collect::<Vec<_>>()))
-        .collect()
-}
-
-/// Put one event into robust-z space, into a buffer the caller reuses.
-///
-/// Into a buffer rather than returning a vector, because this runs once per
-/// event of every parent population: allocating a row each time would be the
-/// dominant cost of scoring a sample.
-pub fn z_into(row: &[f32], baselines: &[Baseline], out: &mut Vec<f64>) {
-    out.clear();
-    out.extend(
-        row.iter()
-            .zip(baselines.iter())
-            .map(|(value, base)| base.z(*value as f64)),
-    );
+/// The robust spread of `values` about `middle`.
+fn spread_about(values: &[f64], middle: f64) -> f64 {
+    let mut deviations: Vec<f64> = values.iter().map(|v| (v - middle).abs()).collect();
+    (median_of_mut(&mut deviations) * MAD_TO_SIGMA).max(MIN_SPREAD)
 }
 
 fn median_of(values: &[f64]) -> f64 {
@@ -287,7 +218,7 @@ fn median_of_mut(values: &mut [f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     if values.len() % 2 == 0 {
         (values[mid - 1] + values[mid]) / 2.0
@@ -296,247 +227,299 @@ fn median_of_mut(values: &mut [f64]) -> f64 {
     }
 }
 
-/// The mean of each marker, over a population already in z space.
-fn centre_of(rows: &[Vec<f64>], markers: usize) -> Vec<f64> {
-    let mut centre = vec![0.0; markers];
-    if rows.is_empty() {
-        return centre;
-    }
-    for row in rows {
-        for (at, value) in row.iter().enumerate().take(markers) {
-            centre[at] += value;
-        }
-    }
-    for value in &mut centre {
-        *value /= rows.len() as f64;
-    }
-    centre
+/// How one marker is read on one sample: `(value - origin) / unit`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    pub origin: f64,
+    pub unit: f64,
+    /// Whether the origin is the negative's peak and the unit the way to the
+    /// valley above it; otherwise the parent's middle and spread.
+    pub by_landmarks: bool,
 }
 
-/// The covariance of a population, row-major and symmetric.
-pub fn covariance(rows: &[Vec<f64>], markers: usize, centre: &[f64]) -> Vec<f64> {
-    let mut out = vec![0.0; markers * markers];
-    if rows.len() < 2 {
-        // One event has no spread to measure. An identity covariance says "I
-        // know where it is and nothing about its shape", which is true, and
-        // leaves the distance below an ordinary euclidean one.
-        for at in 0..markers {
-            out[at * markers + at] = 1.0;
-        }
-        return out;
+impl Frame {
+    pub fn read(&self, value: f64) -> f64 {
+        (value - self.origin) / self.unit
     }
-    for row in rows {
-        for i in 0..markers {
-            let di = row[i] - centre[i];
-            for j in i..markers {
-                out[i * markers + j] += di * (row[j] - centre[j]);
-            }
-        }
+
+    pub fn value_at(&self, read: f64) -> f64 {
+        self.origin + read * self.unit
     }
-    let n = (rows.len() - 1) as f64;
-    for i in 0..markers {
-        for j in i..markers {
-            let value = out[i * markers + j] / n;
-            out[i * markers + j] = value;
-            out[j * markers + i] = value;
-        }
-    }
-    out
 }
 
-/// Invert a symmetric positive-definite matrix, with a ridge on the diagonal.
-///
-/// Cholesky rather than a general inverse: the matrix is a covariance, so it is
-/// symmetric and - once the ridge is on - positive definite, and the
-/// decomposition both exploits that and reports when it does not hold. `None`
-/// means the matrix was not positive definite even with the ridge, which for a
-/// covariance means something is wrong with the data rather than with the
-/// arithmetic.
-pub fn invert_spd(matrix: &[f64], n: usize, ridge: f64) -> Option<Vec<f64>> {
-    if n == 0 || matrix.len() != n * n {
-        return None;
-    }
-    // L, lower triangular, with A + ridge*I = L L^T.
-    let mut l = vec![0.0f64; n * n];
-    for i in 0..n {
-        for j in 0..=i {
-            let mut sum = matrix[i * n + j];
-            if i == j {
-                sum += ridge;
-            }
-            for k in 0..j {
-                sum -= l[i * n + k] * l[j * n + k];
-            }
-            if i == j {
-                if sum <= 0.0 || !sum.is_finite() {
-                    return None;
-                }
-                l[i * n + i] = sum.sqrt();
-            } else {
-                l[i * n + j] = sum / l[j * n + j];
-            }
-        }
-    }
-
-    // Invert L in place into `li`, then A^-1 = L^-T L^-1.
-    let mut li = vec![0.0f64; n * n];
-    for i in 0..n {
-        li[i * n + i] = 1.0 / l[i * n + i];
-        for j in 0..i {
-            let mut sum = 0.0;
-            for k in j..i {
-                sum += l[i * n + k] * li[k * n + j];
-            }
-            li[i * n + j] = -sum / l[i * n + i];
-        }
-    }
-
-    let mut out = vec![0.0f64; n * n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut sum = 0.0;
-            for k in i.max(j)..n {
-                sum += li[k * n + i] * li[k * n + j];
-            }
-            out[i * n + j] = sum;
-            out[j * n + i] = sum;
-        }
-    }
-    Some(out)
+/// The two frames one marker can be read in on one sample.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frames {
+    /// The negative's peak and the valley above it, where there is a valley.
+    pub landmarks: Option<Frame>,
+    pub spread: Frame,
 }
 
-/// How unlike the signature one event is, squared.
-///
-/// Mahalanobis: the distance measured in the population's own shape, so a step
-/// along a direction the population is wide in counts for less than the same
-/// step where it is narrow.
-pub fn distance_squared(signature: &Signature, z: &[f64]) -> f64 {
-    let n = signature.centre.len();
-    if z.len() < n {
-        return f64::INFINITY;
-    }
-    let mut delta = vec![0.0; n];
-    for at in 0..n {
-        delta[at] = z[at] - signature.centre[at];
-    }
-    let mut total = 0.0;
-    for i in 0..n {
-        let mut row = 0.0;
-        for j in 0..n {
-            row += signature.precision[i * n + j] * delta[j];
+impl Frames {
+    /// One marker's frames, from its values across a parent population.
+    pub fn of(values: &[f64]) -> Self {
+        let values: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+        let baseline = Baseline::of(&values);
+        let landmarks = crate::gate_rules::threshold::first_valley(&values, 1.0)
+            .ok()
+            .filter(|valley| valley.bottom - valley.peak > MIN_SPREAD)
+            .map(|valley| Frame {
+                origin: valley.peak,
+                unit: valley.bottom - valley.peak,
+                by_landmarks: true,
+            });
+        Self {
+            landmarks,
+            spread: Frame {
+                origin: baseline.median,
+                unit: baseline.spread,
+                by_landmarks: false,
+            },
         }
-        total += delta[i] * row;
     }
-    total.max(0.0)
+
+    /// The frame this and `other` share: landmarks when both have them, so a
+    /// marker is read the same way on both samples.
+    pub fn shared_with(&self, other: &Frames) -> (Frame, Frame) {
+        match (self.landmarks, other.landmarks) {
+            (Some(mine), Some(theirs)) => (mine, theirs),
+            _ => (self.spread, other.spread),
+        }
+    }
+}
+
+/// Every marker's frames on one sample's parent population.
+pub fn frames(parent: Rows<'_>) -> Vec<Frames> {
+    (0..parent.markers())
+        .map(|at| Frames::of(&parent.column(at).collect::<Vec<_>>()))
+        .collect()
+}
+
+/// Where a population sits on one marker, in its own sample's raw values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    /// The frames of the parent it was gated out of.
+    pub frames: Frames,
+    /// The range that holds its cells - see [`KEEP`].
+    pub low: f64,
+    pub high: f64,
+    /// Its median and robust spread.
+    pub middle: f64,
+    pub spread: f64,
+}
+
+/// A population marker by marker: what a cell must be to be one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Signature {
+    /// The channels, in the order every vector here uses.
+    pub markers: Vec<Arc<str>>,
+    pub profiles: Vec<Profile>,
+    /// How many events the signature was built from.
+    pub members: usize,
 }
 
 impl Signature {
-    /// Describe a population by where its members sit across the markers.
+    /// Describe a population by where its members sit on each marker.
     ///
     /// `members` are the events inside the reference gate and `parent` is the
     /// population they were gated out of, both as raw marker values in the same
-    /// column order. The parent is what the members are measured against - see
-    /// the module comment - so it has to be the same sample's.
+    /// column order.
     pub fn describe(markers: Vec<Arc<str>>, members: Rows<'_>, parent: Rows<'_>) -> Option<Self> {
         let n = markers.len();
         if n == 0 || n != members.markers() || n != parent.markers() || members.is_empty() {
             return None;
         }
-        let baselines = baselines(parent);
-        // The members are held in z space because both the centre and the
-        // covariance need a second pass over them. A parent is only ever
-        // streamed, and is not.
-        let mut buffer = Vec::with_capacity(n);
-        let z: Vec<Vec<f64>> = members
-            .rows()
-            .map(|row| {
-                z_into(row, &baselines, &mut buffer);
-                buffer.clone()
+        let columns: Vec<Vec<f64>> = (0..n)
+            .map(|at| {
+                let mut column: Vec<f64> = members.column(at).collect();
+                column.sort_by(f64::total_cmp);
+                column
             })
             .collect();
-        let centre = centre_of(&z, n);
-        let mut spread = covariance(&z, n, &centre);
-        // What the baseline cannot resolve, added to what the population's own
-        // shape says. See [`BASELINE_SLIP`].
-        for at in 0..n {
-            spread[at * n + at] += (centre[at] * BASELINE_SLIP).powi(2);
-        }
-        let precision = invert_spd(&spread, n, RIDGE)?;
-
-        let mut draft = Self {
+        let tail = tail_holding(&columns, members, KEEP);
+        let profiles = frames(parent)
+            .into_iter()
+            .zip(&columns)
+            .map(|(frames, column)| {
+                let middle = median_of(column);
+                Profile {
+                    frames,
+                    low: quantile_of_sorted(column, tail),
+                    high: quantile_of_sorted(column, 1.0 - tail),
+                    middle,
+                    spread: spread_about(column, middle),
+                }
+            })
+            .collect();
+        Some(Self {
             markers,
-            centre,
-            precision,
-            cut: f64::INFINITY,
+            profiles,
             members: members.len(),
-        };
-
-        // The cut has to allow for two things, and the larger of them wins.
-        //
-        // What the population's own members actually do: a gated population is
-        // not normal - it is whatever the person drew round - so the radius
-        // holding `KEEP` of them is measured rather than assumed.
-        let mut distances: Vec<f64> = z.iter().map(|row| distance_squared(&draft, row)).collect();
-        let measured = quantile_of_mut(&mut distances, KEEP);
-
-        // And what the metric itself implies. The covariance carries the
-        // baseline slip, which is a distance the members of *another* sample
-        // will be moved by and this sample's members will not: the reference's
-        // own spread is measured against a baseline it was measured with. So
-        // its members sit inside the radius the slip allows for, and a cut
-        // taken from them alone would be tighter than the metric it is applied
-        // in - rejecting the very cells the slip exists to admit.
-        let modelled = chi_squared_quantile(n, KEEP);
-        draft.cut = measured.max(modelled);
-        Some(draft)
+        })
     }
 
-    /// Which of `parent`'s events look like these cells.
-    ///
-    /// The parent is baselined against itself, so this sample is measured in
-    /// its own frame and nothing is rescaled across samples.
-    ///
-    /// Streamed: each event is put into z space in a reused buffer and scored,
-    /// so the whole parent is never held in a second representation.
+    /// Which of `parent`'s events are these cells: within range on every
+    /// marker, each read in the frame this sample shares with the reference.
     pub fn find_in(&self, parent: Rows<'_>) -> Matched {
-        let n = self.markers.len();
-        if n != parent.markers() {
+        if self.markers.len() != parent.markers() {
             return Matched {
                 members: Vec::new(),
-                distances: Vec::new(),
                 parent: parent.len(),
+                reads: Vec::new(),
             };
         }
-        let baselines = baselines(parent);
-        let mut buffer = Vec::with_capacity(n);
-        let mut distances = Vec::with_capacity(parent.len());
-        let mut members = Vec::new();
-        for (at, row) in parent.rows().enumerate() {
-            z_into(row, &baselines, &mut buffer);
-            let distance = distance_squared(self, &buffer);
-            if distance <= self.cut {
-                members.push(at);
-            }
-            distances.push(distance);
-        }
+        let shared: Vec<(Frame, Frame)> = self
+            .profiles
+            .iter()
+            .zip(frames(parent))
+            .map(|(profile, here)| profile.frames.shared_with(&here))
+            .collect();
+        let ranges: Vec<(f64, f64)> = self
+            .profiles
+            .iter()
+            .zip(&shared)
+            .map(|(profile, (there, here))| {
+                let widened = |end: f64, outwards: f64| {
+                    let read = there.read(end);
+                    here.value_at(read + outwards * BASELINE_SLIP * read.abs())
+                };
+                (widened(profile.low, -1.0), widened(profile.high, 1.0))
+            })
+            .collect();
+        let members: Vec<usize> = parent
+            .rows()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.iter()
+                    .zip(&ranges)
+                    .all(|(value, (low, high))| (*low..=*high).contains(&f64::from(*value)))
+            })
+            .map(|(at, _)| at)
+            .collect();
+        let reads = self
+            .markers
+            .iter()
+            .enumerate()
+            .map(|(at, marker)| {
+                let (there, here) = shared[at];
+                let profile = &self.profiles[at];
+                let values: Vec<f64> = members
+                    .iter()
+                    .map(|event| f64::from(parent.row(*event)[at]))
+                    .collect();
+                MarkerRead {
+                    marker: marker.clone(),
+                    by_landmarks: there.by_landmarks,
+                    reference_middle: there.read(profile.middle),
+                    reference_spread: profile.spread / there.unit,
+                    middle: if values.is_empty() {
+                        f64::NAN
+                    } else {
+                        here.read(median_of(&values))
+                    },
+                }
+            })
+            .collect();
         Matched {
             members,
-            distances,
             parent: parent.len(),
+            reads,
         }
     }
 }
+
+/// The share of each marker's two tails left out so that `keep` of the
+/// members are within range on every marker at once.
+///
+/// Measured on the members rather than assumed: markers that move together
+/// leave out the same cells, and independent ones leave out different cells,
+/// and only the members say which.
+fn tail_holding(columns: &[Vec<f64>], members: Rows<'_>, keep: f64) -> f64 {
+    let held = |tail: f64| {
+        let ranges: Vec<(f64, f64)> = columns
+            .iter()
+            .map(|c| {
+                (
+                    quantile_of_sorted(c, tail),
+                    quantile_of_sorted(c, 1.0 - tail),
+                )
+            })
+            .collect();
+        let inside = members
+            .rows()
+            .filter(|row| {
+                row.iter()
+                    .zip(&ranges)
+                    .all(|(v, (low, high))| (*low..=*high).contains(&f64::from(*v)))
+            })
+            .count();
+        inside as f64 / members.len() as f64
+    };
+    let (mut wide, mut narrow) = (0.0, (1.0 - keep) / 2.0);
+    if held(narrow) >= keep {
+        return narrow;
+    }
+    for _ in 0..30 {
+        let mid = (wide + narrow) / 2.0;
+        if held(mid) >= keep {
+            wide = mid;
+        } else {
+            narrow = mid;
+        }
+    }
+    wide
+}
+
+/// The value `q` of the way up sorted `values`, by nearest rank.
+fn quantile_of_sorted(values: &[f64], q: f64) -> f64 {
+    if values.is_empty() {
+        return f64::NAN;
+    }
+    values[((values.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize]
+}
+
+/// Where the matched cells sit on one marker against the reference's, both
+/// in the frame the two samples share.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerRead {
+    pub marker: Arc<str>,
+    pub by_landmarks: bool,
+    pub reference_middle: f64,
+    pub reference_spread: f64,
+    /// NaN where nothing matched.
+    pub middle: f64,
+}
+
+impl MarkerRead {
+    /// Whether the matched cells' middle has left the reference population:
+    /// further from its middle than its own spread, allowing for the noise in
+    /// the frames.
+    pub fn drifted(&self) -> bool {
+        let allowed = self.reference_spread + BASELINE_SLIP * self.reference_middle.abs();
+        !((self.middle - self.reference_middle).abs() <= allowed)
+    }
+}
+
+/// The fewest matched cells a gate is moved onto.
+pub const FEWEST_MATCHED: usize = 50;
+
+/// The least share of its parent the matched cells may be, against the
+/// reference population's share of its own: a population a fifth as common
+/// may be real; rarer, the cells that match are mostly near misses from the
+/// populations round it.
+pub const LEAST_SHARE: f64 = 0.2;
+
+/// The share of the matched cells the largest cloud they form on the plot
+/// must hold for them to be one population.
+pub const ONE_CLOUD: f64 = 0.8;
 
 /// The events of one sample that match a signature.
 pub struct Matched {
     /// Indices into the parent population.
     pub members: Vec<usize>,
-    /// Every parent event's squared distance from the signature, in the same
-    /// order as the parent. Kept whole rather than filtered, because how the
-    /// distances are distributed is the evidence for whether the population is
-    /// there at all.
-    pub distances: Vec<f64>,
     pub parent: usize,
+    /// Per marker, where the matched cells sit against the reference.
+    pub reads: Vec<MarkerRead>,
 }
 
 impl Matched {
@@ -547,83 +530,38 @@ impl Matched {
         }
         self.members.len() as f64 / self.parent as f64
     }
-}
 
-/// The value a chi-squared with `k` degrees of freedom falls below with
-/// probability `p`.
-///
-/// Wilson-Hilferty: a chi-squared's cube root is very nearly normal, which
-/// turns the quantile into one line and is within a fraction of a percent
-/// across the range this uses - far inside the precision the covariance it is
-/// applied to can claim.
-pub fn chi_squared_quantile(k: usize, p: f64) -> f64 {
-    if k == 0 {
-        return 0.0;
+    /// Why these cells are too weak a match to move a gate onto, if they are,
+    /// against `reference_share`, the reference population's share of its
+    /// parent.
+    pub fn weak(&self, reference_share: f64) -> Option<String> {
+        if self.members.len() < FEWEST_MATCHED {
+            return Some(format!(
+                "only {} cells match the reference population; {FEWEST_MATCHED} are needed",
+                self.members.len()
+            ));
+        }
+        if self.fraction() < LEAST_SHARE * reference_share {
+            return Some(format!(
+                "{:.3}% of the parent matched against {:.3}% on the reference - under a fifth \
+                 as common, so most of the cells matched are likely near misses",
+                self.fraction() * 100.0,
+                reference_share * 100.0
+            ));
+        }
+        self.reads.iter().find(|read| read.drifted()).map(|read| {
+            format!(
+                "on {} the matched cells sit at {:.2} against {:.2} on the reference ({}) - \
+                 not the same cells",
+                read.marker,
+                read.middle,
+                read.reference_middle,
+                if read.by_landmarks {
+                    "0 at the negative's peak, 1 at the valley above it"
+                } else {
+                    "in spreads from the parent's middle"
+                }
+            )
+        })
     }
-    let k = k as f64;
-    let z = normal_quantile(p);
-    let term = 1.0 - 2.0 / (9.0 * k) + z * (2.0 / (9.0 * k)).sqrt();
-    (k * term * term * term).max(0.0)
-}
-
-/// The standard normal's inverse cumulative distribution.
-///
-/// Acklam's rational approximation, accurate to about one part in a billion,
-/// which is far more than anything here needs; it is used because a shorter
-/// approximation would be no simpler to read and would need its error
-/// justifying.
-pub fn normal_quantile(p: f64) -> f64 {
-    const A: [f64; 6] = [
-        -3.969_683_028_665_376e1,
-        2.209_460_984_245_205e2,
-        -2.759_285_104_469_687e2,
-        1.383_577_518_672_690e2,
-        -3.066_479_806_614_716e1,
-        2.506_628_277_459_239,
-    ];
-    const B: [f64; 5] = [
-        -5.447_609_879_822_406e1,
-        1.615_858_368_580_409e2,
-        -1.556_989_798_598_866e2,
-        6.680_131_188_771_972e1,
-        -1.328_068_155_288_572e1,
-    ];
-    const C: [f64; 6] = [
-        -7.784_894_002_430_293e-3,
-        -3.223_964_580_411_365e-1,
-        -2.400_758_277_161_838,
-        -2.549_732_539_343_734,
-        4.374_664_141_464_968,
-        2.938_163_982_698_783,
-    ];
-    const D: [f64; 4] = [
-        7.784_695_709_041_462e-3,
-        3.224_671_290_700_398e-1,
-        2.445_134_137_142_996,
-        3.754_408_661_907_416,
-    ];
-    const LOW: f64 = 0.024_25;
-
-    let p = p.clamp(1e-12, 1.0 - 1e-12);
-    if p < LOW {
-        let q = (-2.0 * p.ln()).sqrt();
-        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
-            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
-    } else if p <= 1.0 - LOW {
-        let q = p - 0.5;
-        let r = q * q;
-        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
-            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
-    } else {
-        -normal_quantile(1.0 - p)
-    }
-}
-
-fn quantile_of_mut(values: &mut [f64], q: f64) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let at = ((values.len() - 1) as f64 * q.clamp(0.0, 1.0)).round() as usize;
-    values[at]
 }

@@ -271,22 +271,71 @@ fn a_shape_follows_its_population_across() {
     assert!((centre.1 + 3.0).abs() < 0.3, "y centre {}", centre.1);
 }
 
+/// The population grew 2.5 times on x: the gate grows as far as the area
+/// limit lets it, 1.3 times, in the population's proportions - x 2.5 times
+/// y, so x by sqrt(1.3 * 2.5) and y by sqrt(1.3 / 2.5).
 #[test]
-fn a_shape_grows_with_a_population_that_spread_out() {
+fn a_shape_grows_with_a_population_that_spread_out_as_far_as_the_area_limit() {
     let mut rng = Cloud(12);
     let from = rng.blob((0.0, 0.0), (1.0, 1.0), 3000);
     let to = rng.blob((0.0, 0.0), (2.5, 1.0), 3000);
     let moved = Reshape::between(&from, &to);
+    assert!(moved.clamped);
     assert!(
-        (moved.scale.0 - 2.5).abs() < 0.4,
-        "x should have grown 2.5x, got {}",
-        moved.scale.0
+        (moved.scale.0 * moved.scale.1 - 1.3).abs() < 1e-9,
+        "{:?}",
+        moved.scale
+    );
+    assert!((moved.scale.0 - 1.803).abs() < 0.2, "x {}", moved.scale.0);
+    assert!((moved.scale.1 - 0.721).abs() < 0.1, "y {}", moved.scale.1);
+}
+
+/// Shrunk to a third on both axes: the area is held at 0.7, sqrt(0.7) each.
+#[test]
+fn a_shape_shrinks_with_a_population_no_further_than_the_area_limit() {
+    let mut rng = Cloud(18);
+    let from = rng.blob((0.0, 0.0), (3.0, 3.0), 3000);
+    let to = rng.blob((0.0, 0.0), (1.0, 1.0), 3000);
+    let moved = Reshape::between(&from, &to);
+    assert!(moved.clamped);
+    assert!(
+        (moved.scale.0 - 0.7f64.sqrt()).abs() < 0.02,
+        "{:?}",
+        moved.scale
     );
     assert!(
-        (moved.scale.1 - 1.0).abs() < 0.2,
-        "y should not have changed, got {}",
-        moved.scale.1
+        (moved.scale.1 - 0.7f64.sqrt()).abs() < 0.02,
+        "{:?}",
+        moved.scale
     );
+}
+
+#[test]
+fn a_shape_grown_within_the_area_limit_is_not_clamped() {
+    let mut rng = Cloud(19);
+    let from = rng.blob((0.0, 0.0), (1.0, 1.0), 3000);
+    let to = rng.blob((0.0, 0.0), (1.1, 1.1), 3000);
+    let moved = Reshape::between(&from, &to);
+    assert!(!moved.clamped, "{:?}", moved.scale);
+    assert!(
+        (moved.scale.0 * moved.scale.1 - 1.21).abs() < 0.15,
+        "{:?}",
+        moved.scale
+    );
+}
+
+#[test]
+fn an_area_change_of_thirty_percent_either_way_is_within_the_limit() {
+    for (ratio, within) in [
+        (0.69, false),
+        (0.7, true),
+        (1.0, true),
+        (1.3, true),
+        (1.31, false),
+    ] {
+        assert_eq!(within_area_limit(ratio), within, "{ratio}");
+    }
+    assert!(!within_area_limit(f64::NAN));
 }
 
 #[test]

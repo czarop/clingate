@@ -2490,20 +2490,30 @@ fn panel(
     members: usize,
     population: (f32, f32, f32),
 ) -> polars::prelude::DataFrame {
+    populations(seed, background, &[(members, population, 25.0)])
+}
+
+/// [`panel`] with any number of populations, each `(how many, where, how far
+/// it spreads on the two axes)`.
+fn populations(
+    seed: u64,
+    background: usize,
+    clouds: &[(usize, (f32, f32, f32), f32)],
+) -> polars::prelude::DataFrame {
     use polars::prelude::*;
     let mut rng = Spread(seed);
-    let mut xs = Vec::with_capacity(background + members);
-    let mut ys = Vec::with_capacity(background + members);
-    let mut marker = Vec::with_capacity(background + members);
+    let (mut xs, mut ys, mut marker) = (Vec::new(), Vec::new(), Vec::new());
     for _ in 0..background {
         xs.push(rng.about(200.0, 60.0));
         ys.push(rng.about(200.0, 60.0));
         marker.push(rng.about(100.0, 30.0));
     }
-    for _ in 0..members {
-        xs.push(rng.about(population.0, 25.0));
-        ys.push(rng.about(population.1, 25.0));
-        marker.push(rng.about(population.2, 20.0));
+    for (members, population, spread) in clouds {
+        for _ in 0..*members {
+            xs.push(rng.about(population.0, *spread));
+            ys.push(rng.about(population.1, *spread));
+            marker.push(rng.about(population.2, 20.0));
+        }
     }
     df![X => xs, Y => ys, "CD161" => marker].unwrap()
 }
@@ -2601,15 +2611,26 @@ fn match_run(
     crate::gates::GateState,
     Arc<str>,
 ) {
+    match_against(fit, panel(2, 1800, 200, moved_to))
+}
+
+/// [`match_run`] on `sample`. The reference's population is 200 of 2000
+/// events, at (700, 700) inside a rectangle 160 wide, and bright.
+fn match_against(
+    fit: crate::gate_rules::rule::ShapeFit,
+    sample: polars::prelude::DataFrame,
+) -> (
+    crate::gate_rules::autogate::Report,
+    crate::gates::GateState,
+    Arc<str>,
+) {
     use crate::gate_rules::autogate::{measure_file, position_all};
 
-    // The reference: the population sits at (700, 700) and is bright.
     let (mut state, gate_id) = gate_around(700.0, 700.0, 80.0);
     let map = two_specimens();
     let rules = phenotype_rule(fit, &["CD161"]);
 
     let reference = panel(1, 1800, 200, (700.0, 700.0, 800.0));
-    let sample = panel(2, 1800, 200, moved_to);
 
     let mut measured = Vec::new();
     let mut unmeasured = Vec::new();
@@ -2706,11 +2727,137 @@ fn drawing_a_polygon_replaces_the_rectangle_with_one() {
         panic!("drawing a polygon should have produced one");
     };
     assert!(nodes.len() >= 3, "a polygon needs at least three points");
+    assert_eq!(
+        report.positioned[0]
+            .phenotype
+            .as_ref()
+            .unwrap()
+            .refused_outline,
+        None
+    );
     let (cx, cy) = centre_of(&placed);
     assert!(
         (cx - 300.0).abs() < 80.0 && (cy - 650.0).abs() < 80.0,
         "the polygon centred on ({cx:.0}, {cy:.0}), the cells are at (300, 650)"
     );
+}
+
+fn reasons(report: &crate::gate_rules::autogate::Report) -> Vec<&str> {
+    report.skipped.iter().map(|s| s.reason.as_str()).collect()
+}
+
+/// The sample's gate is still the reference's, round (700, 700).
+fn left_where_it_was(state: &crate::gates::GateState, gate_id: &Arc<str>) -> bool {
+    let placed = state
+        .gate_for_file(gate_id, &Arc::from("fs_b"), &two_specimens())
+        .expect("the sample has a gate");
+    centre_of(&placed) == (700.0, 700.0)
+}
+
+fn rectangle_area(state: &crate::gates::GateState, gate_id: &Arc<str>) -> f32 {
+    let placed = state
+        .gate_for_file(gate_id, &Arc::from("fs_b"), &two_specimens())
+        .expect("the sample has a gate");
+    let GateGeometry::Rectangle { min, max } = &placed.get_gate_ref(None).unwrap().geometry else {
+        panic!("not a rectangle");
+    };
+    (max.get_coordinate(X).unwrap() - min.get_coordinate(X).unwrap())
+        * (max.get_coordinate(Y).unwrap() - min.get_coordinate(Y).unwrap())
+}
+
+/// 40 bright cells: more than enough to draw round, too few to trust.
+#[test]
+fn fewer_than_fifty_matched_cells_leave_the_gate_where_it_is() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (report, state, gate_id) = match_against(
+        ShapeFit::KeepShape,
+        panel(2, 1800, 40, (300.0, 650.0, 800.0)),
+    );
+    assert!(report.positioned.is_empty());
+    assert!(
+        reasons(&report)
+            .iter()
+            .any(|r| r.contains("cells match the reference population; 50 are needed")),
+        "{:?}",
+        reasons(&report)
+    );
+    assert!(left_where_it_was(&state, &gate_id));
+}
+
+/// 10% of the parent on the reference; 60 of 3860 here is 1.6%, under a
+/// fifth of that.
+#[test]
+fn a_population_under_a_fifth_as_common_as_the_reference_leaves_the_gate_where_it_is() {
+    use crate::gate_rules::rule::ShapeFit;
+    let (report, state, gate_id) = match_against(
+        ShapeFit::KeepShape,
+        panel(2, 3800, 60, (300.0, 650.0, 800.0)),
+    );
+    assert!(report.positioned.is_empty());
+    assert!(
+        reasons(&report)
+            .iter()
+            .any(|r| r.contains("under a fifth as common")),
+        "{:?}",
+        reasons(&report)
+    );
+    assert!(left_where_it_was(&state, &gate_id));
+}
+
+/// The bright cells sit half in one place on the plot and half in another:
+/// no one gate is them.
+#[test]
+fn matched_cells_in_two_places_leave_the_gate_where_it_is() {
+    use crate::gate_rules::rule::ShapeFit;
+    let sample = populations(
+        2,
+        1800,
+        &[
+            (100, (300.0, 650.0, 800.0), 25.0),
+            (100, (650.0, 250.0, 800.0), 25.0),
+        ],
+    );
+    let (report, state, gate_id) = match_against(ShapeFit::KeepShape, sample);
+    assert!(report.positioned.is_empty());
+    assert!(
+        reasons(&report)
+            .iter()
+            .any(|r| r.contains("separate clouds")),
+        "{:?}",
+        reasons(&report)
+    );
+    assert!(left_where_it_was(&state, &gate_id));
+}
+
+/// The population spreads 2.4 times as far on both axes: the 160 by 160
+/// rectangle grows by 1.3 in area, to 33,280, not 5.8 times.
+#[test]
+fn a_kept_shape_grows_by_no_more_than_the_area_limit() {
+    use crate::gate_rules::rule::ShapeFit;
+    let sample = populations(2, 1800, &[(200, (300.0, 650.0, 800.0), 60.0)]);
+    let (report, state, gate_id) = match_against(ShapeFit::KeepShape, sample);
+    assert_eq!(report.positioned.len(), 1, "{:?}", reasons(&report));
+    let area = rectangle_area(&state, &gate_id);
+    assert!((area - 33_280.0).abs() < 50.0, "area {area}");
+    assert!(report.positioned[0].phenotype.as_ref().unwrap().clamped);
+}
+
+/// The outline round a population spreading 2.4 times as far would be over
+/// five times the reference's: the shape is kept instead, grown by 1.3.
+#[test]
+fn a_polygon_that_would_change_the_area_too_much_keeps_the_shape_instead() {
+    use crate::gate_rules::rule::ShapeFit;
+    let sample = populations(2, 1800, &[(200, (300.0, 650.0, 800.0), 60.0)]);
+    let (report, state, gate_id) = match_against(ShapeFit::DrawPolygon, sample);
+    assert_eq!(report.positioned.len(), 1, "{:?}", reasons(&report));
+    let read = report.positioned[0].phenotype.as_ref().unwrap();
+    assert!(
+        read.refused_outline.is_some_and(|r| r > 3.0),
+        "{:?}",
+        read.refused_outline
+    );
+    let area = rectangle_area(&state, &gate_id);
+    assert!((area - 33_280.0).abs() < 50.0, "area {area}");
 }
 
 #[test]
@@ -2740,12 +2887,15 @@ fn the_report_says_what_was_matched_and_where_it_sat() {
         "matched {} - it has taken in background",
         read.matched
     );
-    // The marker's centre should read about the same on both, since it is the
-    // same population - that is the check that these are the same cells.
-    let (_, there, here) = &read.centres[0];
+    // CD161 has a negative and a bright population on both, so it is read on
+    // their landmarks, and the same cells read about the same on both.
+    let cd161 = &read.centres[0];
+    assert!(cd161.by_landmarks);
     assert!(
-        (there - here).abs() < 3.0,
-        "CD161 read {there:.1} on the reference and {here:.1} here"
+        (cd161.reference_middle - cd161.middle).abs() < 0.5 && !cd161.drifted(),
+        "CD161 read {:.2} on the reference and {:.2} here",
+        cd161.reference_middle,
+        cd161.middle
     );
     assert!(read.purity > 0.5, "purity {:.2}", read.purity);
 }
