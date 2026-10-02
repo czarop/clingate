@@ -273,6 +273,7 @@ pub enum Rule {
     PercentileOffset(PercentileOffsetRule),
     AboveTheNegative(AboveTheNegativeRule),
     InTheValley(ValleyRule),
+    ValleyOrSmear(ValleyOrSmearRule),
     MatchThePhenotype(PhenotypeRule),
     FromAnotherGate(FromGateRule),
     NextToGate(NextToRule),
@@ -642,6 +643,88 @@ impl ValleyRule {
     }
 }
 
+/// "In the valley where there is one; where there is a smear, as on an
+/// example of one."
+///
+/// One rule for a gate that is a clear population on some samples and a
+/// smear on others. Each sample is read for a dip between its negative and
+/// its positive: with one, the gate goes in it, as [`ValleyRule`] puts it;
+/// without, it goes as far above the negative as on a hand-gated smear, as
+/// [`AboveTheNegativeRule`] puts it - or where another gate is, with
+/// `fallback`.
+///
+/// The smear example is the reference when the reference is itself a smear.
+/// When the reference has a dip, its gate says nothing about where a smear is
+/// cut, so a run stops at the first smear for a person to gate it by hand,
+/// and that sample becomes `smear_example`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValleyOrSmearRule {
+    /// Scales the bandwidth the dip is looked for with - see
+    /// [`ValleyRule::smoothing`].
+    #[serde(default = "one")]
+    pub smoothing: f64,
+    #[serde(default)]
+    pub confidence: CountAndSeparation,
+    /// On a smear, where this gate is - usually the same gate under another
+    /// parent - rather than as on the smear example.
+    #[serde(default)]
+    pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
+    /// The hand-gated sample a smear is placed from, named as a rule names a
+    /// file, once one is known.
+    #[serde(default)]
+    pub smear_example: Option<Arc<str>>,
+}
+
+impl Default for ValleyOrSmearRule {
+    fn default() -> Self {
+        Self {
+            smoothing: 1.0,
+            confidence: CountAndSeparation::default(),
+            fallback: None,
+            smear_example: None,
+        }
+    }
+}
+
+impl ValleyOrSmearRule {
+    /// The rule a sample with a dip is placed by.
+    pub fn valley(&self) -> ValleyRule {
+        ValleyRule {
+            smoothing: self.smoothing,
+            confidence: self.confidence.clone(),
+            fallback: self.fallback.clone(),
+        }
+    }
+
+    /// The rule a smear is placed by, against the smear example: the gate on
+    /// a smear sits in the dim cells, so the negative is its peak, not all
+    /// that is below the gate.
+    pub fn smear(&self) -> AboveTheNegativeRule {
+        AboveTheNegativeRule {
+            find: NegativeFinder::NegativePeak,
+            confidence: self.confidence.clone(),
+            ..AboveTheNegativeRule::default()
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        let mut how = "in the dip between the negative and the positive, as on the reference; \
+                       on a smear, "
+            .to_string();
+        match (&self.fallback, &self.smear_example) {
+            (Some(fallback), _) => how.push_str(&format!("where {} is", fallback.describe())),
+            (None, Some(example)) => {
+                how.push_str(&format!("as far above the negative as on {example}"))
+            }
+            (None, None) => how.push_str("as far above the negative as on a smear gated by hand"),
+        }
+        if self.smoothing != 1.0 {
+            how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
+        }
+        how
+    }
+}
+
 impl Rule {
     /// Solve and score, dispatching to the variant's own implementation.
     pub fn apply(&self, values: &[f64], reference_x: Option<f64>) -> Result<Solved, SolveError> {
@@ -655,6 +738,7 @@ impl Rule {
             // for it to return.
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
@@ -681,6 +765,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
+            Rule::ValleyOrSmear(r) => r.confidence.assess(threshold, reference_x),
             Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
                 return None;
             }
@@ -693,6 +778,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.solve(values),
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
@@ -705,6 +791,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.describe(),
             Rule::AboveTheNegative(r) => r.describe(),
             Rule::InTheValley(r) => r.describe(),
+            Rule::ValleyOrSmear(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
             Rule::FromAnotherGate(r) => r.describe(),
             Rule::NextToGate(r) => r.describe(),
@@ -731,6 +818,7 @@ impl Rule {
             Rule::PercentileOffset(_)
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => None,
@@ -765,6 +853,7 @@ impl Rule {
         match self {
             Rule::FromAnotherGate(r) => r.anchors(),
             Rule::InTheValley(r) => r.fallback.iter().collect(),
+            Rule::ValleyOrSmear(r) => r.fallback.iter().collect(),
             Rule::NextToGate(r) => vec![&r.anchor],
             _ => Vec::new(),
         }
@@ -777,6 +866,7 @@ impl Rule {
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
             Rule::InTheValley(_) => "In the valley",
+            Rule::ValleyOrSmear(_) => "Valley, or as on a smear",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
             Rule::NextToGate(_) => "Next to another gate",

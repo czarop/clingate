@@ -741,7 +741,10 @@ fn starting_position_matters(rule: &GateRule) -> bool {
     match &rule.rule {
         Rule::TailFraction(_) => true,
         Rule::AboveTheNegative(r) => r.find == NegativeFinder::BelowTheGate,
-        Rule::PercentileOffset(_) | Rule::InTheValley(_) | Rule::MatchThePhenotype(_) => false,
+        Rule::PercentileOffset(_)
+        | Rule::InTheValley(_)
+        | Rule::ValleyOrSmear(_)
+        | Rule::MatchThePhenotype(_) => false,
         // Where it goes is read from another gate, not from where it began.
         Rule::FromAnotherGate(_) => false,
         // Grown up to another gate, its far side stays where it began.

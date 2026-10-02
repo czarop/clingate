@@ -723,6 +723,7 @@ fn the_banner_names_the_gate_the_sample_and_why() {
             group: Arc::from("DONOR-B"),
         }),
         why: "no FMO for this specimen".to_string(),
+        smear_example_for: None,
     };
     assert_eq!(
         crate::gate_editor::paused_run::describe_need(&need),
@@ -815,8 +816,98 @@ fn stopping_a_paused_run_keeps_it_with_the_rules_it_ran() {
     let ran = app.with(|held| {
         let ran = held.rules.peek().clone();
         held.rules.clone().set(RuleStore::default());
-        paused.keep(&held.rules_run).unwrap();
+        paused.stop(held.rules, &held.rules_run).unwrap();
         ran
+    });
+    let record = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .expect("the run is kept");
+    assert_eq!(record.rules, ran);
+}
+
+/// A run paused at the first smear of a valley-or-smear rule on the open
+/// workspace, with the rule in the document; and the rules it ran.
+fn pause_at_a_smear(app: &mut App) -> (crate::gate_editor::paused_run::PausedRun, RuleStore) {
+    use clingate_core::gate_rules::rule::Rule;
+    use clingate_core::gate_rules::run::{NeedsPlacing, Paused, RunOutcome};
+    app.with(|held| {
+        let mut rules = rules_that_stop_at_a_parent(&held.gates.peek());
+        let target = rules.entries()[1].target.clone();
+        let mut either = rules.get(&target).unwrap().clone();
+        either.rule = Rule::ValleyOrSmear(Default::default());
+        rules.insert(target.clone(), either);
+        held.rules.clone().set(rules.clone());
+        let outcome = RunOutcome {
+            report: Default::default(),
+            placements: Vec::new(),
+            cancelled: false,
+            events: Default::default(),
+            paused: Some(Paused {
+                next_level: 1,
+                needs: vec![NeedsPlacing {
+                    gate_id: Arc::from("g"),
+                    gate: target.gate.clone(),
+                    parent_gate: target.parent.clone(),
+                    file: Arc::from("file_b"),
+                    specimen: None,
+                    why: String::new(),
+                    smear_example_for: Some(target),
+                }],
+            }),
+        };
+        let paused = crate::gate_editor::paused_run::PausedRun::new(
+            outcome,
+            1,
+            rules.clone(),
+            &held.gates.peek(),
+        );
+        (paused, rules)
+    })
+}
+
+/// The smear example `rules` has for its valley-or-smear rule.
+fn smear_example(rules: &RuleStore) -> Option<Arc<str>> {
+    rules
+        .entries()
+        .iter()
+        .find_map(|entry| match &entry.rule.rule {
+            clingate_core::gate_rules::rule::Rule::ValleyOrSmear(either) => {
+                either.smear_example.clone()
+            }
+            _ => None,
+        })
+}
+
+#[test]
+fn a_run_paused_at_a_smear_goes_on_with_it_as_the_rule_s_example() {
+    let mut app = App::new();
+    app.open(&two_samples_with_a_rule("paused-run-smear"));
+    let (paused, ran) = pause_at_a_smear(&mut app);
+    app.with(|held| {
+        assert!(
+            paused.why_not_go_on(&held.gates.peek(), &ran).is_some(),
+            "it goes on only with the example taken in"
+        );
+        paused.adopt_rules(held.rules);
+        assert_eq!(smear_example(&held.rules.peek()), Some(Arc::from("file_b")));
+        assert_eq!(
+            paused.why_not_go_on(&held.gates.peek(), &held.rules.peek()),
+            None
+        );
+    });
+    assert!(crate::gate_editor::paused_run::paused_message(paused.needs()).contains("smear"));
+}
+
+#[test]
+fn stopping_a_run_paused_at_a_smear_takes_the_example_out_and_keeps_the_rules_it_ran() {
+    let folder = two_samples_with_a_rule("paused-run-smear-stop");
+    let mut app = App::new();
+    app.open(&folder);
+    let (paused, ran) = pause_at_a_smear(&mut app);
+    app.with(|held| {
+        paused.adopt_rules(held.rules);
+        paused.stop(held.rules, &held.rules_run).unwrap();
+        assert_eq!(*held.rules.peek(), ran);
     });
     let record = clingate_core::review::RunRecord::load(&folder)
         .unwrap()

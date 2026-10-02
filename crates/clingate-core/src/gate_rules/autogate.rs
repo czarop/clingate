@@ -1987,8 +1987,8 @@ pub fn solve_all_reporting(
         // from the moved gate and the drift would compound every time. Only a
         // rule naming one sample is affected - a partner rule's reference is
         // inside the specimen it is positioning, which is the point of it.
-        if let MeasuredOn::File(named) = &rule.measured_on
-            && specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen)
+        if hand_gated(rule)
+            .any(|named| specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen))
         {
             let holds = state
                 .gate_for_file(&measured.gate_id, &measured.file, metadata)
@@ -2049,11 +2049,13 @@ pub fn solve_all_reporting(
             steps.push((measured, Step::Unplaced(Some(specimen), reason)));
             continue;
         };
+        let smear = smear_example(store, rule, measured, measurements, metadata);
         steps.push((
             measured,
             Step::Place {
                 rule,
                 reference,
+                smear,
                 specimen,
             },
         ));
@@ -2134,6 +2136,9 @@ enum Step<'a> {
     Place {
         rule: &'a GateRule,
         reference: Reference<'a>,
+        /// For a valley-or-smear rule, the hand-gated smear it places a
+        /// smear from, once there is one.
+        smear: Option<Reference<'a>>,
         specimen: MetaDataKey,
     },
 }
@@ -2161,6 +2166,7 @@ fn place_side_by_side(
             let Step::Place {
                 rule,
                 reference,
+                smear,
                 specimen,
             } = step
             else {
@@ -2171,7 +2177,15 @@ fn place_side_by_side(
             }
             let beside = &measured.beside;
             let outcome = position_one(
-                state, rule, measured, reference, specimen, metadata, beside, &described,
+                state,
+                rule,
+                measured,
+                reference,
+                smear.as_ref(),
+                specimen,
+                metadata,
+                beside,
+                &described,
             )
             .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside))
             .map(|outcome| read_on(rule, outcome));
@@ -2611,6 +2625,7 @@ fn position_one(
     rule: &GateRule,
     measured: &Measurement,
     reference: &Reference<'_>,
+    smear: Option<&Reference<'_>>,
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
     beside: &[crate::gate_rules::clearance::Neighbour],
@@ -2633,6 +2648,11 @@ fn position_one(
     }
     if let Rule::NextToGate(wanted) = &rule.rule {
         return position_next_to(state, wanted, measured, specimen, metadata);
+    }
+    if let Rule::ValleyOrSmear(either) = &rule.rule {
+        return position_valley_or_smear(
+            state, rule, either, measured, reference, smear, specimen, metadata, beside, described,
+        );
     }
     let line = measured
         .line
@@ -3596,6 +3616,108 @@ fn set_edge(
 /// the Review tab flags it, and not so low that a run pauses for it - placing
 /// it where a person would is the point.
 pub const FLAGGED_CONFIDENCE: f64 = 0.25;
+
+/// Why a smear was not placed: there is no smear gated by hand to place it
+/// from. A pausing run stops for a person to gate the first one.
+pub const NO_SMEAR_EXAMPLE: &str = "a smear, with no dip between its negative and positive, and no smear gated by hand to \
+     place it from";
+
+/// The files a rule is calibrated on by hand: the one it is measured on, and
+/// a valley-or-smear rule's smear example. Their gates are where a person put
+/// them, so a run leaves them there.
+fn hand_gated(rule: &GateRule) -> impl Iterator<Item = &Arc<str>> {
+    let named = match &rule.measured_on {
+        MeasuredOn::File(named) => Some(named),
+        _ => None,
+    };
+    let example = match &rule.rule {
+        Rule::ValleyOrSmear(either) => either.smear_example.as_ref(),
+        _ => None,
+    };
+    named.into_iter().chain(example)
+}
+
+/// A valley-or-smear rule's smear example, as measured in this run.
+fn smear_example<'a>(
+    store: &RuleStore,
+    rule: &GateRule,
+    measured: &Measurement,
+    measurements: &'a [Measurement],
+    metadata: &MetaDataFileMap,
+) -> Option<Reference<'a>> {
+    let Rule::ValleyOrSmear(either) = &rule.rule else {
+        return None;
+    };
+    let named = MeasuredOn::File(either.smear_example.clone()?);
+    let id = store.reference_file(&measured.file, &named, metadata)?;
+    let measurement = measurements
+        .iter()
+        .find(|m| m.file == id && m.gate_id == measured.gate_id)?;
+    Some(Reference { id, measurement })
+}
+
+/// In its valley, when this sample and the reference both have a dip;
+/// otherwise a smear - where the fallback gate is, or as far above the
+/// negative as on the smear example: the one gated by hand, or the reference
+/// when it is a smear itself.
+#[allow(clippy::too_many_arguments)]
+fn position_valley_or_smear(
+    state: &GateState,
+    rule: &GateRule,
+    either: &crate::gate_rules::rule::ValleyOrSmearRule,
+    measured: &Measurement,
+    reference: &Reference<'_>,
+    smear: Option<&Reference<'_>>,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+    beside: &[crate::gate_rules::clearance::Neighbour],
+    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
+) -> Result<Outcome, String> {
+    let line = measured
+        .line
+        .as_ref()
+        .ok_or_else(|| "this gate was not measured along an axis".to_string())?;
+    let reference_line = reference
+        .measurement
+        .line
+        .as_ref()
+        .ok_or_else(|| "the reference was not measured along an axis".to_string())?;
+    let valley = either.valley();
+    let on_reference = valley.calibrate(&reference_line.values, reference_line.current);
+    let here = on_reference
+        .as_ref()
+        .ok()
+        .map(|from| valley.place(&line.values, from.offset, line.current));
+    let placed_by = |how: Rule, from: &Reference<'_>| {
+        let as_rule = GateRule {
+            rule: how,
+            ..rule.clone()
+        };
+        position_one(
+            state, &as_rule, measured, from, None, specimen, metadata, beside, described,
+        )
+    };
+    let why = match here {
+        Some(Ok(_)) => {
+            let in_the_valley = crate::gate_rules::rule::ValleyRule {
+                fallback: None,
+                ..valley.clone()
+            };
+            return placed_by(Rule::InTheValley(in_the_valley), reference);
+        }
+        Some(Err(why)) => why.to_string(),
+        None => "the reference has no dip either".to_string(),
+    };
+    if let Some(fallback) = valley.fallback_rule(&line.parameter, line.bound) {
+        return fall_back(state, &fallback, measured, specimen, metadata, &why);
+    }
+    let example = match (smear, &on_reference) {
+        (Some(example), _) => example,
+        (None, Err(_)) => reference,
+        (None, Ok(_)) => return Err(NO_SMEAR_EXAMPLE.to_string()),
+    };
+    placed_by(Rule::AboveTheNegative(either.smear()), example)
+}
 
 /// A valley rule that found no valley, `why`, placed by its fallback.
 fn fall_back(

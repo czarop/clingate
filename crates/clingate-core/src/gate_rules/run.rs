@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use rustc_hash::FxBuildHasher;
 
 use crate::gate_rules::autogate::Report;
-use crate::gate_rules::rule_store::RuleStore;
+use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
 use crate::gates::GateState;
 
 /// Everything a run reads apart from the gates.
@@ -326,6 +326,10 @@ pub struct NeedsPlacing {
     /// `None` for a file with no sample id: placed on that file alone.
     pub specimen: Option<crate::omiq::metadata::MetaDataKey>,
     pub why: String,
+    /// The valley-or-smear rule this placement becomes the smear example of,
+    /// where it is the first smear the rule had none for. The run goes on
+    /// from the same level, with [`with_smear_examples`] taking it in.
+    pub smear_example_for: Option<RuleTarget>,
 }
 
 /// Where a pausing run stopped, and what it needs before it goes on.
@@ -475,6 +479,21 @@ fn run_levels(
         if cancel.load(Ordering::Relaxed) {
             return stopped();
         }
+        // A smear with no example to place it from: the level stops before
+        // anything of it is kept, and is done again once a person has gated
+        // the first one, which then places the rest.
+        let examples = if pause {
+            smears_to_gate(&level_report, &inputs.rules)
+        } else {
+            Vec::new()
+        };
+        if !examples.is_empty() {
+            paused = Some(Paused {
+                next_level: step,
+                needs: examples,
+            });
+            break;
+        }
         // The next level reads its populations through these.
         apply_placements(&mut working, &level_placements, &inputs.metadata);
         let needs = if pause {
@@ -564,6 +583,7 @@ pub(crate) fn needing_a_person(
             file: u.file.clone(),
             specimen: u.specimen.clone(),
             why: u.reason.clone(),
+            smear_example_for: None,
         });
     let doubtful = level
         .positioned
@@ -585,8 +605,77 @@ pub(crate) fn needing_a_person(
                 ),
                 None => format!("placed with confidence {:.2}", p.confidence),
             },
+            smear_example_for: None,
         });
     unplaced.chain(doubtful).collect()
+}
+
+/// For each valley-or-smear rule of `level` that met a smear with no example
+/// to place it from, the first such sample: a person gates it by hand, and it
+/// becomes the rule's smear example.
+pub(crate) fn smears_to_gate(level: &Report, rules: &RuleStore) -> Vec<NeedsPlacing> {
+    let mut needs: Vec<NeedsPlacing> = Vec::new();
+    for u in &level.unplaced {
+        if u.reason != crate::gate_rules::autogate::NO_SMEAR_EXAMPLE {
+            continue;
+        }
+        let Some(entry) = rules.entry_for(&u.gate, u.parent_gate.as_deref()) else {
+            continue;
+        };
+        if needs
+            .iter()
+            .any(|n| n.smear_example_for.as_ref() == Some(&entry.target))
+        {
+            continue;
+        }
+        needs.push(NeedsPlacing {
+            gate_id: u.gate_id.clone(),
+            gate: u.gate.clone(),
+            parent_gate: u.parent_gate.clone(),
+            file: u.file.clone(),
+            specimen: u.specimen.clone(),
+            why: "a smear, with no dip: gate it by hand, and the rule places every other smear \
+                  from it"
+                .to_string(),
+            smear_example_for: Some(entry.target.clone()),
+        });
+    }
+    needs
+}
+
+/// `rules` with each placement of `needs` that is a smear example written
+/// into its rule, for a paused run to go on with.
+pub fn with_smear_examples(rules: &RuleStore, needs: &[NeedsPlacing]) -> RuleStore {
+    set_smear_examples(rules, needs, |need, _| Some(need.file.clone()))
+}
+
+/// `rules` with the smear examples `needs` wrote taken out again, for a run
+/// stopped before they were gated by hand.
+pub fn without_smear_examples(rules: &RuleStore, needs: &[NeedsPlacing]) -> RuleStore {
+    set_smear_examples(rules, needs, |need, example| {
+        example.filter(|example| *example != need.file)
+    })
+}
+
+fn set_smear_examples(
+    rules: &RuleStore,
+    needs: &[NeedsPlacing],
+    example: impl Fn(&NeedsPlacing, Option<Arc<str>>) -> Option<Arc<str>>,
+) -> RuleStore {
+    let mut out = rules.clone();
+    for need in needs {
+        let Some(target) = &need.smear_example_for else {
+            continue;
+        };
+        let Some(mut rule) = out.get(target).cloned() else {
+            continue;
+        };
+        if let crate::gate_rules::rule::Rule::ValleyOrSmear(either) = &mut rule.rule {
+            either.smear_example = example(need, either.smear_example.take());
+            out.insert(target.clone(), rule);
+        }
+    }
+    out
 }
 
 /// Every gate with one of `nodes` somewhere under it.

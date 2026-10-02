@@ -152,8 +152,13 @@ impl Session {
                 )));
             }
         }
-        if let Rule::InTheValley(dip) = &rule.rule
-            && let Some(fallback) = dip.fallback_rule(&rule.parameter, rule.bound)
+        let valley = match &rule.rule {
+            Rule::InTheValley(dip) => Some(dip.clone()),
+            Rule::ValleyOrSmear(either) => Some(either.valley()),
+            _ => None,
+        };
+        if let Some(fallback) =
+            valley.and_then(|dip| dip.fallback_rule(&rule.parameter, rule.bound))
         {
             return self.check_follow(target, &fallback);
         }

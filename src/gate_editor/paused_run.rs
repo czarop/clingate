@@ -12,7 +12,9 @@ use clingate_core::axis_store::{AxisStoreStoreExt, Param};
 use clingate_core::gate_rules::autogate::describe;
 use clingate_core::gate_rules::autogate::rule_levels;
 use clingate_core::gate_rules::rule_store::RuleStore;
-use clingate_core::gate_rules::run::{NeedsPlacing, RunOutcome};
+use clingate_core::gate_rules::run::{
+    NeedsPlacing, RunOutcome, with_smear_examples, without_smear_examples,
+};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::NodeId;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
@@ -28,8 +30,11 @@ pub(crate) struct PausedRun {
     so_far: RunOutcome,
     /// The document the run was made on.
     document: u64,
-    /// The rules it ran, and the levels they put the gates in: going on from
-    /// a level means the same thing only while both stand.
+    /// The rules it ran.
+    ran: RuleStore,
+    /// The rules it goes on with - those it ran, with each smear it stopped
+    /// at as its rule's example - and the levels they put the gates in: going
+    /// on from a level means the same thing only while both stand.
     rules: RuleStore,
     levels: Vec<rustc_hash::FxHashSet<NodeId>>,
     /// Which of the needs the editor is showing.
@@ -42,17 +47,46 @@ impl PausedRun {
     pub(crate) fn new(
         so_far: RunOutcome,
         document: u64,
-        rules: RuleStore,
+        ran: RuleStore,
         gates: &GateState,
     ) -> Self {
+        let needs = so_far
+            .paused
+            .as_ref()
+            .map_or(&[][..], |paused| &paused.needs);
+        let rules = with_smear_examples(&ran, needs);
         let levels = rule_levels(gates, &rules);
         Self {
             so_far,
             document,
+            ran,
             rules,
             levels,
             at: 0,
         }
+    }
+
+    /// `rules` made the ones the run goes on with. Called as it pauses, while
+    /// no run is in flight for the change to stop, rather than on Continue.
+    pub(crate) fn adopt_rules(&self, mut rules: Signal<RuleStore>) {
+        if *rules.peek() != self.rules {
+            rules.set(self.rules.clone());
+        }
+    }
+
+    /// The run stopped: the smears it stopped at are taken out of `rules` as
+    /// examples, never having been gated for it, and the run so far is kept
+    /// for review.
+    pub(crate) fn stop(
+        self,
+        mut rules: Signal<RuleStore>,
+        run_with: &RulesRun,
+    ) -> Result<(), String> {
+        let without = without_smear_examples(&rules.peek(), self.needs());
+        if without != *rules.peek() {
+            rules.set(without);
+        }
+        self.keep(run_with)
     }
 
     /// The gates to place by hand.
@@ -92,8 +126,8 @@ impl PausedRun {
     }
 
     /// The run so far kept for review with the rules it ran.
-    pub(crate) fn keep(&self, run_with: &RulesRun) -> Result<(), String> {
-        run_with.keep(&self.so_far, &self.rules)
+    fn keep(&self, run_with: &RulesRun) -> Result<(), String> {
+        run_with.keep(&self.so_far, &self.ran)
     }
 }
 
@@ -105,6 +139,20 @@ pub(crate) fn changed_while_running(going_on: bool) -> &'static str {
     } else {
         "The workspace changed while the rules ran, so the run was stopped and no gates were moved - run it again on the workspace as it is now"
     }
+}
+
+/// What to say when a run pauses for `needs`.
+pub(crate) fn paused_message(needs: &[NeedsPlacing]) -> String {
+    let count = needs.len();
+    let plural = if count == 1 { "" } else { "s" };
+    if needs.iter().any(|need| need.smear_example_for.is_some()) {
+        return format!(
+            "The run paused: {count} smear{plural} with no dip to gate by hand in the editor. Continue the run, and each is the example its rule places every other smear from - Save the rules to keep it"
+        );
+    }
+    format!(
+        "The run paused: {count} placement{plural} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run"
+    )
 }
 
 /// Asks the Gate Rules tab to go on with the paused run. A count, so each ask
@@ -181,6 +229,7 @@ pub(crate) fn show_need(at: usize) {
 pub(crate) fn PausedBanner() -> Element {
     let mut paused = use_context::<Signal<Option<PausedRun>>>();
     let mut go_on = use_context::<Signal<GoOn>>();
+    let rules = use_context::<Signal<RuleStore>>();
     let run_with = RulesRun::from_context();
     let toasts = use_toast();
 
@@ -201,7 +250,7 @@ pub(crate) fn PausedBanner() -> Element {
         let Some(run) = paused.write().take() else {
             return;
         };
-        match run.keep(&run_with) {
+        match run.stop(rules, &run_with) {
             Ok(()) => note(
                 &toasts,
                 "The run was stopped. What it placed before it paused stays, and is on the Review tab",

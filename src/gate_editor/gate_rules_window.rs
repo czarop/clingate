@@ -16,7 +16,7 @@ use clingate_core::gate_rules::choices::{
 use clingate_core::gate_rules::phenotype::MarkerRead;
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
-    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
+    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyOrSmearRule, ValleyRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -296,6 +296,8 @@ pub fn GateRulesWindow() -> Element {
     // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
     // for none.
     let mut valley_fallback = use_signal(String::new);
+    // The sample a valley-or-smear rule places smears from; empty for none.
+    let mut smear_example = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -479,13 +481,10 @@ pub fn GateRulesWindow() -> Element {
                     started.0.rules.clone(),
                     &gate_store.peek(),
                 );
-                let count = paused.needs().len();
+                paused.adopt_rules(rules);
                 warn(
                     &toasts,
-                    format!(
-                        "The run paused: {count} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
-                        if count == 1 { "" } else { "s" }
-                    ),
+                    crate::gate_editor::paused_run::paused_message(paused.needs()),
                 );
                 paused_run.set(Some(paused));
                 active.set(crate::gate_editor::route::Tab::Editor);
@@ -596,6 +595,7 @@ pub fn GateRulesWindow() -> Element {
             MeasuredOn::Partner(t) => measured_on.set(t.to_string()),
             MeasuredOn::File(f) => calibrate_on.set(f.to_string()),
         }
+        smear_example.set(String::new());
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -648,6 +648,17 @@ pub fn GateRulesWindow() -> Element {
                         .unwrap_or_default(),
                 );
             }
+            Rule::ValleyOrSmear(r) => {
+                kind.set("ValleyOrSmear".to_string());
+                smoothing.set(format!("{}", r.smoothing));
+                valley_fallback.set(
+                    r.fallback
+                        .as_ref()
+                        .map(RuleTarget::describe)
+                        .unwrap_or_default(),
+                );
+                smear_example.set(r.smear_example.as_deref().unwrap_or_default().to_string());
+            }
         }
         editing.set(replacing.then(|| entry.target.clone()));
         editing_note.set(Some(if replacing {
@@ -676,6 +687,10 @@ pub fn GateRulesWindow() -> Element {
             warn(&toasts, "Choose the parameter the rule positions");
             return;
         }
+        let target = match parent().as_str() {
+            "" => RuleTarget::named(name.as_str()),
+            p => RuleTarget::under(name.as_str(), p),
+        };
         let rule = match kind().as_str() {
             "MatchThePhenotype" => {
                 let (Ok(k), Ok(sm), Ok(v)) = (
@@ -755,6 +770,26 @@ pub fn GateRulesWindow() -> Element {
                     ..ValleyRule::default()
                 })
             }
+            "ValleyOrSmear" => {
+                let Ok(sm) = smoothing().parse::<f64>() else {
+                    warn(&toasts, "The smoothing must be a number");
+                    return;
+                };
+                let fallback = fallback_targets(&choices.read(), &name, &parent())
+                    .into_iter()
+                    .find(|t| t.describe() == valley_fallback());
+                // An example was gated by hand for one gate: a rule moved to
+                // another starts without.
+                let example = smear_example();
+                let same_gate = editing.peek().as_ref() == Some(&target);
+                Rule::ValleyOrSmear(ValleyOrSmearRule {
+                    smoothing: sm,
+                    fallback,
+                    smear_example: (same_gate && !example.is_empty())
+                        .then(|| Arc::from(example.as_str())),
+                    ..ValleyOrSmearRule::default()
+                })
+            }
             "AboveTheNegative" => {
                 let (Ok(s), Ok(n)) = (scale().parse::<f64>(), nudge().parse::<f64>()) else {
                     warn(&toasts, "The scale and nudge must be numbers");
@@ -797,20 +832,16 @@ pub fn GateRulesWindow() -> Element {
                 })
             }
         };
-        // All three read a named reference sample rather than a partner of
-        // each specimen.
+        // These read a named reference sample rather than a partner of each
+        // specimen.
         let calibrated = matches!(
             kind().as_str(),
-            "AboveTheNegative" | "InTheValley" | "MatchThePhenotype"
+            "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype"
         );
         if calibrated && calibrate_on().is_empty() {
             warn(&toasts, "Choose the sample to calibrate against");
             return;
         }
-        let target = match parent().as_str() {
-            "" => RuleTarget::named(name.as_str()),
-            p => RuleTarget::under(name.as_str(), p),
-        };
         let described = target.describe();
         let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
@@ -1061,7 +1092,7 @@ pub fn GateRulesWindow() -> Element {
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -1085,8 +1116,15 @@ pub fn GateRulesWindow() -> Element {
                     },
                     option { value: "TailFraction", "capture a percentage of the parent" }
                     option { value: "PercentileOffset", "step above a percentile" }
-                    option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
-                    option { value: "InTheValley", "in the valley between the negative and the positive" }
+                    option { value: "ValleyOrSmear", "in the valley, or on a smear as on one gated by hand" }
+                    // Replaced by the one above; offered only to a rule that
+                    // already is one, so it can still be edited.
+                    if kind() == "AboveTheNegative" {
+                        option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
+                    }
+                    if kind() == "InTheValley" {
+                        option { value: "InTheValley", "in the valley between the negative and the positive" }
+                    }
                     option { value: "MatchThePhenotype", "find the cells that match the reference population" }
                     option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
                     option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
@@ -1338,6 +1376,58 @@ pub fn GateRulesWindow() -> Element {
                     } else {
                         p { class: "gate_rules-hint gate_rules-span",
                             "The gate is moved and resized onto the matched cells and keeps its shape and its kind - a rectangle stays a rectangle. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                        }
+                    }
+                }
+
+                if kind() == "ValleyOrSmear" {
+                    {calibrate_picker(calibrate_on, files)}
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Reads each sample for a dip between its negative and its positive. Where there is one, the gate goes in it, offset as on the reference. Where there is none - a smear - the gate goes as far above the negative, in widths of the negative, as on a smear gated by hand."
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "A reference that is a smear is that example. A reference with a dip says nothing about where to cut a smear, so the run stops at the first smear for you to gate it in the editor; Continue the run, and that sample is the example every other smear is placed from. Save the rules to keep it."
+                    }
+
+                    label { "Smoothing" }
+                    input {
+                        r#type: "number",
+                        step: "0.1",
+                        value: "{smoothing}",
+                        oninput: move |e| smoothing.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
+                    }
+
+                    label { "On a smear" }
+                    select {
+                        value: "{valley_fallback}",
+                        onchange: move |e| valley_fallback.set(e.value()),
+                        option { value: "", "as on a smear gated by hand" }
+                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: valley_fallback() == target.describe(),
+                                "where {target.describe()} is"
+                            }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Or its edge goes where the same gate's is under another parent, on the same sample: a run places that gate first, and every placement made this way comes up for review."
+                    }
+
+                    if !smear_example().is_empty() {
+                        label { "Smear example" }
+                        div {
+                            span { "{file_name(&files.read(), &smear_example())} " }
+                            button {
+                                onclick: move |_| smear_example.set(String::new()),
+                                "Forget"
+                            }
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Smears are placed from this sample, as it is gated now. Forget it, and the next run stops at a smear for you to gate another."
                         }
                     }
                 }
@@ -2282,6 +2372,15 @@ mod tests {
 }
 
 /// The one sample a calibrated rule reads its reference from.
+/// The name a gating id is loaded under, or the id where none is.
+fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
+    files
+        .iter()
+        .find(|(_, gating_id)| &**gating_id == id)
+        .map_or(id, |(name, _)| &**name)
+        .to_string()
+}
+
 fn calibrate_picker(
     mut calibrate_on: Signal<String>,
     files: Memo<Vec<(Arc<str>, Arc<str>)>>,

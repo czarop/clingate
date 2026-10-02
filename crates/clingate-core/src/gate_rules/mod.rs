@@ -53,3 +53,5 @@ mod runs_tests;
 #[cfg(test)]
 mod shape_fit_tests;
 mod threshold_tests;
+#[cfg(test)]
+mod valley_smear_tests;
