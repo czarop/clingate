@@ -1,6 +1,7 @@
 use crate::components::context_menu::*;
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use clingate_core::gates::GateState;
+use clingate_core::gates::gate_paths::places_of;
 use clingate_core::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
@@ -192,6 +193,7 @@ fn GateNode(
     let mut link_error = use_context::<LinkError>().0;
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
     let mut is_expanded = use_signal(|| true);
+    let mut showing_places = use_signal(|| false);
 
     // Which gate this position shows. Several nodes may name the same gate -
     // that is what a linked gate is - so everything about the gate comes from
@@ -259,6 +261,8 @@ fn GateNode(
     let node_id_for_click = node_id.clone();
     let node_id_for_link = node_id.clone();
     let node_id_for_unlink = node_id.clone();
+    let node_id_for_places = node_id.clone();
+    let gate_id_for_places = gate_id.clone();
     let node_id_for_instance = node_id.clone();
     let gate_id_delete_clone = gate_id.clone();
     // let gate_id_rename_clone = gate_id.clone();
@@ -378,7 +382,11 @@ fn GateNode(
                                 if is_linked {
                                     span {
                                         class: "row-badge linked-badge",
-                                        title: "This gate is applied at more than one point in the tree",
+                                        title: "This gate is applied at more than one point in the tree - click to list them",
+                                        onclick: move |e| {
+                                            e.stop_propagation();
+                                            showing_places.toggle();
+                                        },
                                         "\u{1f517}"
                                     }
                                 }
@@ -420,6 +428,43 @@ fn GateNode(
                         }
 
                         span { class: "gate-name", "{gate_name}" }
+                        }
+                    }
+
+                    if is_linked && showing_places() {
+                        div {
+                            class: "linked-places",
+                            onclick: move |e| e.stop_propagation(),
+                            div { class: "linked-places-title",
+                                span { "Applied at" }
+                                button {
+                                    class: "linked-button",
+                                    onclick: move |_| showing_places.set(false),
+                                    "Close"
+                                }
+                            }
+                            for (place , path) in places_of(&gate_store.read(), &gate_id_for_places) {
+                                div { class: "linked-place",
+                                    span {
+                                        class: if *place.as_arc() == node_id_for_places { "linked-path here" } else { "linked-path" },
+                                        title: "{path}",
+                                        "{path}"
+                                    }
+                                    button {
+                                        class: "linked-button",
+                                        title: "Unlink here: this place keeps a copy of the gate as a gate of its own",
+                                        onclick: move |_| {
+                                            let before = edits.before();
+                                            let unlinked = gate_store.write().unlink_node(&place);
+                                            edits.after(before);
+                                            if let Err(err) = unlinked {
+                                                link_error.set(Some(err.to_string()));
+                                            }
+                                        },
+                                        "Unlink"
+                                    }
+                                }
+                            }
                         }
                     }
 

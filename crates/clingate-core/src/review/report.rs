@@ -239,16 +239,6 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// The gate at `node` and the gate names above it, root first.
-fn gate_path(state: &GateState, node: &NodeId) -> Vec<String> {
-    state
-        .gate_chain_for_node(node)
-        .iter()
-        .filter_map(|id| state.population_name(id))
-        .map(|name| name.to_string())
-        .collect()
-}
-
 /// Where `gate_id` sits directly under the population at `parent`, or the
 /// root when there is none - how the gate editor names a gate: the one
 /// selected on a plot of `parent`.
@@ -292,7 +282,7 @@ pub fn node_named(state: &GateState, gate_id: &str, parent_gate: Option<&str>) -
     nodes
         .iter()
         .find(|node| {
-            let path = gate_path(state, node);
+            let path = crate::gates::gate_paths::path_names(state, node);
             let parent = (path.len() > 1).then(|| path[path.len() - 2].as_str());
             parent == parent_gate
         })
@@ -451,7 +441,7 @@ pub fn gather(
         .gate_for_node(&request.node)
         .cloned()
         .ok_or("that population has no gate")?;
-    let path = gate_path(state, &request.node);
+    let path = crate::gates::gate_paths::path_names(state, &request.node);
     let gate = path.last().cloned().unwrap_or_default();
     let parent_gate = (path.len() > 1).then(|| path[path.len() - 2].clone());
 

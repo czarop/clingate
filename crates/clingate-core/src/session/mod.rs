@@ -709,14 +709,10 @@ impl Session {
             .gates
             .placements()
             .map(|(node, _)| {
-                let path: Vec<String> = self
-                    .gates
-                    .gate_chain_for_node(node)
-                    .iter()
-                    .filter_map(|id| self.gates.population_name(id))
-                    .map(|name| name.to_string())
-                    .collect();
-                (node.clone(), path)
+                (
+                    node.clone(),
+                    crate::gates::gate_paths::path_names(&self.gates, node),
+                )
             })
             .filter(|(_, path)| !path.is_empty())
             .collect();

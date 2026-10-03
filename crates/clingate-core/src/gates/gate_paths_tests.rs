@@ -4,8 +4,8 @@
 
 use crate::axis_store::PlotMapper;
 use crate::gates::GateState;
-use crate::gates::gate_paths::{SEPARATOR, unique_names};
-use crate::gates::gate_store::{GateStateImplExt, ROOTGATE};
+use crate::gates::gate_paths::{SEPARATOR, places_of, unique_names};
+use crate::gates::gate_store::{GateStateImplExt, NodeId, ROOTGATE};
 use crate::gates::gate_types::PrimaryGateType;
 use flow_fcs::TransformType;
 use std::sync::Arc;
@@ -166,4 +166,62 @@ fn a_linked_gate_at_two_points_is_two_populations() {
         for_linked[0], for_linked[1],
         "the same gate in two places is two populations: {for_linked:?}"
     );
+}
+
+/// CD218a+ drawn under CD4+, and a placeholder under CD8+ - the state and
+/// both nodes, the placeholder's first.
+fn cd218a_under_cd4_and_spare_under_cd8() -> (GateState, Arc<str>, NodeId, NodeId) {
+    let mut state = GateState::default();
+    let cells = add(&mut state, "Cells", Some(ROOTGATE.clone()));
+    let cd4 = add(&mut state, "CD4+", Some(cells.clone()));
+    let cd8 = add(&mut state, "CD8+", Some(cells));
+    let linked = add(&mut state, "CD218a+", Some(cd4));
+    let spare = add(&mut state, "spare", Some(cd8));
+    let node_of = |gate: &Arc<str>| state.nodes_for_gate(gate)[0].clone();
+    let (spare_node, linked_node) = (node_of(&spare), node_of(&linked));
+    (state, linked, spare_node, linked_node)
+}
+
+#[test]
+fn a_linked_gate_lists_every_place_it_is_drawn_by_its_full_path() {
+    let (mut state, linked, spare_node, linked_node) = cd218a_under_cd4_and_spare_under_cd8();
+    assert_eq!(
+        places_of(&state, &linked),
+        [(linked_node.clone(), "Cells > CD4+ > CD218a+".to_string())]
+    );
+    state.link_node_to_gate(&spare_node, &linked_node).unwrap();
+    assert_eq!(
+        places_of(&state, &linked),
+        [
+            (linked_node, "Cells > CD4+ > CD218a+".to_string()),
+            (spare_node, "Cells > CD8+ > CD218a+".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn linking_and_unlinking_are_each_a_step_undo_takes_back() {
+    use crate::working_copy::{WorkingCopy, WorkingState};
+    let (state, linked, spare_node, linked_node) = cd218a_under_cd4_and_spare_under_cd8();
+    let mut working = WorkingCopy::default();
+    let mut now = WorkingState {
+        gates: state,
+        axes: Default::default(),
+    };
+
+    let before = now.clone();
+    now.gates
+        .link_node_to_gate(&spare_node, &linked_node)
+        .unwrap();
+    assert!(working.record(before, &now), "a link is a step");
+    let linked_state = now.clone();
+    now.gates.unlink_node(&spare_node).unwrap();
+    assert!(working.record(linked_state, &now), "an unlink is a step");
+    assert_eq!(places_of(&now.gates, &linked).len(), 1);
+
+    let now = working.undo(now).expect("the unlink undone");
+    assert_eq!(places_of(&now.gates, &linked).len(), 2);
+    let now = working.undo(now).expect("the link undone");
+    assert_eq!(places_of(&now.gates, &linked).len(), 1);
+    assert_ne!(now.gates.gate_for_node(&spare_node), Some(&linked));
 }
