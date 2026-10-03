@@ -1240,7 +1240,7 @@ pub fn GateRulesWindow() -> Element {
                         oninput: move |e| next_gap.set(e.value()),
                     }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the shape of the other's side facing it, not its top or bottom, where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
+                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the shape of the other's side facing it, not its top or bottom, where the two lie alongside (polygons); sliding moves the gate whole. The gap is the space left between them, in the plot's units, 0 or more on either side - unlike a gap set against another gate's edge, which is added to that edge and so is negative below or left of it."
                     }
                 }
 
@@ -1312,7 +1312,7 @@ pub fn GateRulesWindow() -> Element {
                                         }
                                     }
                                 }
-                                " plus "
+                                " gap "
                                 input {
                                     value: "{row.gap}",
                                     placeholder: "0",
@@ -1342,6 +1342,9 @@ pub fn GateRulesWindow() -> Element {
                                     })
                             },
                             "add an edge"
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gap is added to the other gate's edge, in the plot's units: positive moves the edge right or up, negative left or down. So a gate below or left of the other - its upper edge at the other's lower edge - touches it at 0 and leaves a space with a negative gap; a gate above or right of it - its lower edge at the other's upper - leaves a space with a positive one. A gap that takes the gate over the other leaves it unplaced, as a run never places a gate over another."
                         }
                     }
                 }

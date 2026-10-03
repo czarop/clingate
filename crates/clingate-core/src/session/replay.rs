@@ -146,6 +146,9 @@ pub struct RuleUpdated {
     /// holds them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resolved: Vec<String>,
+    /// What will stop the rule placing its gate, though it is written.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
     pub next: &'static str,
 }
 
@@ -544,6 +547,11 @@ impl Session {
             return Err(failed(problem.reason));
         }
         changed.save(&file).map_err(failed)?;
+        let problems = crate::gate_rules::autogate::edges_over_their_anchors(&self.gates, &changed)
+            .into_iter()
+            .filter(|p| p.target == change.target)
+            .map(|p| p.reason)
+            .collect();
         *store = changed;
         // A preview made under the old rule would apply placements the rules
         // no longer make.
@@ -554,6 +562,7 @@ impl Session {
             was: was.as_ref().map(describe_rule),
             now: describe_rule(&change.rule),
             resolved,
+            problems,
             next: "preview_rules shows what the changed rules would move; the app reads the \
                    rules file when the workspace is next opened",
         })

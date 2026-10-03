@@ -54,7 +54,10 @@ the two meet where they first touch, on the plot as drawn.
 - `side` - which side of the other gate it sits on: `Lower` is to its left,
   or below it; `Upper` to its right, or above it.
 - `meet` - `GrowSide`, `FollowOutline` or `Slide`, as above.
-- `gap` - left between the two, in the plot's units; 0 is touching.
+- `gap` - left between the two, in the plot's units; 0 is touching, and it
+  is 0 or more on either side. Unlike [From another
+  gate](from-another-gate.md)'s gap, which is added to the anchor's edge and
+  so is negative below or left of it.
 
 The rule's own `parameter`, `bound` and `measured_on` are not read: the
 position is the other gate's, on the gate's own sample.

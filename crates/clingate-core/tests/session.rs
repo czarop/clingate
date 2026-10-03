@@ -2560,7 +2560,7 @@ fn a_rule_that_puts_its_gate_over_the_one_it_follows_is_told_before_and_after_th
     use clingate_core::gate_rules::rule_store::MeasuredOn;
     let folder = with_rules("session-follow-over");
     let mut session = Session::open(&folder).unwrap();
-    session
+    let written = session
         .update_rule(change(
             "teff_naive",
             None,
@@ -2575,6 +2575,13 @@ fn a_rule_that_puts_its_gate_over_the_one_it_follows_is_told_before_and_after_th
             ),
         ))
         .unwrap();
+    assert!(
+        written
+            .problems
+            .iter()
+            .any(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{written:?}"
+    );
     let row = session
         .rules_view()
         .unwrap()
@@ -2605,7 +2612,7 @@ fn a_rule_that_puts_its_gate_over_the_one_it_follows_is_told_before_and_after_th
         refused
             .rule_problem
             .as_deref()
-            .is_some_and(|p| p.contains("bring its gaps to 0 or below")),
+            .is_some_and(|p| p.contains("set its edge facing Tmem against that gate's near edge")),
         "{refused:?}"
     );
     assert!(

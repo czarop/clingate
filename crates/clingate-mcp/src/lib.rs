@@ -134,7 +134,13 @@ Two rules for it, or one rule that reaches it at two parents, is refused.
 A gate the guide places by another gate - 'the same position as the main \
 CD4-CD8+ gate', 'aligned to the left edge of CD19+CD14-' - takes the rule \
 kind FromAnotherGate (rule_guide 'From another gate'): same_shape_as copies \
-a gate's whole shape, edges sets an edge against another gate's edge. A run \
+a gate's whole shape, edges sets an edge against another gate's edge. An \
+edge's gap is added to the other gate's edge in the plot's units, so its sign \
+follows the axis: a gate below or left of the other (its Upper edge at the \
+other's Lower) leaves a space with a negative gap, and a positive one puts \
+it over the other, where a run never places it; above or right of it, the \
+reverse. update_rule lists under problems a rule whose edges put its gate \
+over the gate it follows on the gates as drawn: tell the user. A run \
 places the gate it follows first, on each sample. Settle the gate it follows \
 before writing this rule - its rule written and reviewed, or placed by hand - \
 since this gate copies wherever that one ends up. update_rule refuses a rule \

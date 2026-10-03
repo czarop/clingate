@@ -2455,6 +2455,17 @@ fn a_gate_measured_on_no_file_of_a_specimen_is_named_on_its_full_stain() {
 /// Lymph on FSC-A against SSC-A; B's rule sets its right edge at A's left
 /// edge, `gap` on.
 fn b_beside_a(gap: f64, b_parent: &str) -> (GateState, RuleStore) {
+    b_by_a((-20.0, -5.0), (Side::Upper, Side::Lower), gap, b_parent)
+}
+
+/// A, from 0 to 10, and B from `b_x`, both under Lymph on FSC-A against
+/// SSC-A; B's rule sets its `sides.0` edge at A's `sides.1` edge, `gap` on.
+fn b_by_a(
+    b_x: (f32, f32),
+    sides: (Side, Side),
+    gap: f64,
+    b_parent: &str,
+) -> (GateState, RuleStore) {
     let mut state = GateState::default();
     add(&mut state, rect("lymph", "Lymph", -100.0, -100.0), None);
     add(&mut state, rect("other", "Other", -100.0, -100.0), None);
@@ -2465,23 +2476,35 @@ fn b_beside_a(gap: f64, b_parent: &str) -> (GateState, RuleStore) {
     );
     add(
         &mut state,
-        boxed("b", "B", (-20.0, -5.0), (0.0, 10.0)),
+        boxed("b", "B", b_x, (0.0, 10.0)),
         Some(b_parent),
     );
     let rules = store(&[(
         RuleTarget::named("B"),
         follows(
             None,
-            vec![edge_from(
-                RuleTarget::named("A"),
-                X,
-                Side::Upper,
-                Side::Lower,
-                gap,
-            )],
+            vec![edge_from(RuleTarget::named("A"), X, sides.0, sides.1, gap)],
         ),
     )]);
     (state, rules)
+}
+
+/// B to A's right, its left edge set at A's right edge: a negative gap takes
+/// it over A, and the way back is a gap of 0 or above.
+#[test]
+fn a_gate_set_to_the_right_of_another_is_told_to_raise_its_gap() {
+    let (state, rules) = b_by_a((15.0, 30.0), (Side::Lower, Side::Upper), -2.0, "lymph");
+    let told = edges_over_their_anchors(&state, &rules);
+    assert_eq!(told.len(), 1);
+    assert!(
+        told[0]
+            .reason
+            .contains("bring the gap on its lower FSC-A edge to 0 or above"),
+        "{}",
+        told[0].reason
+    );
+    let (state, rules) = b_by_a((15.0, 30.0), (Side::Lower, Side::Upper), 0.0, "lymph");
+    assert!(edges_over_their_anchors(&state, &rules).is_empty());
 }
 
 #[test]
@@ -2495,7 +2518,10 @@ fn a_rule_that_takes_its_gate_over_the_one_it_follows_is_told_and_one_short_of_i
         told.iter().map(|p| &p.reason).collect::<Vec<_>>()
     );
     assert!(
-        told[0].reason.contains("it lies over A"),
+        told[0].reason.contains("it lies over A")
+            && told[0]
+                .reason
+                .contains("bring the gap on its upper FSC-A edge to 0 or below"),
         "{}",
         told[0].reason
     );

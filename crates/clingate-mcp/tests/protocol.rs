@@ -384,6 +384,29 @@ fn a_rule_over_the_gate_it_follows_is_listed_and_its_refusals_assessed_over_the_
         json!({"folder": folder.to_str().unwrap()}),
     );
     assert_eq!(opened["outcome"], "ok", "{opened}");
+    let edge = |parameter: &str| {
+        json!({"anchor": {"gate": "Tmem"}, "parameter": parameter,
+               "side": "Lower", "anchor_side": "Lower", "gap": 0.0})
+    };
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "teff_naive",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {"kind": "FromAnotherGate", "edges": [edge("BUV805-A"), edge("BUV563-A")]}
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["problems"][0]
+            .as_str()
+            .is_some_and(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{written}"
+    );
     let listed = server.call("list_rules", json!({}));
     let teff = listed["result"]["rules"]
         .as_array()
@@ -414,7 +437,7 @@ fn a_rule_over_the_gate_it_follows_is_listed_and_its_refusals_assessed_over_the_
         refused["rule_problem"]
             .as_str()
             .unwrap()
-            .contains("bring its gaps to 0 or below")
+            .contains("set its edge facing Tmem against that gate's near edge")
     );
 }
 

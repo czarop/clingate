@@ -1646,10 +1646,10 @@ pub fn edges_over_their_anchors(state: &GateState, rules: &RuleStore) -> Vec<Anc
         };
         let reason = format!(
             "set as it says - {} - it lies over {} on the gates as drawn, and a run never \
-             places a gate over another, so it is left where it is on every sample: bring its \
-             gaps to 0 or below",
+             places a gate over another, so it is left where it is on every sample: {}",
             from.describe(),
-            edge.anchor.describe()
+            edge.anchor.describe(),
+            way_off(edge)
         );
         match problems
             .iter_mut()
@@ -1664,6 +1664,28 @@ pub fn edges_over_their_anchors(state: &GateState, rules: &RuleStore) -> Vec<Anc
         }
     }
     problems
+}
+
+/// How to take a gate set by `edge` off its anchor. A gap is added to the
+/// anchor's edge, so an edge set below or left of the anchor clears it at 0
+/// or below, and one set above or right of it at 0 or above.
+fn way_off(edge: &crate::gate_rules::rule::EdgeFrom) -> String {
+    use crate::gate_rules::rule::Side;
+    match (edge.side, edge.anchor_side) {
+        (Side::Upper, Side::Lower) => format!(
+            "bring the gap on its upper {} edge to 0 or below",
+            edge.parameter
+        ),
+        (Side::Lower, Side::Upper) => format!(
+            "bring the gap on its lower {} edge to 0 or above",
+            edge.parameter
+        ),
+        _ => format!(
+            "set its edge facing {} against that gate's near edge - its upper edge at the \
+             other's lower, or its lower at the other's upper",
+            edge.anchor.describe()
+        ),
+    }
 }
 
 /// Every rule reading another gate's position - from another gate, or a
