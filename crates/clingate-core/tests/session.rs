@@ -2466,6 +2466,70 @@ fn edge_from(
     }
 }
 
+/// teff_naive set at Tmem's lower edges, Tmem being beside it on its plot:
+/// that puts it over Tmem, which the rules list says when the rule is
+/// written, and the run, refusing it on every sample, says on the review.
+#[test]
+fn a_rule_that_puts_its_gate_over_the_one_it_follows_is_told_before_and_after_the_run() {
+    use clingate_core::gate_rules::rule::Side;
+    use clingate_core::gate_rules::rule_store::MeasuredOn;
+    let folder = with_rules("session-follow-over");
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "teff_naive",
+            None,
+            "",
+            MeasuredOn::Itself,
+            from_gate(
+                None,
+                vec![
+                    edge_from("Tmem", "BUV805-A", Side::Lower, Side::Lower),
+                    edge_from("Tmem", "BUV563-A", Side::Lower, Side::Lower),
+                ],
+            ),
+        ))
+        .unwrap();
+    let row = session
+        .rules_view()
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.population.starts_with("teff_naive"))
+        .unwrap();
+    assert!(
+        row.problems
+            .iter()
+            .any(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{:?}",
+        row.problems
+    );
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let assessed = session.assess_run().unwrap();
+    let refused = assessed
+        .unplaced
+        .iter()
+        .find(|u| u.gate == "teff_naive")
+        .expect("teff_naive was not placed");
+    assert!(refused.everywhere, "{refused:?}");
+    assert_eq!(refused.samples.len(), 2);
+    assert!(refused.reason.contains("would overlap Tmem"), "{refused:?}");
+    assert!(
+        refused
+            .rule_problem
+            .as_deref()
+            .is_some_and(|p| p.contains("bring its gaps to 0 or below")),
+        "{refused:?}"
+    );
+    assert!(
+        refused.says().contains("change the rule"),
+        "{}",
+        refused.says()
+    );
+}
+
 #[test]
 fn a_rule_from_another_gate_is_stored_with_what_a_run_reads_and_runs() {
     use clingate_core::gate_rules::rule::Side;
@@ -2501,6 +2565,23 @@ fn a_rule_from_another_gate_is_stored_with_what_a_run_reads_and_runs() {
         .clone();
     assert_eq!(&*stored.parameter, "");
     assert_eq!(stored.measured_on, MeasuredOn::Itself);
+
+    // The two branches are drawn alike, beside each other on one plot, so
+    // the rules list says Branch B lies over Branch A.
+    let row = session
+        .rules_view()
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.population.starts_with("Branch B"))
+        .unwrap();
+    assert!(
+        row.problems
+            .iter()
+            .any(|p| p.contains("it lies over Branch A")),
+        "{:?}",
+        row.problems
+    );
 
     // It runs: the two branches are drawn alike, so Branch B is already where
     // Branch A puts it, on both samples - and nothing is refused.

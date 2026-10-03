@@ -26,7 +26,7 @@ use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::{GateId, NodeId};
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
 use clingate_core::review::RunRecord;
-use clingate_core::review::assess::assess;
+use clingate_core::review::assess::{Unplaced, assess};
 use clingate_core::review::board::{Board, Entry, LooksRight, Pile, board};
 use clingate_core::review::run_record::SampleRef;
 
@@ -252,6 +252,9 @@ pub fn ReviewWindow() -> Element {
                     }
                 }
             }
+            if !board.unplaced.is_empty() {
+                UnplacedList { unplaced: board.unplaced.clone() }
+            }
             p { class: "review-tab_hint", {pile_hint(pile())} }
             if on_page.is_empty() {
                 div { class: "gallery-empty", "Nothing here." }
@@ -270,6 +273,43 @@ pub fn ReviewWindow() -> Element {
                 }
             }
         }
+    }
+}
+
+/// What the run could not place - open when a gate was refused on every
+/// sample, which wants its rule changed rather than a sample looked at.
+#[component]
+fn UnplacedList(unplaced: Vec<Unplaced>) -> Element {
+    let everywhere = unplaced.iter().any(|u| u.everywhere);
+    let title = unplaced_title(&unplaced);
+    rsx! {
+        details { class: "review-tab_unplaced", open: everywhere,
+            summary { "{title}" }
+            ul {
+                for (at , u) in unplaced.iter().enumerate() {
+                    li {
+                        key: "{at}",
+                        class: if u.everywhere { "review-tab_unplaced-everywhere" } else { "" },
+                        "{u.says()}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The line the list of what the run could not place opens with.
+fn unplaced_title(unplaced: &[Unplaced]) -> String {
+    let everywhere = unplaced.iter().filter(|u| u.everywhere).count();
+    let placements: usize = unplaced.iter().map(|u| u.samples.len()).sum();
+    match everywhere {
+        0 => format!("Could not be placed: {placements} placements"),
+        1 => format!(
+            "Could not be placed: {placements} placements - 1 gate on no sample at all, whose rule needs changing"
+        ),
+        n => format!(
+            "Could not be placed: {placements} placements - {n} gates on no sample at all, whose rules need changing"
+        ),
     }
 }
 
@@ -671,5 +711,43 @@ fn ReviewTile(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused(gate: &str, samples: usize, everywhere: bool) -> Unplaced {
+        Unplaced {
+            gate: gate.into(),
+            parent_gate: None,
+            reason: "it would overlap CD8+".into(),
+            samples: (0..samples)
+                .map(|n| SampleRef {
+                    id: format!("s{n}"),
+                    name: None,
+                    sample_type: None,
+                })
+                .collect(),
+            everywhere,
+            rule_problem: None,
+        }
+    }
+
+    #[test]
+    fn the_list_of_what_could_not_be_placed_says_how_many_rules_need_changing() {
+        assert_eq!(
+            unplaced_title(&[refused("A", 3, false)]),
+            "Could not be placed: 3 placements"
+        );
+        assert_eq!(
+            unplaced_title(&[refused("A", 32, true), refused("B", 3, false)]),
+            "Could not be placed: 35 placements - 1 gate on no sample at all, whose rule needs changing"
+        );
+        assert_eq!(
+            unplaced_title(&[refused("A", 32, true), refused("B", 3, true)]),
+            "Could not be placed: 35 placements - 2 gates on no sample at all, whose rules need changing"
+        );
     }
 }

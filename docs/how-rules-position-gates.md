@@ -392,6 +392,14 @@ hair's difference look enormous (`Measure::floor`). The "typical peer" shown
 beside a flagged sample is, of its peers that are not flagged themselves, the
 one whose gate position measure is nearest the peers' median (`typical_of`).
 
+The placements the run could not make are listed with the flags
+(`review::assess::unplaced`), a gate and a reason at a time. A gate refused on
+every sample it reached, for one reason, is listed first and said to need its
+rule changed: that is the rule or the gates as drawn, not the data. A rule
+from another gate whose edges, set from the gates as drawn, put it over an
+anchor beside it on its plot is also said when the rules are listed
+(`autogate::edges_over_their_anchors`): its gaps reach into the anchor.
+
 A person then reviews the run: accepts it, moves gates by hand, or reports a
 placement with a problem (`too_high`, `too_low`,
 `cuts_through_a_population`, `wrong_population`, `too_tight`, `too_loose`,

@@ -389,6 +389,12 @@ impl Session {
                     .filter(|p| p.target == *target)
                     .map(|p| p.reason),
             );
+            problems.extend(
+                crate::gate_rules::autogate::edges_over_their_anchors(&self.gates, store)
+                    .into_iter()
+                    .filter(|p| p.target == *target)
+                    .map(|p| p.reason),
+            );
             if crate::gate_rules::autogate::rules_reaching_nothing(&self.gates, store)
                 .contains(target)
                 && problems.is_empty()

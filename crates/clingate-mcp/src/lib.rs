@@ -77,8 +77,11 @@ whether to restore or discard them.
 
 To review a rules run, start with assess_run: it lists the placements that look \
 unlike their peers or that the rule was unsure of, with reasons, and costs \
-little. compare_to_peers then shows one sample beside its peers in numbers. \
-Present what you find to the user; the flags are for a person to judge.
+little, and the gates the run could not place. compare_to_peers then shows one \
+sample beside its peers in numbers. Present what you find to the user; the \
+flags are for a person to judge. A gate the run could not place on any sample \
+needs its rule changed: tell the user what is wrong with it, and change it only \
+when they agree.
 
 When the user says a gate was placed badly, report_placement records it - with \
 their reason - so the rules' confidence scores can be improved; do not report \
@@ -697,8 +700,9 @@ impl Clingate {
 
     /// Assess the last applied rules run: which placements look unlike their peers - the
     /// other samples of the same kind that the rule placed confidently - or that the rule was
-    /// unsure of, each with its reasons in words, worst first; and each gate across the run in
-    /// a line. Reads no files: it works from the run the workspace keeps.
+    /// unsure of, each with its reasons in words, worst first; each gate across the run in a
+    /// line; and the placements the run could not make, those refused on every sample first.
+    /// Reads no files: it works from the run the workspace keeps.
     #[tool(annotations(read_only_hint = true))]
     async fn assess_run(&self) -> String {
         self.run(|s| s.assess_run()).await

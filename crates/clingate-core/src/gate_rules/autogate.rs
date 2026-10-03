@@ -1578,6 +1578,88 @@ pub struct AnchorProblem {
     pub reason: String,
 }
 
+/// Every rule setting edges from other gates whose edges, set from the gates
+/// as drawn, put its gate over one of them. A run never places a gate over
+/// another, so such a rule leaves its gate where it is on every sample -
+/// most likely its gaps reach into the gates it follows. Said, not refused:
+/// on a sample whose gates sit differently it may still fit.
+pub fn edges_over_their_anchors(state: &GateState, rules: &RuleStore) -> Vec<AnchorProblem> {
+    use crate::gates::gate_contact::{outline, overlaps, same_axes};
+    let names = crate::gates::gate_paths::unique_names(state);
+    let graph = dependencies(state, rules, &names);
+    let drawn = |anchor: &crate::gate_rules::rule_store::RuleTarget| {
+        let id = anchor_gate(state, anchor)?;
+        let gate = state
+            .registered_gate(&id)
+            .ok_or_else(|| format!("{} is not drawn", anchor.describe()))?;
+        Ok::<_, String>((id, gate))
+    };
+    let mut problems: Vec<AnchorProblem> = Vec::new();
+    let mut nodes: Vec<&NodeId> = graph.keys().collect();
+    nodes.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for node in nodes {
+        let Some(entry) = entry_at(state, rules, &names, node) else {
+            continue;
+        };
+        let crate::gate_rules::rule::Rule::FromAnotherGate(from) = &entry.rule.rule else {
+            continue;
+        };
+        if from.same_shape_as.is_some() || from.problem().is_some() {
+            continue;
+        }
+        let Some(id) = state.gate_for_node(node) else {
+            continue;
+        };
+        let Some(gate) = state.registered_gate(id) else {
+            continue;
+        };
+        let Ok(placed) = edges_set(&gate, from, drawn) else {
+            continue;
+        };
+        let (x, y) = placed.get_params();
+        let Some(mine) = outline(&placed, id, &x, &y) else {
+            continue;
+        };
+        let parent = state.parent_node(node);
+        let beside = |their_id: &GateId| {
+            state
+                .nodes_for_gate(their_id)
+                .iter()
+                .any(|theirs| state.parent_node(theirs) == parent)
+        };
+        let over = from.edges.iter().find(|edge| {
+            drawn(&edge.anchor).is_ok_and(|(their_id, theirs)| {
+                beside(&their_id)
+                    && same_axes(&theirs.get_params(), &(x.clone(), y.clone()))
+                    && outline(&theirs, &their_id, &x, &y)
+                        .is_some_and(|other| overlaps(&mine, &other))
+            })
+        });
+        let Some(edge) = over else {
+            continue;
+        };
+        let reason = format!(
+            "set as it says - {} - it lies over {} on the gates as drawn, and a run never \
+             places a gate over another, so it is left where it is on every sample: bring its \
+             gaps to 0 or below",
+            from.describe(),
+            edge.anchor.describe()
+        );
+        match problems
+            .iter_mut()
+            .find(|p| p.target == entry.target && p.reason == reason)
+        {
+            Some(p) => p.nodes.push(node.clone()),
+            None => problems.push(AnchorProblem {
+                target: entry.target.clone(),
+                nodes: vec![node.clone()],
+                reason,
+            }),
+        }
+    }
+    problems
+}
+
 /// Every rule reading another gate's position - from another gate, or a
 /// valley's fallback - whose anchor names no one gate, names the gate itself,
 /// or leads round in a loop back to it.
@@ -3963,7 +4045,6 @@ fn position_from_gate(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    use crate::gate_rules::rule::Side;
     if let Some(problem) = wanted.problem() {
         return Err(problem.to_string());
     }
@@ -3984,38 +4065,7 @@ fn position_from_gate(
             let (_, theirs) = anchor_on_sample(anchor)?;
             same_shape(&current, &theirs)?
         }
-        None => {
-            let mut gate = current.clone();
-            for edge in &wanted.edges {
-                let (id, theirs) = anchor_on_sample(&edge.anchor)?;
-                let shape = theirs
-                    .get_gate_ref(Some(id.as_ref()))
-                    .or_else(|| theirs.get_gate_ref(None))
-                    .ok_or_else(|| format!("{} has no shape", edge.anchor.describe()))?;
-                let (low, high) = extent_on(&shape.geometry, &edge.parameter).ok_or_else(|| {
-                    format!(
-                        "{} is not drawn on {}, so it has no edge there",
-                        edge.anchor.describe(),
-                        edge.parameter
-                    )
-                })?;
-                let at = match edge.anchor_side {
-                    Side::Lower => low,
-                    Side::Upper => high,
-                };
-                if !at.is_finite() || at.abs() > UNBOUNDED {
-                    return Err(format!(
-                        "the {} edge of {} on {} is open, so there is nothing to set this \
-                         gate against",
-                        edge.anchor_side.label(),
-                        edge.anchor.describe(),
-                        edge.parameter
-                    ));
-                }
-                gate = set_edge(&gate, &edge.parameter, edge.side, at + edge.gap as f32)?;
-            }
-            gate
-        }
+        None => edges_set(&current, wanted, anchor_on_sample)?,
     };
 
     Ok(read_from_another(
@@ -4025,6 +4075,47 @@ fn position_from_gate(
         placed,
         format!("placed from {}", wanted.describe()),
     ))
+}
+
+/// `gate` with each edge `wanted` names set from its anchor, as `anchor_of`
+/// finds the anchor - on one sample, or as drawn.
+fn edges_set(
+    gate: &Arc<dyn DrawableGate>,
+    wanted: &crate::gate_rules::rule::FromGateRule,
+    anchor_of: impl Fn(
+        &crate::gate_rules::rule_store::RuleTarget,
+    ) -> Result<(GateId, Arc<dyn DrawableGate>), String>,
+) -> Result<Arc<dyn DrawableGate>, String> {
+    use crate::gate_rules::rule::Side;
+    let mut gate = gate.clone();
+    for edge in &wanted.edges {
+        let (id, theirs) = anchor_of(&edge.anchor)?;
+        let shape = theirs
+            .get_gate_ref(Some(id.as_ref()))
+            .or_else(|| theirs.get_gate_ref(None))
+            .ok_or_else(|| format!("{} has no shape", edge.anchor.describe()))?;
+        let (low, high) = extent_on(&shape.geometry, &edge.parameter).ok_or_else(|| {
+            format!(
+                "{} is not drawn on {}, so it has no edge there",
+                edge.anchor.describe(),
+                edge.parameter
+            )
+        })?;
+        let at = match edge.anchor_side {
+            Side::Lower => low,
+            Side::Upper => high,
+        };
+        if !at.is_finite() || at.abs() > UNBOUNDED {
+            return Err(format!(
+                "the {} edge of {} on {} is open, so there is nothing to set this gate against",
+                edge.anchor_side.label(),
+                edge.anchor.describe(),
+                edge.parameter
+            ));
+        }
+        gate = set_edge(&gate, &edge.parameter, edge.side, at + edge.gap as f32)?;
+    }
+    Ok(gate)
 }
 
 /// Where a rule reading another gate put `current`, as `placed`: kept when

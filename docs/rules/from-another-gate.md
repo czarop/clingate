@@ -94,6 +94,14 @@ Examples:
   end of the axis) has no edge to set against; that sample is refused.
 - **Setting a rectangle's edge past its other edge** is refused rather than
   turning the rectangle inside out.
+- **A gap that reaches into the anchor.** A positive gap on an `Upper`
+  edge set at an anchor's `Lower` edge takes this gate over the anchor -
+  and a run never places a gate over another on its plot, so it is left
+  where it is on every sample. The rules list says so when the anchor is
+  beside it on the same plot, as drawn, and the Review tab lists the gate as
+  placed on no sample at all. Use a gap of 0, or below to leave a space. A
+  polygon anchor with a slanted side can still be clipped by a straight
+  edge set at its furthest point.
 - **A replay** does not re-place a gate that follows another: its position
   is the anchor's, so replay the anchor's rule.
 

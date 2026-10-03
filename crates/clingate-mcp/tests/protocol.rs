@@ -342,6 +342,82 @@ fn workspace_with_rules(name: &str) -> PathBuf {
     dir
 }
 
+/// [`workspace_with_rules`], with teff_naive set at Tmem's lower edges -
+/// which puts it over Tmem, beside it on its plot.
+fn workspace_with_teff_over_tmem(name: &str) -> PathBuf {
+    use clingate_core::gate_rules::rule::{EdgeFrom, FromGateRule, Rule, Side};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget,
+    };
+    let dir = workspace_with_rules(name);
+    let file = clingate_core::workspace::rules_file(&dir);
+    let mut store = RuleStore::load(&file).unwrap();
+    let edge = |parameter: &str| EdgeFrom {
+        anchor: RuleTarget::named("Tmem"),
+        parameter: parameter.into(),
+        side: Side::Lower,
+        anchor_side: Side::Lower,
+        gap: 0.0,
+    };
+    store.insert(
+        RuleTarget::named("teff_naive"),
+        GateRule {
+            parameter: "".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::FromAnotherGate(FromGateRule {
+                same_shape_as: None,
+                edges: vec![edge("BUV805-A"), edge("BUV563-A")],
+            }),
+        },
+    );
+    store.save(&file).unwrap();
+    dir
+}
+
+#[test]
+fn a_rule_over_the_gate_it_follows_is_listed_and_its_refusals_assessed_over_the_protocol() {
+    let folder = workspace_with_teff_over_tmem("unplaced");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let listed = server.call("list_rules", json!({}));
+    let teff = listed["result"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["population"].as_str().unwrap().starts_with("teff_naive"))
+        .cloned()
+        .unwrap();
+    assert!(
+        teff["problems"][0]
+            .as_str()
+            .unwrap()
+            .contains("it lies over Tmem on the gates as drawn"),
+        "{teff}"
+    );
+
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+    let assessed = server.call("assess_run", json!({}));
+    assert_eq!(assessed["outcome"], "ok", "{assessed}");
+    let refused = &assessed["result"]["unplaced"][0];
+    assert_eq!(refused["gate"], "teff_naive", "{assessed}");
+    assert_eq!(refused["everywhere"], true);
+    assert!(
+        refused["rule_problem"]
+            .as_str()
+            .unwrap()
+            .contains("bring its gaps to 0 or below")
+    );
+}
+
 #[test]
 fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
     let folder = workspace_with_rules("review");

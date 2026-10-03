@@ -657,7 +657,7 @@ fn an_unlinked_gate_of_the_same_name_under_two_parents_is_no_conflict() {
 // of CD19+CD14-". The anchor is placed first, on each sample, and this gate
 // takes its position from it there.
 
-use crate::gate_rules::autogate::anchor_problems;
+use crate::gate_rules::autogate::{anchor_problems, edges_over_their_anchors};
 use crate::gate_rules::rule::{EdgeFrom, FromGateRule, Side};
 
 /// A rectangle with all four edges given.
@@ -2449,4 +2449,67 @@ fn a_gate_measured_on_no_file_of_a_specimen_is_named_on_its_full_stain() {
         .map(|u| u.file.to_string())
         .collect();
     assert_eq!(named, ["a_2"]);
+}
+
+/// A, from 0 to 10, and B beside it to the left, from -20 to -5, both under
+/// Lymph on FSC-A against SSC-A; B's rule sets its right edge at A's left
+/// edge, `gap` on.
+fn b_beside_a(gap: f64, b_parent: &str) -> (GateState, RuleStore) {
+    let mut state = GateState::default();
+    add(&mut state, rect("lymph", "Lymph", -100.0, -100.0), None);
+    add(&mut state, rect("other", "Other", -100.0, -100.0), None);
+    add(
+        &mut state,
+        boxed("a", "A", (0.0, 10.0), (0.0, 10.0)),
+        Some("lymph"),
+    );
+    add(
+        &mut state,
+        boxed("b", "B", (-20.0, -5.0), (0.0, 10.0)),
+        Some(b_parent),
+    );
+    let rules = store(&[(
+        RuleTarget::named("B"),
+        follows(
+            None,
+            vec![edge_from(
+                RuleTarget::named("A"),
+                X,
+                Side::Upper,
+                Side::Lower,
+                gap,
+            )],
+        ),
+    )]);
+    (state, rules)
+}
+
+#[test]
+fn a_rule_that_takes_its_gate_over_the_one_it_follows_is_told_and_one_short_of_it_is_not() {
+    let (state, rules) = b_beside_a(2.0, "lymph");
+    let told = edges_over_their_anchors(&state, &rules);
+    assert_eq!(
+        told.len(),
+        1,
+        "{:?}",
+        told.iter().map(|p| &p.reason).collect::<Vec<_>>()
+    );
+    assert!(
+        told[0].reason.contains("it lies over A"),
+        "{}",
+        told[0].reason
+    );
+    for gap in [0.0, -1.0] {
+        let (state, rules) = b_beside_a(gap, "lymph");
+        assert!(
+            edges_over_their_anchors(&state, &rules).is_empty(),
+            "gap {gap}"
+        );
+    }
+}
+
+#[test]
+fn a_gate_following_one_on_another_plot_is_not_told_it_lies_over_it() {
+    let (state, rules) = b_beside_a(2.0, "other");
+    assert!(edges_over_their_anchors(&state, &rules).is_empty());
 }

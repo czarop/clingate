@@ -48,6 +48,9 @@ pub struct RunAssessment {
     /// flagged, and not yet reported, changed or judged to look right.
     pub flags: Vec<crate::review::assess::Flag>,
     pub gates: Vec<crate::review::assess::GateSummary>,
+    /// The placements the run could not make, as the Review tab lists them:
+    /// those refused on every sample first - the rule, not the data.
+    pub unplaced: Vec<crate::review::assess::Unplaced>,
     pub next: &'static str,
 }
 
@@ -87,8 +90,11 @@ impl Session {
                 .take(FLAGS_SHOWN)
                 .collect(),
             gates: assessment.gates,
+            unplaced: assessment.unplaced,
             next: "compare_to_peers shows one flagged sample's distribution beside its peers'; \
-                   show the user the flags and let them decide what is wrong",
+                   show the user the flags and let them decide what is wrong. Tell the user \
+                   of every gate in unplaced refused everywhere: its rule needs changing, \
+                   and rule_problem says how where it can",
         })
     }
 
