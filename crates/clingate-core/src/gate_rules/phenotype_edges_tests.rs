@@ -416,3 +416,65 @@ fn an_edge_drawn_inside_the_negative_could_be_pinned() {
         assert!(read.pinned.is_empty());
     }
 }
+/// How far the edges placed from either half of the sample's events agree,
+/// with the gate drawn from 450 and placed by `fit`; `None` where the run
+/// does not score it.
+fn steady(fit: ShapeFit, sample: &polars::prelude::DataFrame) -> Option<f64> {
+    let reference = sample_of(
+        31,
+        (300.0, 50.0),
+        40.0,
+        3_000,
+        Positives::Population(800.0, 100.0),
+    );
+    let (report, _, _) = run(fit, (450.0, 3_000.0), &reference, sample);
+    let why: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
+    assert_eq!(report.positioned.len(), 1, "{why:?}");
+    report.positioned[0]
+        .components
+        .iter()
+        .find(|c| c.name == crate::gate_rules::confidence::STEADY)
+        .map(|c| c.score)
+}
+
+/// Both halves of a sample like the reference put the edge in the same gap.
+/// Halves that hold different positives - one dim, reaching down towards the
+/// negative, one bright - put it in different places, and the dim cells
+/// between are held by one placement only.
+#[test]
+fn edges_that_agree_between_halves_score_and_those_that_do_not_are_doubted() {
+    let alike = sample_of(
+        33,
+        (300.0, 50.0),
+        40.0,
+        3_000,
+        Positives::Population(800.0, 100.0),
+    );
+    let agreeing = steady(ShapeFit::KeepShape, &alike).unwrap();
+    assert!(agreeing > 0.99, "{agreeing}");
+    let apart = steady(ShapeFit::KeepShape, &halves_apart(32)).unwrap();
+    assert!(apart < 0.95, "{apart}");
+    let moved_only = steady(ShapeFit::MoveOnly, &halves_apart(32)).unwrap();
+    assert!(moved_only < 0.95, "{moved_only}");
+}
+
+/// 10,000 CD56-negative cells, N(300, 50), and 3,000 positives, every other
+/// one at N(550, 60) and the rest at N(850, 60) - so each half of its events
+/// holds only one of the two.
+fn halves_apart(seed: u64) -> polars::prelude::DataFrame {
+    use polars::prelude::*;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let negative = Normal::new(300.0, 50.0).unwrap();
+    let dim = Normal::new(550.0, 60.0).unwrap();
+    let bright = Normal::new(850.0, 60.0).unwrap();
+    let cd3 = Normal::new(500.0, 40.0).unwrap();
+    let xs: Vec<f32> = (0..13_000)
+        .map(|at| match (at < 10_000, at % 2) {
+            (true, _) => negative.sample(&mut rng),
+            (false, 0) => dim.sample(&mut rng),
+            (false, _) => bright.sample(&mut rng),
+        } as f32)
+        .collect();
+    let ys: Vec<f32> = (0..xs.len()).map(|_| cd3.sample(&mut rng) as f32).collect();
+    df![X => xs, Y => ys].unwrap()
+}

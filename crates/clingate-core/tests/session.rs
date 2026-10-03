@@ -3663,6 +3663,48 @@ fn an_edge_drawn_inside_the_negative_is_offered_for_pinning() {
     );
 }
 
+/// A run keeps, beside its other measures, how far the edges placed from
+/// either half of a sample's events agree - for a gate whose edges are
+/// carried, not one traced afresh.
+#[test]
+fn a_run_keeps_whether_a_phenotype_gate_s_edges_agree_between_halves() {
+    use clingate_core::gate_rules::confidence::STEADY;
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    use clingate_core::review::RunRecord;
+    for (fit, scored) in [(ShapeFit::KeepShape, true), (ShapeFit::DrawPolygon, false)] {
+        let rule = Rule::MatchThePhenotype(PhenotypeRule {
+            markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+            fit,
+            ..Default::default()
+        });
+        let folder =
+            tmem_workspace_beside_teff_naive(&format!("session-phenotype-halves-{}", fit.key()));
+        let mut session = Session::open(&rule_in(folder.clone(), rule.clone())).unwrap();
+        session
+            .update_rule(change("Tmem", None, "", file("sample1"), rule))
+            .unwrap();
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        let record = RunRecord::load(&folder).unwrap().expect("kept on apply");
+        let placed = record
+            .placed
+            .iter()
+            .find(|p| p.gate == "Tmem")
+            .unwrap_or_else(|| panic!("{record:#?}"));
+        let agreement = placed.components.iter().find(|c| c.name == STEADY);
+        assert_eq!(
+            agreement.is_some(),
+            scored,
+            "{fit:?}: {:#?}",
+            placed.components
+        );
+        if let Some(agreement) = agreement {
+            assert!(agreement.score > 0.9, "{agreement:?}");
+            assert!(agreement.detail.contains("the same cells"), "{agreement:?}");
+        }
+    }
+}
+
 /// Both samples a third positive: the same cells are found on sample2 and
 /// its gate is moved onto them.
 #[test]

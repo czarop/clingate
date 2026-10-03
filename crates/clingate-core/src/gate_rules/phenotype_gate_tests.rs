@@ -524,3 +524,49 @@ fn a_pinned_side_sets_how_far_the_gate_slides() {
     .unwrap();
     assert_eq!(x_span(&moved), (150.0, 350.0));
 }
+
+#[test]
+fn halves_take_alternate_events_and_renumber_their_members() {
+    let points: Vec<(f64, f64)> = (0..5).map(|i| (i as f64, 0.0)).collect();
+    let [even, odd] = halves(&points, &[1, 2, 4]);
+    assert_eq!(even.0, [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0)]);
+    assert_eq!(even.1, [1, 2]);
+    assert_eq!(odd.0, [(1.0, 0.0), (3.0, 0.0)]);
+    assert_eq!(odd.1, [0]);
+}
+
+/// Spans of a gate on both axes, carried to `x` and `y`.
+fn spans(x: (f64, f64), y: (f64, f64)) -> [Carry; 2] {
+    [
+        Carry {
+            extent: x,
+            open: Open::default(),
+            to: x,
+            pinned: None,
+        },
+        Carry {
+            extent: y,
+            open: Open::default(),
+            to: y,
+            pinned: None,
+        },
+    ]
+}
+
+#[test]
+fn agreement_is_the_share_of_cells_either_placement_holds_that_both_hold() {
+    // Cells at x = 0..=100 and y = 0: [10, 50] holds 41 of them, [30, 70]
+    // 41, and both the 21 from 30 to 50, of the 61 from 10 to 70.
+    let points: Vec<(f64, f64)> = (0..=100).map(|i| (i as f64, 0.0)).collect();
+    let first = spans((10.0, 50.0), (-1.0, 1.0));
+    let second = spans((30.0, 70.0), (-1.0, 1.0));
+    assert_eq!(agreement(&first, &second, &points), 21.0 / 61.0);
+    assert_eq!(agreement(&first, &first, &points), 1.0);
+    // Off the plot's other axis, neither holds anything to disagree about.
+    let elsewhere = spans((10.0, 50.0), (5.0, 6.0));
+    assert_eq!(agreement(&elsewhere, &elsewhere, &points), 1.0);
+    assert_eq!(
+        agreement(&first, &spans((10.0, 50.0), (5.0, 6.0)), &points),
+        0.0
+    );
+}

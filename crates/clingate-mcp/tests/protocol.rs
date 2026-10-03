@@ -1061,6 +1061,12 @@ fn a_phenotype_rule_that_moves_only_is_written_over_the_protocol() {
     );
     let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
     assert!(guide.to_string().contains("`MoveOnly`"), "{guide}");
+    assert!(
+        guide
+            .to_string()
+            .contains("whether the edges agree between halves of the events"),
+        "{guide}"
+    );
 }
 
 /// Pinned by channel over the protocol, the rule says so; pinning a marker

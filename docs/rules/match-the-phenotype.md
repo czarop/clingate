@@ -176,3 +176,10 @@ real dip a width above a wide negative reads the same.
   outline.
 - *how common the population is, against the reference* - scored on the
   ratio: three times more or less common halves the score.
+- *whether the edges agree between halves of the events* - the edges are
+  placed twice more, once from each half of the sample's events (alternate
+  events), and of the cells either placement holds, the share both hold is
+  the score. An edge on a flat stretch of density - a smear with no real
+  dip - lands wherever the noise puts it, and the halves disagree; an edge
+  that moves through empty space between them costs no cells, so does not
+  count against it. Not scored for a traced polygon, which places no edges.

@@ -117,6 +117,7 @@ pub const PURITY: &str = "how much else the gate holds";
 pub const CAUGHT: &str = "how much of the population the gate holds";
 pub const ONE_CLOUD: &str = "whether the matched cells form one cloud";
 pub const ABUNDANCE: &str = "how common the population is, against the reference";
+pub const STEADY: &str = "whether the edges agree between halves of the events";
 pub const FALLBACK: &str = "no valley, so placed from another gate";
 pub const HELD_BACK: &str = "held back off another gate";
 
@@ -433,6 +434,9 @@ pub struct MatchEvidence {
     pub caught: f64,
     /// How many separate clouds the matched cells formed.
     pub pieces: usize,
+    /// Of the cells the edges placed from either half of the events hold,
+    /// the share both hold; `None` where no edges were placed.
+    pub steady: Option<f64>,
 }
 
 /// How far the abundance may differ from the reference's before it counts
@@ -499,6 +503,20 @@ pub fn assess_match(found: MatchEvidence) -> Confidence {
         },
     ));
 
+    // An edge placed on a flat stretch of density - a smear with no real dip -
+    // lands wherever the noise puts it, and two halves of the same events
+    // then put it in different places. Agreement is a share of cells, so it
+    // needs no scale and counts what a wandering edge costs.
+    if let Some(steady) = found.steady {
+        components.push(Component::new(
+            STEADY,
+            if steady.is_finite() { steady } else { 0.0 },
+            format!(
+                "placed from either half of the events, the gate holds {:.0}% the same cells",
+                steady * 100.0
+            ),
+        ));
+    }
     components.push(abundance(found));
     Confidence::from_components(components)
 }

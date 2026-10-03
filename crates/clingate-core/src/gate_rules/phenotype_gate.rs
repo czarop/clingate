@@ -138,6 +138,47 @@ pub fn within_the_negative(widths: f64) -> bool {
 /// sits.
 const NEAR_BOUNDARY_WIDTHS: f64 = 1.645;
 
+/// A parent's `points`, and the `members` among them, split into two halves
+/// of alternate events, each with its members' indices into its own points.
+pub fn halves(points: &[(f64, f64)], members: &[usize]) -> [(Vec<(f64, f64)>, Vec<usize>); 2] {
+    let mut split: [(Vec<(f64, f64)>, Vec<usize>); 2] = Default::default();
+    for (at, point) in points.iter().enumerate() {
+        split[at % 2].0.push(*point);
+    }
+    for at in members {
+        split[at % 2].1.push(at / 2);
+    }
+    split
+}
+
+/// Of a parent's `points` that the spans `first` or `second` carries a gate
+/// to hold, the share both hold: 1 where they agree, and 1 where neither
+/// holds any.
+pub fn agreement(first: &[Carry; 2], second: &[Carry; 2], points: &[(f64, f64)]) -> f64 {
+    let holds = |carries: &[Carry; 2], point: &(f64, f64)| {
+        let within = |carry: &Carry, value: f64| {
+            carry.to.0.min(carry.to.1) <= value && value <= carry.to.0.max(carry.to.1)
+        };
+        within(&carries[0], point.0) && within(&carries[1], point.1)
+    };
+    let (mut both, mut either) = (0usize, 0usize);
+    for point in points {
+        match (holds(first, point), holds(second, point)) {
+            (true, true) => {
+                both += 1;
+                either += 1;
+            }
+            (true, false) | (false, true) => either += 1,
+            (false, false) => {}
+        }
+    }
+    if either == 0 {
+        1.0
+    } else {
+        both as f64 / either as f64
+    }
+}
+
 /// How one of a gate's axes is carried from the reference to a sample: its
 /// two edges moved, and everything between them kept in proportion, so a
 /// polygon keeps its shape.

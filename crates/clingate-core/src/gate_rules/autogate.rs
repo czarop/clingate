@@ -3494,16 +3494,19 @@ fn position_by_phenotype(
             .collect()
     };
 
-    let [x, y] = carries(
-        &inner.geometry,
-        &measured.params,
-        &signature.markers,
-        &wanted.pinned,
-        (&there.points, &alike_there),
-        (&here.points, &found.members),
-        open,
-        negatives,
-    );
+    let carried_from = |here: (&[(f64, f64)], &[usize])| {
+        carries(
+            &inner.geometry,
+            &measured.params,
+            &signature.markers,
+            &wanted.pinned,
+            (&there.points, &alike_there),
+            here,
+            open,
+            negatives,
+        )
+    };
+    let [x, y] = carried_from((&here.points, &found.members));
     let moved = |resize: bool| -> Result<_, String> {
         use crate::gate_rules::phenotype_gate::{carried, slid};
         let resized = resize && within_area_limit(x.stretch() * y.stretch());
@@ -3597,6 +3600,12 @@ fn position_by_phenotype(
             purity,
             caught,
             pieces,
+            steady: reshaped.is_some().then(|| {
+                let [first, second] =
+                    crate::gate_rules::phenotype_gate::halves(&here.points, &found.members)
+                        .map(|(points, members)| carried_from((&points, &members)));
+                crate::gate_rules::phenotype_gate::agreement(&first, &second, &here.points)
+            }),
         });
 
     Ok(Outcome::Moved(
