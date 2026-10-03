@@ -83,6 +83,13 @@ them.
    edge. Carried so, an edge on a side the gate leaves open is never pulled
    in.
 
+   A marker in `pinned` is placed by its negative instead, on the side of
+   the gate nearest it: on the reference, how many of the negative's widths
+   that edge sits from the peak of the whole parent's negative on the
+   marker; on the sample, as many of the sample's widths from its own peak.
+   The negative is read as for the line rules: its peak, and its width from
+   the side below the peak, which no positives reach.
+
    Then, by `fit`:
    - `KeepShape` - each edge as above, so the gate may grow or shrink with
      the gaps, and everything between them kept in proportion: a polygon
@@ -91,6 +98,9 @@ them.
      and the run says so. The gate stays the kind it was.
    - `MoveOnly` - the gate slides as far as its closed edges move on
      average, its size and shape unchanged, open sides and all.
+
+   A gate that slides - `MoveOnly`, or `KeepShape` past the area limit -
+   slides as far as its pinned edge moves, so that edge stays pinned.
    - `DrawPolygon` - trace a new polygon round the matched cells on a
      smoothed density, holding `keep` of them, with about `vertices` points.
      If its area is more than 30% from the one drawn the same way round the
@@ -114,6 +124,28 @@ them.
   the cells closely, above 1 smoother. Ignored when the shape is kept.
 - `vertices` - for `DrawPolygon`, about how many points the polygon has
   (24 by default). Ignored when the shape is kept.
+- `pinned` - markers, of the two the gate is drawn on and among those the
+  rule reads, whose edge nearest the negative is pinned to it (above).
+  Empty by default: every edge keeps its place in the gap. Not used by
+  `DrawPolygon`, unless its shape is kept.
+
+## Pinned or in the gap
+
+Nothing in the data says which a person meant - an edge put in a gap, in a
+dip, or a fixed distance above the negative look alike on one sample - so
+it is a setting, and the person who drew the gate decides.
+
+- **Pin** an edge drawn against the negative: just above it, or cutting its
+  top, on a marker where the positives smear and differ between samples -
+  CD8 against CD4, say. In the gap, such an edge follows the smear: into the
+  negatives where the positives are dim, away from them where bright.
+- **Leave it in the gap** where the edge sits between two populations, or
+  between the population and something other than the negative.
+
+A run says when the reference edge on a marker it reads lies within the
+negative's own spread - within 1.645 of its widths of the peak, inside its
+95th percentile - as a hint to pin it there. It is a hint: an edge in a
+real dip a width above a wide negative reads the same.
 
 ## Traps
 
@@ -125,6 +157,10 @@ them.
   CD3 against CD56, matched on CD56 alone, slides on CD3 as far as the
   matched cells' CD3 middle moved. Add the marker to the rule to tie the
   gate's CD3 edges to the parent's CD3 negative instead.
+- **A pinned edge moves with the negative alone**, so where a sample's
+  negative is misread the edge follows the misreading. Where a sample's
+  parent has no negative to read on the marker at all, the edge is carried
+  in the gap instead.
 - **A population much rarer than on the reference is left alone**, not
   gated: under a fifth as common, most of what matches is near misses. Pick
   a reference where the population is typical, not unusually large.

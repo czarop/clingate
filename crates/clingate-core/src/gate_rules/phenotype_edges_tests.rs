@@ -112,6 +112,26 @@ fn rule(fit: ShapeFit) -> RuleStore {
 
 /// The phenotype rule for CD3+CD56+, reading `markers`.
 fn rule_reading(fit: ShapeFit, markers: &[&str]) -> RuleStore {
+    rule_of(PhenotypeRule {
+        markers: markers.iter().map(|m| Arc::from(*m)).collect(),
+        fit,
+        ..Default::default()
+    })
+}
+
+/// The rule for CD3+CD56+ reading CD56, its edge on CD56 pinned to the
+/// negative.
+fn pinned(fit: ShapeFit) -> RuleStore {
+    rule_of(PhenotypeRule {
+        markers: vec![Arc::from(X)],
+        pinned: vec![Arc::from(X)],
+        fit,
+        ..Default::default()
+    })
+}
+
+/// `phenotype` as the rule for CD3+CD56+.
+fn rule_of(phenotype: PhenotypeRule) -> RuleStore {
     let mut store = RuleStore::default();
     store.insert(
         RuleTarget::named("CD3+CD56+"),
@@ -119,11 +139,7 @@ fn rule_reading(fit: ShapeFit, markers: &[&str]) -> RuleStore {
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("reference")),
-            rule: Rule::MatchThePhenotype(PhenotypeRule {
-                markers: markers.iter().map(|m| Arc::from(*m)).collect(),
-                fit,
-                ..Default::default()
-            }),
+            rule: Rule::MatchThePhenotype(phenotype),
         },
     );
     store
@@ -350,4 +366,53 @@ fn an_edge_is_placed_against_the_cells_beside_it_not_the_whole_parent_s_split() 
     let why: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
     assert_eq!(report.positioned.len(), 1, "{why:?}");
     assert!((lower - 650.0).abs() < 20.0, "{lower}");
+}
+
+/// The sample's negative sits at 400 and is 80 wide against the reference's
+/// 300 and 50, its positives at 1500 against 700. The gate, drawn from 400 -
+/// two of the reference negative's widths above its peak - starts two of the
+/// sample's above its own, at 560, however it is fitted; kept in the gap
+/// instead, it would start near 630.
+#[test]
+fn a_pinned_edge_keeps_its_widths_above_the_negative() {
+    let reference = sample(5, 50.0, 3_000, Positives::Population(700.0, 100.0));
+    let sample = sample_of(
+        6,
+        (400.0, 80.0),
+        40.0,
+        3_000,
+        Positives::Population(1_500.0, 100.0),
+    );
+    for fit in [ShapeFit::KeepShape, ShapeFit::MoveOnly] {
+        let (report, (lower, _), _) =
+            run_rules(&pinned(fit), (400.0, 3_000.0), &reference, &sample);
+        let why: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
+        assert_eq!(report.positioned.len(), 1, "{why:?}");
+        assert!((lower - 560.0).abs() < 30.0, "{fit:?}: {lower}");
+        let read = report.positioned[0].phenotype.as_ref().unwrap();
+        assert_eq!(read.pinned, [Arc::from(X)]);
+        assert!(read.could_pin.is_empty());
+    }
+}
+
+/// Drawn from 360, the gate's edge cuts the reference negative 1.2 widths
+/// above its peak, so the run says it could be pinned there; drawn from 600,
+/// six widths up in the gap, it does not.
+#[test]
+fn an_edge_drawn_inside_the_negative_could_be_pinned() {
+    let reference = sample(7, 50.0, 3_000, Positives::Population(700.0, 100.0));
+    let sample = sample(8, 50.0, 3_000, Positives::Population(700.0, 100.0));
+    for (from, could) in [(360.0, true), (600.0, false)] {
+        let (report, _, _) = run(ShapeFit::KeepShape, (from, 3_000.0), &reference, &sample);
+        let why: Vec<&str> = report.skipped.iter().map(|s| s.reason.as_str()).collect();
+        assert_eq!(report.positioned.len(), 1, "{why:?}");
+        let read = report.positioned[0].phenotype.as_ref().unwrap();
+        assert_eq!(
+            read.could_pin == [Arc::from(X)],
+            could,
+            "from {from}: {:?}",
+            read.could_pin
+        );
+        assert!(read.pinned.is_empty());
+    }
 }

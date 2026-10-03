@@ -151,7 +151,15 @@ smear_example. Which samples are smears is found when the rules run; do not \
 read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
 - usually the same gate under another parent - for samples where the \
 positives smear with no dip: there its edge goes where the fallback's is, \
-placed first, and the placement comes up for review.
+placed first, and the placement comes up for review. \
+A MatchThePhenotype edge drawn against a marker's negative - CD8 just above \
+its negatives, where the positives smear - can be pinned there ('pinned': \
+[marker]): it then stays as many of the negative's widths above the \
+negative's peak as on the reference, wherever the positives go. Nothing in \
+the data says whether an edge was meant to sit in a gap or against the \
+negative, so suggest it, do not decide it: preview_rules lists under \
+could_pin the edges that lie within their negative on the reference; ask the \
+user, and pin only on their word.
 
 Runs. The files analysed together - this workspace - are one run. A gating \
 guide that says 'per run in the first instance' means one line for all of \

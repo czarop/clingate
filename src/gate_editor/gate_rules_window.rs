@@ -45,8 +45,31 @@ const REVIEW_FLOOR: f64 = 0.30;
 /// the reason to doubt the gate", which is what a person scanning a run needs.
 const PURE_ENOUGH: f64 = 0.70;
 
-/// How a phenotype rule fitted the gate, for the verification table.
-fn fitted(read: &PhenotypeRead) -> String {
+/// How a phenotype rule fitted the gate, for the verification table, its
+/// markers named by `name`.
+fn fitted(read: &PhenotypeRead, name: impl Fn(&str) -> String) -> String {
+    let listed = |markers: &[Arc<str>]| -> String {
+        markers
+            .iter()
+            .map(|m| name(m))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    };
+    let mut said = shape_fitted(read);
+    if !read.pinned.is_empty() {
+        said.push_str(&format!("; pinned on {}", listed(&read.pinned)));
+    }
+    if !read.could_pin.is_empty() {
+        said.push_str(&format!(
+            "; edge on {} inside its negative on the reference - consider pinning",
+            listed(&read.could_pin)
+        ));
+    }
+    said
+}
+
+/// How a phenotype rule fitted the gate's shape.
+fn shape_fitted(read: &PhenotypeRead) -> String {
     let limited = if read.clamped {
         " (slid: resizing would pass the area limit)"
     } else {
@@ -71,6 +94,16 @@ fn signed(distance: f64) -> String {
     } else {
         format!("{distance:+.2}")
     }
+}
+
+/// The pinned markers the form keeps: the gate's own axes, among the ticked
+/// markers where any are ticked.
+fn pinnable(gate_markers: &[String], markers: &[String], pinned: &[String]) -> Vec<String> {
+    pinned
+        .iter()
+        .filter(|m| gate_markers.contains(m) && (markers.is_empty() || markers.contains(m)))
+        .cloned()
+        .collect()
 }
 
 /// The fit the form's menu names by `key`.
@@ -327,6 +360,7 @@ pub fn GateRulesWindow() -> Element {
     // the other.
     let mut fit = use_signal(|| ShapeFit::default().key().to_string());
     let mut markers = use_signal(Vec::<String>::new);
+    let mut pinned = use_signal(Vec::<String>::new);
     let mut keep = use_signal(|| "95".to_string());
     let mut outline_smoothing = use_signal(|| "1.0".to_string());
     let mut vertices = use_signal(|| "24".to_string());
@@ -566,6 +600,11 @@ pub fn GateRulesWindow() -> Element {
             .cloned()
             .collect::<Vec<_>>()
     });
+    // The gate's own axes, as the panel names its channels: the markers a
+    // phenotype rule can pin.
+    let gate_markers = use_memo(move || {
+        clingate_core::gate_rules::choices::plot_markers(&selected_parameters(), &panel.read())
+    });
 
     // The rule the form is standing in for, when it was opened by Edit. The
     // next Add replaces it, so a rule can be moved to another population rather
@@ -640,6 +679,7 @@ pub fn GateRulesWindow() -> Element {
                 kind.set("MatchThePhenotype".to_string());
                 fit.set(r.fit.key().to_string());
                 markers.set(r.markers.iter().map(|m| m.to_string()).collect());
+                pinned.set(r.pinned.iter().map(|m| m.to_string()).collect());
                 keep.set(format!("{}", r.keep * 100.0));
                 outline_smoothing.set(format!("{}", r.smoothing));
                 vertices.set(format!("{}", r.vertices));
@@ -740,6 +780,14 @@ pub fn GateRulesWindow() -> Element {
                     keep: k / 100.0,
                     smoothing: sm,
                     vertices: v,
+                    pinned: if fit() == ShapeFit::DrawPolygon.key() {
+                        Vec::new()
+                    } else {
+                        pinnable(&gate_markers(), &markers(), &pinned())
+                            .into_iter()
+                            .map(|m| Arc::from(m.as_str()))
+                            .collect()
+                    },
                 })
             }
             "FromAnotherGate" => {
@@ -1400,6 +1448,35 @@ pub fn GateRulesWindow() -> Element {
                             "Every edge keeps its place in the gap between the matched cells and the cells beyond it, so the gate can grow or shrink with them. A side drawn past every cell is never pulled in. The gate keeps its shape and its kind - a rectangle stays a rectangle, a polygon is stretched between its new edges - and if its area would change by more than 30% it slides instead. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
                         }
                     }
+
+                    if fit() != ShapeFit::DrawPolygon.key() {
+                        label { "Pin to the negative" }
+                        div { class: "gate_rules-markers",
+                            for marker in gate_markers().into_iter().filter(|m| markers().is_empty() || markers().contains(m)) {
+                                label { class: "gate_rules-marker",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: pinned().contains(&marker),
+                                        onchange: {
+                                            let marker = marker.clone();
+                                            move |e: FormEvent| {
+                                                let mut chosen = pinned();
+                                                chosen.retain(|m| *m != marker);
+                                                if e.checked() {
+                                                    chosen.push(marker.clone());
+                                                }
+                                                pinned.set(chosen);
+                                            }
+                                        },
+                                    }
+                                    "{clingate_core::gate_rules::choices::marker_label(&marker, &panel.read())}"
+                                }
+                            }
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Pinned, the gate's edge nearest that marker's negative stays as many widths of the negative above its peak as on the reference, wherever the positives go, and a slide keeps it there. Choose it where the edge was drawn against the negative - just above it, or cutting its top - rather than in a gap or a dip: then a positive smear that differs between samples cannot drag the edge into the negatives or away from them. Leave it unticked where the edge sits between two populations; the results table says when the reference edge lies inside the negative."
+                        }
+                    }
                 }
 
                 if kind() == "ValleyOrSmear" {
@@ -1910,7 +1987,7 @@ pub fn GateRulesWindow() -> Element {
                                                     "{read.pieces}"
                                                 }
                                                 td {
-                                                    {fitted(read)}
+                                                    {fitted(read, |m| clingate_core::gate_rules::choices::marker_label(m, &panel.read()))}
                                                 }
                                                 td {
                                                     for marker in read.centres.iter() {
@@ -2117,24 +2194,61 @@ mod tests {
             reshaped,
             clamped,
             refused_outline: refused,
+            pinned: Vec::new(),
+            could_pin: Vec::new(),
         }
     }
 
     #[test]
     fn the_table_says_how_the_phenotype_rule_fitted_the_gate() {
-        assert_eq!(fitted(&read(None, false, None)), "new polygon");
+        assert_eq!(shape_fitted(&read(None, false, None)), "new polygon");
         assert_eq!(
-            fitted(&read(Some((12.0, -3.0)), false, None)),
+            shape_fitted(&read(Some((12.0, -3.0)), false, None)),
             "moved +12.00, -3.00"
         );
         assert_eq!(
-            fitted(&read(Some((1200.0, -0.3)), true, None)),
+            shape_fitted(&read(Some((1200.0, -0.3)), true, None)),
             "moved +1200, -0.30 (slid: resizing would pass the area limit)"
         );
         assert_eq!(
-            fitted(&read(Some((12.0, -3.0)), true, Some(2.44))),
+            shape_fitted(&read(Some((12.0, -3.0)), true, Some(2.44))),
             "shape kept: the polygon was 2.4x the area; moved +12.00, -3.00 (slid: resizing would pass the area limit)"
         );
+    }
+
+    #[test]
+    fn the_table_names_the_pinned_markers_and_those_that_could_be() {
+        let mut pinned = read(Some((12.0, -3.0)), false, None);
+        pinned.pinned = vec![Arc::from("PerCP-A")];
+        pinned.could_pin = vec![Arc::from("BUV395-A")];
+        let name = |m: &str| {
+            if m == "PerCP-A" {
+                "CD8 (PerCP-A)".to_string()
+            } else {
+                m.to_string()
+            }
+        };
+        assert_eq!(
+            fitted(&pinned, name),
+            "moved +12.00, -3.00; pinned on CD8 (PerCP-A); edge on BUV395-A inside its negative on the reference - consider pinning"
+        );
+        assert_eq!(fitted(&read(None, false, None), name), "new polygon");
+    }
+
+    #[test]
+    fn the_form_keeps_only_pins_on_the_gates_own_ticked_axes() {
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let axes = owned(&["BUV395-A", "PerCP-A"]);
+        let pinned = owned(&["PerCP-A", "FITC-A"]);
+        assert_eq!(
+            pinnable(&axes, &owned(&["BUV395-A", "PerCP-A", "FITC-A"]), &pinned),
+            owned(&["PerCP-A"])
+        );
+        assert_eq!(
+            pinnable(&axes, &owned(&["BUV395-A"]), &pinned),
+            Vec::<String>::new()
+        );
+        assert_eq!(pinnable(&axes, &[], &pinned), owned(&["PerCP-A"]));
     }
 
     #[test]

@@ -1062,3 +1062,60 @@ fn a_phenotype_rule_that_moves_only_is_written_over_the_protocol() {
     let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
     assert!(guide.to_string().contains("`MoveOnly`"), "{guide}");
 }
+
+/// Pinned by channel over the protocol, the rule says so; pinning a marker
+/// the rule does not read is refused with why.
+#[test]
+fn a_phenotype_rule_pins_an_edge_to_the_negative_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype-pinned");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let write = |server: &mut Server, pinned: &str| {
+        server.call(
+            "update_rule",
+            json!({
+                "gate": "Tmem",
+                "rule": {
+                    "parameter": "",
+                    "bound": "Above",
+                    "measured_on": {"File": "sample1"},
+                    "rule": {
+                        "kind": "MatchThePhenotype",
+                        "markers": ["BUV805-A"],
+                        "pinned": [pinned]
+                    }
+                }
+            }),
+        )
+    };
+    let written = write(&mut server, "BUV805-A");
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules.iter().any(|r| r
+            .rule
+            .contains("its edge on BUV805-A pinned to the negative")),
+        "{:?}",
+        view.rules
+    );
+    let refused = write(&mut server, "BV785-A");
+    assert_ne!(refused["outcome"], "ok", "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("BV785-A is pinned but is not one of the rule's markers"),
+        "{refused}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert!(
+        guide.to_string().contains("Pinned or in the gap"),
+        "{guide}"
+    );
+}

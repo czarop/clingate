@@ -875,6 +875,7 @@ fn a_phenotype_rule_survives_a_save_and_a_load() {
                 keep: 0.9,
                 smoothing: 1.3,
                 vertices: 18,
+                pinned: vec![Arc::from("CD161")],
             }),
         },
     );
@@ -893,6 +894,7 @@ fn a_phenotype_rule_survives_a_save_and_a_load() {
     assert_eq!(rule.keep, 0.9);
     assert_eq!(rule.smoothing, 1.3);
     assert_eq!(rule.vertices, 18);
+    assert_eq!(rule.pinned, vec![Arc::from("CD161")]);
 }
 
 #[test]

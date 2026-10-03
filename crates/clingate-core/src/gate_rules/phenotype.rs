@@ -329,6 +329,14 @@ pub struct Open {
 }
 
 impl Open {
+    /// Whether `side` is open.
+    pub fn on(&self, side: crate::gate_rules::rule::Side) -> bool {
+        match side {
+            crate::gate_rules::rule::Side::Lower => self.low,
+            crate::gate_rules::rule::Side::Upper => self.high,
+        }
+    }
+
     /// From the gate's extent on one marker, `(lower, upper)`, holding `held`
     /// events, and its parent's `values` on that marker.
     pub fn beyond(

@@ -916,13 +916,31 @@ fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
 /// of 3, so those events are all positive on BUV661-A and negative on
 /// BV785-A too.
 fn tmem_workspace_positive_one_in(name: &str, files: [(usize, usize); 2]) -> std::path::PathBuf {
+    let [(first, one_in_first), (second, one_in_second)] = files;
+    tmem_workspace_of(
+        name,
+        [
+            (first, one_in_first, 40_000.0, (0.0, 300.0)),
+            (second, one_in_second, 40_000.0, (0.0, 300.0)),
+        ],
+    )
+}
+
+/// [`tmem_workspace_positive_one_in`], with each file's BUV805-A positives
+/// centred where its third number says and its negative centred and as wide
+/// as its fourth.
+fn tmem_workspace_of(
+    name: &str,
+    files: [(usize, usize, f32, (f32, f32)); 2],
+) -> std::path::PathBuf {
     let dir = workspace(name);
     let mut channels = vec!["FSC-A", "SSC-A"];
     channels.extend(FLUORESCENCE);
     let at = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
-    for ((seed, file), (count, every)) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
-        .into_iter()
-        .zip(files)
+    for ((seed, file), (count, every, positive, negative)) in
+        [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
+            .into_iter()
+            .zip(files)
     {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let high = Normal::new(400_000.0f32, 40_000.0).unwrap();
@@ -932,9 +950,13 @@ fn tmem_workspace_positive_one_in(name: &str, files: [(usize, usize); 2]) -> std
             .map(|(i, mut row)| {
                 row[at("BUV563-A")] = high.sample(&mut rng);
                 row[at("BUV805-A")] = if i % every == 0 {
-                    Normal::new(40_000.0f32, 8_000.0).unwrap().sample(&mut rng)
+                    Normal::new(positive, positive / 5.0)
+                        .unwrap()
+                        .sample(&mut rng)
                 } else {
-                    Normal::new(0.0f32, 300.0).unwrap().sample(&mut rng)
+                    Normal::new(negative.0, negative.1)
+                        .unwrap()
+                        .sample(&mut rng)
                 };
                 row
             })
@@ -2083,6 +2105,69 @@ fn a_phenotype_rule_s_markers_are_stored_as_channels() {
         ),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_pinned_marker_is_stored_as_its_channel_and_must_be_one_the_gate_is_drawn_on() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let folder = marked_workspace("session-rule-phenotype-pinned");
+    let mut session = Session::open(&folder).unwrap();
+    let rule = |markers: &[&str], pinned: &[&str]| {
+        Rule::MatchThePhenotype(PhenotypeRule {
+            markers: markers.iter().map(|m| (*m).into()).collect(),
+            pinned: pinned.iter().map(|m| (*m).into()).collect(),
+            ..Default::default()
+        })
+    };
+    let written = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69", "cd4"], &["CD69"]),
+        ))
+        .unwrap();
+    assert!(
+        written
+            .resolved
+            .iter()
+            .any(|r| r == "pinned marker CD69 is the channel BUV805-A"),
+        "{:?}",
+        written.resolved
+    );
+    assert!(
+        written.now.contains("pinned to the negative"),
+        "{}",
+        written.now
+    );
+
+    let unread = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69"], &["cd4"]),
+        ))
+        .unwrap_err();
+    assert!(
+        format!("{unread:?}").contains("BV785-A is pinned but is not one of the rule's markers"),
+        "{unread:?}"
+    );
+    let off_the_plot = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69", "cd4"], &["cd4"]),
+        ))
+        .unwrap_err();
+    assert!(
+        format!("{off_the_plot:?}").contains("so it has no edge on BV785-A to pin"),
+        "{off_the_plot:?}"
+    );
 }
 
 #[test]
@@ -3491,6 +3576,91 @@ fn a_phenotype_rule_that_moves_only_keeps_the_gate_s_size() {
             "{axis}: {drawn} then {placed}"
         );
     }
+}
+
+/// Tmem's lower edge on BUV805-A on the reference and on sample2, whose
+/// BUV805-A positives sit at 80,000 against the reference's 40,000 while its
+/// negative is the same, after a keep-shape phenotype rule pinning `pinned`.
+fn tmem_lower_edges(name: &str, pinned: &[&str]) -> (f64, f64) {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        pinned: pinned.iter().map(|m| (*m).into()).collect(),
+        ..Default::default()
+    });
+    let folder = tmem_workspace_of(
+        name,
+        [
+            (20_000, 3, 40_000.0, (0.0, 300.0)),
+            (20_000, 3, 80_000.0, (0.0, 300.0)),
+        ],
+    );
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let lower = |sample| {
+        session
+            .gate("Tmem", Some(sample))
+            .unwrap()
+            .extent
+            .iter()
+            .find(|e| e.parameter == "BUV805-A")
+            .and_then(|e| e.lower)
+            .unwrap()
+    };
+    (lower("fmx"), lower("fs"))
+}
+
+/// The negative is the same on both samples, so a lower edge pinned to it
+/// stays where it was drawn; carried in the gap below the brighter positives,
+/// it rises with them.
+#[test]
+fn a_pinned_edge_stays_above_the_negative_wherever_the_positives_go() {
+    let (drawn, pinned) = tmem_lower_edges("session-phenotype-pinned", &["BUV805-A"]);
+    let (_, carried) = tmem_lower_edges("session-phenotype-not-pinned", &[]);
+    assert!(
+        (pinned - drawn).abs() < 0.1 * drawn.abs(),
+        "{drawn} then {pinned}"
+    );
+    assert!(carried > drawn * 1.2, "{drawn} then {carried}");
+}
+
+/// BUV805-A's negative sits at 10,000 and is 1,500 wide - 1.29 and 0.13 on
+/// the arcsinh scale - so Tmem's lower edge, drawn at 1.42, cuts its top a
+/// width above its peak: the preview says so and asks for the user's word
+/// before pinning it.
+#[test]
+fn an_edge_drawn_inside_the_negative_is_offered_for_pinning() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        ..Default::default()
+    });
+    let folder = tmem_workspace_of(
+        "session-phenotype-could-pin",
+        [
+            (20_000, 3, 40_000.0, (10_000.0, 1_500.0)),
+            (20_000, 3, 40_000.0, (10_000.0, 1_500.0)),
+        ],
+    );
+    out_of_tmems_way(&folder.join("gating.omiqgt"));
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview
+            .could_pin
+            .iter()
+            .any(|line| line.starts_with("Tmem of 1: ")
+                && line.contains("its edge on BUV805-A lies within the negative")
+                && line.contains("change nothing until they say")),
+        "{preview:?}"
+    );
 }
 
 /// Both samples a third positive: the same cells are found on sample2 and

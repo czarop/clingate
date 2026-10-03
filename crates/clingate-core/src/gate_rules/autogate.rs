@@ -1210,6 +1210,12 @@ pub struct PhenotypeRead {
     /// more than the limit allows: its area against the reference's. The
     /// shape was kept instead.
     pub refused_outline: Option<f64>,
+    /// The markers whose edge was pinned to the negative on this sample.
+    pub pinned: Vec<Arc<str>>,
+    /// The markers, not pinned, on which the reference gate's edge lies
+    /// within the negative's own spread - drawn against the negative, which
+    /// pinning it there would keep it.
+    pub could_pin: Vec<Arc<str>>,
 }
 
 /// A gate no rule could even be tried against, and why.
@@ -3083,6 +3089,9 @@ struct Described {
     signature: crate::gate_rules::phenotype::Signature,
     /// The sides the gate leaves open on each of its two axes.
     open: [crate::gate_rules::phenotype::Open; 2],
+    /// On each of its two axes, the side nearest the parent's negative and
+    /// how many of the negative's widths it sits from its peak.
+    negatives: [Option<(crate::gate_rules::rule::Side, f64)>; 2],
 }
 
 /// Describe the population `gate_id` holds on `reference`.
@@ -3141,12 +3150,25 @@ fn describe_reference(
     let signature = Signature::describe(there.markers.clone(), members, there_panel)
         .ok_or_else(|| "the reference population has no describable phenotype".to_string())?
         .with_open(&open_on_markers);
+    let negative_on = |axis: usize| {
+        let values: Vec<f64> = there.points.iter().map(|p| coordinate(p, axis)).collect();
+        let extent = extent_on(
+            &inner.geometry,
+            if axis == 0 { &params.0 } else { &params.1 },
+        )?;
+        crate::gate_rules::phenotype_gate::widths_from_negative(
+            &values,
+            (f64::from(extent.0), f64::from(extent.1)),
+        )
+    };
+    let negatives = [negative_on(0), negative_on(1)];
     Ok(Described {
         gate,
         inner,
         inside,
         signature,
         open,
+        negatives,
     })
 }
 
@@ -3164,16 +3186,19 @@ fn describe_reference(
 /// samples have one beside the edge: the line the signature matches by is
 /// read off the whole parent, and on a marker most of the parent smears along
 /// it says little about where this population starts.
+#[allow(clippy::too_many_arguments)]
 fn carries(
     geometry: &GateGeometry,
     params: &(Arc<str>, Arc<str>),
     markers: &[Arc<str>],
+    pinned: &[Arc<str>],
     there: (&[(f64, f64)], &[usize]),
     here: (&[(f64, f64)], &[usize]),
     open: &[crate::gate_rules::phenotype::Open; 2],
+    negatives: &[Option<(crate::gate_rules::rule::Side, f64)>; 2],
 ) -> [crate::gate_rules::phenotype_gate::Carry; 2] {
     use crate::gate_rules::phenotype::Open;
-    use crate::gate_rules::phenotype_gate::{Carry, Gap, edge_in_gap};
+    use crate::gate_rules::phenotype_gate::{Carry, Gap, edge_in_gap, pinned_to_negative};
     use crate::gate_rules::rule::Side;
     let extent = |param: &str| {
         extent_on(geometry, param)
@@ -3203,13 +3228,49 @@ fn carries(
         };
         let carry =
             |edge, side| gaps(edge, side).map_or(edge, |(from, to)| edge_in_gap(edge, from, to));
+        let mut to = (carry(lower, Side::Lower), carry(upper, Side::Upper));
+        let pin = negatives[axis]
+            .filter(|(side, _)| read && pinned.contains(param) && !open.on(*side))
+            .and_then(|(side, widths)| {
+                let values: Vec<f64> = here.0.iter().map(|p| coordinate(p, axis)).collect();
+                Some((side, pinned_to_negative(widths, &values)?))
+            });
+        match pin {
+            Some((Side::Lower, at)) => to.0 = at,
+            Some((Side::Upper, at)) => to.1 = at,
+            None => {}
+        }
         Carry {
             extent: extents[axis],
             open: if read { open } else { Open::default() },
-            to: (carry(lower, Side::Lower), carry(upper, Side::Upper)),
+            to,
+            pinned: pin.map(|(side, _)| side),
         }
     };
     [on_axis(0, open[0]), on_axis(1, open[1])]
+}
+
+/// The plot's axes the rule reads but does not pin, on which the reference
+/// gate's edge lies within the negative's own spread.
+fn could_pin(
+    params: &(Arc<str>, Arc<str>),
+    wanted: &crate::gate_rules::rule::PhenotypeRule,
+    signature: &crate::gate_rules::phenotype::Signature,
+    open: &[crate::gate_rules::phenotype::Open; 2],
+    negatives: &[Option<(crate::gate_rules::rule::Side, f64)>; 2],
+) -> Vec<Arc<str>> {
+    [&params.0, &params.1]
+        .into_iter()
+        .zip(open.iter().zip(negatives))
+        .filter(|(param, (open, negative))| {
+            signature.markers.contains(param)
+                && !wanted.pinned.contains(param)
+                && negative.is_some_and(|(side, widths)| {
+                    !open.on(side) && crate::gate_rules::phenotype_gate::within_the_negative(widths)
+                })
+        })
+        .map(|(param, _)| param.clone())
+        .collect()
 }
 
 /// One axis's values: the population's cells, and the rest beside them.
@@ -3402,6 +3463,7 @@ fn position_by_phenotype(
         inside,
         signature,
         open,
+        negatives,
     } = described;
 
     let there_panel = there
@@ -3436,9 +3498,11 @@ fn position_by_phenotype(
         &inner.geometry,
         &measured.params,
         &signature.markers,
+        &wanted.pinned,
         (&there.points, &alike_there),
         (&here.points, &found.members),
         open,
+        negatives,
     );
     let moved = |resize: bool| -> Result<_, String> {
         use crate::gate_rules::phenotype_gate::{carried, slid};
@@ -3575,6 +3639,16 @@ fn position_by_phenotype(
                 reshaped,
                 clamped,
                 refused_outline,
+                pinned: [(&measured.params.0, &x), (&measured.params.1, &y)]
+                    .into_iter()
+                    .filter(|(_, carry)| reshaped.is_some() && carry.pinned.is_some())
+                    .map(|(param, _)| param.clone())
+                    .collect(),
+                could_pin: if reshaped.is_some() {
+                    could_pin(&measured.params, wanted, signature, open, negatives)
+                } else {
+                    Vec::new()
+                },
             }),
         },
         Placement {

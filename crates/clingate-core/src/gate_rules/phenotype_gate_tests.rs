@@ -28,6 +28,7 @@ fn doubling(open: Open) -> Carry {
         extent: (100.0, 300.0),
         open,
         to: (250.0, 650.0),
+        pinned: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn halving(open: Open) -> Carry {
         extent: (100.0, 300.0),
         open,
         to: (50.0, 150.0),
+        pinned: None,
     }
 }
 
@@ -46,6 +48,7 @@ fn standing(extent: (f64, f64)) -> Carry {
         extent,
         open: Open::default(),
         to: extent,
+        pinned: None,
     }
 }
 
@@ -55,6 +58,7 @@ fn shifting(by: f64) -> Carry {
         extent: (0.0, 0.0),
         open: Open::default(),
         to: (by, by),
+        pinned: None,
     }
 }
 
@@ -318,6 +322,7 @@ fn an_unbounded_edge_stays_unbounded() {
         extent: (100.0, 1e16),
         open: Open::default(),
         to: (250.0, 2e16),
+        pinned: None,
     };
     let moved = carried(&was, &params(), &x, &standing((-1e16, 1e16))).unwrap();
     assert_eq!(x_span(&moved), (250.0, 1e16));
@@ -432,4 +437,90 @@ fn an_outline_with_too_few_points_is_refused() {
         polygon(&outline, &params(), "mait"),
         Err(NoGeometry::TooFewPoints(2))
     );
+}
+
+/// `n` events around `mean` with width `sd`, reproducibly.
+fn cluster(seed: u64, n: usize, mean: f64, sd: f64) -> Vec<f64> {
+    use rand::SeedableRng;
+    use rand_distr::{Distribution, Normal};
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let normal = Normal::new(mean, sd).unwrap();
+    (0..n).map(|_| normal.sample(&mut rng)).collect()
+}
+
+/// A parent with its negative at 0, one wide, and positives at `positives`.
+fn parent(positives: f64) -> Vec<f64> {
+    let mut values = cluster(1, 20_000, 0.0, 1.0);
+    values.extend(cluster(2, 5_000, positives, 1.0));
+    values
+}
+
+#[test]
+fn a_gate_above_the_negative_is_measured_from_its_lower_side() {
+    let (side, widths) = widths_from_negative(&parent(10.0), (2.0, 14.0)).unwrap();
+    assert_eq!(side, Side::Lower);
+    assert!((widths - 2.0).abs() < 0.2, "{widths} widths");
+}
+
+#[test]
+fn a_gate_over_the_negative_is_measured_from_its_upper_side() {
+    let (side, widths) = widths_from_negative(&parent(10.0), (-6.0, 1.0)).unwrap();
+    assert_eq!(side, Side::Upper);
+    assert!((widths - 1.0).abs() < 0.2, "{widths} widths");
+}
+
+#[test]
+fn a_pinned_edge_follows_the_negative_whatever_the_positives_do() {
+    for positives in [5.0, 8.0, 14.0] {
+        let mut here = cluster(3, 20_000, 3.0, 0.5);
+        here.extend(cluster(4, 5_000, positives, 2.0));
+        let at = pinned_to_negative(2.0, &here).unwrap();
+        assert!(
+            (at - 4.0).abs() < 0.1,
+            "positives at {positives}: pinned to {at}"
+        );
+    }
+}
+
+#[test]
+fn pinned_on_the_reference_an_edge_stays_where_it_was_drawn() {
+    let values = parent(10.0);
+    for extent in [(2.0, 14.0), (-6.0, 1.0)] {
+        let (side, widths) = widths_from_negative(&values, extent).unwrap();
+        let drawn = if side == Side::Lower {
+            extent.0
+        } else {
+            extent.1
+        };
+        let at = pinned_to_negative(widths, &values).unwrap();
+        assert!((at - drawn).abs() < 1e-9, "{extent:?}: pinned to {at}");
+    }
+}
+
+#[test]
+fn an_edge_is_within_the_negative_up_to_its_95th_percentile() {
+    assert!(within_the_negative(1.6));
+    assert!(within_the_negative(-1.0));
+    assert!(!within_the_negative(1.7));
+}
+
+#[test]
+fn a_pinned_side_sets_how_far_the_gate_slides() {
+    let carry = |pinned| Carry {
+        extent: (100.0, 300.0),
+        open: Open::default(),
+        to: (150.0, 400.0),
+        pinned,
+    };
+    assert_eq!(carry(Some(Side::Lower)).shift(), 50.0);
+    assert_eq!(carry(Some(Side::Upper)).shift(), 100.0);
+    assert_eq!(carry(None).shift(), 75.0);
+    let moved = slid(
+        &rectangle((100.0, 300.0), (0.0, 50.0)),
+        &params(),
+        &carry(Some(Side::Lower)),
+        &standing((0.0, 50.0)),
+    )
+    .unwrap();
+    assert_eq!(x_span(&moved), (150.0, 350.0));
 }

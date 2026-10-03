@@ -100,6 +100,44 @@ fn quantile(values: &[f64], share: f64) -> Option<f64> {
     Some(sorted[((sorted.len() - 1) as f64 * share).round() as usize])
 }
 
+/// The side of `extent` nearest the negative of a parent's `values` on one
+/// marker, and how many of the negative's widths that side sits from its
+/// peak: below the gate, its lower side; within or above it, its upper side.
+/// `None` where the values have no negative to read.
+pub fn widths_from_negative(values: &[f64], extent: (f64, f64)) -> Option<(Side, f64)> {
+    let negative = crate::gate_rules::threshold::negative_peak(values)?;
+    let side = if negative.centre <= extent.0 {
+        Side::Lower
+    } else {
+        Side::Upper
+    };
+    let edge = if side == Side::Lower {
+        extent.0
+    } else {
+        extent.1
+    };
+    Some((side, (edge - negative.centre) / negative.spread))
+}
+
+/// Where a side `widths` of the negative's widths from its peak on the
+/// reference goes on a sample, pinned to the negative: as far from the peak
+/// of the sample's parent, `here`, in its widths.
+pub fn pinned_to_negative(widths: f64, here: &[f64]) -> Option<f64> {
+    let negative = crate::gate_rules::threshold::negative_peak(here)?;
+    Some(negative.centre + widths * negative.spread)
+}
+
+/// Whether an edge `widths` from its marker's negative lies within the
+/// negative's own spread - inside its 95th percentile - so cuts the top of
+/// the negative rather than sitting between it and the population.
+pub fn within_the_negative(widths: f64) -> bool {
+    widths.abs() <= NEAR_BOUNDARY_WIDTHS
+}
+
+/// How many widths from its peak a symmetric population's 95th percentile
+/// sits.
+const NEAR_BOUNDARY_WIDTHS: f64 = 1.645;
+
 /// How one of a gate's axes is carried from the reference to a sample: its
 /// two edges moved, and everything between them kept in proportion, so a
 /// polygon keeps its shape.
@@ -111,6 +149,9 @@ pub struct Carry {
     pub open: Open,
     /// Where its edges go on the sample.
     pub to: (f64, f64),
+    /// The side pinned to its marker's negative, which a slide keeps where
+    /// it is pinned - see [`pinned_to_negative`].
+    pub pinned: Option<Side>,
 }
 
 impl Carry {
@@ -143,9 +184,15 @@ impl Carry {
         )
     }
 
-    /// How far the gate's closed edges move, on average - how far a gate
-    /// that keeps its size slides. Nothing where both sides are open.
+    /// How far a gate that keeps its size slides: as far as its pinned side
+    /// moves, where one is pinned; otherwise its closed edges, on average.
+    /// Nothing where both sides are open.
     pub fn shift(&self) -> f64 {
+        match self.pinned {
+            Some(Side::Lower) => return self.to.0 - self.extent.0,
+            Some(Side::Upper) => return self.to.1 - self.extent.1,
+            None => {}
+        }
         let moves: Vec<f64> = [
             (self.to.0 - self.extent.0, self.open.low),
             (self.to.1 - self.extent.1, self.open.high),

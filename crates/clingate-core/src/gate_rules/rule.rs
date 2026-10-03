@@ -991,6 +991,14 @@ pub struct PhenotypeRule {
     /// shape is kept.
     #[serde(default = "two_dozen")]
     pub vertices: usize,
+    /// The markers whose edge is pinned to their negative: the side of the
+    /// gate nearest the marker's negative keeps as many of the negative's
+    /// widths from its peak as on the reference, rather than its place
+    /// between the populations. For an edge drawn against the negative, where
+    /// what lies between it and the population varies from sample to sample.
+    /// Each must be one of the gate's two axes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<Arc<str>>,
 }
 
 fn ninety_five() -> f64 {
@@ -1014,10 +1022,23 @@ impl PhenotypeRule {
                 .join(", ")
         };
         format!(
-            "find the cells that match on {markers}, then {}",
-            self.fit.label()
+            "find the cells that match on {markers}, then {}{}",
+            self.fit.label(),
+            pinned_said(&self.pinned, |m| m.to_string())
         )
     }
+}
+
+/// ", its edge on CD8 pinned to the negative", for a rule's description.
+pub fn pinned_said(pinned: &[Arc<str>], name: impl Fn(&str) -> String) -> String {
+    if pinned.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = pinned.iter().map(|m| name(m)).collect();
+    format!(
+        ", its edge on {} pinned to the negative",
+        names.join(" and ")
+    )
 }
 
 impl Default for PhenotypeRule {
@@ -1028,6 +1049,7 @@ impl Default for PhenotypeRule {
             keep: ninety_five(),
             smoothing: one(),
             vertices: two_dozen(),
+            pinned: Vec::new(),
         }
     }
 }
