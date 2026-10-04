@@ -832,6 +832,12 @@ pub enum NoValley {
         /// means the dip was in a tail rather than between two populations.
         far_side: f64,
     },
+    /// A dip, but shallower than the rule asks a dip to be.
+    ShallowerThanAsked {
+        bottom: f64,
+        depth: f64,
+        smallest: f64,
+    },
 }
 
 impl std::fmt::Display for NoValley {
@@ -861,6 +867,17 @@ impl std::fmt::Display for NoValley {
                  side {:.1}% of the tallest - not a boundary between two populations",
                 best_depth * 100.0,
                 far_side * 100.0
+            ),
+            NoValley::ShallowerThanAsked {
+                bottom,
+                depth,
+                smallest,
+            } => write!(
+                f,
+                "the dip at {bottom:.3} is only {:.1}% deep, under the {:.0}% the rule asks for, \
+                 so it is read as no dip",
+                depth * 100.0,
+                smallest * 100.0
             ),
         }
     }

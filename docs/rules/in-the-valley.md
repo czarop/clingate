@@ -49,6 +49,7 @@ that broadens does not throw the gate out.
 6. With `lowest_before`, the dip found in 3 moves to the lowest point of the
    density between the negative's peak and it, on the reference and on each
    sample.
+7. With `smallest_dip`, a dip shallower than it is read as no dip, as in 5.
 
 ## Settings
 
@@ -61,6 +62,14 @@ that broadens does not throw the gate out.
   the same gate under another parent, where the positives do separate. It
   has to be drawn on the rule's parameter. When a rule places it, the run
   places it first, as for a rule from another gate.
+- `smallest_dip` - optional, a fraction: the shallowest dip, against the
+  lower peak beside it, that counts. A shallower one is read as no dip, so
+  the sample is a smear (or goes to the `fallback`). For positives that run
+  straight off the negative as a plateau, where the rule would otherwise gate
+  a 5% wobble in them. Read each placement's depth from its confidence
+  ("the dip is x% as deep as the reference's") and set it between the
+  wobbles and the real dips. It applies to the reference too: a reference
+  shallower than it is a smear, and every sample is placed from it.
 - `lowest_before` - `true` to gate in the lowest point between the
   negative's peak and the dip found, rather than that dip. For positives
   spread thin: a few percent of the cells over a wide range stand lower

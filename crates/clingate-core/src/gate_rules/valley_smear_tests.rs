@@ -6,7 +6,9 @@
 //! at 300 and a positive at 900 with a dip between; `smear1` and `smear2`
 //! have the same negative with a tail falling away from it and no dip, and
 //! `smear_heavy` three times the tail. `thin` has the negative, a gap to 700,
-//! 300 positives spread thin from 700 to 1400 and 900 more piled up at 1650.
+//! 300 positives spread thin from 700 to 1400 and 900 more piled up at 1650;
+//! `shallow` the negative and 5,000 positives at 480, so close the dip
+//! between them is shallow.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,7 +33,15 @@ use crate::gates::gate_traits::DrawableGate;
 const X: &str = "FSC-A";
 const Y: &str = "SSC-A";
 const BIG: f32 = 1e16;
-const SAMPLES: [&str; 6] = ["ref", "dip", "smear1", "smear2", "smear_heavy", "thin"];
+const SAMPLES: [&str; 7] = [
+    "ref",
+    "dip",
+    "smear1",
+    "smear2",
+    "smear_heavy",
+    "thin",
+    "shallow",
+];
 
 fn rect(id: &str, name: &str, x0: f32) -> Arc<dyn DrawableGate> {
     let geometry = flow_gates::create_rectangle_geometry(
@@ -88,6 +98,11 @@ fn events(sample: &str, seed: u64) -> Vec<Vec<f32>> {
         let piled = Normal::new(1650.0f32, 40.0).unwrap();
         rows.extend((0..300).map(|_| vec![spread.sample(&mut rng), 0.0]));
         rows.extend((0..900).map(|_| vec![piled.sample(&mut rng), 0.0]));
+        return rows;
+    }
+    if sample == "shallow" {
+        let near = Normal::new(480.0f32, 70.0).unwrap();
+        rows.extend((0..5_000).map(|_| vec![near.sample(&mut rng), 0.0]));
         return rows;
     }
     let smear = sample.starts_with("smear");
@@ -380,4 +395,41 @@ fn thin_positives_are_gated_below_them_when_the_rule_takes_the_lowest_point() {
         placed(&outcome, "smear1").is_none(),
         "a smear is still a smear"
     );
+}
+
+/// How deep the dip `sample` was placed in under `outcome`.
+fn depth(outcome: &RunOutcome, sample: &str) -> f64 {
+    placed(outcome, sample)
+        .and_then(|p| p.valley.as_ref())
+        .map(|(_, here)| here.depth)
+        .unwrap_or_else(|| panic!("{sample} was not placed in a dip"))
+}
+
+/// `shallow`'s positives sit so close to the negative that the dip between
+/// is shallower than `dip`'s. With the smallest dip set between the two, it
+/// reads as a smear - here, one with no example - while `dip` is placed in
+/// its dip as before.
+#[test]
+fn a_dip_shallower_than_the_rule_asks_for_is_a_smear() {
+    let files = write("valley-smear-shallow");
+    let any = run(&gates(), &files, rules("ref", ValleyOrSmearRule::default()));
+    let (shallow, deep) = (depth(&any, "shallow"), depth(&any, "dip"));
+    assert!(shallow < deep / 2.0, "{shallow} against {deep}");
+
+    let asking = ValleyOrSmearRule {
+        smallest_dip: Some((shallow + deep) / 2.0),
+        ..Default::default()
+    };
+    let outcome = run(&gates(), &files, rules("ref", asking));
+    assert!(placed(&outcome, "shallow").is_none());
+    assert!(
+        outcome
+            .report
+            .unplaced
+            .iter()
+            .any(|u| &*u.file == "shallow" && u.reason == NO_SMEAR_EXAMPLE),
+        "{:?}",
+        outcome.report.unplaced
+    );
+    assert_eq!(edge(&gates(), &outcome, "dip"), edge(&gates(), &any, "dip"));
 }

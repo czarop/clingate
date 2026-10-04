@@ -353,6 +353,8 @@ pub fn GateRulesWindow() -> Element {
     // The sample a valley-or-smear rule places smears from; empty for none.
     let mut smear_example = use_signal(String::new);
     let mut lowest_before = use_signal(|| false);
+    // A valley rule's smallest dip, as a percentage; empty for none.
+    let mut smallest_dip = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -658,6 +660,7 @@ pub fn GateRulesWindow() -> Element {
         }
         smear_example.set(String::new());
         lowest_before.set(false);
+        smallest_dip.set(String::new());
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -705,6 +708,7 @@ pub fn GateRulesWindow() -> Element {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
                 lowest_before.set(r.lowest_before);
+                smallest_dip.set(percent_of(r.smallest_dip));
                 valley_fallback.set(
                     r.fallback
                         .as_ref()
@@ -716,6 +720,7 @@ pub fn GateRulesWindow() -> Element {
                 kind.set("ValleyOrSmear".to_string());
                 smoothing.set(format!("{}", r.smoothing));
                 lowest_before.set(r.lowest_before);
+                smallest_dip.set(percent_of(r.smallest_dip));
                 valley_fallback.set(
                     r.fallback
                         .as_ref()
@@ -831,6 +836,10 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, "The smoothing must be a number");
                     return;
                 };
+                let Ok(smallest) = fraction_from(&smallest_dip()) else {
+                    warn(&toasts, SMALLEST_DIP_PROBLEM);
+                    return;
+                };
                 let fallback = fallback_targets(&choices.read(), &name, &parent())
                     .into_iter()
                     .find(|t| t.describe() == valley_fallback());
@@ -838,12 +847,17 @@ pub fn GateRulesWindow() -> Element {
                     smoothing: sm,
                     fallback,
                     lowest_before: lowest_before(),
+                    smallest_dip: smallest,
                     ..ValleyRule::default()
                 })
             }
             "ValleyOrSmear" => {
                 let Ok(sm) = smoothing().parse::<f64>() else {
                     warn(&toasts, "The smoothing must be a number");
+                    return;
+                };
+                let Ok(smallest) = fraction_from(&smallest_dip()) else {
+                    warn(&toasts, SMALLEST_DIP_PROBLEM);
                     return;
                 };
                 let fallback = fallback_targets(&choices.read(), &name, &parent())
@@ -859,6 +873,7 @@ pub fn GateRulesWindow() -> Element {
                     smear_example: (same_gate && !example.is_empty())
                         .then(|| Arc::from(example.as_str())),
                     lowest_before: lowest_before(),
+                    smallest_dip: smallest,
                     ..ValleyOrSmearRule::default()
                 })
             }
@@ -1509,6 +1524,7 @@ pub fn GateRulesWindow() -> Element {
                     }
 
                     {lowest_before_picker(lowest_before)}
+                    {smallest_dip_picker(smallest_dip)}
 
                     label { "On a smear" }
                     select {
@@ -1564,6 +1580,7 @@ pub fn GateRulesWindow() -> Element {
                     }
 
                     {lowest_before_picker(lowest_before)}
+                    {smallest_dip_picker(smallest_dip)}
 
                     label { "With no dip" }
                     select {
@@ -2265,6 +2282,17 @@ mod tests {
     }
 
     #[test]
+    fn the_smallest_dip_is_typed_as_a_percentage_and_kept_as_a_fraction() {
+        assert_eq!(fraction_from(""), Ok(None));
+        assert_eq!(fraction_from(" 10 "), Ok(Some(0.1)));
+        assert_eq!(fraction_from("101"), Err(()));
+        assert_eq!(fraction_from("ten"), Err(()));
+        assert_eq!(percent_of(Some(0.05)), "5");
+        assert_eq!(percent_of(Some(0.125)), "12.5");
+        assert_eq!(percent_of(None), "");
+    }
+
+    #[test]
     fn every_fit_the_menu_offers_is_saved_as_itself() {
         for fit in ShapeFit::ALL {
             assert_eq!(fit_chosen(fit.key()), fit);
@@ -2536,6 +2564,47 @@ fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .find(|(_, gating_id)| &**gating_id == id)
         .map_or(id, |(name, _)| &**name)
         .to_string()
+}
+
+/// The valley rules' smallest dip, typed as a percentage, and when to set
+/// it.
+fn smallest_dip_picker(mut smallest_dip: Signal<String>) -> Element {
+    rsx! {
+        label { "Smallest dip (%)" }
+        input {
+            r#type: "number",
+            step: "1",
+            placeholder: "any",
+            value: "{smallest_dip}",
+            oninput: move |e| smallest_dip.set(e.value()),
+        }
+        p { class: "gate_rules-hint gate_rules-span",
+            "A dip shallower than this, against the lower peak beside it, is read as no dip: a smear, placed from the smear example or the fallback. Set it where the positives run straight off the negative and the rule gates a wobble in them; leave it empty to take any dip. Each placement's confidence says how deep its dip was against the reference's."
+        }
+    }
+}
+
+/// What the form says when the smallest dip is not a percentage.
+const SMALLEST_DIP_PROBLEM: &str =
+    "The smallest dip must be a percentage between 0 and 100, or empty";
+
+/// A fraction typed as a percentage: `None` when empty.
+fn fraction_from(typed: &str) -> Result<Option<f64>, ()> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    match typed.parse::<f64>() {
+        Ok(percent) if (0.0..=100.0).contains(&percent) => Ok(Some(percent / 100.0)),
+        _ => Err(()),
+    }
+}
+
+/// `fraction` as the form shows it, a percentage; empty for none.
+fn percent_of(fraction: Option<f64>) -> String {
+    fraction
+        .map(|f| format!("{}", (f * 1000.0).round() / 10.0))
+        .unwrap_or_default()
 }
 
 /// The valley rules' "lowest point before the dip" setting, and when to

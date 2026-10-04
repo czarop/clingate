@@ -552,6 +552,12 @@ pub struct ValleyRule {
     /// [`lowest_valley_for_gate`]: crate::gate_rules::threshold::lowest_valley_for_gate
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lowest_before: bool,
+    /// The shallowest dip, as a fraction of the lower peak beside it, that
+    /// counts: a sample whose dip is shallower is read as having none - a
+    /// smear, or one for the fallback. For positives that run straight off
+    /// the negative, where a wobble in them would otherwise be gated in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smallest_dip: Option<f64>,
 }
 
 impl Default for ValleyRule {
@@ -561,6 +567,7 @@ impl Default for ValleyRule {
             confidence: CountAndSeparation::default(),
             fallback: None,
             lowest_before: false,
+            smallest_dip: None,
         }
     }
 }
@@ -623,11 +630,19 @@ impl ValleyRule {
         values: &[f64],
         gate: f64,
     ) -> Result<crate::gate_rules::threshold::Valley, crate::gate_rules::threshold::NoValley> {
-        use crate::gate_rules::threshold::{lowest_valley_for_gate, valley_for_gate};
-        if self.lowest_before {
+        use crate::gate_rules::threshold::{NoValley, lowest_valley_for_gate, valley_for_gate};
+        let found = if self.lowest_before {
             lowest_valley_for_gate(values, self.smoothing, gate)
         } else {
             valley_for_gate(values, self.smoothing, gate)
+        }?;
+        match self.smallest_dip {
+            Some(smallest) if found.depth < smallest => Err(NoValley::ShallowerThanAsked {
+                bottom: found.bottom,
+                depth: found.depth,
+                smallest,
+            }),
+            _ => Ok(found),
         }
     }
 
@@ -658,6 +673,7 @@ impl ValleyRule {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
         how.push_str(lowest_said(self.lowest_before));
+        how.push_str(&smallest_said(self.smallest_dip));
         if let Some(fallback) = &self.fallback {
             how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
         }
@@ -698,6 +714,9 @@ pub struct ValleyOrSmearRule {
     /// See [`ValleyRule::lowest_before`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lowest_before: bool,
+    /// See [`ValleyRule::smallest_dip`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smallest_dip: Option<f64>,
 }
 
 impl Default for ValleyOrSmearRule {
@@ -708,8 +727,16 @@ impl Default for ValleyOrSmearRule {
             fallback: None,
             smear_example: None,
             lowest_before: false,
+            smallest_dip: None,
         }
     }
+}
+
+/// What a valley rule's description says of `smallest_dip`.
+fn smallest_said(smallest_dip: Option<f64>) -> String {
+    smallest_dip
+        .map(|smallest| format!(", a dip under {:.0}% deep read as none", smallest * 100.0))
+        .unwrap_or_default()
 }
 
 /// What a valley rule's description says of `lowest_before`.
@@ -729,6 +756,7 @@ impl ValleyOrSmearRule {
             confidence: self.confidence.clone(),
             fallback: self.fallback.clone(),
             lowest_before: self.lowest_before,
+            smallest_dip: self.smallest_dip,
         }
     }
 
@@ -745,8 +773,10 @@ impl ValleyOrSmearRule {
 
     pub fn describe(&self) -> String {
         let mut how = format!(
-            "in the dip between the negative and the positive, as on the reference{}; on a smear, ",
-            lowest_said(self.lowest_before)
+            "in the dip between the negative and the positive, as on the reference{}{}; on a \
+             smear, ",
+            lowest_said(self.lowest_before),
+            smallest_said(self.smallest_dip)
         );
         match (&self.fallback, &self.smear_example) {
             (Some(fallback), _) => how.push_str(&format!("where {} is", fallback.describe())),

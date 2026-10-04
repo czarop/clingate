@@ -80,6 +80,14 @@ The smear example is a reference, as the reference is: never moved by a run.
   places it first.
 - `smear_example` - the hand-gated smear, named as a rule names a file; set
   by a paused run, or by hand.
+- `smallest_dip` - optional, a fraction: the shallowest dip, against the
+  lower peak beside it, that counts. A shallower one is read as no dip, so
+  the sample is a smear (or goes to the `fallback`). For positives that run
+  straight off the negative as a plateau, where the rule would otherwise gate
+  a 5% wobble in them. Read each placement's depth from its confidence
+  ("the dip is x% as deep as the reference's") and set it between the
+  wobbles and the real dips. It applies to the reference too: a reference
+  shallower than it is a smear, and every sample is placed from it.
 - `lowest_before` - `true` to gate a sample with a dip in the lowest point between the
   negative's peak and the dip found, rather than that dip. For positives
   spread thin: a few percent of the cells over a wide range stand lower

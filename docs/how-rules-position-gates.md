@@ -279,6 +279,9 @@ Consequences worth knowing:
   it - the real dip below positives spread too thin to clear the 5% bar,
   which the walk passes on its way to a ripple where they pile up. Where the
   first dip was taken, that is the dip itself. Off by default.
+- With `smallest_dip`, a dip shallower than it (`ValleyRule::find`) is read
+  as no dip - `NoValley::ShallowerThanAsked` - on the reference as on a
+  sample. Off by default; any dip at least 2% deep counts.
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 - No valley on the reference or the sample, and a `fallback` gate named
@@ -565,11 +568,12 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true}` -
+- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true, "smallest_dip": 0.1}` -
   `fallback` is optional; it is placed first, like an anchor. `lowest_before` is optional (false):
-  the lowest point between the negative and the dip found
-- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true}` -
-  `fallback`, `smear_example` and `lowest_before` are optional; measured on a `File`
+  the lowest point between the negative and the dip found. `smallest_dip` is optional: a
+  shallower dip, as a fraction of the lower peak beside it, is read as none
+- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true, "smallest_dip": 0.1}` -
+  `fallback`, `smear_example`, `lowest_before` and `smallest_dip` are optional; measured on a `File`
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24, "pinned": ["CD8"]}` -
   `pinned` is optional: markers of the gate's two axes whose edge nearest the negative is pinned to it
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or

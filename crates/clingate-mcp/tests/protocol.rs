@@ -896,6 +896,19 @@ fn a_valley_or_smear_rule_is_written_with_its_smear_example_over_the_protocol() 
         "{written}"
     );
     assert!(guide.to_string().contains("lowest_before"), "{guide}");
+
+    let mut shallow = either(json!({"File": "sample1_FMX.fcs"}));
+    shallow["rule"]["rule"]["smallest_dip"] = json!(0.1);
+    let written = server.call("update_rule", shallow);
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["now"]
+            .as_str()
+            .unwrap()
+            .contains("a dip under 10% deep read as none"),
+        "{written}"
+    );
+    assert!(guide.to_string().contains("smallest_dip"), "{guide}");
 }
 
 #[test]

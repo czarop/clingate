@@ -3494,6 +3494,41 @@ fn a_smear_waits_for_an_example_gated_by_hand() {
     assert_eq!(references, ["one", "two"]);
 }
 
+/// Asked for a dip deeper than any can be, sample1's clear dip reads as
+/// none: the reference is a smear, its own example, so sample2 - a smear
+/// that would wait for one gated by hand - is placed from it.
+#[test]
+fn a_rule_asking_for_a_deeper_dip_reads_a_shallower_one_as_a_smear() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-smallest-dip",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    a_dip_and_a_smear_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let rule = clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
+            smallest_dip: Some(1.0),
+            ..Default::default()
+        },
+    );
+    let written = session
+        .update_rule(change("Pos", None, "FSC-A", file("sample1"), rule))
+        .unwrap();
+    assert!(
+        written.now.contains("a dip under 100% deep read as none"),
+        "{}",
+        written.now
+    );
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    let two = preview
+        .would_move
+        .iter()
+        .find(|m| m.specimen == "two")
+        .unwrap_or_else(|| panic!("{preview:?}"));
+    assert_eq!(two.measured_on, "sample1_FMX.fcs");
+}
+
 /// One peak on FSC-A and nothing else, 200,000 wide: at 2,000,000 on
 /// sample1 and 2,200,000 on sample2.
 fn one_peak_each_on_fsc(dir: &std::path::Path) {

@@ -164,6 +164,13 @@ where they pile up rather than in the dip below them - can take \
 'lowest_before': true: the lowest point between the negative and the dip it \
 found. Off by default; suggest it, and set it only on the user's word, and \
 only on the rules whose placements it fixes. \
+A valley rule that gates a shallow wobble inside positives that run straight \
+off the negative - a dip a few percent deep where the real ones are tens of \
+percent - can take 'smallest_dip': a fraction below which a dip is read as \
+none, so the sample is a smear or goes to the fallback. Each placement's \
+confidence gives its dip's depth; propose a value between the wobbles and \
+the real dips, show the user which samples it changes, and set it only on \
+their word. It applies to the reference too. \
 A MatchThePhenotype edge drawn against a marker's negative - CD8 just above \
 its negatives, where the positives smear - can be pinned there ('pinned': \
 [marker]): it then stays as many of the negative's widths above the \
