@@ -545,6 +545,13 @@ pub struct ValleyRule {
     /// A run places it first when a rule places it.
     #[serde(default)]
     pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
+    /// Gate in the lowest point between the negative's peak and the dip
+    /// found, rather than that dip - for positives spread too thin to stand
+    /// out beside the negative. See [`lowest_valley_for_gate`].
+    ///
+    /// [`lowest_valley_for_gate`]: crate::gate_rules::threshold::lowest_valley_for_gate
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lowest_before: bool,
 }
 
 impl Default for ValleyRule {
@@ -553,6 +560,7 @@ impl Default for ValleyRule {
             smoothing: 1.0,
             confidence: CountAndSeparation::default(),
             fallback: None,
+            lowest_before: false,
         }
     }
 }
@@ -581,8 +589,7 @@ impl ValleyRule {
         values: &[f64],
         reference_x: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found =
-            crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, reference_x)?;
+        let found = self.find(values, reference_x)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
@@ -600,7 +607,7 @@ impl ValleyRule {
         offset: f64,
         gate: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found = crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, gate)?;
+        let found = self.find(values, gate)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
@@ -608,6 +615,20 @@ impl ValleyRule {
             offset,
             at: found.bottom + offset,
         })
+    }
+
+    /// The dip in `values` this rule gates in, with the gate at `gate`.
+    fn find(
+        &self,
+        values: &[f64],
+        gate: f64,
+    ) -> Result<crate::gate_rules::threshold::Valley, crate::gate_rules::threshold::NoValley> {
+        use crate::gate_rules::threshold::{lowest_valley_for_gate, valley_for_gate};
+        if self.lowest_before {
+            lowest_valley_for_gate(values, self.smoothing, gate)
+        } else {
+            valley_for_gate(values, self.smoothing, gate)
+        }
     }
 
     /// The fallback as a rule from another gate: this gate's leading edge on
@@ -636,6 +657,7 @@ impl ValleyRule {
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
+        how.push_str(lowest_said(self.lowest_before));
         if let Some(fallback) = &self.fallback {
             how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
         }
@@ -673,6 +695,9 @@ pub struct ValleyOrSmearRule {
     /// file, once one is known.
     #[serde(default)]
     pub smear_example: Option<Arc<str>>,
+    /// See [`ValleyRule::lowest_before`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lowest_before: bool,
 }
 
 impl Default for ValleyOrSmearRule {
@@ -682,7 +707,17 @@ impl Default for ValleyOrSmearRule {
             confidence: CountAndSeparation::default(),
             fallback: None,
             smear_example: None,
+            lowest_before: false,
         }
+    }
+}
+
+/// What a valley rule's description says of `lowest_before`.
+fn lowest_said(lowest_before: bool) -> &'static str {
+    if lowest_before {
+        ", at the lowest point between the negative and that dip"
+    } else {
+        ""
     }
 }
 
@@ -693,6 +728,7 @@ impl ValleyOrSmearRule {
             smoothing: self.smoothing,
             confidence: self.confidence.clone(),
             fallback: self.fallback.clone(),
+            lowest_before: self.lowest_before,
         }
     }
 
@@ -721,6 +757,7 @@ impl ValleyOrSmearRule {
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
+        how.push_str(lowest_said(self.lowest_before));
         how
     }
 }

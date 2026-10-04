@@ -274,6 +274,11 @@ Consequences worth knowing:
   of all and at least 30, and `depth = (negative - bottom) / negative >= 0.02`.
   None -> refused with what the density looked like (one peak only / nothing
   deep enough).
+- With `lowest_before` (`threshold::lowest_valley_for_gate`), the dip found
+  moves to the lowest point of the density between the negative's peak and
+  it - the real dip below positives spread too thin to clear the 5% bar,
+  which the walk passes on its way to a ripple where they pile up. Where the
+  first dip was taken, that is the dip itself. Off by default.
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 - No valley on the reference or the sample, and a `fallback` gate named
@@ -560,10 +565,11 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}}` -
-  `fallback` is optional; it is placed first, like an anchor
-- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>"}` -
-  `fallback` and `smear_example` are optional; measured on a `File`
+- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true}` -
+  `fallback` is optional; it is placed first, like an anchor. `lowest_before` is optional (false):
+  the lowest point between the negative and the dip found
+- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true}` -
+  `fallback`, `smear_example` and `lowest_before` are optional; measured on a `File`
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24, "pinned": ["CD8"]}` -
   `pinned` is optional: markers of the gate's two axes whose edge nearest the negative is pinned to it
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or

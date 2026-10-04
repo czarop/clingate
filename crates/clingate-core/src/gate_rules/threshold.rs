@@ -687,6 +687,37 @@ pub fn valley_for_gate(values: &[f64], smoothing: f64, gate: f64) -> Result<Vall
         .map_err(|why| counted(why, events))
 }
 
+/// [`valley_for_gate`]'s dip moved to the lowest point between the
+/// negative's peak and it.
+///
+/// A positive population spread thin - a few percent of the cells over a
+/// wide range - stands lower beside the negative than the 5% a dip's far side
+/// needs, so [`valley_in`] walks past the real dip and stops at a ripple
+/// inside the positives, where they happen to pile up. The real dip is the
+/// lowest point it walked past. Where the first dip it met was the one it
+/// took, that is the dip itself, so a sample with two clear peaks is placed
+/// as before.
+pub fn lowest_valley_for_gate(
+    values: &[f64],
+    smoothing: f64,
+    gate: f64,
+) -> Result<Valley, NoValley> {
+    let found = valley_for_gate(values, smoothing, gate)?;
+    let (xs, density, _) = smoothed(values, smoothing)?;
+    let at = |x: f64| xs.iter().position(|v| *v == x);
+    let (Some(peak), Some(bottom)) = (at(found.peak), at(found.bottom)) else {
+        return Ok(found);
+    };
+    let lowest = lowest_between(&density, peak.min(bottom), peak.max(bottom));
+    // The depth against the same flanking peak, from the lower point.
+    let depth = 1.0 - (1.0 - found.depth) * density[lowest] / density[bottom];
+    Ok(Valley {
+        bottom: xs[lowest],
+        depth,
+        ..found
+    })
+}
+
 /// The density [`first_valley`] reads, and how many events made it.
 fn smoothed(values: &[f64], smoothing: f64) -> Result<(Vec<f64>, Vec<f64>, usize), NoValley> {
     if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {

@@ -5,7 +5,8 @@
 //! Five samples, each its own specimen. On X, `ref` and `dip` have a negative
 //! at 300 and a positive at 900 with a dip between; `smear1` and `smear2`
 //! have the same negative with a tail falling away from it and no dip, and
-//! `smear_heavy` three times the tail.
+//! `smear_heavy` three times the tail. `thin` has the negative, a gap to 700,
+//! 300 positives spread thin from 700 to 1400 and 900 more piled up at 1650.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,7 +31,7 @@ use crate::gates::gate_traits::DrawableGate;
 const X: &str = "FSC-A";
 const Y: &str = "SSC-A";
 const BIG: f32 = 1e16;
-const SAMPLES: [&str; 5] = ["ref", "dip", "smear1", "smear2", "smear_heavy"];
+const SAMPLES: [&str; 6] = ["ref", "dip", "smear1", "smear2", "smear_heavy", "thin"];
 
 fn rect(id: &str, name: &str, x0: f32) -> Arc<dyn DrawableGate> {
     let geometry = flow_gates::create_rectangle_geometry(
@@ -82,6 +83,13 @@ fn events(sample: &str, seed: u64) -> Vec<Vec<f32>> {
     let mut rows: Vec<Vec<f32>> = (0..15_000)
         .map(|_| vec![negative.sample(&mut rng), 0.0])
         .collect();
+    if sample == "thin" {
+        let spread = rand_distr::Uniform::new(700.0f32, 1400.0).unwrap();
+        let piled = Normal::new(1650.0f32, 40.0).unwrap();
+        rows.extend((0..300).map(|_| vec![spread.sample(&mut rng), 0.0]));
+        rows.extend((0..900).map(|_| vec![piled.sample(&mut rng), 0.0]));
+        return rows;
+    }
     let smear = sample.starts_with("smear");
     let positives = if sample == "smear_heavy" {
         15_000
@@ -338,4 +346,38 @@ fn a_smear_takes_the_fallback_gate_s_edge_when_there_is_one() {
         assert_eq!(edge(&gates(), &outcome, smear), 700.0);
     }
     assert!(placed(&outcome, "dip").unwrap().valley.is_some());
+}
+
+/// `thin`'s positives spread from 700 stand far lower than 5% of the
+/// negative's peak, so the rule walks past the gap below them and gates in
+/// the dip below the 900 piled up at 1650. Taking the lowest point it walked
+/// past puts the gate in the gap, between the negative's last cells near 500
+/// and the positives' first at 700; the dip sample, whose first dip counted,
+/// is placed as before.
+#[test]
+fn thin_positives_are_gated_below_them_when_the_rule_takes_the_lowest_point() {
+    let files = write("valley-smear-thin");
+    let first = run(&gates(), &files, rules("ref", ValleyOrSmearRule::default()));
+    assert!(
+        edge(&gates(), &first, "thin") > 1400.0,
+        "{}",
+        edge(&gates(), &first, "thin")
+    );
+
+    let lowest = ValleyOrSmearRule {
+        lowest_before: true,
+        ..Default::default()
+    };
+    let outcome = run(&gates(), &files, rules("ref", lowest));
+    let thin = edge(&gates(), &outcome, "thin");
+    assert!((500.0..700.0).contains(&thin), "{thin}");
+    assert!(placed(&outcome, "thin").unwrap().valley.is_some());
+    assert_eq!(
+        edge(&gates(), &outcome, "dip"),
+        edge(&gates(), &first, "dip")
+    );
+    assert!(
+        placed(&outcome, "smear1").is_none(),
+        "a smear is still a smear"
+    );
 }

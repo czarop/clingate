@@ -3363,6 +3363,88 @@ fn a_valley_or_smear_rule_is_read_on_a_file_and_names_its_example_as_a_file() {
     assert_eq!(stored.rule, valley_or_smear(Some("sample2")));
 }
 
+/// On FSC-A, sample1 as in [`a_dip_and_a_smear_on_fsc`]; sample2 the same
+/// negative, a gap to 2,000,000, 300 positives spread thin to 3,200,000 and
+/// 900 more piled up at 3,600,000.
+fn a_dip_and_thin_positives_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    let negative = Normal::new(1_000_000.0f32, 150_000.0).unwrap();
+    let positive = Normal::new(3_000_000.0f32, 150_000.0).unwrap();
+    let spread = rand_distr::Uniform::new(2_000_000.0f32, 3_200_000.0).unwrap();
+    let piled = Normal::new(3_600_000.0f32, 60_000.0).unwrap();
+    for (seed, file) in [(1, "sample1_FMX.fcs"), (2, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 300);
+        let rows: Vec<Vec<f32>> = events(seed, 16_200)
+            .into_iter()
+            .enumerate()
+            .map(|(at, mut row)| {
+                row[0] = match (at < 15_000, seed, at < 15_300) {
+                    (true, _, _) => negative.sample(&mut rng),
+                    (false, 1, _) => positive.sample(&mut rng),
+                    (false, _, true) => spread.sample(&mut rng),
+                    (false, _, false) => piled.sample(&mut rng),
+                };
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+/// Sample2's thin positives stand too low beside the negative to count, so
+/// the rule walks past the gap below them to the dip below the pile, above
+/// 3,200,000; told to take the lowest point it walked past, it reads the dip
+/// in the gap, between the negative's last cells near 1,600,000 and the
+/// positives' first at 2,000,000. The run keeps the dip it read.
+#[test]
+fn a_valley_rule_can_gate_thin_positives_at_the_lowest_point_below_them() {
+    let dip_on_sample2 = |name: &str, lowest_before: bool| {
+        let folder = workspace_of_rectangles(name, &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))]);
+        a_dip_and_thin_positives_on_fsc(&folder);
+        let mut session = Session::open(&folder).unwrap();
+        let rule = clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+            clingate_core::gate_rules::rule::ValleyOrSmearRule {
+                lowest_before,
+                ..Default::default()
+            },
+        );
+        let written = session
+            .update_rule(change("Pos", None, "FSC-A", file("sample1_FMX.fcs"), rule))
+            .unwrap();
+        assert_eq!(
+            written
+                .now
+                .contains("at the lowest point between the negative and that dip"),
+            lowest_before,
+            "{}",
+            written.now
+        );
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        let record = clingate_core::review::RunRecord::load(&folder)
+            .unwrap()
+            .unwrap();
+        let placed = record
+            .placed
+            .iter()
+            .find(|p| {
+                p.gate == "Pos"
+                    && p.sample
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.contains("sample2"))
+            })
+            .unwrap_or_else(|| panic!("{record:#?}"));
+        let (_, here) = placed.valley.as_ref().expect("placed in a dip");
+        here.bottom
+    };
+    let first = dip_on_sample2("session-valley-thin-first", false);
+    assert!(first > 3_200_000.0, "{first}");
+    let lowest = dip_on_sample2("session-valley-thin-lowest", true);
+    assert!((1_600_000.0..2_000_000.0).contains(&lowest), "{lowest}");
+}
+
 /// Pos drawn from 2,000,000, in sample1's dip. Sample2 is a smear: with no
 /// example it is left unplaced, saying so; gated by hand and named the
 /// example, it is a reference too, and nothing is left unplaced.

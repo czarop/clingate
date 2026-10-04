@@ -158,6 +158,12 @@ read the data beforehand to predict it. It, and an InTheValley rule, can name a 
 - usually the same gate under another parent - for samples where the \
 positives smear with no dip: there its edge goes where the fallback's is, \
 placed first, and the placement comes up for review. \
+A valley rule that puts some gates too high inside a thin positive \
+population - a few percent of the cells spread wide, the gate at a ripple \
+where they pile up rather than in the dip below them - can take \
+'lowest_before': true: the lowest point between the negative and the dip it \
+found. Off by default; suggest it, and set it only on the user's word, and \
+only on the rules whose placements it fixes. \
 A MatchThePhenotype edge drawn against a marker's negative - CD8 just above \
 its negatives, where the positives smear - can be pinned there ('pinned': \
 [marker]): it then stays as many of the negative's widths above the \

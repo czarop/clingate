@@ -352,6 +352,7 @@ pub fn GateRulesWindow() -> Element {
     let mut valley_fallback = use_signal(String::new);
     // The sample a valley-or-smear rule places smears from; empty for none.
     let mut smear_example = use_signal(String::new);
+    let mut lowest_before = use_signal(|| false);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -656,6 +657,7 @@ pub fn GateRulesWindow() -> Element {
             MeasuredOn::File(f) => calibrate_on.set(f.to_string()),
         }
         smear_example.set(String::new());
+        lowest_before.set(false);
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -702,6 +704,7 @@ pub fn GateRulesWindow() -> Element {
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
+                lowest_before.set(r.lowest_before);
                 valley_fallback.set(
                     r.fallback
                         .as_ref()
@@ -712,6 +715,7 @@ pub fn GateRulesWindow() -> Element {
             Rule::ValleyOrSmear(r) => {
                 kind.set("ValleyOrSmear".to_string());
                 smoothing.set(format!("{}", r.smoothing));
+                lowest_before.set(r.lowest_before);
                 valley_fallback.set(
                     r.fallback
                         .as_ref()
@@ -833,6 +837,7 @@ pub fn GateRulesWindow() -> Element {
                 Rule::InTheValley(ValleyRule {
                     smoothing: sm,
                     fallback,
+                    lowest_before: lowest_before(),
                     ..ValleyRule::default()
                 })
             }
@@ -853,6 +858,7 @@ pub fn GateRulesWindow() -> Element {
                     fallback,
                     smear_example: (same_gate && !example.is_empty())
                         .then(|| Arc::from(example.as_str())),
+                    lowest_before: lowest_before(),
                     ..ValleyOrSmearRule::default()
                 })
             }
@@ -1502,6 +1508,8 @@ pub fn GateRulesWindow() -> Element {
                         "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
                     }
 
+                    {lowest_before_picker(lowest_before)}
+
                     label { "On a smear" }
                     select {
                         value: "{valley_fallback}",
@@ -1554,6 +1562,8 @@ pub fn GateRulesWindow() -> Element {
                     p { class: "gate_rules-hint gate_rules-span",
                         "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
                     }
+
+                    {lowest_before_picker(lowest_before)}
 
                     label { "With no dip" }
                     select {
@@ -2526,6 +2536,25 @@ fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .find(|(_, gating_id)| &**gating_id == id)
         .map_or(id, |(name, _)| &**name)
         .to_string()
+}
+
+/// The valley rules' "lowest point before the dip" setting, and when to
+/// choose it.
+fn lowest_before_picker(mut lowest_before: Signal<bool>) -> Element {
+    rsx! {
+        label { "Thin positives" }
+        label {
+            input {
+                r#type: "checkbox",
+                checked: lowest_before(),
+                onchange: move |e: FormEvent| lowest_before.set(e.checked()),
+            }
+            " gate at the lowest point before the dip found"
+        }
+        p { class: "gate_rules-hint gate_rules-span",
+            "A dip only counts where the cells beyond it stand 5% as tall as the negative's peak. Positives spread thin - a few percent of the cells over a wide range - are lower than that beside the negative, so the rule walks past the real dip and stops at a ripple inside the positives, putting the gate too high. Ticked, the gate goes in the lowest point it walked past. A sample whose first dip counted is placed as before, and so is a smear. Leave it unticked where the placements are right: on a marker with a third population above the positives it can drop the gate to the dip below them."
+        }
+    }
 }
 
 fn calibrate_picker(

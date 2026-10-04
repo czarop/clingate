@@ -80,6 +80,16 @@ The smear example is a reference, as the reference is: never moved by a run.
   places it first.
 - `smear_example` - the hand-gated smear, named as a rule names a file; set
   by a paused run, or by hand.
+- `lowest_before` - `true` to gate a sample with a dip in the lowest point between the
+  negative's peak and the dip found, rather than that dip. For positives
+  spread thin: a few percent of the cells over a wide range stand lower
+  beside the negative than the 5% a dip's far side needs, so the rule walks
+  past the real dip and stops at a ripple inside the positives, where they
+  pile up - a gate too high. The lowest point it walked past is the real dip.
+  A sample whose first dip counted is placed as before, and a smear is still
+  a smear. Off by default: on a marker with a third population above the
+  positives, it can drop the gate to the dip below them. Choose it per rule,
+  where a run puts some gates too high inside a thin positive population.
 - `confidence` - see the shared settings in the choosing guide.
 
 ## Traps

@@ -883,6 +883,19 @@ fn a_valley_or_smear_rule_is_written_with_its_smear_example_over_the_protocol() 
         "{:?}",
         view.rules
     );
+
+    let mut lowest = either(json!({"File": "sample1_FMX.fcs"}));
+    lowest["rule"]["rule"]["lowest_before"] = json!(true);
+    let written = server.call("update_rule", lowest);
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["now"]
+            .as_str()
+            .unwrap()
+            .contains("at the lowest point between the negative and that dip"),
+        "{written}"
+    );
+    assert!(guide.to_string().contains("lowest_before"), "{guide}");
 }
 
 #[test]

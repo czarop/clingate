@@ -46,6 +46,9 @@ that broadens does not throw the gate out.
    the density looked like (one peak only, or dips too shallow or in the
    tail). With a `fallback`, the gate's edge - the one the dip would have
    set - goes where the fallback gate's same edge is on this sample instead.
+6. With `lowest_before`, the dip found in 3 moves to the lowest point of the
+   density between the negative's peak and it, on the reference and on each
+   sample.
 
 ## Settings
 
@@ -58,6 +61,16 @@ that broadens does not throw the gate out.
   the same gate under another parent, where the positives do separate. It
   has to be drawn on the rule's parameter. When a rule places it, the run
   places it first, as for a rule from another gate.
+- `lowest_before` - `true` to gate in the lowest point between the
+  negative's peak and the dip found, rather than that dip. For positives
+  spread thin: a few percent of the cells over a wide range stand lower
+  beside the negative than the 5% a dip's far side needs, so the rule walks
+  past the real dip and stops at a ripple inside the positives, where they
+  pile up - a gate too high. The lowest point it walked past is the real dip.
+  A sample whose first dip counted is placed as before, and a smear is still
+  a smear. Off by default: on a marker with a third population above the
+  positives, it can drop the gate to the dip below them. Choose it per rule,
+  where a run puts some gates too high inside a thin positive population.
 
 ## Traps
 
