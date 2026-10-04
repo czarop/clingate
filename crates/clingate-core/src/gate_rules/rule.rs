@@ -744,9 +744,10 @@ impl ValleyOrSmearRule {
     }
 
     pub fn describe(&self) -> String {
-        let mut how = "in the dip between the negative and the positive, as on the reference; \
-                       on a smear, "
-            .to_string();
+        let mut how = format!(
+            "in the dip between the negative and the positive, as on the reference{}; on a smear, ",
+            lowest_said(self.lowest_before)
+        );
         match (&self.fallback, &self.smear_example) {
             (Some(fallback), _) => how.push_str(&format!("where {} is", fallback.describe())),
             (None, Some(example)) => {
@@ -757,7 +758,6 @@ impl ValleyOrSmearRule {
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
-        how.push_str(lowest_said(self.lowest_before));
         how
     }
 }
