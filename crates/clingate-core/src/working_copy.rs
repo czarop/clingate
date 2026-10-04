@@ -178,13 +178,14 @@ impl WorkingCopy {
         folder: &Path,
         current: &WorkingState,
         metadata: &MetaDataFileMap,
+        held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
     ) -> Result<GatingFiles, Refused> {
         if self.saved.is_none() {
             return Err("there is nothing to save: no gating file is loaded".into());
         }
         let files = GatingFiles::saved(folder);
         files
-            .write(&current.gates, metadata, &current.axes.settings)
+            .write(&current.gates, metadata, held, &current.axes.settings)
             .map_err(|e| format!("{}: {e}", files.gating.display()))?;
         self.history.mark_saved();
         self.saved = Some(current.clone());
@@ -196,8 +197,14 @@ impl WorkingCopy {
     }
 
     /// Write the saved copy - not the working copy - as an Omiq gating file
-    /// at `target`. Says whether there were unsaved changes it left out.
-    pub fn export(&self, target: &Path, metadata: &MetaDataFileMap) -> Result<bool, Refused> {
+    /// at `target`, with a position of its own for each of the `held` files
+    /// that has one. Says whether there were unsaved changes it left out.
+    pub fn export(
+        &self,
+        target: &Path,
+        metadata: &MetaDataFileMap,
+        held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
+    ) -> Result<bool, Refused> {
         let Some(saved) = &self.saved else {
             return Err("there is nothing to export: no gating file is loaded".into());
         };
@@ -214,9 +221,13 @@ impl WorkingCopy {
                 target.display()
             ));
         }
-        let document =
-            crate::omiq::serialise::to_omiq_document(&saved.gates, metadata, &saved.axes.settings)
-                .map_err(|e| e.to_string())?;
+        let document = crate::omiq::serialise::to_omiq_document(
+            &saved.gates,
+            metadata,
+            held,
+            &saved.axes.settings,
+        )
+        .map_err(|e| e.to_string())?;
         let text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
         crate::workspace::make_parent(target).map_err(|e| e.to_string())?;
         std::fs::write(target, text).map_err(|e| format!("{}: {e}", target.display()))?;
@@ -253,10 +264,11 @@ pub fn keep_recovery(
     wanted: bool,
     current: &WorkingState,
     metadata: &MetaDataFileMap,
+    held: &rustc_hash::FxHashSet<crate::gates::gate_store::FileId>,
 ) -> anyhow::Result<()> {
     let files = GatingFiles::recovery(folder);
     if wanted {
-        files.write(&current.gates, metadata, &current.axes.settings)
+        files.write(&current.gates, metadata, held, &current.axes.settings)
     } else {
         files.remove();
         Ok(())

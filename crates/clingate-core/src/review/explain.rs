@@ -235,6 +235,10 @@ mod tests {
             "below {:.2} is flagged",
             super::super::assess::REVIEW_FLOOR
         )));
+        assert!(doc.contains(&format!(
+            "control (the specimen's FMX, or the run's) of more than {}\nevents",
+            crate::gate_rules::autogate::TRUSTED_CONTROL_EVENTS
+        )));
     }
 
     #[test]

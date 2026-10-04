@@ -8,14 +8,15 @@ use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
-use clingate_core::gate_rules::autogate::{Report, describe};
+use clingate_core::gate_rules::autogate::{PhenotypeRead, Report, describe};
 use clingate_core::gate_rules::choices::{
     EdgeForm, beside, carry_over, choices, describe_phenotype, every_target, fallback_targets,
     follow_from_form, follow_to_form, marker_label, side_from, side_to,
 };
+use clingate_core::gate_rules::phenotype::MarkerRead;
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
-    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
+    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyOrSmearRule, ValleyRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -44,14 +45,80 @@ const REVIEW_FLOOR: f64 = 0.30;
 /// the reason to doubt the gate", which is what a person scanning a run needs.
 const PURE_ENOUGH: f64 = 0.70;
 
-/// How far a marker's centre may differ between the reference and a sample
-/// before the table marks it.
-///
-/// In spreads of each sample's own parent, so it is already comparable. Three
-/// is generous - a population really does shift between donors - and it is
-/// there to catch the case that matters: a marker reading +8 on the reference
-/// and +1 here has not been matched on, whatever the overall distance said.
-const MARKER_DISAGREEMENT: f64 = 3.0;
+/// How a phenotype rule fitted the gate, for the verification table, its
+/// markers named by `name`.
+fn fitted(read: &PhenotypeRead, name: impl Fn(&str) -> String) -> String {
+    let listed = |markers: &[Arc<str>]| -> String {
+        markers
+            .iter()
+            .map(|m| name(m))
+            .collect::<Vec<_>>()
+            .join(" and ")
+    };
+    let mut said = shape_fitted(read);
+    if !read.pinned.is_empty() {
+        said.push_str(&format!("; pinned on {}", listed(&read.pinned)));
+    }
+    if !read.could_pin.is_empty() {
+        said.push_str(&format!(
+            "; edge on {} inside its negative on the reference - consider pinning",
+            listed(&read.could_pin)
+        ));
+    }
+    said
+}
+
+/// How a phenotype rule fitted the gate's shape.
+fn shape_fitted(read: &PhenotypeRead) -> String {
+    let limited = if read.clamped {
+        " (slid: resizing would pass the area limit)"
+    } else {
+        ""
+    };
+    match (read.reshaped, read.refused_outline) {
+        (Some((dx, dy)), Some(area)) => format!(
+            "shape kept: the polygon was {area:.1}x the area; moved {}, {}{limited}",
+            signed(dx),
+            signed(dy)
+        ),
+        (Some((dx, dy)), None) => format!("moved {}, {}{limited}", signed(dx), signed(dy)),
+        (None, _) => "new polygon".to_string(),
+    }
+}
+
+/// A distance moved, to a precision that reads on a linear axis and on an
+/// arcsinh one alike.
+fn signed(distance: f64) -> String {
+    if distance.abs() >= 100.0 {
+        format!("{distance:+.0}")
+    } else {
+        format!("{distance:+.2}")
+    }
+}
+
+/// The pinned markers the form keeps: the gate's own axes, among the ticked
+/// markers where any are ticked.
+fn pinnable(gate_markers: &[String], markers: &[String], pinned: &[String]) -> Vec<String> {
+    pinned
+        .iter()
+        .filter(|m| gate_markers.contains(m) && (markers.is_empty() || markers.contains(m)))
+        .cloned()
+        .collect()
+}
+
+/// The fit the form's menu names by `key`.
+fn fit_chosen(key: &str) -> ShapeFit {
+    ShapeFit::from_key(key).unwrap_or_default()
+}
+
+/// The frame a marker was read in, for its tooltip.
+fn frame_of(marker: &MarkerRead) -> &'static str {
+    if marker.by_landmarks {
+        "0 at the negative's peak, 1 at the valley above it"
+    } else {
+        "in spreads from the parent's middle"
+    }
+}
 
 /// A count as a percentage of its whole, for the report's tables.
 fn fraction(part: usize, whole: usize) -> String {
@@ -283,6 +350,11 @@ pub fn GateRulesWindow() -> Element {
     // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
     // for none.
     let mut valley_fallback = use_signal(String::new);
+    // The sample a valley-or-smear rule places smears from; empty for none.
+    let mut smear_example = use_signal(String::new);
+    let mut lowest_before = use_signal(|| false);
+    // A valley rule's smallest dip, as a percentage; empty for none.
+    let mut smallest_dip = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
     // `smoothing` above even though the two are never on screen together: one
@@ -291,6 +363,7 @@ pub fn GateRulesWindow() -> Element {
     // the other.
     let mut fit = use_signal(|| ShapeFit::default().key().to_string());
     let mut markers = use_signal(Vec::<String>::new);
+    let mut pinned = use_signal(Vec::<String>::new);
     let mut keep = use_signal(|| "95".to_string());
     let mut outline_smoothing = use_signal(|| "1.0".to_string());
     let mut vertices = use_signal(|| "24".to_string());
@@ -466,13 +539,10 @@ pub fn GateRulesWindow() -> Element {
                     started.0.rules.clone(),
                     &gate_store.peek(),
                 );
-                let count = paused.needs().len();
+                paused.adopt_rules(rules);
                 warn(
                     &toasts,
-                    format!(
-                        "The run paused: {count} placement{} of gates with other rules under them could not be made, or are doubtful. Place each by hand in the editor, then Continue the run",
-                        if count == 1 { "" } else { "s" }
-                    ),
+                    crate::gate_editor::paused_run::paused_message(paused.needs()),
                 );
                 paused_run.set(Some(paused));
                 active.set(crate::gate_editor::route::Tab::Editor);
@@ -533,6 +603,11 @@ pub fn GateRulesWindow() -> Element {
             .cloned()
             .collect::<Vec<_>>()
     });
+    // The gate's own axes, as the panel names its channels: the markers a
+    // phenotype rule can pin.
+    let gate_markers = use_memo(move || {
+        clingate_core::gate_rules::choices::plot_markers(&selected_parameters(), &panel.read())
+    });
 
     // The rule the form is standing in for, when it was opened by Edit. The
     // next Add replaces it, so a rule can be moved to another population rather
@@ -583,6 +658,9 @@ pub fn GateRulesWindow() -> Element {
             MeasuredOn::Partner(t) => measured_on.set(t.to_string()),
             MeasuredOn::File(f) => calibrate_on.set(f.to_string()),
         }
+        smear_example.set(String::new());
+        lowest_before.set(false);
+        smallest_dip.set(String::new());
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -606,6 +684,7 @@ pub fn GateRulesWindow() -> Element {
                 kind.set("MatchThePhenotype".to_string());
                 fit.set(r.fit.key().to_string());
                 markers.set(r.markers.iter().map(|m| m.to_string()).collect());
+                pinned.set(r.pinned.iter().map(|m| m.to_string()).collect());
                 keep.set(format!("{}", r.keep * 100.0));
                 outline_smoothing.set(format!("{}", r.smoothing));
                 vertices.set(format!("{}", r.vertices));
@@ -628,12 +707,27 @@ pub fn GateRulesWindow() -> Element {
             Rule::InTheValley(r) => {
                 kind.set("InTheValley".to_string());
                 smoothing.set(format!("{}", r.smoothing));
+                lowest_before.set(r.lowest_before);
+                smallest_dip.set(percent_of(r.smallest_dip));
                 valley_fallback.set(
                     r.fallback
                         .as_ref()
                         .map(RuleTarget::describe)
                         .unwrap_or_default(),
                 );
+            }
+            Rule::ValleyOrSmear(r) => {
+                kind.set("ValleyOrSmear".to_string());
+                smoothing.set(format!("{}", r.smoothing));
+                lowest_before.set(r.lowest_before);
+                smallest_dip.set(percent_of(r.smallest_dip));
+                valley_fallback.set(
+                    r.fallback
+                        .as_ref()
+                        .map(RuleTarget::describe)
+                        .unwrap_or_default(),
+                );
+                smear_example.set(r.smear_example.as_deref().unwrap_or_default().to_string());
             }
         }
         editing.set(replacing.then(|| entry.target.clone()));
@@ -663,6 +757,10 @@ pub fn GateRulesWindow() -> Element {
             warn(&toasts, "Choose the parameter the rule positions");
             return;
         }
+        let target = match parent().as_str() {
+            "" => RuleTarget::named(name.as_str()),
+            p => RuleTarget::under(name.as_str(), p),
+        };
         let rule = match kind().as_str() {
             "MatchThePhenotype" => {
                 let (Ok(k), Ok(sm), Ok(v)) = (
@@ -686,14 +784,19 @@ pub fn GateRulesWindow() -> Element {
                 }
                 Rule::MatchThePhenotype(PhenotypeRule {
                     markers: markers().iter().map(|m| Arc::from(m.as_str())).collect(),
-                    fit: match fit().as_str() {
-                        "DrawPolygon" => ShapeFit::DrawPolygon,
-                        _ => ShapeFit::KeepShape,
-                    },
+                    fit: fit_chosen(&fit()),
                     // Typed as a percentage, stored as a fraction.
                     keep: k / 100.0,
                     smoothing: sm,
                     vertices: v,
+                    pinned: if fit() == ShapeFit::DrawPolygon.key() {
+                        Vec::new()
+                    } else {
+                        pinnable(&gate_markers(), &markers(), &pinned())
+                            .into_iter()
+                            .map(|m| Arc::from(m.as_str()))
+                            .collect()
+                    },
                 })
             }
             "FromAnotherGate" => {
@@ -733,13 +836,45 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, "The smoothing must be a number");
                     return;
                 };
+                let Ok(smallest) = fraction_from(&smallest_dip()) else {
+                    warn(&toasts, SMALLEST_DIP_PROBLEM);
+                    return;
+                };
                 let fallback = fallback_targets(&choices.read(), &name, &parent())
                     .into_iter()
                     .find(|t| t.describe() == valley_fallback());
                 Rule::InTheValley(ValleyRule {
                     smoothing: sm,
                     fallback,
+                    lowest_before: lowest_before(),
+                    smallest_dip: smallest,
                     ..ValleyRule::default()
+                })
+            }
+            "ValleyOrSmear" => {
+                let Ok(sm) = smoothing().parse::<f64>() else {
+                    warn(&toasts, "The smoothing must be a number");
+                    return;
+                };
+                let Ok(smallest) = fraction_from(&smallest_dip()) else {
+                    warn(&toasts, SMALLEST_DIP_PROBLEM);
+                    return;
+                };
+                let fallback = fallback_targets(&choices.read(), &name, &parent())
+                    .into_iter()
+                    .find(|t| t.describe() == valley_fallback());
+                // An example was gated by hand for one gate: a rule moved to
+                // another starts without.
+                let example = smear_example();
+                let same_gate = editing.peek().as_ref() == Some(&target);
+                Rule::ValleyOrSmear(ValleyOrSmearRule {
+                    smoothing: sm,
+                    fallback,
+                    smear_example: (same_gate && !example.is_empty())
+                        .then(|| Arc::from(example.as_str())),
+                    lowest_before: lowest_before(),
+                    smallest_dip: smallest,
+                    ..ValleyOrSmearRule::default()
                 })
             }
             "AboveTheNegative" => {
@@ -784,20 +919,16 @@ pub fn GateRulesWindow() -> Element {
                 })
             }
         };
-        // All three read a named reference sample rather than a partner of
-        // each specimen.
+        // These read a named reference sample rather than a partner of each
+        // specimen.
         let calibrated = matches!(
             kind().as_str(),
-            "AboveTheNegative" | "InTheValley" | "MatchThePhenotype"
+            "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype"
         );
         if calibrated && calibrate_on().is_empty() {
             warn(&toasts, "Choose the sample to calibrate against");
             return;
         }
-        let target = match parent().as_str() {
-            "" => RuleTarget::named(name.as_str()),
-            p => RuleTarget::under(name.as_str(), p),
-        };
         let described = target.describe();
         let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
@@ -1048,7 +1179,7 @@ pub fn GateRulesWindow() -> Element {
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -1072,8 +1203,15 @@ pub fn GateRulesWindow() -> Element {
                     },
                     option { value: "TailFraction", "capture a percentage of the parent" }
                     option { value: "PercentileOffset", "step above a percentile" }
-                    option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
-                    option { value: "InTheValley", "in the valley between the negative and the positive" }
+                    option { value: "ValleyOrSmear", "in the valley, or on a smear as on one gated by hand" }
+                    // Replaced by the one above; offered only to a rule that
+                    // already is one, so it can still be edited.
+                    if kind() == "AboveTheNegative" {
+                        option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
+                    }
+                    if kind() == "InTheValley" {
+                        option { value: "InTheValley", "in the valley between the negative and the positive" }
+                    }
                     option { value: "MatchThePhenotype", "find the cells that match the reference population" }
                     option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
                     option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
@@ -1123,7 +1261,7 @@ pub fn GateRulesWindow() -> Element {
                         oninput: move |e| next_gap.set(e.value()),
                     }
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the other's shape where the two lie alongside (polygons); sliding moves the gate whole. The gap is left between them, in the plot's units."
+                        "Growing moves the side facing the other gate, every point alike, and keeps the far side where it is; following its outline makes the facing side take the shape of the other's side facing it, not its top or bottom, where the two lie alongside (polygons); sliding moves the gate whole. The gap is the space left between them, in the plot's units, 0 or more on either side - unlike a gap set against another gate's edge, which is added to that edge and so is negative below or left of it."
                     }
                 }
 
@@ -1195,7 +1333,7 @@ pub fn GateRulesWindow() -> Element {
                                         }
                                     }
                                 }
-                                " plus "
+                                " gap "
                                 input {
                                     value: "{row.gap}",
                                     placeholder: "0",
@@ -1225,6 +1363,9 @@ pub fn GateRulesWindow() -> Element {
                                     })
                             },
                             "add an edge"
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gap is added to the other gate's edge, in the plot's units: positive moves the edge right or up, negative left or down. So a gate below or left of the other - its upper edge at the other's lower edge - touches it at 0 and leaves a space with a negative gap; a gate above or right of it - its lower edge at the other's upper - leaves a space with a positive one. A gap that takes the gate over the other leaves it unplaced, as a run never places a gate over another."
                         }
                     }
                 }
@@ -1322,9 +1463,97 @@ pub fn GateRulesWindow() -> Element {
                         p { class: "gate_rules-hint gate_rules-span",
                             "A gate with two hundred points is a different kind of object from one drawn by hand, however well it fits."
                         }
+                    } else if fit() == ShapeFit::MoveOnly.key() {
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "The gate slides as far as its edges would move, its size and shape unchanged, and stays the kind of gate it is."
+                        }
                     } else {
                         p { class: "gate_rules-hint gate_rules-span",
-                            "The gate is moved and resized onto the matched cells and keeps its shape and its kind - a rectangle stays a rectangle. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                            "Every edge keeps its place in the gap between the matched cells and the cells beyond it, so the gate can grow or shrink with them. A side drawn past every cell is never pulled in. The gate keeps its shape and its kind - a rectangle stays a rectangle, a polygon is stretched between its new edges - and if its area would change by more than 30% it slides instead. Use this where the outline means something the data does not: a quadrant, a shape agreed with somebody else, a gate that has to stay comparable with how it was drawn before."
+                        }
+                    }
+
+                    if fit() != ShapeFit::DrawPolygon.key() {
+                        label { "Pin to the negative" }
+                        div { class: "gate_rules-markers",
+                            for marker in gate_markers().into_iter().filter(|m| markers().is_empty() || markers().contains(m)) {
+                                label { class: "gate_rules-marker",
+                                    input {
+                                        r#type: "checkbox",
+                                        checked: pinned().contains(&marker),
+                                        onchange: {
+                                            let marker = marker.clone();
+                                            move |e: FormEvent| {
+                                                let mut chosen = pinned();
+                                                chosen.retain(|m| *m != marker);
+                                                if e.checked() {
+                                                    chosen.push(marker.clone());
+                                                }
+                                                pinned.set(chosen);
+                                            }
+                                        },
+                                    }
+                                    "{clingate_core::gate_rules::choices::marker_label(&marker, &panel.read())}"
+                                }
+                            }
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Pinned, the gate's edge nearest that marker's negative stays as many widths of the negative above its peak as on the reference, wherever the positives go, and a slide keeps it there. Choose it where the edge was drawn against the negative - just above it, or cutting its top - rather than in a gap or a dip: then a positive smear that differs between samples cannot drag the edge into the negatives or away from them. Leave it unticked where the edge sits between two populations; the results table says when the reference edge lies inside the negative."
+                        }
+                    }
+                }
+
+                if kind() == "ValleyOrSmear" {
+                    {calibrate_picker(calibrate_on, files)}
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Reads each sample for a dip between its negative and its positive. Where there is one, the gate goes in it, offset as on the reference. Where there is none - a smear - the gate goes as far above the negative, in widths of the negative, as on a smear gated by hand."
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "A reference that is a smear is that example. A reference with a dip says nothing about where to cut a smear, so the run stops at the first smear for you to gate it in the editor; Continue the run, and that sample is the example every other smear is placed from. Save the rules to keep it."
+                    }
+
+                    label { "Smoothing" }
+                    input {
+                        r#type: "number",
+                        step: "0.1",
+                        value: "{smoothing}",
+                        oninput: move |e| smoothing.set(e.value()),
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
+                    }
+
+                    {lowest_before_picker(lowest_before)}
+                    {smallest_dip_picker(smallest_dip)}
+
+                    label { "On a smear" }
+                    select {
+                        value: "{valley_fallback}",
+                        onchange: move |e| valley_fallback.set(e.value()),
+                        option { value: "", "as on a smear gated by hand" }
+                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
+                            option {
+                                value: "{target.describe()}",
+                                selected: valley_fallback() == target.describe(),
+                                "where {target.describe()} is"
+                            }
+                        }
+                    }
+                    p { class: "gate_rules-hint gate_rules-span",
+                        "Or its edge goes where the same gate's is under another parent, on the same sample: a run places that gate first, and every placement made this way comes up for review."
+                    }
+
+                    if !smear_example().is_empty() {
+                        label { "Smear example" }
+                        div {
+                            span { "{file_name(&files.read(), &smear_example())} " }
+                            button {
+                                onclick: move |_| smear_example.set(String::new()),
+                                "Forget"
+                            }
+                        }
+                        p { class: "gate_rules-hint gate_rules-span",
+                            "Smears are placed from this sample, as it is gated now. Forget it, and the next run stops at a smear for you to gate another."
                         }
                     }
                 }
@@ -1332,7 +1561,7 @@ pub fn GateRulesWindow() -> Element {
                 if kind() == "InTheValley" {
                     {calibrate_picker(calibrate_on, files)}
                     p { class: "gate_rules-hint gate_rules-span",
-                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own, use above-the-negative instead."
+                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own on some samples, use valley or smear instead."
                     }
 
                     p { class: "gate_rules-hint gate_rules-span",
@@ -1349,6 +1578,9 @@ pub fn GateRulesWindow() -> Element {
                     p { class: "gate_rules-hint gate_rules-span",
                         "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
                     }
+
+                    {lowest_before_picker(lowest_before)}
+                    {smallest_dip_picker(smallest_dip)}
 
                     label { "With no dip" }
                     select {
@@ -1707,7 +1939,7 @@ pub fn GateRulesWindow() -> Element {
                             tbody {
                                 for placed in run.positioned.iter().filter(|p| p.phenotype.is_none()) {
                                     tr {
-                                        class: if placed.confidence < REVIEW_FLOOR || !placed.in_band { "gate_rules-weak" } else { "" },
+                                        class: if placed.needs_review(REVIEW_FLOOR) { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
                                         td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
                                         td { "{name_of(&files.read(), &placed.measured_on)}" }
@@ -1736,7 +1968,7 @@ pub fn GateRulesWindow() -> Element {
                     if run.positioned.iter().any(|p| p.phenotype.is_some()) {
                         h3 { "Matched by phenotype" }
                         p { class: "gate_rules-hint",
-                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, both in spreads of their own parent - the two should agree, because they are supposed to be the same cells."
+                            "A gate drawn round the wrong cells looks exactly like one drawn round the right cells until these are read. Each marker shows where the matched cells sat on the reference and where they sit here, read the same way on both: 0 at the negative's peak and 1 at the valley above it, or in spreads from the parent's middle where a sample has no valley. A marker the population is positive or negative on only has to stay on the same side of the valley, however much brighter or dimmer; a dim one has to stay close. A sample where it does not, or where the cells are too few, too rare or scattered, is left where it was and listed with the reason."
                         }
                         div { class: "gate_rules-verify",
                             table { class: "gate_rules-table",
@@ -1785,22 +2017,16 @@ pub fn GateRulesWindow() -> Element {
                                                     "{read.pieces}"
                                                 }
                                                 td {
-                                                    match read.reshaped {
-                                                        Some((dx, dy)) => format!(
-                                                            "moved {dx:+.0}, {dy:+.0}{}",
-                                                            if read.clamped { " (stretch clamped)" } else { "" },
-                                                        ),
-                                                        None => "new polygon".to_string(),
-                                                    }
+                                                    {fitted(read, |m| clingate_core::gate_rules::choices::marker_label(m, &panel.read()))}
                                                 }
                                                 td {
-                                                    for (marker , there , here) in read.centres.iter() {
+                                                    for marker in read.centres.iter() {
                                                         span {
-                                                            class: if (there - here).abs() > MARKER_DISAGREEMENT { "gate_rules-doubt" } else { "" },
-                                                            title: "{marker}: {there:+.1} spreads on the reference, {here:+.1} here",
+                                                            class: if marker.drifted() { "gate_rules-doubt" } else { "" },
+                                                            title: "{marker.marker}: {marker.reference_middle:+.2} on the reference, {marker.middle:+.2} here, {frame_of(marker)}",
                                                             // The marker as it was ticked, not the
                                                             // column it was read from.
-                                                            "{marker_label(marker, &panel.read())} {there:+.1}→{here:+.1}  "
+                                                            "{marker_label(&marker.marker, &panel.read())} {marker.reference_middle:+.1}→{marker.middle:+.1}  "
                                                         }
                                                     }
                                                 }
@@ -1983,6 +2209,116 @@ pub fn GateRulesWindow() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read(reshaped: Option<(f64, f64)>, clamped: bool, refused: Option<f64>) -> PhenotypeRead {
+        PhenotypeRead {
+            markers: Vec::new(),
+            matched: 0,
+            parent: 0,
+            reference_matched: 0,
+            reference_parent: 0,
+            purity: 1.0,
+            caught: 1.0,
+            pieces: 1,
+            centres: Vec::new(),
+            reshaped,
+            clamped,
+            refused_outline: refused,
+            pinned: Vec::new(),
+            could_pin: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_table_says_how_the_phenotype_rule_fitted_the_gate() {
+        assert_eq!(shape_fitted(&read(None, false, None)), "new polygon");
+        assert_eq!(
+            shape_fitted(&read(Some((12.0, -3.0)), false, None)),
+            "moved +12.00, -3.00"
+        );
+        assert_eq!(
+            shape_fitted(&read(Some((1200.0, -0.3)), true, None)),
+            "moved +1200, -0.30 (slid: resizing would pass the area limit)"
+        );
+        assert_eq!(
+            shape_fitted(&read(Some((12.0, -3.0)), true, Some(2.44))),
+            "shape kept: the polygon was 2.4x the area; moved +12.00, -3.00 (slid: resizing would pass the area limit)"
+        );
+    }
+
+    #[test]
+    fn the_table_names_the_pinned_markers_and_those_that_could_be() {
+        let mut pinned = read(Some((12.0, -3.0)), false, None);
+        pinned.pinned = vec![Arc::from("PerCP-A")];
+        pinned.could_pin = vec![Arc::from("BUV395-A")];
+        let name = |m: &str| {
+            if m == "PerCP-A" {
+                "CD8 (PerCP-A)".to_string()
+            } else {
+                m.to_string()
+            }
+        };
+        assert_eq!(
+            fitted(&pinned, name),
+            "moved +12.00, -3.00; pinned on CD8 (PerCP-A); edge on BUV395-A inside its negative on the reference - consider pinning"
+        );
+        assert_eq!(fitted(&read(None, false, None), name), "new polygon");
+    }
+
+    #[test]
+    fn the_form_keeps_only_pins_on_the_gates_own_ticked_axes() {
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let axes = owned(&["BUV395-A", "PerCP-A"]);
+        let pinned = owned(&["PerCP-A", "FITC-A"]);
+        assert_eq!(
+            pinnable(&axes, &owned(&["BUV395-A", "PerCP-A", "FITC-A"]), &pinned),
+            owned(&["PerCP-A"])
+        );
+        assert_eq!(
+            pinnable(&axes, &owned(&["BUV395-A"]), &pinned),
+            Vec::<String>::new()
+        );
+        assert_eq!(pinnable(&axes, &[], &pinned), owned(&["PerCP-A"]));
+    }
+
+    #[test]
+    fn the_smallest_dip_is_typed_as_a_percentage_and_kept_as_a_fraction() {
+        assert_eq!(fraction_from(""), Ok(None));
+        assert_eq!(fraction_from(" 10 "), Ok(Some(0.1)));
+        assert_eq!(fraction_from("101"), Err(()));
+        assert_eq!(fraction_from("ten"), Err(()));
+        assert_eq!(percent_of(Some(0.05)), "5");
+        assert_eq!(percent_of(Some(0.125)), "12.5");
+        assert_eq!(percent_of(None), "");
+    }
+
+    #[test]
+    fn every_fit_the_menu_offers_is_saved_as_itself() {
+        for fit in ShapeFit::ALL {
+            assert_eq!(fit_chosen(fit.key()), fit);
+        }
+        assert_eq!(fit_chosen("MoveOnly"), ShapeFit::MoveOnly);
+    }
+
+    #[test]
+    fn a_marker_says_which_frame_it_was_read_in() {
+        let marker = |by_landmarks| MarkerRead {
+            marker: Arc::from("CD4"),
+            by_landmarks,
+            identity: clingate_core::gate_rules::phenotype::Identity::Between(-0.6, 0.6),
+            reference_middle: 0.0,
+            reference_spread: 0.2,
+            middle: 0.1,
+        };
+        assert_eq!(
+            frame_of(&marker(true)),
+            "0 at the negative's peak, 1 at the valley above it"
+        );
+        assert_eq!(
+            frame_of(&marker(false)),
+            "in spreads from the parent's middle"
+        );
+    }
 
     /// B-RUN-1: a run must stop when anything it read changes. Driven through
     /// the real hook, in a headless `VirtualDom` holding the same stores and
@@ -2221,6 +2557,75 @@ mod tests {
 }
 
 /// The one sample a calibrated rule reads its reference from.
+/// The name a gating id is loaded under, or the id where none is.
+fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
+    files
+        .iter()
+        .find(|(_, gating_id)| &**gating_id == id)
+        .map_or(id, |(name, _)| &**name)
+        .to_string()
+}
+
+/// The valley rules' smallest dip, typed as a percentage, and when to set
+/// it.
+fn smallest_dip_picker(mut smallest_dip: Signal<String>) -> Element {
+    rsx! {
+        label { "Smallest dip (%)" }
+        input {
+            r#type: "number",
+            step: "1",
+            placeholder: "any",
+            value: "{smallest_dip}",
+            oninput: move |e| smallest_dip.set(e.value()),
+        }
+        p { class: "gate_rules-hint gate_rules-span",
+            "A dip shallower than this, against the lower peak beside it, is read as no dip: a smear, placed from the smear example or the fallback. Set it where the positives run straight off the negative and the rule gates a wobble in them; leave it empty to take any dip. Each placement's confidence says how deep its dip was against the reference's."
+        }
+    }
+}
+
+/// What the form says when the smallest dip is not a percentage.
+const SMALLEST_DIP_PROBLEM: &str =
+    "The smallest dip must be a percentage between 0 and 100, or empty";
+
+/// A fraction typed as a percentage: `None` when empty.
+fn fraction_from(typed: &str) -> Result<Option<f64>, ()> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return Ok(None);
+    }
+    match typed.parse::<f64>() {
+        Ok(percent) if (0.0..=100.0).contains(&percent) => Ok(Some(percent / 100.0)),
+        _ => Err(()),
+    }
+}
+
+/// `fraction` as the form shows it, a percentage; empty for none.
+fn percent_of(fraction: Option<f64>) -> String {
+    fraction
+        .map(|f| format!("{}", (f * 1000.0).round() / 10.0))
+        .unwrap_or_default()
+}
+
+/// The valley rules' "lowest point before the dip" setting, and when to
+/// choose it.
+fn lowest_before_picker(mut lowest_before: Signal<bool>) -> Element {
+    rsx! {
+        label { "Thin positives" }
+        label {
+            input {
+                r#type: "checkbox",
+                checked: lowest_before(),
+                onchange: move |e: FormEvent| lowest_before.set(e.checked()),
+            }
+            " gate at the lowest point before the dip found"
+        }
+        p { class: "gate_rules-hint gate_rules-span",
+            "A dip only counts where the cells beyond it stand 5% as tall as the negative's peak. Positives spread thin - a few percent of the cells over a wide range - are lower than that beside the negative, so the rule walks past the real dip and stops at a ripple inside the positives, putting the gate too high. Ticked, the gate goes in the lowest point it walked past. A sample whose first dip counted is placed as before, and so is a smear. Leave it unticked where the placements are right: on a marker with a third population above the positives it can drop the gate to the dip below them."
+        }
+    }
+}
+
 fn calibrate_picker(
     mut calibrate_on: Signal<String>,
     files: Memo<Vec<(Arc<str>, Arc<str>)>>,

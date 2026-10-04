@@ -10,7 +10,7 @@
 //! `CD3+CD14- / CD4+CD8-` only where it is not. That is what this computes.
 
 use crate::gates::GateState;
-use crate::gates::gate_store::NodeId;
+use crate::gates::gate_store::{GateId, NodeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
@@ -83,4 +83,29 @@ pub fn sorted_unique(names: &FxHashMap<NodeId, Arc<str>>) -> Vec<Arc<str>> {
     let mut out: Vec<Arc<str>> = seen.into_iter().collect();
     out.sort();
     out
+}
+
+/// The population names from the root down to `node`.
+pub fn path_names(state: &GateState, node: &NodeId) -> Vec<String> {
+    state
+        .gate_chain_for_node(node)
+        .iter()
+        .filter_map(|id| state.population_name(id))
+        .map(|name| name.to_string())
+        .collect()
+}
+
+/// Every place `gate` is drawn in the tree, with its full path, in path
+/// order: the places a linked gate is applied.
+pub fn places_of(state: &GateState, gate: &GateId) -> Vec<(NodeId, String)> {
+    let mut places: Vec<(NodeId, String)> = state
+        .nodes_for_gate(gate)
+        .iter()
+        .map(|node| {
+            let path = path_names(state, node).join(crate::session::lookup::PATH_SEPARATOR);
+            (node.clone(), path)
+        })
+        .collect();
+    places.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+    places
 }

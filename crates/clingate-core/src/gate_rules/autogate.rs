@@ -1151,6 +1151,9 @@ pub struct Positioned {
     pub reference_events: usize,
     /// Whether that landed inside the band the rule asked for.
     pub in_band: bool,
+    /// Whether the rule read a control - the specimen's FMX, or the run's -
+    /// rather than the sample itself or one named file.
+    pub read_on_control: bool,
     /// For a rule that places against the negative: what it read on the
     /// reference, and what it read on this sample. The two side by side are
     /// the only way to tell a gate that moved because the negative moved from
@@ -1195,19 +1198,24 @@ pub struct PhenotypeRead {
     /// than one means a single outline is not the whole story.
     pub pieces: usize,
     /// Per marker, where the matched cells sit on this sample against where
-    /// they sat on the reference, both in spreads of their own parent.
-    ///
-    /// This is the check that the rule has found the same cells rather than a
-    /// different population that happened to be nearest: a marker that reads
-    /// +8 on the reference and +1 here has not been matched on, whatever the
-    /// distance said.
-    pub centres: Vec<(Arc<str>, f64, f64)>,
-    /// How far the gate had to be moved and stretched, where the shape was
+    /// they sat on the reference, both in the frame the two samples share.
+    pub centres: Vec<crate::gate_rules::phenotype::MarkerRead>,
+    /// How far the gate had to be moved, where the shape was
     /// kept. `None` where a new polygon was drawn, which has no before to
     /// compare against.
     pub reshaped: Option<(f64, f64)>,
-    /// Whether the stretch hit its limit and was clamped.
+    /// Whether the change of size hit the area limit and was held to it.
     pub clamped: bool,
+    /// Where a polygon was asked for and the one drawn changed the area by
+    /// more than the limit allows: its area against the reference's. The
+    /// shape was kept instead.
+    pub refused_outline: Option<f64>,
+    /// The markers whose edge was pinned to the negative on this sample.
+    pub pinned: Vec<Arc<str>>,
+    /// The markers, not pinned, on which the reference gate's edge lies
+    /// within the negative's own spread - drawn against the negative, which
+    /// pinning it there would keep it.
+    pub could_pin: Vec<Arc<str>>,
 }
 
 /// A gate no rule could even be tried against, and why.
@@ -1349,13 +1357,38 @@ pub struct Report {
     pub unplaced: Vec<Unplaced>,
 }
 
+/// More events than this in the control a placement was read on, and a
+/// placement in its band is trusted however low its confidence: the count is
+/// what holds a control's confidence down, and this many is plenty to set a
+/// band on.
+pub const TRUSTED_CONTROL_EVENTS: usize = 300;
+
+/// Whether a placement read on a control of `events`, in its band or not, is
+/// trusted without review.
+pub fn trusted_control(read_on_control: bool, events: usize, in_band: bool) -> bool {
+    read_on_control && in_band && events > TRUSTED_CONTROL_EVENTS
+}
+
+impl Positioned {
+    /// Read on a control big enough to trust, and in its band: see
+    /// [`TRUSTED_CONTROL_EVENTS`].
+    pub fn trusted(&self) -> bool {
+        trusted_control(self.read_on_control, self.reference_events, self.in_band)
+    }
+
+    /// Whether it is worth opening by hand: outside its band, or under
+    /// `floor` and not [`trusted`](Self::trusted).
+    pub fn needs_review(&self, floor: f64) -> bool {
+        !self.in_band || (self.confidence < floor && !self.trusted())
+    }
+}
+
 impl Report {
-    /// Gates worth opening by hand: a weak placement, or one that could not be
-    /// brought inside the band at all.
+    /// Gates worth opening by hand - see [`Positioned::needs_review`].
     pub fn needs_review(&self, floor: f64) -> impl Iterator<Item = &Positioned> {
         self.positioned
             .iter()
-            .filter(move |p| p.confidence < floor || !p.in_band)
+            .filter(move |p| p.needs_review(floor))
     }
 }
 
@@ -1549,6 +1582,110 @@ pub struct AnchorProblem {
     pub target: crate::gate_rules::rule_store::RuleTarget,
     pub nodes: Vec<NodeId>,
     pub reason: String,
+}
+
+/// Every rule setting edges from other gates whose edges, set from the gates
+/// as drawn, put its gate over one of them. A run never places a gate over
+/// another, so such a rule leaves its gate where it is on every sample -
+/// most likely its gaps reach into the gates it follows. Said, not refused:
+/// on a sample whose gates sit differently it may still fit.
+pub fn edges_over_their_anchors(state: &GateState, rules: &RuleStore) -> Vec<AnchorProblem> {
+    use crate::gates::gate_contact::{outline, overlaps, same_axes};
+    let names = crate::gates::gate_paths::unique_names(state);
+    let graph = dependencies(state, rules, &names);
+    let drawn = |anchor: &crate::gate_rules::rule_store::RuleTarget| {
+        let id = anchor_gate(state, anchor)?;
+        let gate = state
+            .registered_gate(&id)
+            .ok_or_else(|| format!("{} is not drawn", anchor.describe()))?;
+        Ok::<_, String>((id, gate))
+    };
+    let mut problems: Vec<AnchorProblem> = Vec::new();
+    let mut nodes: Vec<&NodeId> = graph.keys().collect();
+    nodes.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    for node in nodes {
+        let Some(entry) = entry_at(state, rules, &names, node) else {
+            continue;
+        };
+        let crate::gate_rules::rule::Rule::FromAnotherGate(from) = &entry.rule.rule else {
+            continue;
+        };
+        if from.same_shape_as.is_some() || from.problem().is_some() {
+            continue;
+        }
+        let Some(id) = state.gate_for_node(node) else {
+            continue;
+        };
+        let Some(gate) = state.registered_gate(id) else {
+            continue;
+        };
+        let Ok(placed) = edges_set(&gate, from, drawn) else {
+            continue;
+        };
+        let (x, y) = placed.get_params();
+        let Some(mine) = outline(&placed, id, &x, &y) else {
+            continue;
+        };
+        let parent = state.parent_node(node);
+        let beside = |their_id: &GateId| {
+            state
+                .nodes_for_gate(their_id)
+                .iter()
+                .any(|theirs| state.parent_node(theirs) == parent)
+        };
+        let over = from.edges.iter().find(|edge| {
+            drawn(&edge.anchor).is_ok_and(|(their_id, theirs)| {
+                beside(&their_id)
+                    && same_axes(&theirs.get_params(), &(x.clone(), y.clone()))
+                    && outline(&theirs, &their_id, &x, &y)
+                        .is_some_and(|other| overlaps(&mine, &other))
+            })
+        });
+        let Some(edge) = over else {
+            continue;
+        };
+        let reason = format!(
+            "set as it says - {} - it lies over {} on the gates as drawn, and a run never \
+             places a gate over another, so it is left where it is on every sample: {}",
+            from.describe(),
+            edge.anchor.describe(),
+            way_off(edge)
+        );
+        match problems
+            .iter_mut()
+            .find(|p| p.target == entry.target && p.reason == reason)
+        {
+            Some(p) => p.nodes.push(node.clone()),
+            None => problems.push(AnchorProblem {
+                target: entry.target.clone(),
+                nodes: vec![node.clone()],
+                reason,
+            }),
+        }
+    }
+    problems
+}
+
+/// How to take a gate set by `edge` off its anchor. A gap is added to the
+/// anchor's edge, so an edge set below or left of the anchor clears it at 0
+/// or below, and one set above or right of it at 0 or above.
+fn way_off(edge: &crate::gate_rules::rule::EdgeFrom) -> String {
+    use crate::gate_rules::rule::Side;
+    match (edge.side, edge.anchor_side) {
+        (Side::Upper, Side::Lower) => format!(
+            "bring the gap on its upper {} edge to 0 or below",
+            edge.parameter
+        ),
+        (Side::Lower, Side::Upper) => format!(
+            "bring the gap on its lower {} edge to 0 or above",
+            edge.parameter
+        ),
+        _ => format!(
+            "set its edge facing {} against that gate's near edge - its upper edge at the \
+             other's lower, or its lower at the other's upper",
+            edge.anchor.describe()
+        ),
+    }
 }
 
 /// Every rule reading another gate's position - from another gate, or a
@@ -1825,7 +1962,7 @@ pub fn solve_all_reporting(
     measurements: &[Measurement],
     unmeasured: &[Unmeasured],
     metadata: &MetaDataFileMap,
-    progress: impl Fn(usize, usize),
+    progress: impl Fn(usize, usize) + Sync,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> (Report, Vec<Placement>) {
     let mut placements: Vec<Placement> = Vec::new();
@@ -1929,13 +2066,15 @@ pub fn solve_all_reporting(
         metadata,
     ));
 
+    // Decided in order, then placed side by side - placing is the slow part
+    // - then recorded in order, so the report reads as if done one by one.
+    let mut steps: Vec<(&Measurement, Step<'_>)> = Vec::new();
     for (seen, measured) in measurements.iter().enumerate() {
         // Stopped: nothing half-done is handed back. The caller sees the flag
         // and writes nothing.
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return (Report::default(), Vec::new());
         }
-        progress(seen + 1, measurements.len());
         let Some(rule) = store.rule_for(&measured.gate, measured.parent_gate.as_deref()) else {
             continue;
         };
@@ -1944,13 +2083,7 @@ pub fn solve_all_reporting(
                 "no {} for this file, so there is no specimen to position",
                 store.pairing.sample_id_column
             );
-            report.unplaced.push(Unplaced::of(measured, None, &reason));
-            report.skipped.push(Skipped {
-                file: measured.file.clone(),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                reason,
-            });
+            steps.push((measured, Step::Unplaced(None, reason)));
             continue;
         };
         // One answer per specimen, read from the file that is actually gated.
@@ -1964,35 +2097,38 @@ pub fn solve_all_reporting(
         // from the moved gate and the drift would compound every time. Only a
         // rule naming one sample is affected - a partner rule's reference is
         // inside the specimen it is positioning, which is the point of it.
-        if let MeasuredOn::File(named) = &rule.measured_on
-            && specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen)
+        if hand_gated(rule)
+            .any(|named| specimen_of(&store.pairing, named, metadata).as_ref() == Some(&specimen))
         {
             let holds = state
                 .gate_for_file(&measured.gate_id, &measured.file, metadata)
                 .and_then(|gate| admitted_by(&gate, &measured.index))
                 .unwrap_or(f64::NAN);
-            report.reference.push(Unchanged {
-                gate_id: measured.gate_id.clone(),
-                file: measured.file.clone(),
-                measured_on: None,
-                line: measured.line.as_ref().map(|l| l.current),
-                shape: measured
-                    .line
-                    .as_ref()
-                    .and_then(|l| crate::review::shape::summarise(&l.values)),
-                bound: measured.line.as_ref().map(|l| l.bound),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                specimen: specimen.group.clone(),
-                achieved: holds,
-                // A phenotype rule has no line, so there is nothing a bare
-                // threshold would have taken to report beside it.
-                above_the_line: measured
-                    .line
-                    .as_ref()
-                    .map(|line| beyond_the_line(&line.values, line.bound, line.current))
-                    .unwrap_or(f64::NAN),
-            });
+            steps.push((
+                measured,
+                Step::Reference(Unchanged {
+                    gate_id: measured.gate_id.clone(),
+                    file: measured.file.clone(),
+                    measured_on: None,
+                    line: measured.line.as_ref().map(|l| l.current),
+                    shape: measured
+                        .line
+                        .as_ref()
+                        .and_then(|l| crate::review::shape::summarise(&l.values)),
+                    bound: measured.line.as_ref().map(|l| l.bound),
+                    gate: measured.gate.clone(),
+                    parent_gate: measured.parent_gate.clone(),
+                    specimen: specimen.group.clone(),
+                    achieved: holds,
+                    // A phenotype rule has no line, so there is nothing a bare
+                    // threshold would have taken to report beside it.
+                    above_the_line: measured
+                        .line
+                        .as_ref()
+                        .map(|line| beyond_the_line(&line.values, line.bound, line.current))
+                        .unwrap_or(f64::NAN),
+                }),
+            ));
             continue;
         }
 
@@ -2012,73 +2148,68 @@ pub fn solve_all_reporting(
                 &mut pooled,
             )
             .and_then(|line| line.for_specimen(state, measured, &specimen, metadata))
-            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside));
-            match outcome {
-                Ok(Outcome::Moved(p, placed)) => {
-                    report.positioned.push(p);
-                    placements.push(placed);
-                }
-                Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-                // The run's line failed for every specimen alike: said once,
-                // naming the first and counting the rest.
-                Err(reason) => {
-                    report
-                        .unplaced
-                        .push(Unplaced::of(measured, Some(&specimen), &reason));
-                    match pooled_failures.iter_mut().find(|(s, _)| {
-                        s.gate == measured.gate && s.parent_gate == measured.parent_gate
-                    }) {
-                        Some((_, count)) => *count += 1,
-                        None => pooled_failures.push((
-                            Skipped {
-                                file: measured.file.clone(),
-                                gate: measured.gate.clone(),
-                                parent_gate: measured.parent_gate.clone(),
-                                reason,
-                            },
-                            1,
-                        )),
-                    }
-                }
-            }
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, &measured.beside))
+            .map(|outcome| read_on(rule, outcome));
+            steps.push((measured, Step::Pooled(outcome, specimen)));
             continue;
         }
 
         let Some(reference) = resolve_reference(store, measured, measurements, metadata) else {
             let reason = why_no_reference(store, measured, unmeasured, metadata);
-            report
-                .unplaced
-                .push(Unplaced::of(measured, Some(&specimen), &reason));
-            report.skipped.push(Skipped {
-                file: measured.file.clone(),
-                gate: measured.gate.clone(),
-                parent_gate: measured.parent_gate.clone(),
-                reason,
-            });
+            steps.push((measured, Step::Unplaced(Some(specimen), reason)));
             continue;
         };
+        let smear = smear_example(store, rule, measured, measurements, metadata);
+        steps.push((
+            measured,
+            Step::Place {
+                rule,
+                reference,
+                smear,
+                specimen,
+            },
+        ));
+    }
 
-        let beside = &measured.beside;
-        let outcome = position_one(
-            state, rule, measured, &reference, &specimen, metadata, beside,
-        )
-        .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside));
-        match outcome {
-            Ok(Outcome::Moved(p, placed)) => {
-                report.positioned.push(p);
-                placements.push(placed);
+    let placed = place_side_by_side(state, &steps, metadata, &progress, cancel);
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return (Report::default(), Vec::new());
+    }
+
+    for ((measured, step), placed) in steps.into_iter().zip(placed) {
+        match (step, placed) {
+            (Step::Unplaced(specimen, reason), _) => {
+                report.unplace(measured, specimen.as_ref(), reason)
             }
-            Ok(Outcome::Kept(u)) => report.unchanged.push(u),
-            Err(reason) => {
+            (Step::Reference(kept), _) => report.reference.push(kept),
+            (Step::Place { specimen, .. }, Some(Err(reason))) => {
+                report.unplace(measured, Some(&specimen), reason)
+            }
+            (Step::Place { .. }, Some(Ok(outcome))) | (Step::Pooled(Ok(outcome), _), _) => {
+                report.record(&mut placements, outcome)
+            }
+            (Step::Place { .. }, None) => {}
+            // The run's line failed for every specimen alike: said once,
+            // naming the first and counting the rest.
+            (Step::Pooled(Err(reason), specimen), _) => {
                 report
                     .unplaced
                     .push(Unplaced::of(measured, Some(&specimen), &reason));
-                report.skipped.push(Skipped {
-                    file: measured.file.clone(),
-                    gate: measured.gate.clone(),
-                    parent_gate: measured.parent_gate.clone(),
-                    reason,
-                });
+                match pooled_failures
+                    .iter_mut()
+                    .find(|(s, _)| s.gate == measured.gate && s.parent_gate == measured.parent_gate)
+                {
+                    Some((_, count)) => *count += 1,
+                    None => pooled_failures.push((
+                        Skipped {
+                            file: measured.file.clone(),
+                            gate: measured.gate.clone(),
+                            parent_gate: measured.parent_gate.clone(),
+                            reason,
+                        },
+                        1,
+                    )),
+                }
             }
         }
     }
@@ -2100,6 +2231,112 @@ pub fn solve_all_reporting(
     // either order.
     sort_report(&mut report, &mut placements, &store.pairing, metadata);
     (report, placements)
+}
+
+/// What a run does with one measurement, decided in order before the
+/// placing that runs side by side.
+enum Step<'a> {
+    /// Not placed, and why; with its specimen where it has one.
+    Unplaced(Option<MetaDataKey>, String),
+    /// The reference, left where a person drew it.
+    Reference(Unchanged),
+    /// Placed on a line pooled across the run, already worked out.
+    Pooled(Result<Outcome, String>, MetaDataKey),
+    /// To be placed by its rule.
+    Place {
+        rule: &'a GateRule,
+        reference: Reference<'a>,
+        /// For a valley-or-smear rule, the hand-gated smear it places a
+        /// smear from, once there is one.
+        smear: Option<Reference<'a>>,
+        specimen: MetaDataKey,
+    },
+}
+
+/// Every [`Step::Place`] among `steps` placed, side by side; `None` for the
+/// other steps, and for any left when the run is stopped.
+fn place_side_by_side(
+    state: &GateState,
+    steps: &[(&Measurement, Step<'_>)],
+    metadata: &MetaDataFileMap,
+    progress: &(impl Fn(usize, usize) + Sync),
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Vec<Option<Result<Outcome, String>>> {
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let described = describe_references(state, steps, metadata);
+    let total = steps
+        .iter()
+        .filter(|(_, step)| matches!(step, Step::Place { .. }))
+        .count();
+    let done = AtomicUsize::new(0);
+    steps
+        .par_iter()
+        .map(|(measured, step)| {
+            let Step::Place {
+                rule,
+                reference,
+                smear,
+                specimen,
+            } = step
+            else {
+                return None;
+            };
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let beside = &measured.beside;
+            let outcome = position_one(
+                state,
+                rule,
+                measured,
+                reference,
+                smear.as_ref(),
+                specimen,
+                metadata,
+                beside,
+                &described,
+            )
+            .and_then(|outcome| kept_clear(outcome, &measured.gate_id, beside))
+            .map(|outcome| read_on(rule, outcome));
+            progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+            Some(outcome)
+        })
+        .collect()
+}
+
+/// `outcome`, marked as read on a control where `rule` reads the specimen's
+/// partner file.
+fn read_on(rule: &GateRule, mut outcome: Outcome) -> Outcome {
+    if let Outcome::Moved(positioned, _) = &mut outcome {
+        positioned.read_on_control = matches!(rule.measured_on, MeasuredOn::Partner(_));
+    }
+    outcome
+}
+
+impl Report {
+    /// A placement made: moved, or found already where its rule wants it.
+    fn record(&mut self, placements: &mut Vec<Placement>, outcome: Outcome) {
+        match outcome {
+            Outcome::Moved(p, placed) => {
+                self.positioned.push(p);
+                placements.push(placed);
+            }
+            Outcome::Kept(u) => self.unchanged.push(u),
+        }
+    }
+
+    /// `measured` not placed, and why.
+    fn unplace(&mut self, measured: &Measurement, specimen: Option<&MetaDataKey>, reason: String) {
+        self.unplaced
+            .push(Unplaced::of(measured, specimen, &reason));
+        self.skipped.push(Skipped {
+            file: measured.file.clone(),
+            gate: measured.gate.clone(),
+            parent_gate: measured.parent_gate.clone(),
+            reason,
+        });
+    }
 }
 
 /// Put every list in the report into the pairing's sample order.
@@ -2289,6 +2526,7 @@ impl PooledLine {
                 above_the_line: beyond_the_line(&self.values, self.bound, self.to),
                 reference_events: self.events,
                 in_band: self.in_band,
+                read_on_control: false,
                 negative: None,
                 valley: None,
                 phenotype: None,
@@ -2491,25 +2729,40 @@ fn kept_clear(
     Ok(outcome)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn position_one(
     state: &GateState,
     rule: &GateRule,
     measured: &Measurement,
     reference: &Reference<'_>,
+    smear: Option<&Reference<'_>>,
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
     beside: &[crate::gate_rules::clearance::Neighbour],
+    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
 ) -> Result<Outcome, String> {
     // A rule that identifies a population does not move an edge, so none of
     // what follows applies to it.
     if let Rule::MatchThePhenotype(wanted) = &rule.rule {
-        return position_by_phenotype(state, wanted, measured, reference, specimen, metadata);
+        let described = described
+            .get(&(measured.gate_id.clone(), reference.id.clone()))
+            .ok_or_else(|| "the reference population was not described".to_string())?
+            .as_ref()
+            .map_err(String::clone)?;
+        return position_by_phenotype(
+            state, wanted, measured, reference, described, specimen, metadata,
+        );
     }
     if let Rule::FromAnotherGate(wanted) = &rule.rule {
         return position_from_gate(state, wanted, measured, specimen, metadata);
     }
     if let Rule::NextToGate(wanted) = &rule.rule {
         return position_next_to(state, wanted, measured, specimen, metadata);
+    }
+    if let Rule::ValleyOrSmear(either) = &rule.rule {
+        return position_valley_or_smear(
+            state, rule, either, measured, reference, smear, specimen, metadata, beside, described,
+        );
     }
     let line = measured
         .line
@@ -2816,6 +3069,7 @@ fn position_one(
             above_the_line: beyond_the_line(&judged_line.values, line.bound, to),
             reference_events: parent_events,
             in_band,
+            read_on_control: false,
             negative: reading,
             valley,
             phenotype: None,
@@ -2848,6 +3102,339 @@ fn bracket_for(values: &[f64], current: f64) -> (f64, f64) {
 
 // ── positioning by phenotype ─────────────────────────────────────────────
 
+/// The reference population a phenotype rule looks for: its gate, the
+/// events inside it, and their signature.
+struct Described {
+    gate: Arc<dyn DrawableGate>,
+    inner: flow_gates::Gate,
+    inside: Vec<usize>,
+    signature: crate::gate_rules::phenotype::Signature,
+    /// The sides the gate leaves open on each of its two axes.
+    open: [crate::gate_rules::phenotype::Open; 2],
+    /// On each of its two axes, the side nearest the parent's negative and
+    /// how many of the negative's widths it sits from its peak.
+    negatives: [Option<(crate::gate_rules::rule::Side, f64)>; 2],
+}
+
+/// Describe the population `gate_id` holds on `reference`.
+///
+/// Which events the reference gate holds is asked of the gate through the
+/// same index the on-screen percentage is counted from, so the population
+/// described is the one a person sees inside the outline.
+fn describe_reference(
+    state: &GateState,
+    gate_id: &GateId,
+    reference: &Reference<'_>,
+    metadata: &MetaDataFileMap,
+) -> Result<Described, String> {
+    use crate::gate_rules::phenotype::{Open, Rows, Signature};
+    let there = reference
+        .measurement
+        .phenotype
+        .as_ref()
+        .ok_or_else(|| "the reference was not measured across any markers".to_string())?;
+    let there_panel = there
+        .matrix()
+        .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?;
+    let gate = state
+        .gate_for_file(gate_id, &reference.id, metadata)
+        .ok_or_else(|| "the reference has no gate to describe".to_string())?;
+    let inner = gate
+        .get_gate_ref(None)
+        .ok_or_else(|| "the reference gate has no geometry".to_string())?
+        .clone();
+    let inside = reference
+        .measurement
+        .index
+        .event_index
+        .filter_by_gate(&inner)
+        .map_err(|e| format!("the reference gate could not be read: {e}"))?;
+    if inside.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
+        return Err(format!(
+            "the reference gate holds {} events, too few to describe a population",
+            inside.len()
+        ));
+    }
+    let members = there_panel.select(&inside);
+    let members = Rows::new(&members, there.markers.len())
+        .ok_or_else(|| "the reference members do not form a matrix".to_string())?;
+    let params = &reference.measurement.params;
+    let open = open_sides(&inner.geometry, params, &there.points, inside.len());
+    let open_on_markers: Vec<Open> = there
+        .markers
+        .iter()
+        .map(|marker| match marker {
+            m if *m == params.0 => open[0],
+            m if *m == params.1 => open[1],
+            _ => Open::default(),
+        })
+        .collect();
+    let signature = Signature::describe(there.markers.clone(), members, there_panel)
+        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?
+        .with_open(&open_on_markers);
+    let negative_on = |axis: usize| {
+        let values: Vec<f64> = there.points.iter().map(|p| coordinate(p, axis)).collect();
+        let extent = extent_on(
+            &inner.geometry,
+            if axis == 0 { &params.0 } else { &params.1 },
+        )?;
+        crate::gate_rules::phenotype_gate::widths_from_negative(
+            &values,
+            (f64::from(extent.0), f64::from(extent.1)),
+        )
+    };
+    let negatives = [negative_on(0), negative_on(1)];
+    Ok(Described {
+        gate,
+        inner,
+        inside,
+        signature,
+        open,
+        negatives,
+    })
+}
+
+/// How each of the gate's two axes is carried from the reference, `there`, to
+/// this sample, `here`, each with the indices of the cells the rule's
+/// signature matches in it; the sides the gate leaves `open` on the axes the rule reads are never
+/// pulled in.
+///
+/// Each edge keeps its place in the gap between the population and the cells
+/// beyond it, as a person would put it: not by where the matched cells' middle
+/// happens to be, which moves with how many there are and how bright, nor by
+/// the parent's frame, which knows nothing of the populations either side.
+/// On an axis the rule reads, the two are told apart by the valley between
+/// them among the cells in the gate's span on the other axis, where both
+/// samples have one beside the edge: the line the signature matches by is
+/// read off the whole parent, and on a marker most of the parent smears along
+/// it says little about where this population starts.
+#[allow(clippy::too_many_arguments)]
+fn carries(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    markers: &[Arc<str>],
+    pinned: &[Arc<str>],
+    there: (&[(f64, f64)], &[usize]),
+    here: (&[(f64, f64)], &[usize]),
+    open: &[crate::gate_rules::phenotype::Open; 2],
+    negatives: &[Option<(crate::gate_rules::rule::Side, f64)>; 2],
+) -> [crate::gate_rules::phenotype_gate::Carry; 2] {
+    use crate::gate_rules::phenotype::Open;
+    use crate::gate_rules::phenotype_gate::{Carry, Gap, edge_in_gap, pinned_to_negative};
+    use crate::gate_rules::rule::Side;
+    let extent = |param: &str| {
+        extent_on(geometry, param)
+            .map(|(lower, upper)| (lower as f64, upper as f64))
+            .or_else(|| ellipse_extent(geometry, param, param == &*params.0))
+            .unwrap_or((f64::NAN, f64::NAN))
+    };
+    let extents = [extent(&params.0), extent(&params.1)];
+    let on_axis = |axis: usize, open: Open| {
+        let (lower, upper) = extents[axis];
+        let param = if axis == 0 { &params.0 } else { &params.1 };
+        let read = markers.contains(param);
+        let span = extents[1 - axis];
+        let gaps = |edge, side| {
+            let at_valley = |cells| {
+                read.then(|| split_at_valley(cells, axis, span, side, edge))
+                    .flatten()
+            };
+            let (from, to) = match (at_valley(there), at_valley(here)) {
+                (Some(from), Some(to)) => (from, to),
+                _ => (
+                    split_by_match(there, axis, span),
+                    split_by_match(here, axis, span),
+                ),
+            };
+            Option::zip(Gap::of(&from.0, &from.1, side), Gap::of(&to.0, &to.1, side))
+        };
+        let carry =
+            |edge, side| gaps(edge, side).map_or(edge, |(from, to)| edge_in_gap(edge, from, to));
+        let mut to = (carry(lower, Side::Lower), carry(upper, Side::Upper));
+        let pin = negatives[axis]
+            .filter(|(side, _)| read && pinned.contains(param) && !open.on(*side))
+            .and_then(|(side, widths)| {
+                let values: Vec<f64> = here.0.iter().map(|p| coordinate(p, axis)).collect();
+                Some((side, pinned_to_negative(widths, &values)?))
+            });
+        match pin {
+            Some((Side::Lower, at)) => to.0 = at,
+            Some((Side::Upper, at)) => to.1 = at,
+            None => {}
+        }
+        Carry {
+            extent: extents[axis],
+            open: if read { open } else { Open::default() },
+            to,
+            pinned: pin.map(|(side, _)| side),
+        }
+    };
+    [on_axis(0, open[0]), on_axis(1, open[1])]
+}
+
+/// The plot's axes the rule reads but does not pin, on which the reference
+/// gate's edge lies within the negative's own spread.
+fn could_pin(
+    params: &(Arc<str>, Arc<str>),
+    wanted: &crate::gate_rules::rule::PhenotypeRule,
+    signature: &crate::gate_rules::phenotype::Signature,
+    open: &[crate::gate_rules::phenotype::Open; 2],
+    negatives: &[Option<(crate::gate_rules::rule::Side, f64)>; 2],
+) -> Vec<Arc<str>> {
+    [&params.0, &params.1]
+        .into_iter()
+        .zip(open.iter().zip(negatives))
+        .filter(|(param, (open, negative))| {
+            signature.markers.contains(param)
+                && !wanted.pinned.contains(param)
+                && negative.is_some_and(|(side, widths)| {
+                    !open.on(side) && crate::gate_rules::phenotype_gate::within_the_negative(widths)
+                })
+        })
+        .map(|(param, _)| param.clone())
+        .collect()
+}
+
+/// One axis's values: the population's cells, and the rest beside them.
+pub(crate) type Split = (Vec<f64>, Vec<f64>);
+
+/// The population at `members` among `points` on `axis`, and the rest of the
+/// cells within `span` on the other axis.
+fn split_by_match(
+    (points, members): (&[(f64, f64)], &[usize]),
+    axis: usize,
+    span: (f64, f64),
+) -> Split {
+    let mut is_member = vec![false; points.len()];
+    for at in members {
+        is_member[*at] = true;
+    }
+    let (inside, rest): (Vec<_>, Vec<_>) = points
+        .iter()
+        .zip(&is_member)
+        .filter(|(point, member)| {
+            **member || (span.0..=span.1).contains(&coordinate(point, 1 - axis))
+        })
+        .partition(|(_, member)| **member);
+    let values = |cells: Vec<(&(f64, f64), &bool)>| -> Vec<f64> {
+        cells
+            .into_iter()
+            .map(|(point, _)| coordinate(point, axis))
+            .collect()
+    };
+    (values(inside), values(rest))
+}
+
+/// The cells within `span` on the other axis split on `axis` at the valley
+/// among them, the population's side of it first - where there is a valley
+/// on `side` of the population at `members`, as an `edge` there would sit.
+pub(crate) fn split_at_valley(
+    (points, members): (&[(f64, f64)], &[usize]),
+    axis: usize,
+    span: (f64, f64),
+    side: crate::gate_rules::rule::Side,
+    edge: f64,
+) -> Option<Split> {
+    use crate::gate_rules::rule::Side;
+    let candidates: Vec<f64> = points
+        .iter()
+        .filter(|point| (span.0..=span.1).contains(&coordinate(point, 1 - axis)))
+        .map(|point| coordinate(point, axis))
+        .collect();
+    let bottom = crate::gate_rules::threshold::valley_for_gate(&candidates, 1.0, edge)
+        .ok()?
+        .bottom;
+    let population: Vec<f64> = members
+        .iter()
+        .map(|at| coordinate(&points[*at], axis))
+        .collect();
+    let middle = crate::gate_rules::phenotype::median_of(&population);
+    let inside = |value: f64| match side {
+        Side::Lower => value > bottom,
+        Side::Upper => value < bottom,
+    };
+    inside(middle).then(|| candidates.into_iter().partition(|value| inside(*value)))
+}
+
+/// A point's value on the plot's horizontal axis, 0, or its vertical one.
+fn coordinate(point: &(f64, f64), axis: usize) -> f64 {
+    if axis == 0 { point.0 } else { point.1 }
+}
+
+/// How far an ellipse reaches on `param`, the plot's horizontal axis if
+/// `across`, where `geometry` is one.
+pub(crate) fn ellipse_extent(
+    geometry: &GateGeometry,
+    param: &str,
+    across: bool,
+) -> Option<(f64, f64)> {
+    let GateGeometry::Ellipse {
+        center,
+        radius_x,
+        radius_y,
+        angle,
+    } = geometry
+    else {
+        return None;
+    };
+    let centre = f64::from(center.get_coordinate(param)?);
+    let (sin, cos) = f64::from(*angle).sin_cos();
+    let (along, crossing) = if across { (cos, sin) } else { (sin, cos) };
+    let reach = (f64::from(*radius_x) * along).hypot(f64::from(*radius_y) * crossing);
+    Some((centre - reach, centre + reach))
+}
+
+/// The sides `geometry` leaves open on each of its two axes, `params`, over
+/// its parent's `points`, with `held` of them inside it.
+fn open_sides(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    points: &[(f64, f64)],
+    held: usize,
+) -> [crate::gate_rules::phenotype::Open; 2] {
+    use crate::gate_rules::phenotype::Open;
+    let on_axis = |param: &str, value: fn(&(f64, f64)) -> f64| {
+        extent_on(geometry, param)
+            .map(|(lower, upper)| {
+                Open::beyond(points.iter().map(value), (lower as f64, upper as f64), held)
+            })
+            .unwrap_or_default()
+    };
+    [on_axis(&params.0, |p| p.0), on_axis(&params.1, |p| p.1)]
+}
+
+/// The reference populations the phenotype rules among `steps` look for,
+/// each described once, side by side, rather than again for every sample.
+fn describe_references(
+    state: &GateState,
+    steps: &[(&Measurement, Step<'_>)],
+    metadata: &MetaDataFileMap,
+) -> FxHashMap<(GateId, FileId), Result<Described, String>> {
+    use rayon::prelude::*;
+    let mut wanted: Vec<(&GateId, &Reference<'_>)> = Vec::new();
+    for (measured, step) in steps {
+        if let Step::Place {
+            rule, reference, ..
+        } = step
+            && matches!(rule.rule, Rule::MatchThePhenotype(_))
+            && !wanted
+                .iter()
+                .any(|(id, held)| **id == measured.gate_id && held.id == reference.id)
+        {
+            wanted.push((&measured.gate_id, reference));
+        }
+    }
+    wanted
+        .par_iter()
+        .map(|(gate_id, reference)| {
+            (
+                ((*gate_id).clone(), reference.id.clone()),
+                describe_reference(state, gate_id, reference, metadata),
+            )
+        })
+        .collect()
+}
+
 /// Fit a gate to the cells that match the reference population's phenotype.
 ///
 /// The shape of it: describe the reference gate's contents across the chosen
@@ -2865,12 +3452,12 @@ fn position_by_phenotype(
     wanted: &crate::gate_rules::rule::PhenotypeRule,
     measured: &Measurement,
     reference: &Reference<'_>,
+    described: &Described,
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    use crate::gate_rules::phenotype::{Rows, Signature};
     use crate::gate_rules::rule::ShapeFit;
-    use crate::gate_rules::shape_fit::{Reshape, fit};
+    use crate::gate_rules::shape_fit::{contour_around, fit, within_area_limit};
 
     let here = measured
         .phenotype
@@ -2889,55 +3476,33 @@ fn position_by_phenotype(
             there.markers.len()
         ));
     }
-    let (here_panel, there_panel) = (
-        here.matrix()
-            .ok_or_else(|| "this file's markers do not form a matrix".to_string())?,
-        there
-            .matrix()
-            .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?,
-    );
+    let here_panel = here
+        .matrix()
+        .ok_or_else(|| "this file's markers do not form a matrix".to_string())?;
+    let Described {
+        gate: reference_gate,
+        inner,
+        inside,
+        signature,
+        open,
+        negatives,
+    } = described;
 
-    // Which events the reference gate holds. Asked of the gate through the
-    // same index the on-screen percentage is counted from, so the population
-    // described here is the one a person sees inside the outline.
-    let reference_gate = state
-        .gate_for_file(&measured.gate_id, &reference.id, metadata)
-        .ok_or_else(|| "the reference has no gate to describe".to_string())?;
-    let inner = reference_gate
-        .get_gate_ref(None)
-        .ok_or_else(|| "the reference gate has no geometry".to_string())?;
-    let inside = reference
-        .measurement
-        .index
-        .event_index
-        .filter_by_gate(inner)
-        .map_err(|e| format!("the reference gate could not be read: {e}"))?;
-    if inside.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
-        return Err(format!(
-            "the reference gate holds {} events, too few to describe a population",
-            inside.len()
-        ));
-    }
-
-    let members = there_panel.select(&inside);
-    let members = Rows::new(&members, there.markers.len())
-        .ok_or_else(|| "the reference members do not form a matrix".to_string())?;
-    let signature = Signature::describe(here.markers.clone(), members, there_panel)
-        .ok_or_else(|| "the reference population has no describable phenotype".to_string())?;
-
-    let found = signature.find_in(here_panel);
-    if found.members.len() < crate::gate_rules::shape_fit::MIN_EVENTS {
-        return Err(format!(
-            "only {} events match the reference population, too few to place a gate \
-             ({} matched on the reference)",
-            found.members.len(),
-            inside.len()
-        ));
+    let there_panel = there
+        .matrix()
+        .ok_or_else(|| "the reference's markers do not form a matrix".to_string())?;
+    let (alike_there, found) = signature.find_in_both(Some(there_panel), here_panel);
+    let reference_share = inside.len() as f64 / there.points.len().max(1) as f64;
+    if let Some(weak) = found.weak(reference_share) {
+        return Err(format!("{weak}, so the gate is left where it is"));
     }
 
     // Where those cells sit on the two axes the gate is drawn on.
     let matched_here: Vec<(f64, f64)> = found.members.iter().map(|at| here.points[*at]).collect();
     let matched_there: Vec<(f64, f64)> = inside.iter().map(|at| there.points[*at]).collect();
+    if let Some(scattered) = scattered(&matched_here) {
+        return Err(format!("{scattered}, so the gate is left where it is"));
+    }
     let others_here: Vec<(f64, f64)> = {
         let mut is_member = vec![false; here.points.len()];
         for at in &found.members {
@@ -2951,32 +3516,46 @@ fn position_by_phenotype(
             .collect()
     };
 
-    let (geometry, reshaped, clamped, purity, caught, pieces) = match wanted.fit {
-        ShapeFit::KeepShape => {
-            let moved = Reshape::between(&matched_there, &matched_here);
-            let geometry = crate::gate_rules::phenotype_gate::reshaped(
-                &inner.geometry,
-                &measured.params,
-                &moved,
-            )
-            .map_err(|e| e.to_string())?;
-            // Purity and catch are measured on the gate that will actually be
-            // written, not on an idealised boundary: a kept shape may hold the
-            // population loosely, and that is exactly what wants reporting.
-            let outline = outline_of(&geometry, &measured.params);
-            let (purity, caught) = hold(&outline, &matched_here, &others_here);
-            (
-                geometry,
-                Some((
-                    moved.to.centre.0 - moved.from.centre.0,
-                    moved.to.centre.1 - moved.from.centre.1,
-                )),
-                moved.clamped,
-                purity,
-                caught,
-                1,
-            )
+    let carried_from = |here: (&[(f64, f64)], &[usize])| {
+        carries(
+            &inner.geometry,
+            &measured.params,
+            &signature.markers,
+            &wanted.pinned,
+            (&there.points, &alike_there),
+            here,
+            open,
+            negatives,
+        )
+    };
+    let [x, y] = carried_from((&here.points, &found.members));
+    let moved = |resize: bool| -> Result<_, String> {
+        use crate::gate_rules::phenotype_gate::{carried, slid};
+        let resized = resize && within_area_limit(x.stretch() * y.stretch());
+        let geometry = if resized {
+            carried(&inner.geometry, &measured.params, &x, &y)
+        } else {
+            slid(&inner.geometry, &measured.params, &x, &y)
         }
+        .map_err(|e| e.to_string())?;
+        // Purity and catch are measured on the gate that will actually be
+        // written, not on an idealised boundary: a kept shape may hold the
+        // population loosely, and that is exactly what wants reporting.
+        let outline = outline_of(&geometry, &measured.params);
+        let (purity, caught) = hold(&outline, &matched_here, &others_here);
+        Ok(Fitted {
+            geometry,
+            reshaped: Some((x.shift(), y.shift())),
+            clamped: resize && !resized,
+            refused_outline: None,
+            purity,
+            caught,
+            pieces: 1,
+        })
+    };
+    let fitted = match wanted.fit {
+        ShapeFit::KeepShape => moved(true)?,
+        ShapeFit::MoveOnly => moved(false)?,
         ShapeFit::DrawPolygon => {
             let drawn = fit(
                 &matched_here,
@@ -2986,36 +3565,50 @@ fn position_by_phenotype(
                 wanted.vertices,
             )
             .map_err(|e| e.to_string())?;
-            let geometry = crate::gate_rules::phenotype_gate::polygon(
-                &drawn.outline,
-                &measured.params,
-                &measured.gate_id,
+            let (on_the_reference, _) = contour_around(
+                &matched_there,
+                wanted.keep,
+                wanted.smoothing,
+                wanted.vertices,
             )
-            .map_err(|e| e.to_string())?;
-            (
-                geometry,
-                None,
-                false,
-                drawn.purity,
-                drawn.caught,
-                drawn.pieces,
-            )
+            .map_err(|e| format!("on the reference, {e}"))?;
+            let area = drawn.outline.area() / on_the_reference.area();
+            if within_area_limit(area) {
+                Fitted {
+                    geometry: crate::gate_rules::phenotype_gate::polygon(
+                        &drawn.outline,
+                        &measured.params,
+                        &measured.gate_id,
+                    )
+                    .map_err(|e| e.to_string())?,
+                    reshaped: None,
+                    clamped: false,
+                    refused_outline: None,
+                    purity: drawn.purity,
+                    caught: drawn.caught,
+                    pieces: drawn.pieces,
+                }
+            } else {
+                Fitted {
+                    refused_outline: Some(area),
+                    ..moved(true)?
+                }
+            }
         }
     };
+    let Fitted {
+        geometry,
+        reshaped,
+        clamped,
+        refused_outline,
+        purity,
+        caught,
+        pieces,
+    } = fitted;
 
     let mut rebuilt = inner.clone();
     rebuilt.geometry = geometry;
-    let placed = rebuild(&reference_gate, rebuilt).map_err(|e| e.to_string())?;
-
-    // Where the matched cells sit on each marker, here and on the reference,
-    // each against its own parent - the check that these are the same cells.
-    let centres = marker_centres(
-        &signature.markers,
-        here_panel,
-        &found.members,
-        there_panel,
-        &inside,
-    );
+    let placed = rebuild(reference_gate, rebuilt).map_err(|e| e.to_string())?;
 
     let achieved = admitted_by(&placed, &measured.index).unwrap_or(f64::NAN);
     // Scored on its own evidence - see `assess_match`. There is no threshold
@@ -3029,6 +3622,12 @@ fn position_by_phenotype(
             purity,
             caught,
             pieces,
+            steady: reshaped.is_some().then(|| {
+                let [first, second] =
+                    crate::gate_rules::phenotype_gate::halves(&here.points, &found.members)
+                        .map(|(points, members)| carried_from((&points, &members)));
+                crate::gate_rules::phenotype_gate::agreement(&first, &second, &here.points)
+            }),
         });
 
     Ok(Outcome::Moved(
@@ -3055,6 +3654,7 @@ fn position_by_phenotype(
             above_the_line: f64::NAN,
             reference_events: measured.index.event_index.len(),
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: Some(PhenotypeRead {
@@ -3066,9 +3666,20 @@ fn position_by_phenotype(
                 purity,
                 caught,
                 pieces,
-                centres,
+                centres: found.reads,
                 reshaped,
                 clamped,
+                refused_outline,
+                pinned: [(&measured.params.0, &x), (&measured.params.1, &y)]
+                    .into_iter()
+                    .filter(|(_, carry)| reshaped.is_some() && carry.pinned.is_some())
+                    .map(|(param, _)| param.clone())
+                    .collect(),
+                could_pin: if reshaped.is_some() {
+                    could_pin(&measured.params, wanted, signature, open, negatives)
+                } else {
+                    Vec::new()
+                },
             }),
         },
         Placement {
@@ -3077,6 +3688,38 @@ fn position_by_phenotype(
             gate: placed,
         },
     ))
+}
+
+/// A gate's new geometry from a phenotype rule, and what it holds.
+struct Fitted {
+    geometry: GateGeometry,
+    reshaped: Option<(f64, f64)>,
+    clamped: bool,
+    refused_outline: Option<f64>,
+    purity: f64,
+    caught: f64,
+    pieces: usize,
+}
+
+/// Why the matched cells are not one population on the plot, if they are not:
+/// the largest cloud they form holds under [`ONE_CLOUD`] of them.
+///
+/// [`ONE_CLOUD`]: crate::gate_rules::phenotype::ONE_CLOUD
+fn scattered(points: &[(f64, f64)]) -> Option<String> {
+    use crate::gate_rules::phenotype::{KEEP, ONE_CLOUD};
+    let (outline, pieces) =
+        match crate::gate_rules::shape_fit::contour_around(points, KEEP, 1.0, usize::MAX) {
+            Ok(traced) => traced,
+            Err(e) => return Some(e.to_string()),
+        };
+    let held = points.iter().filter(|p| outline.holds(**p)).count() as f64 / points.len() as f64;
+    (held < ONE_CLOUD).then(|| {
+        format!(
+            "the matched cells sit in {pieces} separate clouds on this plot, the largest \
+             holding {:.0}% of them",
+            held * 100.0
+        )
+    })
 }
 
 /// What the gate held on this sample before the rule touched it.
@@ -3161,45 +3804,6 @@ fn hold(
             inside_population as f64 / population.len() as f64
         },
     )
-}
-
-/// Where a matched population sits on each marker, here and on the reference.
-///
-/// Both in robust z against their own parent, which is the only way the two
-/// are comparable without normalising between samples.
-fn marker_centres(
-    markers: &[Arc<str>],
-    here: crate::gate_rules::phenotype::Rows<'_>,
-    here_members: &[usize],
-    there: crate::gate_rules::phenotype::Rows<'_>,
-    there_members: &[usize],
-) -> Vec<(Arc<str>, f64, f64)> {
-    use crate::gate_rules::phenotype::baselines;
-    let (here_base, there_base) = (baselines(here), baselines(there));
-    markers
-        .iter()
-        .enumerate()
-        .map(|(at, marker)| {
-            let middle = |rows: crate::gate_rules::phenotype::Rows<'_>,
-                          members: &[usize],
-                          base: &crate::gate_rules::phenotype::Baseline| {
-                if members.is_empty() {
-                    return f64::NAN;
-                }
-                let mut values: Vec<f64> = members
-                    .iter()
-                    .map(|event| base.z(rows.row(*event)[at] as f64))
-                    .collect();
-                values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                values[values.len() / 2]
-            };
-            (
-                marker.clone(),
-                middle(there, there_members, &there_base[at]),
-                middle(here, here_members, &here_base[at]),
-            )
-        })
-        .collect()
 }
 
 // ── following another gate ────────────────────────────────────────────────
@@ -3399,6 +4003,108 @@ fn set_edge(
 /// it where a person would is the point.
 pub const FLAGGED_CONFIDENCE: f64 = 0.25;
 
+/// Why a smear was not placed: there is no smear gated by hand to place it
+/// from. A pausing run stops for a person to gate the first one.
+pub const NO_SMEAR_EXAMPLE: &str = "a smear, with no dip between its negative and positive, and no smear gated by hand to \
+     place it from";
+
+/// The files a rule is calibrated on by hand: the one it is measured on, and
+/// a valley-or-smear rule's smear example. Their gates are where a person put
+/// them, so a run leaves them there.
+fn hand_gated(rule: &GateRule) -> impl Iterator<Item = &Arc<str>> {
+    let named = match &rule.measured_on {
+        MeasuredOn::File(named) => Some(named),
+        _ => None,
+    };
+    let example = match &rule.rule {
+        Rule::ValleyOrSmear(either) => either.smear_example.as_ref(),
+        _ => None,
+    };
+    named.into_iter().chain(example)
+}
+
+/// A valley-or-smear rule's smear example, as measured in this run.
+fn smear_example<'a>(
+    store: &RuleStore,
+    rule: &GateRule,
+    measured: &Measurement,
+    measurements: &'a [Measurement],
+    metadata: &MetaDataFileMap,
+) -> Option<Reference<'a>> {
+    let Rule::ValleyOrSmear(either) = &rule.rule else {
+        return None;
+    };
+    let named = MeasuredOn::File(either.smear_example.clone()?);
+    let id = store.reference_file(&measured.file, &named, metadata)?;
+    let measurement = measurements
+        .iter()
+        .find(|m| m.file == id && m.gate_id == measured.gate_id)?;
+    Some(Reference { id, measurement })
+}
+
+/// In its valley, when this sample and the reference both have a dip;
+/// otherwise a smear - where the fallback gate is, or as far above the
+/// negative as on the smear example: the one gated by hand, or the reference
+/// when it is a smear itself.
+#[allow(clippy::too_many_arguments)]
+fn position_valley_or_smear(
+    state: &GateState,
+    rule: &GateRule,
+    either: &crate::gate_rules::rule::ValleyOrSmearRule,
+    measured: &Measurement,
+    reference: &Reference<'_>,
+    smear: Option<&Reference<'_>>,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+    beside: &[crate::gate_rules::clearance::Neighbour],
+    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
+) -> Result<Outcome, String> {
+    let line = measured
+        .line
+        .as_ref()
+        .ok_or_else(|| "this gate was not measured along an axis".to_string())?;
+    let reference_line = reference
+        .measurement
+        .line
+        .as_ref()
+        .ok_or_else(|| "the reference was not measured along an axis".to_string())?;
+    let valley = either.valley();
+    let on_reference = valley.calibrate(&reference_line.values, reference_line.current);
+    let here = on_reference
+        .as_ref()
+        .ok()
+        .map(|from| valley.place(&line.values, from.offset, line.current));
+    let placed_by = |how: Rule, from: &Reference<'_>| {
+        let as_rule = GateRule {
+            rule: how,
+            ..rule.clone()
+        };
+        position_one(
+            state, &as_rule, measured, from, None, specimen, metadata, beside, described,
+        )
+    };
+    let why = match here {
+        Some(Ok(_)) => {
+            let in_the_valley = crate::gate_rules::rule::ValleyRule {
+                fallback: None,
+                ..valley.clone()
+            };
+            return placed_by(Rule::InTheValley(in_the_valley), reference);
+        }
+        Some(Err(why)) => why.to_string(),
+        None => "the reference has no dip either".to_string(),
+    };
+    if let Some(fallback) = valley.fallback_rule(&line.parameter, line.bound) {
+        return fall_back(state, &fallback, measured, specimen, metadata, &why);
+    }
+    let example = match (smear, &on_reference) {
+        (Some(example), _) => example,
+        (None, Err(_)) => reference,
+        (None, Ok(_)) => return Err(NO_SMEAR_EXAMPLE.to_string()),
+    };
+    placed_by(Rule::AboveTheNegative(either.smear()), example)
+}
+
 /// A valley rule that found no valley, `why`, placed by its fallback.
 fn fall_back(
     state: &GateState,
@@ -3444,7 +4150,6 @@ fn position_from_gate(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
 ) -> Result<Outcome, String> {
-    use crate::gate_rules::rule::Side;
     if let Some(problem) = wanted.problem() {
         return Err(problem.to_string());
     }
@@ -3465,38 +4170,7 @@ fn position_from_gate(
             let (_, theirs) = anchor_on_sample(anchor)?;
             same_shape(&current, &theirs)?
         }
-        None => {
-            let mut gate = current.clone();
-            for edge in &wanted.edges {
-                let (id, theirs) = anchor_on_sample(&edge.anchor)?;
-                let shape = theirs
-                    .get_gate_ref(Some(id.as_ref()))
-                    .or_else(|| theirs.get_gate_ref(None))
-                    .ok_or_else(|| format!("{} has no shape", edge.anchor.describe()))?;
-                let (low, high) = extent_on(&shape.geometry, &edge.parameter).ok_or_else(|| {
-                    format!(
-                        "{} is not drawn on {}, so it has no edge there",
-                        edge.anchor.describe(),
-                        edge.parameter
-                    )
-                })?;
-                let at = match edge.anchor_side {
-                    Side::Lower => low,
-                    Side::Upper => high,
-                };
-                if !at.is_finite() || at.abs() > UNBOUNDED {
-                    return Err(format!(
-                        "the {} edge of {} on {} is open, so there is nothing to set this \
-                         gate against",
-                        edge.anchor_side.label(),
-                        edge.anchor.describe(),
-                        edge.parameter
-                    ));
-                }
-                gate = set_edge(&gate, &edge.parameter, edge.side, at + edge.gap as f32)?;
-            }
-            gate
-        }
+        None => edges_set(&current, wanted, anchor_on_sample)?,
     };
 
     Ok(read_from_another(
@@ -3506,6 +4180,47 @@ fn position_from_gate(
         placed,
         format!("placed from {}", wanted.describe()),
     ))
+}
+
+/// `gate` with each edge `wanted` names set from its anchor, as `anchor_of`
+/// finds the anchor - on one sample, or as drawn.
+fn edges_set(
+    gate: &Arc<dyn DrawableGate>,
+    wanted: &crate::gate_rules::rule::FromGateRule,
+    anchor_of: impl Fn(
+        &crate::gate_rules::rule_store::RuleTarget,
+    ) -> Result<(GateId, Arc<dyn DrawableGate>), String>,
+) -> Result<Arc<dyn DrawableGate>, String> {
+    use crate::gate_rules::rule::Side;
+    let mut gate = gate.clone();
+    for edge in &wanted.edges {
+        let (id, theirs) = anchor_of(&edge.anchor)?;
+        let shape = theirs
+            .get_gate_ref(Some(id.as_ref()))
+            .or_else(|| theirs.get_gate_ref(None))
+            .ok_or_else(|| format!("{} has no shape", edge.anchor.describe()))?;
+        let (low, high) = extent_on(&shape.geometry, &edge.parameter).ok_or_else(|| {
+            format!(
+                "{} is not drawn on {}, so it has no edge there",
+                edge.anchor.describe(),
+                edge.parameter
+            )
+        })?;
+        let at = match edge.anchor_side {
+            Side::Lower => low,
+            Side::Upper => high,
+        };
+        if !at.is_finite() || at.abs() > UNBOUNDED {
+            return Err(format!(
+                "the {} edge of {} on {} is open, so there is nothing to set this gate against",
+                edge.anchor_side.label(),
+                edge.anchor.describe(),
+                edge.parameter
+            ));
+        }
+        gate = set_edge(&gate, &edge.parameter, edge.side, at + edge.gap as f32)?;
+    }
+    Ok(gate)
 }
 
 /// Where a rule reading another gate put `current`, as `placed`: kept when
@@ -3564,6 +4279,7 @@ fn read_from_another(
             above_the_line: f64::NAN,
             reference_events: measured.index.event_index.len(),
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,

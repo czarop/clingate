@@ -51,6 +51,24 @@ impl Session {
                 markers.push(channel);
             }
             wanted.markers = markers;
+            let mut pinned = Vec::with_capacity(wanted.pinned.len());
+            for marker in &wanted.pinned {
+                let channel = self.channel_named(marker)?;
+                if *channel != **marker {
+                    notes.push(format!("pinned marker {marker} is the channel {channel}"));
+                }
+                pinned.push(channel);
+            }
+            wanted.pinned = pinned;
+        }
+        if let Rule::ValleyOrSmear(either) = &mut rule.rule
+            && let Some(named) = &either.smear_example
+        {
+            let id = self.metadata_row_named(named)?;
+            if *id != **named {
+                notes.push(format!("the smear example {named} is the file {id}"));
+            }
+            either.smear_example = Some(id);
         }
         match &rule.measured_on {
             MeasuredOn::File(named) => {
@@ -133,14 +151,22 @@ impl Session {
         if let Rule::NextToGate(next) = &rule.rule {
             return self.check_next_to(target, next);
         }
-        if let Rule::MatchThePhenotype(_) = &rule.rule {
+        if let Rule::MatchThePhenotype(wanted) = &rule.rule {
             if !matches!(rule.measured_on, MeasuredOn::File(_)) {
                 return Err(failed(
                     "a phenotype rule describes the population from one sample gated by hand, so \
                      it is measured on one named file: {\"File\": \"<sample>\"}",
                 ));
             }
-            return Ok(());
+            return check_pinned(wanted, &matched);
+        }
+        if matches!(rule.rule, Rule::ValleyOrSmear(_))
+            && !matches!(rule.measured_on, MeasuredOn::File(_))
+        {
+            return Err(failed(
+                "a valley-or-smear rule places every sample from one gated by hand, so it is \
+                 measured on one named file: {\"File\": \"<sample>\"}",
+            ));
         }
         for (here, (x, y)) in &matched {
             if *rule.parameter != **x && *rule.parameter != **y {
@@ -152,8 +178,13 @@ impl Session {
                 )));
             }
         }
-        if let Rule::InTheValley(dip) = &rule.rule
-            && let Some(fallback) = dip.fallback_rule(&rule.parameter, rule.bound)
+        let valley = match &rule.rule {
+            Rule::InTheValley(dip) => Some(dip.clone()),
+            Rule::ValleyOrSmear(either) => Some(either.valley()),
+            _ => None,
+        };
+        if let Some(fallback) =
+            valley.and_then(|dip| dip.fallback_rule(&rule.parameter, rule.bound))
         {
             return self.check_follow(target, &fallback);
         }
@@ -367,6 +398,12 @@ impl Session {
                     .filter(|p| p.target == *target)
                     .map(|p| p.reason),
             );
+            problems.extend(
+                crate::gate_rules::autogate::edges_over_their_anchors(&self.gates, store)
+                    .into_iter()
+                    .filter(|p| p.target == *target)
+                    .map(|p| p.reason),
+            );
             if crate::gate_rules::autogate::rules_reaching_nothing(&self.gates, store)
                 .contains(target)
                 && problems.is_empty()
@@ -425,6 +462,33 @@ impl Session {
         types.dedup();
         types
     }
+}
+
+/// Refuses a pinned marker the rule does not read, or that is not one of the
+/// two axes a gate it reaches is drawn on - it has no edge there to pin.
+fn check_pinned(
+    wanted: &crate::gate_rules::rule::PhenotypeRule,
+    matched: &[(RuleTarget, (String, String))],
+) -> Result<(), Refusal> {
+    for marker in &wanted.pinned {
+        if !wanted.markers.is_empty() && !wanted.markers.contains(marker) {
+            return Err(failed(format!(
+                "{marker} is pinned but is not one of the rule's markers ({}): a pinned marker \
+                 is one the rule reads",
+                list(&wanted.markers)
+            )));
+        }
+        if let Some((here, (x, y))) = matched
+            .iter()
+            .find(|(_, (x, y))| **marker != *x.as_str() && **marker != *y.as_str())
+        {
+            return Err(failed(format!(
+                "{} is drawn on {x} and {y}, so it has no edge on {marker} to pin",
+                here.describe()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn list(names: &[Arc<str>]) -> String {

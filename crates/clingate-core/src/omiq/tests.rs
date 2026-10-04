@@ -1896,7 +1896,7 @@ use crate::omiq::serialise::to_omiq_document;
 fn export(name: &str) -> serde_json::Value {
     let state = import(name);
     let metadata = im::HashMap::with_hasher(FxBuildHasher);
-    to_omiq_document(&state, &metadata, &fixture_axes())
+    to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes())
         .unwrap_or_else(|e| panic!("{name} should export, got: {e}"))
 }
 
@@ -2171,8 +2171,13 @@ fn import_with_metadata(name: &str) -> GateState {
 
 fn export_with_metadata(name: &str) -> serde_json::Value {
     let state = import_with_metadata(name);
-    to_omiq_document(&state, &fixture_metadata(), &fixture_axes())
-        .unwrap_or_else(|e| panic!("{name} should export, got: {e}"))
+    to_omiq_document(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+    )
+    .unwrap_or_else(|e| panic!("{name} should export, got: {e}"))
 }
 
 /// A metadata-grouped gate holds one position per group, not per file. Both
@@ -2361,7 +2366,13 @@ fn each_placement_keeps_its_own_parent_and_flags() {
 #[test]
 fn every_placement_is_written_back() {
     let state = import_json(&linked_gate_json());
-    let written = to_omiq_document(&state, &fixture_metadata(), &fixture_axes()).unwrap();
+    let written = to_omiq_document(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+    )
+    .unwrap();
     let nodes = objects(&written, &["tree", "nodes"]);
 
     assert_eq!(nodes.len(), 4, "all four nodes must be written");
@@ -2379,12 +2390,14 @@ fn placements_are_written_in_a_stable_order() {
     let first = to_omiq_document(
         &import_json(&linked_gate_json()),
         &fixture_metadata(),
+        &Default::default(),
         &fixture_axes(),
     )
     .unwrap();
     let second = to_omiq_document(
         &import_json(&linked_gate_json()),
         &fixture_metadata(),
+        &Default::default(),
         &fixture_axes(),
     )
     .unwrap();
@@ -2485,7 +2498,8 @@ fn a_real_gating_file_survives_a_round_trip() {
         .upload_gates_from_file(std::path::PathBuf::from(&path), &metadata, axes.clone())
         .expect("a real file should import");
 
-    let written = to_omiq_document(&state, &metadata, &axes).expect("a real file should export");
+    let written = to_omiq_document(&state, &metadata, &Default::default(), &axes)
+        .expect("a real file should export");
 
     assert_eq!(
         objects(&written, &["tree", "nodes"]).len(),
@@ -2582,6 +2596,7 @@ fn export_new(state: &GateState) -> serde_json::Value {
     to_omiq_document_with_header(
         state,
         &im::HashMap::with_hasher(FxBuildHasher),
+        &Default::default(),
         &fixture_axes(),
         test_header(),
     )
@@ -2923,6 +2938,7 @@ fn exporting_without_an_imported_header_is_an_error() {
     let result = to_omiq_document(
         &state,
         &im::HashMap::with_hasher(FxBuildHasher),
+        &Default::default(),
         &fixture_axes(),
     );
 
@@ -2941,6 +2957,7 @@ fn an_imported_file_exports_without_a_supplied_header() {
         to_omiq_document(
             &state,
             &im::HashMap::with_hasher(FxBuildHasher),
+            &Default::default(),
             &fixture_axes()
         )
         .is_ok(),
@@ -3155,9 +3172,14 @@ fn deleting_a_linked_gate_removes_every_placement() {
 #[test]
 fn every_placement_survives_the_round_trip() {
     let state = import_json(&linked_gate_json());
-    let doc =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let doc = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
 
     let nodes = doc["tree"]["nodes"].as_object().unwrap();
     let shared_nodes = nodes
@@ -3212,9 +3234,14 @@ fn assert_nodes_match_tree(state: &GateState, written: &serde_json::Value) {
 #[test]
 fn an_imported_tree_exports_exactly_its_placements() {
     let state = import_json(&linked_gate_json());
-    let written =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let written = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
 
     assert_nodes_match_tree(&state, &written);
 }
@@ -3243,9 +3270,14 @@ fn new_and_imported_gates_share_one_node_source() {
         Some(Arc::from("g1")),
     );
 
-    let written =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let written = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
 
     assert_nodes_match_tree(&state, &written);
 }
@@ -3262,9 +3294,14 @@ fn a_ghost_writes_a_container_but_no_node() {
         .filter(|id| state.is_ghost(id))
         .collect();
 
-    let written =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let written = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
     let nodes = objects(&written, &["tree", "nodes"]);
 
     for ghost in ghosts {
@@ -3650,9 +3687,14 @@ fn a_link_made_here_is_written_to_the_file() {
         )
         .unwrap();
 
-    let written =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let written = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
 
     let nodes = objects(&written, &["tree", "nodes"]);
     let g2_nodes = nodes
@@ -3670,9 +3712,14 @@ fn an_unlink_made_here_is_written_to_the_file() {
     let node = state.nodes_for_gate(&shared_gate())[0].clone();
     let new_id = state.unlink_node(&node).unwrap();
 
-    let written =
-        to_omiq_document_with_header(&state, &fixture_metadata(), &fixture_axes(), test_header())
-            .expect("exports");
+    let written = to_omiq_document_with_header(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+        test_header(),
+    )
+    .expect("exports");
 
     let containers = objects(&written, &["tree", "filterContainers"]);
     assert!(
@@ -4555,7 +4602,7 @@ fn a_group_override_written_here_reaches_the_file() {
         Some(GateSource::Group(_))
     ));
 
-    let written = to_omiq_document(&state, &metadata, &fixture_axes())
+    let written = to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes())
         .expect("a state that imported a header can be written");
     let containers = objects(&written, &["tree", "filterContainers"]);
     let per_file = containers[&*gate_id]["perFileFilters"]
@@ -4626,7 +4673,8 @@ fn a_file_the_document_does_not_hold_is_never_written() {
         &moved,
     );
 
-    let written = to_omiq_document(&state, &metadata, &fixture_axes()).unwrap();
+    let written =
+        to_omiq_document(&state, &metadata, &Default::default(), &fixture_axes()).unwrap();
     let containers = objects(&written, &["tree", "filterContainers"]);
 
     for (id, container) in containers.iter() {
@@ -4816,7 +4864,13 @@ fn a_gate_positioned_in_this_session_exports_as_grouped() {
         )),
     );
 
-    let written = to_omiq_document(&state, &fixture_metadata(), &fixture_axes()).unwrap();
+    let written = to_omiq_document(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+    )
+    .unwrap();
     let containers = objects(&written, &["tree", "filterContainers"]);
     assert_eq!(
         containers[&*plain]["md"], "test",

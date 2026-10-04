@@ -88,6 +88,8 @@ pub struct Board {
     pub run_applied_at: String,
     /// Needs a look worst first; the rest by gate, then sample.
     pub entries: Vec<Entry>,
+    /// What the run could not place, from the assessment.
+    pub unplaced: Vec<crate::review::assess::Unplaced>,
 }
 
 impl Board {
@@ -277,6 +279,7 @@ pub fn board(
     Board {
         run_applied_at: run.applied_at.clone(),
         entries,
+        unplaced: assessment.unplaced.clone(),
     }
 }
 
@@ -338,6 +341,7 @@ mod tests {
             above_the_line: None,
             reference_events: 0,
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,

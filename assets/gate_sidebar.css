@@ -308,3 +308,51 @@
     background-color: hsl(101, 45%, 42%);
     color: #fff;
 }
+
+/* Clicking the link mark lists every place the gate is applied, by full
+   path, each with its own Unlink. Theme colours, so it reads in dark mode. */
+.linked-badge {
+    cursor: pointer;
+}
+
+.linked-places {
+    margin: 2px 6px 4px;
+    padding: 4px 6px;
+    font-size: var(--tree-font-size);
+    background: var(--primary-color-2, #fff);
+    color: var(--secondary-color-4, #111);
+    border: 1px solid var(--primary-color-7, #999);
+    border-radius: 4px;
+}
+
+.linked-places-title,
+.linked-place {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 2px 0;
+}
+
+.linked-path {
+    overflow-wrap: anywhere;
+}
+
+.linked-path.here {
+    font-weight: 600;
+}
+
+.linked-button {
+    flex: 0 0 auto;
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--primary-color-7, #999);
+    border-radius: 3px;
+    font-size: var(--tree-font-size);
+    padding: 1px 6px;
+    cursor: pointer;
+}
+
+.linked-button:hover {
+    background: var(--primary-color-6, #eee);
+}

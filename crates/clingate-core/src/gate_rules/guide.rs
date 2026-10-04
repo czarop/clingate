@@ -51,6 +51,14 @@ pub const GUIDES: &[Guide] = &[
         text: include_str!("../../../../docs/rules/in-the-valley.md"),
     },
     Guide {
+        key: "ValleyOrSmear",
+        name: "Valley or smear",
+        summary: "in the dip where a sample has one, as in the valley; on a smear, as far above \
+                  the negative as on a smear gated by hand - markers clear on some samples and \
+                  smeared on others",
+        text: include_str!("../../../../docs/rules/valley-or-smear.md"),
+    },
+    Guide {
         key: "MatchThePhenotype",
         name: "Match the phenotype",
         summary: "find the cells that look like the reference gate's across chosen markers and \
@@ -94,7 +102,8 @@ mod tests {
     use super::*;
     use crate::gate_rules::rule::{
         AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, Meet, NegativeFinder, NextToRule,
-        PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyRule,
+        PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule,
+        ValleyOrSmearRule, ValleyRule,
     };
 
     fn every_rule() -> Vec<Rule> {
@@ -103,6 +112,7 @@ mod tests {
             Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.3)),
             Rule::AboveTheNegative(AboveTheNegativeRule::default()),
             Rule::InTheValley(ValleyRule::default()),
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
             Rule::MatchThePhenotype(PhenotypeRule::default()),
             Rule::FromAnotherGate(FromGateRule {
                 same_shape_as: Some(crate::gate_rules::rule_store::RuleTarget::named("CD4+")),
@@ -246,10 +256,30 @@ mod tests {
         assert!(text("MatchThePhenotype").contains("(0.95 by\n  default)"));
         assert!(text("MatchThePhenotype").contains("(24 by default)"));
         assert_eq!(crate::gate_rules::phenotype::TRIM, 4.0);
-        assert!(text("MatchThePhenotype").contains("more than 4\n   spreads out"));
-        assert_eq!(crate::gate_rules::shape_fit::MAX_STRETCH, 4.0);
-        assert!(text("MatchThePhenotype").contains("at most 4 times"));
+        assert!(text("MatchThePhenotype").contains("more than 4 spreads out"));
         assert_eq!(crate::gate_rules::phenotype::KEEP, 0.95);
+        assert!(text("MatchThePhenotype").contains("together hold 95%"));
+        assert_eq!(crate::gate_rules::phenotype::BASELINE_SLIP, 0.1);
+        assert!(text("MatchThePhenotype").contains("widened by a tenth"));
+        assert_eq!(crate::gate_rules::phenotype::FEWEST_MATCHED, 50);
+        assert!(text("MatchThePhenotype").contains("at least 50 cells match"));
+        assert_eq!(crate::gate_rules::phenotype::LEAST_SHARE, 0.2);
+        assert!(text("MatchThePhenotype").contains("at least a fifth as common"));
+        assert_eq!(crate::gate_rules::phenotype::ONE_CLOUD, 0.8);
+        assert!(text("MatchThePhenotype").contains("at least 80% of them"));
+        assert_eq!(crate::gate_rules::shape_fit::MAX_AREA_CHANGE, 0.3);
+        assert!(text("MatchThePhenotype").contains("more than 30% either way"));
+        assert_eq!(
+            (
+                crate::gate_rules::phenotype::STRAY_SHARE,
+                crate::gate_rules::phenotype::STRAY_EVENTS
+            ),
+            (0.01, 20)
+        );
+        assert!(
+            text("MatchThePhenotype")
+                .contains("fewer\n   than 1% of the events in the gate, and no more than 20")
+        );
         // Above the negative's defaults.
         let above = AboveTheNegativeRule::default();
         assert_eq!(

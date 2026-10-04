@@ -23,6 +23,9 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// How much larger a gate's draggable points are drawn than their shapes
+/// say, so they are easier to catch with the pointer.
+const HANDLE_SCALE: f32 = 1.2;
 #[derive(Clone)]
 struct GateList(Vec<Arc<dyn DrawableGate>>);
 
@@ -1032,7 +1035,7 @@ fn RenderShape(
                             key: "{gate_id}-{gate_index}-{shape_index}",
                             cx: "{p.0}",
                             cy: "{p.1}",
-                            r: radius,
+                            r: radius * HANDLE_SCALE,
                             fill,
                             onmousedown: move |evt| {
                                 match shape_type {
@@ -1184,7 +1187,7 @@ fn RenderShape(
                             cx: "{handle_x}",
                             cy: "{handle_y}",
                             stroke: "orange",
-                            r: size,
+                            r: size * HANDLE_SCALE,
                             onmousedown: move |evt| {
                                 let local_coords = &evt.data.coordinates().element();
                                 let px = local_coords.x as f32;

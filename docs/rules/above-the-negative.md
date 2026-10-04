@@ -17,7 +17,9 @@ drifts or broadens from run to run carries the gate with it.
   is - rather than just its position. The rule measures one side and
   assumes the other; see the traps.
 - A clear dip between negative and positive: in the valley reads it
-  directly and amplifies nothing.
+  directly and amplifies nothing. Where some samples have a dip and others
+  smear, valley or smear does each; the Gate Rules tab offers it in place of
+  this rule.
 - Negatives that merge with the positives in some samples: the width read
   from a merged population is too wide and is multiplied (one real case put
   a gate six widths past where it belonged).

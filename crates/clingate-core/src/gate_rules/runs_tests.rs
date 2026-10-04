@@ -408,3 +408,36 @@ fn a_run_failing_one_marker_on_two_parents_says_so_for_each() {
         "{said:?}"
     );
 }
+
+/// Each specimen's line read on its own FMX of 600 events: in band, but with
+/// a confidence held down by the count. 600 is over the 300 a control needs
+/// to be trusted, so nothing is flagged for review - nor would the run pause
+/// on it.
+#[test]
+fn a_line_read_on_a_big_enough_fmx_and_in_band_is_not_flagged() {
+    let written = write("runs-fmx-trusted", &FILES);
+    let outcome = run(
+        &gates(),
+        &written,
+        &FILES,
+        store(band(Pool::Specimen, fmx())),
+    );
+    let placed = &outcome.report.positioned;
+    assert_eq!(placed.len(), 4, "{:?}", reasons(&outcome));
+    for p in placed {
+        assert!(
+            p.read_on_control && p.in_band && p.reference_events == 600,
+            "{} {} {}",
+            p.read_on_control,
+            p.in_band,
+            p.reference_events
+        );
+    }
+    let floor = crate::review::assess::REVIEW_FLOOR;
+    assert!(
+        placed.iter().all(|p| p.confidence < floor),
+        "only a weak placement shows the exemption: {:?}",
+        placed.iter().map(|p| p.confidence).collect::<Vec<_>>()
+    );
+    assert_eq!(outcome.report.needs_review(floor).count(), 0);
+}

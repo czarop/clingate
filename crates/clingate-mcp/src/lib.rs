@@ -50,8 +50,16 @@ it was, pastes the matrix exported from Omiq). Ask them; do not assume.
 Distributions, gate edges and comparisons are in the units the plots are drawn \
 in: arcsinh-scaled where the scaling says so.
 
-To see whether a sample is distributed unlike the rest - the usual reason a \
-rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
+Read the samples' events - population_stats, distribution, compare_samples, \
+compare_to_peers, gate_profile, gate_picture, try_rules, preview_rules - only \
+when the user asks you to, or asks for something that cannot be done without \
+them. Writing, changing or explaining a rule does not need them: say what the \
+rule does, and offer to look at the data rather than looking. Never read the \
+data to predict which samples a rule will refuse, stop at or flag - a run \
+finds that out, and says so.
+
+When the user asks whether a sample is distributed unlike the rest - the usual \
+reason a rule puts a gate in the wrong place - use compare_samples: shift_in_iqrs far \
 from 0, or spread_ratio well above 1, marks a sample worth a closer look.
 
 Gates are edited in a working copy, exactly as in the clingate app. The \
@@ -69,8 +77,11 @@ whether to restore or discard them.
 
 To review a rules run, start with assess_run: it lists the placements that look \
 unlike their peers or that the rule was unsure of, with reasons, and costs \
-little. compare_to_peers then shows one sample beside its peers in numbers. \
-Present what you find to the user; the flags are for a person to judge.
+little, and the gates the run could not place. compare_to_peers then shows one \
+sample beside its peers in numbers. Present what you find to the user; the \
+flags are for a person to judge. A gate the run could not place on any sample \
+needs its rule changed: tell the user what is wrong with it, and change it only \
+when they agree.
 
 When the user says a gate was placed badly, report_placement records it - with \
 their reason - so the rules' confidence scores can be improved; do not report \
@@ -78,8 +89,8 @@ a gate on your own judgement. mark_run_reviewed records that the user has \
 finished reviewing a run: only when they say so, since every placement they \
 did not report then counts as accepted.
 
-To build rules for a panel with the user - done once per panel, so be \
-thorough but lean: \
+When the user asks you to build rules for a panel from the data with them - \
+done once per panel, so be thorough but lean: \
 1. gate_profile with no population: every gate in a line - what its \
 populations look like by sample type. Agree with the user which gates need \
 rules. \
@@ -123,25 +134,59 @@ Two rules for it, or one rule that reaches it at two parents, is refused.
 A gate the guide places by another gate - 'the same position as the main \
 CD4-CD8+ gate', 'aligned to the left edge of CD19+CD14-' - takes the rule \
 kind FromAnotherGate (rule_guide 'From another gate'): same_shape_as copies \
-a gate's whole shape, edges sets an edge against another gate's edge. A run \
+a gate's whole shape, edges sets an edge against another gate's edge. An \
+edge's gap is added to the other gate's edge in the plot's units, so its sign \
+follows the axis: a gate below or left of the other (its Upper edge at the \
+other's Lower) leaves a space with a negative gap, and a positive one puts \
+it over the other, where a run never places it; above or right of it, the \
+reverse. update_rule lists under problems a rule whose edges put its gate \
+over the gate it follows on the gates as drawn: tell the user. A run \
 places the gate it follows first, on each sample. Settle the gate it follows \
 before writing this rule - its rule written and reviewed, or placed by hand - \
 since this gate copies wherever that one ends up. update_rule refuses a rule \
 that follows itself, a gate that is not there, or a loop. A gate the guide \
 places 'adjacent to' another on the same plot - grown or slid up to it, \
 touching but not overlapping - takes the kind NextToGate (rule_guide 'Next to \
-another gate'). An InTheValley rule \
-can name a fallback the same way - usually the same gate under another parent \
-- for samples where the positives smear with no dip: there its edge goes where \
-the fallback's is, placed first, and the placement comes up for review.
+another gate'). A marker that separates on some samples and smears on others \
+takes the kind ValleyOrSmear (rule_guide 'Valley or smear'), measured on a \
+hand-gated File: in the dip where a sample has one, and on a smear as far \
+above the negative as on its smear_example, a smear gated by hand - the \
+reference itself when the reference is a smear. With no example, a smear is \
+left unplaced: ask the user to gate one smear by hand, then name its file as \
+smear_example. Which samples are smears is found when the rules run; do not \
+read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
+- usually the same gate under another parent - for samples where the \
+positives smear with no dip: there its edge goes where the fallback's is, \
+placed first, and the placement comes up for review. \
+A valley rule that puts some gates too high inside a thin positive \
+population - a few percent of the cells spread wide, the gate at a ripple \
+where they pile up rather than in the dip below them - can take \
+'lowest_before': true: the lowest point between the negative and the dip it \
+found. Off by default; suggest it, and set it only on the user's word, and \
+only on the rules whose placements it fixes. \
+A valley rule that gates a shallow wobble inside positives that run straight \
+off the negative - a dip a few percent deep where the real ones are tens of \
+percent - can take 'smallest_dip': a fraction below which a dip is read as \
+none, so the sample is a smear or goes to the fallback. Each placement's \
+confidence gives its dip's depth; propose a value between the wobbles and \
+the real dips, show the user which samples it changes, and set it only on \
+their word. It applies to the reference too. \
+A MatchThePhenotype edge drawn against a marker's negative - CD8 just above \
+its negatives, where the positives smear - can be pinned there ('pinned': \
+[marker]): it then stays as many of the negative's widths above the \
+negative's peak as on the reference, wherever the positives go. Nothing in \
+the data says whether an edge was meant to sit in a gap or against the \
+negative, so suggest it, do not decide it: preview_rules lists under \
+could_pin the edges that lie within their negative on the reference; ask the \
+user, and pin only on their word.
 
 Runs. The files analysed together - this workspace - are one run. A gating \
 guide that says 'per run in the first instance' means one line for all of \
 them: a band rule with 'pool': 'Run' reads every FMX file in the workspace \
 together and puts the same line on every specimen. For small populations, \
 where 0.2% of one FMX is a couple of events, that is the difference between \
-a line set by stray events and one set by dozens. Check with gate_profile \
-that the specimens are alike enough to share a line. Write a pooled rule \
+a line set by stray events and one set by dozens. Offer to check with \
+gate_profile that the specimens are alike enough to share a line. Write a pooled rule \
 only when the user asks for one: it is not how this lab gates, and each \
 specimen's own FMX no longer holds the band under it.
 
@@ -544,6 +589,7 @@ impl Clingate {
     /// Events in a population, in its parent and in the whole file, and the population's
     /// percent of parent and of total, for each sample named - with the minimum, median and
     /// maximum percent of parent across them.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn population_stats(&self, Parameters(args): Parameters<PopulationStats>) -> String {
         self.run(move |s| s.population_stats(&args.population, &args.samples))
@@ -553,6 +599,7 @@ impl Clingate {
     /// How a population's parent is spread on one parameter in one sample - percentiles and
     /// a histogram - and where the population's gate edges sit on it, with the share of the
     /// parent between them. In the units the plots are drawn in.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn distribution(&self, Parameters(args): Parameters<DistributionArgs>) -> String {
         self.run(move |s| s.distribution(&args.population, &args.sample, &args.parameter))
@@ -598,6 +645,7 @@ impl Clingate {
     /// How a population's parent is spread on one parameter in each sample named, side by
     /// side: percentiles, each sample's distance from the others in typical interquartile
     /// ranges, its spread against theirs, and where the population's gate sits in it.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn compare_samples(&self, Parameters(args): Parameters<CompareSamples>) -> String {
         self.run(move |s| s.compare_samples(&args.population, &args.parameter, &args.samples))
@@ -679,8 +727,9 @@ impl Clingate {
 
     /// Assess the last applied rules run: which placements look unlike their peers - the
     /// other samples of the same kind that the rule placed confidently - or that the rule was
-    /// unsure of, each with its reasons in words, worst first; and each gate across the run in
-    /// a line. Reads no files: it works from the run the workspace keeps.
+    /// unsure of, each with its reasons in words, worst first; each gate across the run in a
+    /// line; and the placements the run could not make, those refused on every sample first.
+    /// Reads no files: it works from the run the workspace keeps.
     #[tool(annotations(read_only_hint = true))]
     async fn assess_run(&self) -> String {
         self.run(|s| s.assess_run()).await
@@ -780,6 +829,7 @@ impl Clingate {
     /// they are, moving nothing: for each, what the gate would hold on every sample, summed up
     /// by sample type, beside what it holds as the gates stand now, with what each rule was
     /// unsure of or could not place. Each file is read once for all the candidates.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn try_rules(&self, Parameters(args): Parameters<TryRules>) -> String {
         self.run(move |s| {
@@ -799,7 +849,8 @@ impl Clingate {
     /// sample type: each sample's shape class (separate, shoulder, smear, merged, negative
     /// only, several peaks), how the negative shifts and changes shape, where the gate sits now
     /// against the negative and what it holds, and on the full stain how much lies above its
-    /// FMX's top. Reads a spread of specimens; moves nothing. For choosing a rule.
+    /// FMX's top. Reads a spread of specimens; moves nothing. For choosing a rule with the
+    /// user, only when they ask for the data to be read.
     #[tool(annotations(read_only_hint = true))]
     async fn gate_profile(&self, Parameters(args): Parameters<GateProfileArgs>) -> String {
         self.run(move |s| s.gate_profile(args.population.as_deref(), args.specimens))
@@ -811,6 +862,7 @@ impl Clingate {
     /// would - where the negative ends, whether the positive separates or smears, whether the
     /// gate sits alike on every sample. The captions say which plot is which, left to right,
     /// top to bottom, and what the gate holds on each.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn gate_picture(
         &self,

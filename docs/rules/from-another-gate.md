@@ -68,7 +68,13 @@ position is the anchor's, on the same sample.
   - `anchor_side` - which edge of the anchor it goes to: `Lower` or
     `Upper`;
   - `gap` - added to the anchor's edge, in the plot's units (default 0: the
-    edges touch).
+    edges touch). Its sign follows the axis, not the gates: positive moves
+    the edge right or up, negative left or down. A gate below or left of the
+    anchor - its `Upper` edge at the anchor's `Lower` - leaves a space with a
+    negative gap; one above or right of it - its `Lower` edge at the anchor's
+    `Upper` - with a positive one. This is not [Next to another
+    gate](next-to-another-gate.md)'s gap, the space left between the two,
+    which is 0 or more on either side.
 
 The rule's own `parameter`, `bound` and `measured_on` mean nothing here and
 are ignored: a gate that follows another reads its own sample.
@@ -94,6 +100,16 @@ Examples:
   end of the axis) has no edge to set against; that sample is refused.
 - **Setting a rectangle's edge past its other edge** is refused rather than
   turning the rectangle inside out.
+- **A gap that reaches into the anchor.** A positive gap on an `Upper`
+  edge set at an anchor's `Lower` edge, or a negative one on a `Lower` edge
+  set at its `Upper`, takes this gate over the anchor - and a run never
+  places a gate over another on its plot, so it is left where it is on
+  every sample. Writing the rule says so when the anchor is beside it on the
+  same plot, as drawn, as does the rules list, and the Review tab lists the
+  gate as placed on no sample at all. Use a gap of 0, or one pointing away
+  from the anchor to leave a space. A
+  polygon anchor with a slanted side can still be clipped by a straight
+  edge set at its furthest point.
 - **A replay** does not re-place a gate that follows another: its position
   is the anchor's, so replay the anchor's rule.
 

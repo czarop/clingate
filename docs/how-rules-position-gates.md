@@ -77,8 +77,13 @@ show, not raw channel values.
    put the gates in, are those it paused with; otherwise it has to be stopped
    and run again. Stopping keeps what it did with the rules it ran. A paused
    run is dropped when another workspace is opened. A gate with nothing ruled under it never
-   pauses a run - the Review tab is for those. `run_rules`, which the tools
-   for Claude use, never pauses.
+   pauses a run - the Review tab is for those. A valley-or-smear rule that
+   meets a smear with no smear example to place it from stops the run too,
+   at that level, before anything of the level is kept: the first such
+   sample is shown to be gated by hand, the Gate Rules tab writes it into the
+   rule as the example, and going on runs the same level again (3.5);
+   stopping takes it out of the rule again. `run_rules`, which the tools for
+   Claude use, never pauses.
 1. **Measure** (`measure_file` -> `measure_population`). For every file and
    every gate a rule names, the gate's parent population is filtered exactly
    as the plot filters it (same gate chain, same override resolution, same
@@ -269,6 +274,14 @@ Consequences worth knowing:
   of all and at least 30, and `depth = (negative - bottom) / negative >= 0.02`.
   None -> refused with what the density looked like (one peak only / nothing
   deep enough).
+- With `lowest_before` (`threshold::lowest_valley_for_gate`), the dip found
+  moves to the lowest point of the density between the negative's peak and
+  it - the real dip below positives spread too thin to clear the 5% bar,
+  which the walk passes on its way to a ripple where they pile up. Where the
+  first dip was taken, that is the dip itself. Off by default.
+- With `smallest_dip`, a dip shallower than it (`ValleyRule::find`) is read
+  as no dip - `NoValley::ShallowerThanAsked` - on the reference as on a
+  sample. Off by default; any dip at least 2% deep counts.
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 - No valley on the reference or the sample, and a `fallback` gate named
@@ -280,13 +293,59 @@ Consequences worth knowing:
 Judged on the reference population; distance moved not scored. An extra
 component compares the dip's depth with the reference's (below).
 
-### 3.5 MatchThePhenotype
+### 3.5 ValleyOrSmear - "in the dip; on a smear, as on a smear gated by hand"
 
-Does not move a line. It describes the cells inside the reference gate by a
-robust z (median and MAD, with the far tail trimmed) of each chosen marker
-against their own parent, finds the cells in the sample that match, and
-either moves and resizes the drawn shape onto them (`KeepShape`) or traces a
-new polygon round them (`DrawPolygon`). It must be measured on one named,
+`autogate::position_valley_or_smear`. The dip is looked for on the reference
+and on the sample as in 3.4 (`ValleyOrSmearRule::valley`). Both have one: the
+gate is placed as InTheValley places it, against the reference. Otherwise
+the sample is a smear, and:
+
+- with a `fallback`, its edge goes where the fallback's is, as in 3.4;
+- otherwise it is placed as AboveTheNegative places it
+  (`ValleyOrSmearRule::smear`, always `NegativePeak`: the events below a gate
+  on a smear include the dim cells), calibrated on the **smear example** - the
+  rule's `smear_example`, or the reference itself when the reference has no
+  dip;
+- with neither, it is left unplaced (`NO_SMEAR_EXAMPLE`).
+
+The smear example, like the reference, is never moved (step 3 of section
+2). A pausing run stops at the first such smear (`smears_to_gate`), before
+any of that level is kept, and goes on from the same level once it is gated
+by hand and written into the rule (`with_smear_examples`).
+
+### 3.6 MatchThePhenotype
+
+Does not move a line. It reads each chosen marker on each sample's own
+landmarks - 0 at the parent's negative peak, 1 at the valley above it, or a
+robust z where either sample has no valley - and describes the cells inside
+the reference gate by the range they sit in on every marker. A cell in the
+sample matches only if it is one of them on every marker: on the same side
+of the valley as a population wholly above or below it, however bright, or
+within the range of one across it. When fewer than 50
+match, they are under a fifth as common as on the reference, they are
+scattered over the plot, or a marker's middle has drifted from the
+reference's, the gate is left where it is (not placed). A side the reference
+gate leaves open on a marker - nothing beyond its edge but under 1% of the
+gate's events and at most 20 - sets no limit there. Otherwise the gate is
+placed edge by edge (`carries`, `phenotype_gate`): each edge keeps its share
+of the way across the gap from the cells beyond it (their 5% nearest) to the
+population's boundary (its 5% nearest), the population being the matched
+cells on the reference as on the sample, and the cells beyond the unmatched
+within the gate's span on the other axis - or, on an axis the rule reads,
+those within that span split at the valley among them (`split_at_valley`,
+`valley_for_gate`), where both samples have one on the edge's side of the
+population; with only dust beyond on either,
+the edge moves as far as the population's boundary. A side left open is never
+pulled in by a carried edge. A marker in `pinned` is placed by its negative
+instead, on the side nearest it: as many of the negative's widths from the
+whole parent's negative peak as on the reference (`widths_from_negative`,
+`pinned_to_negative`). `KeepShape` carries every edge so, a polygon's vertices kept in
+proportion between its new edges, and slides instead where the area would
+change by more than 30%; `MoveOnly` slides as far as its closed edges move
+on average - or as its pinned edge, where one is pinned - its size kept exactly; `DrawPolygon` traces a new polygon round the matched cells, keeping the shape instead when
+the polygon's area is more than 30% from the reference's. A reference edge
+within 1.645 of the negative's widths of its peak, on a marker the rule reads
+and does not pin, is listed as one that could be pinned (`could_pin`). It must be measured on one named,
 hand-gated file (`File(id)`). See `gate_rules/phenotype.rs` and
 `position_by_phenotype`. It is **not replayable** (runs keep only the gate's
 two axes, and it reads the whole marker panel).
@@ -297,7 +356,7 @@ Each placement gets components, each scored 0 to 1 (clamped; unmeasurable
 counts as 0). **The overall confidence is the minimum**, and the lowest
 component is reported as "weakest" (`Confidence::from_components`). The
 population the numbers are counted on is the one the placement is judged on
-(3.1-3.4). Limits (`ConfidenceLimits`, can be changed per rule in the rules
+(3.1-3.5). Limits (`ConfidenceLimits`, can be changed per rule in the rules
 file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 `displacement_limit = 0.5`.
 
@@ -312,9 +371,13 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
 | held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
-| phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference (`confidence::assess_match`) |
+| phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference, and - where its edges are carried - whether edges placed from either half of the events hold the same cells (`confidence::assess_match`, `phenotype_gate::agreement`) |
 
-The Gate Rules tab and the Review tab flag a placement below 0.30.
+The Gate Rules tab and the Review tab flag a placement below 0.30 - unless
+its rule read a control (the specimen's FMX, or the run's) of more than 300
+events and it landed in its band: a control's confidence is held down by its
+count, and that many is plenty to set a band on (`TRUSTED_CONTROL_EVENTS`). A
+run does not pause on such a placement either.
 
 ## 5. The review (what "looks wrong" means)
 
@@ -334,10 +397,22 @@ notable, 3 or more is flagged - on:
 - the rule's confidence (below 0.30 is flagged whatever the peers say), and
   whether it reached its band.
 
+A placement read on a control of more than 300 events that reached its band
+is not flagged on any of these.
+
 Each z has a floor on the peer spread, so near-identical peers do not make a
 hair's difference look enormous (`Measure::floor`). The "typical peer" shown
 beside a flagged sample is, of its peers that are not flagged themselves, the
 one whose gate position measure is nearest the peers' median (`typical_of`).
+
+The placements the run could not make are listed with the flags
+(`review::assess::unplaced`), a gate and a reason at a time. A gate refused on
+every sample it reached, for one reason, is listed first and said to need its
+rule changed: that is the rule or the gates as drawn, not the data. A rule
+from another gate whose edges, set from the gates as drawn, put it over an
+anchor beside it on its plot is also said when the rule is written and when
+the rules are listed (`autogate::edges_over_their_anchors`): its gaps reach
+into the anchor, and the advice names the sign that takes the edge off it.
 
 A person then reviews the run: accepts it, moves gates by hand, or reports a
 placement with a problem (`too_high`, `too_low`,
@@ -493,12 +568,18 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}}` -
-  `fallback` is optional; it is placed first, like an anchor
-- `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24}`
+- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true, "smallest_dip": 0.1}` -
+  `fallback` is optional; it is placed first, like an anchor. `lowest_before` is optional (false):
+  the lowest point between the negative and the dip found. `smallest_dip` is optional: a
+  shallower dip, as a fraction of the lower peak beside it, is read as none
+- `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true, "smallest_dip": 0.1}` -
+  `fallback`, `smear_example`, `lowest_before` and `smallest_dip` are optional; measured on a `File`
+- `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24, "pinned": ["CD8"]}` -
+  `pinned` is optional: markers of the gate's two axes whose edge nearest the negative is pinned to it
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
   `{"kind": "FromAnotherGate", "edges": [{"anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Upper" | "Lower", "anchor_side": "Lower" | "Upper", "gap": 0.0}]}` -
   the anchor is placed first (section 2); `parameter`, `bound` and `measured_on` are ignored.
+  `gap` is added to the anchor's edge, so it is negative to leave a space below or left of it.
 - `{"kind": "NextToGate", "anchor": {"gate": "CD19+CD14-", "parent": "CD45+"}, "parameter": "CD19", "side": "Lower" | "Upper", "meet": "GrowSide" | "FollowOutline" | "Slide", "gap": 0.0}` -
   brought up against the anchor on the same plot (`next_to`); the anchor is placed first.
 

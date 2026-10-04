@@ -66,6 +66,11 @@
 .review-tab_pile { border: 1px solid hsl(0, 0%, 75%); background: hsl(0, 0%, 96%); color: inherit; border-radius: 4px; padding: 4px 10px; font-size: 0.8rem; }
 .review-tab_pile.selected { background: #0a66d8; color: white; border-color: #0a66d8; }
 .review-tab_hint { font-size: 0.8rem; opacity: 0.75; margin: 0.5rem 0; }
+.review-tab_unplaced { font-size: 0.8rem; margin: 0.5rem 0; }
+.review-tab_unplaced summary { cursor: pointer; font-weight: 600; }
+.review-tab_unplaced ul { margin: 0.25rem 0 0 1rem; padding: 0; }
+.review-tab_unplaced li { margin: 0.15rem 0; }
+.review-tab_unplaced-everywhere { color: #c0392b; font-weight: 600; }
 .review-tile { border: 1px solid hsl(0, 0%, 85%); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .review-tile_notable { border-left: 4px solid #d68910; }
 .review-tile_severe { border-left: 4px solid #c0392b; }

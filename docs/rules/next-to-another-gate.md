@@ -33,8 +33,11 @@ the two meet where they first touch, on the plot as drawn.
      rectangle.
    - `FollowOutline`: where the gate lies alongside the other, its facing
      side takes the other's outline, so there is no gap anywhere along it,
-     with steps where that stretch begins and ends; the rest of the gate is
-     as it was. Polygons only - a rectangle grows its side.
+     with steps where that stretch begins and ends - along the other's top
+     or bottom, and never into it where the other has moved onto the gate;
+     the rest of the gate is as it was. Only the other's side facing it is followed, not its top or
+     bottom - an edge running more along the axis than across - so the gate
+     never wraps round it. Polygons only - a rectangle grows its side.
    - `Slide`: the whole gate slides, its shape as it is.
 3. A gate that never comes level with the other along that axis - the other
    lies wholly above it, say, for a gate moving across - is left where it
@@ -51,7 +54,10 @@ the two meet where they first touch, on the plot as drawn.
 - `side` - which side of the other gate it sits on: `Lower` is to its left,
   or below it; `Upper` to its right, or above it.
 - `meet` - `GrowSide`, `FollowOutline` or `Slide`, as above.
-- `gap` - left between the two, in the plot's units; 0 is touching.
+- `gap` - left between the two, in the plot's units; 0 is touching, and it
+  is 0 or more on either side. Unlike [From another
+  gate](from-another-gate.md)'s gap, which is added to the anchor's edge and
+  so is negative below or left of it.
 
 The rule's own `parameter`, `bound` and `measured_on` are not read: the
 position is the other gate's, on the gate's own sample.

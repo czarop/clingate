@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use clingate_core::file_load::FcsFiles;
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::GateStateStoreExt;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
@@ -29,6 +30,7 @@ pub struct Edits {
     gates: GateStore,
     axes: AxesStore,
     metadata: MetadataStore,
+    files: Signal<Option<FcsFiles>>,
     loaded: Signal<Loaded>,
     generation: Signal<Generation>,
     working: Signal<WorkingCopy>,
@@ -47,6 +49,7 @@ impl Edits {
         gates: GateStore,
         axes: AxesStore,
         metadata: MetadataStore,
+        files: Signal<Option<FcsFiles>>,
         loaded: Signal<Loaded>,
         generation: Signal<Generation>,
     ) -> Self {
@@ -54,11 +57,21 @@ impl Edits {
             gates,
             axes,
             metadata,
+            files,
             loaded,
             generation,
             working: Signal::new(WorkingCopy::default()),
             offer: Signal::new(None),
         }
+    }
+
+    /// The gating ids of the files the workspace holds.
+    fn held_files(&self) -> rustc_hash::FxHashSet<clingate_core::gates::gate_store::FileId> {
+        self.files
+            .peek()
+            .as_ref()
+            .map(|files| files.gating_ids(&self.metadata.file_name_to_gating_id().peek()))
+            .unwrap_or_default()
     }
 
     fn snapshot(&self) -> WorkingState {
@@ -224,7 +237,11 @@ impl Edits {
             .ok_or("there is no workspace folder to save into")?;
         let state = self.snapshot();
         let metadata = self.metadata.metadata().peek().clone();
-        let files = self.working.write().save(&folder, &state, &metadata)?;
+        let held = self.held_files();
+        let files = self
+            .working
+            .write()
+            .save(&folder, &state, &metadata, &held)?;
         let mut loaded = self.loaded.write();
         loaded.gating = Part::Loaded(files.gating.clone());
         loaded.scaling = Part::Loaded(files.scaling.clone());
@@ -235,7 +252,9 @@ impl Edits {
     /// Says whether there were unsaved changes it left out.
     pub fn export(&self, target: &Path) -> Result<bool, String> {
         let metadata = self.metadata.metadata().peek().clone();
-        self.working.peek().export(target, &metadata)
+        self.working
+            .peek()
+            .export(target, &metadata, &self.held_files())
     }
 
     // ── the recovery copy ────────────────────────────────────────────────
@@ -250,12 +269,13 @@ impl Edits {
         let wanted = self.working.peek().recovery_wanted();
         let state = self.snapshot();
         let metadata = self.metadata.metadata().peek().clone();
+        let held = self.held_files();
         spawn(async move {
             let written = tokio::task::spawn_blocking(move || {
                 if RECOVERY_WRITE.load(Ordering::SeqCst) != turn {
                     return Ok(());
                 }
-                working_copy::keep_recovery(&folder, wanted, &state, &metadata)
+                working_copy::keep_recovery(&folder, wanted, &state, &metadata, &held)
             })
             .await;
             match written {

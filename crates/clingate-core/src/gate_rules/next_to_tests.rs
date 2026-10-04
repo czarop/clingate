@@ -259,3 +259,116 @@ fn a_polygon_on_the_upper_side_follows_the_other_s_slanted_side() {
         ],
     );
 }
+
+/// CD19- left of CD19+ on CD19, as on the plot that showed the fault, in plot
+/// units. CD19+'s top edge rises to its far right corner (5.2, 0.72) and its
+/// bottom falls to (5.0, -0.36), so its highest and lowest points are on its
+/// far side; only its left edge, (0.2, 0.36) to (0.21, -0.33), faces CD19-.
+/// Its slanted top-left edge runs 1.45 along u for 0.3 across, against the
+/// two gates' 5.8 by 5.3, so it is more a top than a side. CD19-'s right side
+/// follows the left edge, goes up at 0.21 to CD19+'s top, and steps back to
+/// where it was: at -0.36 and 0.72 its slanted side is at
+/// 0.52 - 0.05 * 0.34 / 3 and 0.52 - 0.05 * 1.42 / 3. It does not wrap round
+/// CD19+'s top and bottom.
+#[test]
+fn following_the_outline_goes_no_further_than_the_other_s_facing_side() {
+    let gate = polygon(&[
+        (-0.6, -0.7),
+        (-0.6, 4.5),
+        (-0.1, 4.6),
+        (0.5, 4.6),
+        (0.47, 2.3),
+        (0.52, -0.7),
+    ]);
+    let against = vec![
+        (0.2, 0.36),
+        (1.65, 0.66),
+        (5.2, 0.72),
+        (5.0, -0.36),
+        (0.21, -0.33),
+    ];
+    let got = placed(
+        &gate,
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    );
+    assert_near(
+        &got,
+        &[
+            (-0.6, -0.7),
+            (0.52, -0.7),
+            (0.514_333, -0.36),
+            (0.21, -0.36),
+            (0.21, -0.33),
+            (0.2, 0.36),
+            (0.21, 0.66),
+            (0.21, 0.72),
+            (0.496_333, 0.72),
+            (0.47, 2.3),
+            (0.5, 4.6),
+            (-0.1, 4.6),
+            (-0.6, 4.5),
+        ],
+    );
+}
+
+/// A long flat sliver pointing at the gate: both its edges run 880 along the
+/// axis for 1 across, against the two gates' 900 by 100, so it has a top and
+/// a bottom but no side to follow.
+#[test]
+fn following_an_outline_with_no_side_facing_the_gate_is_refused() {
+    let gate = polygon(&[(0.0, 0.0), (10.0, 0.0), (10.0, 100.0), (0.0, 100.0)]);
+    let against = vec![(20.0, 41.0), (900.0, 40.0), (900.0, 42.0)];
+    let refused = placed_next_to(
+        &gate,
+        &Arc::from("g"),
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    )
+    .err()
+    .expect("refused");
+    assert!(refused.contains("no side facing it"), "{refused}");
+}
+
+/// A, from 6 to 20 and 0 to 5, has moved onto G, from 0 to 10 and 1 to 10.
+/// G's right side follows A's left edge from G's bottom, 1, up to A's top, 5,
+/// and steps back out to where it was above A; its bottom stops at A's edge
+/// rather than running on inside A to where G's side was.
+#[test]
+fn following_an_outline_the_other_has_moved_onto_stays_clear_of_it() {
+    let gate = polygon(&[(0.0, 1.0), (10.0, 1.0), (10.0, 10.0), (0.0, 10.0)]);
+    let against = boxed((6.0, 20.0), (0.0, 5.0));
+    let got = placed(
+        &gate,
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    );
+    assert!(
+        !crate::gates::gate_contact::overlaps(&got, &against),
+        "{got:?}"
+    );
+    assert_near(
+        &got,
+        &[
+            (6.0, 1.0),
+            (6.0, 5.0),
+            (10.0, 5.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 1.0),
+        ],
+    );
+    // G from 1 to 4, within A's height at both ends: its right side is A's
+    // edge all the way.
+    let short = polygon(&[(0.0, 1.0), (10.0, 1.0), (10.0, 4.0), (0.0, 4.0)]);
+    let got = placed(
+        &short,
+        &against,
+        &rule(X, Side::Lower, Meet::FollowOutline, 0.0),
+    );
+    assert!(
+        !crate::gates::gate_contact::overlaps(&got, &against),
+        "{got:?}"
+    );
+    assert_near(&got, &[(6.0, 1.0), (6.0, 4.0), (0.0, 4.0), (0.0, 1.0)]);
+}

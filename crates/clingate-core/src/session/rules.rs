@@ -74,6 +74,10 @@ pub struct RulesPreview {
     /// Specimens the rules calibrate from, left alone.
     pub references: Vec<Kept>,
     pub not_positioned: Vec<NotPositioned>,
+    /// Phenotype rules whose reference edge on a marker lies within that
+    /// marker's negative, a line each: ask the user whether to pin it there.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub could_pin: Vec<String>,
     pub next: String,
 }
 
@@ -183,7 +187,7 @@ impl Session {
             .positioned
             .iter()
             .map(|p| {
-                let review = p.confidence < REVIEW_FLOOR || !p.in_band;
+                let review = p.needs_review(REVIEW_FLOOR);
                 Move {
                     gate: describe(&p.gate, p.parent_gate.as_deref()),
                     specimen: p.specimen.to_string(),
@@ -207,7 +211,22 @@ impl Session {
                 })
                 .collect()
         };
+        let mut could_pin: Vec<String> = Vec::new();
+        for placed in &report.positioned {
+            for marker in placed.phenotype.iter().flat_map(|read| &read.could_pin) {
+                let line = format!(
+                    "{}: on the reference its edge on {marker} lies within the negative's own \
+                     spread - drawn against the negative. Ask the user whether to pin it there \
+                     (\"pinned\": [\"{marker}\"] in the rule); change nothing until they say",
+                    describe(&placed.gate, placed.parent_gate.as_deref())
+                );
+                if !could_pin.contains(&line) {
+                    could_pin.push(line);
+                }
+            }
+        }
         let preview = RulesPreview {
+            could_pin,
             needs_review: would_move.iter().filter(|m| m.review).count(),
             already_in_place: kept(&report.unchanged),
             references: kept(&report.reference),

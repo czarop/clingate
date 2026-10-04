@@ -342,6 +342,105 @@ fn workspace_with_rules(name: &str) -> PathBuf {
     dir
 }
 
+/// [`workspace_with_rules`], with teff_naive set at Tmem's lower edges -
+/// which puts it over Tmem, beside it on its plot.
+fn workspace_with_teff_over_tmem(name: &str) -> PathBuf {
+    use clingate_core::gate_rules::rule::{EdgeFrom, FromGateRule, Rule, Side};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget,
+    };
+    let dir = workspace_with_rules(name);
+    let file = clingate_core::workspace::rules_file(&dir);
+    let mut store = RuleStore::load(&file).unwrap();
+    let edge = |parameter: &str| EdgeFrom {
+        anchor: RuleTarget::named("Tmem"),
+        parameter: parameter.into(),
+        side: Side::Lower,
+        anchor_side: Side::Lower,
+        gap: 0.0,
+    };
+    store.insert(
+        RuleTarget::named("teff_naive"),
+        GateRule {
+            parameter: "".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::FromAnotherGate(FromGateRule {
+                same_shape_as: None,
+                edges: vec![edge("BUV805-A"), edge("BUV563-A")],
+            }),
+        },
+    );
+    store.save(&file).unwrap();
+    dir
+}
+
+#[test]
+fn a_rule_over_the_gate_it_follows_is_listed_and_its_refusals_assessed_over_the_protocol() {
+    let folder = workspace_with_teff_over_tmem("unplaced");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let edge = |parameter: &str| {
+        json!({"anchor": {"gate": "Tmem"}, "parameter": parameter,
+               "side": "Lower", "anchor_side": "Lower", "gap": 0.0})
+    };
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "teff_naive",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {"kind": "FromAnotherGate", "edges": [edge("BUV805-A"), edge("BUV563-A")]}
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["problems"][0]
+            .as_str()
+            .is_some_and(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{written}"
+    );
+    let listed = server.call("list_rules", json!({}));
+    let teff = listed["result"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["population"].as_str().unwrap().starts_with("teff_naive"))
+        .cloned()
+        .unwrap();
+    assert!(
+        teff["problems"][0]
+            .as_str()
+            .unwrap()
+            .contains("it lies over Tmem on the gates as drawn"),
+        "{teff}"
+    );
+
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+    let assessed = server.call("assess_run", json!({}));
+    assert_eq!(assessed["outcome"], "ok", "{assessed}");
+    let refused = &assessed["result"]["unplaced"][0];
+    assert_eq!(refused["gate"], "teff_naive", "{assessed}");
+    assert_eq!(refused["everywhere"], true);
+    assert!(
+        refused["rule_problem"]
+            .as_str()
+            .unwrap()
+            .contains("set its edge facing Tmem against that gate's near edge")
+    );
+}
+
 #[test]
 fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
     let folder = workspace_with_rules("review");
@@ -451,7 +550,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 8);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
@@ -731,6 +830,88 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
 }
 
 #[test]
+fn a_valley_or_smear_rule_is_written_with_its_smear_example_over_the_protocol() {
+    let folder = workspace_with_rules("valley-or-smear");
+    let parameter = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .gate("Tmem", None)
+        .unwrap()
+        .parameters[0]
+        .clone();
+    let either = |measured_on: Value| {
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": parameter,
+                "bound": "Above",
+                "measured_on": measured_on,
+                "rule": {"kind": "ValleyOrSmear", "smear_example": "sample2_FS.fcs"}
+            }
+        })
+    };
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let guide = server.call("rule_guide", json!({"rule": "valley or smear"}));
+    assert_eq!(guide["result"]["kind"], "ValleyOrSmear", "{guide}");
+
+    let itself = server.call("update_rule", either(json!("Itself")));
+    assert_eq!(itself["outcome"], "failed", "{itself}");
+    assert!(
+        itself["reason"]
+            .as_str()
+            .unwrap()
+            .contains("measured on one named file"),
+        "{itself}"
+    );
+
+    let written = server.call("update_rule", either(json!({"File": "sample1_FMX.fcs"})));
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    // The metadata names sample2_FS.fcs sample2.
+    assert!(
+        view.rules[0]
+            .rule
+            .contains("on a smear, as far above the negative as on sample2"),
+        "{:?}",
+        view.rules
+    );
+
+    let mut lowest = either(json!({"File": "sample1_FMX.fcs"}));
+    lowest["rule"]["rule"]["lowest_before"] = json!(true);
+    let written = server.call("update_rule", lowest);
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["now"]
+            .as_str()
+            .unwrap()
+            .contains("at the lowest point between the negative and that dip"),
+        "{written}"
+    );
+    assert!(guide.to_string().contains("lowest_before"), "{guide}");
+
+    let mut shallow = either(json!({"File": "sample1_FMX.fcs"}));
+    shallow["rule"]["rule"]["smallest_dip"] = json!(0.1);
+    let written = server.call("update_rule", shallow);
+    assert_eq!(written["outcome"], "ok", "{written}");
+    assert!(
+        written["result"]["now"]
+            .as_str()
+            .unwrap()
+            .contains("a dip under 10% deep read as none"),
+        "{written}"
+    );
+    assert!(guide.to_string().contains("smallest_dip"), "{guide}");
+}
+
+#[test]
 fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
     let folder = workspace_with_rules("next-to");
     let parameter = clingate_core::session::Session::open(&folder)
@@ -827,5 +1008,169 @@ fn a_rule_next_to_another_gate_is_read_and_checked_over_the_protocol() {
     assert!(
         now_upper > upper,
         "grown towards Tmem: {upper} -> {now_upper}"
+    );
+}
+
+/// IL18a's cells are Vio Bright 423-A and BV785-A positive and BUV661-A
+/// negative, but it is drawn under teff_naive, which holds only a few dozen
+/// of these small files' events: written over the protocol, the rule's
+/// preview leaves IL18a on sample2 where it is, says why, and the guide says
+/// what a match needs.
+#[test]
+fn a_phenotype_too_few_cells_match_is_left_alone_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "IL18a",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": {"File": "sample1"},
+                "rule": {
+                    "kind": "MatchThePhenotype",
+                    "markers": ["Vio Bright 423-A", "BV785-A", "BUV661-A"]
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let preview = server.call("preview_rules", json!({}));
+    assert_eq!(preview["outcome"], "ok", "{preview}");
+    let il18a = |row: &Value| row["gate"].as_str().unwrap().starts_with("IL18a");
+    assert!(
+        !preview["result"]["would_move"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(il18a),
+        "{preview}"
+    );
+    let left = preview["result"]["not_positioned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| il18a(row))
+        .unwrap_or_else(|| panic!("{preview}"))
+        .clone();
+    assert_eq!(left["sample"], "sample2_FS.fcs");
+    let reason = left["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("50 are needed") && reason.contains("left where it is"),
+        "{reason}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert_eq!(guide["outcome"], "ok", "{guide}");
+    assert!(
+        guide.to_string().contains("at least 50 cells match"),
+        "{guide}"
+    );
+}
+
+#[test]
+fn a_phenotype_rule_that_moves_only_is_written_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype-move-only");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": "",
+                "bound": "Above",
+                "measured_on": {"File": "sample1"},
+                "rule": {
+                    "kind": "MatchThePhenotype",
+                    "markers": ["BUV805-A"],
+                    "fit": "MoveOnly"
+                }
+            }
+        }),
+    );
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules.iter().any(|r| r.rule.contains("move it only")),
+        "{:?}",
+        view.rules
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert!(guide.to_string().contains("`MoveOnly`"), "{guide}");
+    assert!(
+        guide
+            .to_string()
+            .contains("whether the edges agree between halves of the events"),
+        "{guide}"
+    );
+}
+
+/// Pinned by channel over the protocol, the rule says so; pinning a marker
+/// the rule does not read is refused with why.
+#[test]
+fn a_phenotype_rule_pins_an_edge_to_the_negative_over_the_protocol() {
+    let folder = workspace_with_rules("phenotype-pinned");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    let write = |server: &mut Server, pinned: &str| {
+        server.call(
+            "update_rule",
+            json!({
+                "gate": "Tmem",
+                "rule": {
+                    "parameter": "",
+                    "bound": "Above",
+                    "measured_on": {"File": "sample1"},
+                    "rule": {
+                        "kind": "MatchThePhenotype",
+                        "markers": ["BUV805-A"],
+                        "pinned": [pinned]
+                    }
+                }
+            }),
+        )
+    };
+    let written = write(&mut server, "BUV805-A");
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let view = clingate_core::session::Session::open(&folder)
+        .unwrap()
+        .rules_view()
+        .unwrap();
+    assert!(
+        view.rules.iter().any(|r| r
+            .rule
+            .contains("its edge on BUV805-A pinned to the negative")),
+        "{:?}",
+        view.rules
+    );
+    let refused = write(&mut server, "BV785-A");
+    assert_ne!(refused["outcome"], "ok", "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("BV785-A is pinned but is not one of the rule's markers"),
+        "{refused}"
+    );
+    let guide = server.call("rule_guide", json!({"rule": "MatchThePhenotype"}));
+    assert!(
+        guide.to_string().contains("Pinned or in the gap"),
+        "{guide}"
     );
 }

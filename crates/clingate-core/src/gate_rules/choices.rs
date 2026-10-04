@@ -223,8 +223,9 @@ pub fn describe_phenotype(rule: &PhenotypeRule, panel: &[Param]) -> String {
             .join(", ")
     };
     format!(
-        "find the cells that match on {named}, then {}",
-        rule.fit.label()
+        "find the cells that match on {named}, then {}{}",
+        rule.fit.label(),
+        crate::gate_rules::rule::pinned_said(&rule.pinned, |m| marker_label(m, panel))
     )
 }
 

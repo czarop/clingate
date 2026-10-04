@@ -924,3 +924,51 @@ fn a_small_negative_needs_thirty_events_as_well_as_one_percent() {
     assert_eq!(small_negative_below(&xs, &d, 5.0, 200), None);
     assert!(small_negative_below(&xs, &d, 5.0, 1_000).is_some());
 }
+
+/// 20,000 negatives at 0, 0.3 wide; 300 positives spread thin from 2 to 4,
+/// far under 5% of the negative's height; 900 more piled up at 4.6.
+fn thin_positives() -> Vec<f64> {
+    let mut values = cluster(31, 20_000, 0.0, 0.3);
+    let mut rng = StdRng::seed_from_u64(32);
+    let spread = rand_distr::Uniform::new(2.0, 4.0).unwrap();
+    values.extend((0..300).map(|_| spread.sample(&mut rng)));
+    values.extend(cluster(33, 900, 4.6, 0.12));
+    values
+}
+
+#[test]
+fn the_lowest_point_before_the_dip_is_the_gap_below_thin_positives() {
+    let values = thin_positives();
+    let first = valley_for_gate(&values, 1.0, 1.5).unwrap();
+    assert!(first.bottom > 4.0, "walked to the pile: {}", first.bottom);
+    let lowest = lowest_valley_for_gate(&values, 1.0, 1.5).unwrap();
+    // The negative's cells end near 1.2 and the positives start at 2.
+    assert!((1.2..2.0).contains(&lowest.bottom), "{}", lowest.bottom);
+    assert_eq!(lowest.peak, first.peak);
+    assert!(
+        lowest.depth > first.depth,
+        "{} against {}",
+        lowest.depth,
+        first.depth
+    );
+}
+
+#[test]
+fn with_two_clear_peaks_the_lowest_point_is_the_dip_itself() {
+    let mut values = cluster(41, 15_000, 300.0, 50.0);
+    values.extend(cluster(42, 5_000, 900.0, 50.0));
+    assert_eq!(
+        lowest_valley_for_gate(&values, 1.0, 600.0).unwrap(),
+        valley_for_gate(&values, 1.0, 600.0).unwrap()
+    );
+}
+
+#[test]
+fn a_smear_has_no_lowest_point_either() {
+    let mut values = cluster(51, 15_000, 300.0, 50.0);
+    let mut rng = StdRng::seed_from_u64(52);
+    let tail = rand_distr::Exp::new(1.0 / 150.0).unwrap();
+    values.extend((0..5_000).map(|_| 300.0 + tail.sample(&mut rng)));
+    assert!(valley_for_gate(&values, 1.0, 500.0).is_err());
+    assert!(lowest_valley_for_gate(&values, 1.0, 500.0).is_err());
+}

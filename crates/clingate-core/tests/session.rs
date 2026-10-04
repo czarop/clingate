@@ -556,6 +556,22 @@ fn a_bad_placement_is_reported_its_fix_recorded_on_save_and_the_run_reviewed() {
         "every event is in the histogram"
     );
     assert!(report.data.events_subsample.len() <= 5_000);
+    let kept = report
+        .data
+        .gate
+        .as_ref()
+        .expect("the gate's outline is kept");
+    assert_eq!(&*kept.name, "Tmem");
+    for at in &report.data.gate_at {
+        let (lower, upper) =
+            clingate_core::gate_rules::autogate::extent_on(&kept.geometry, &at.parameter).unwrap();
+        assert_eq!(
+            (Some(f64::from(lower)), Some(f64::from(upper))),
+            (at.lower, at.upper),
+            "{}",
+            at.parameter
+        );
+    }
     assert!(report.correction.is_none(), "not fixed yet");
 
     // Reviewed: the reported one, and the other accepted as placed.
@@ -892,23 +908,55 @@ fn tmem_workspace(name: &str) -> std::path::PathBuf {
 /// [`tmem_workspace`] with teff_naive where it is drawn: beside Tmem on its
 /// plot, to the left of it on BUV805-A.
 fn tmem_workspace_beside_teff_naive(name: &str) -> std::path::PathBuf {
+    tmem_workspace_positive_one_in(name, [(20_000, 3), (20_000, 3)])
+}
+
+/// [`tmem_workspace_beside_teff_naive`], with sample1 and sample2 each
+/// `(events, one_in)`: BUV805-A positive on one event in `one_in`, a multiple
+/// of 3, so those events are all positive on BUV661-A and negative on
+/// BV785-A too.
+fn tmem_workspace_positive_one_in(name: &str, files: [(usize, usize); 2]) -> std::path::PathBuf {
+    let [(first, one_in_first), (second, one_in_second)] = files;
+    tmem_workspace_of(
+        name,
+        [
+            (first, one_in_first, 40_000.0, (0.0, 300.0)),
+            (second, one_in_second, 40_000.0, (0.0, 300.0)),
+        ],
+    )
+}
+
+/// [`tmem_workspace_positive_one_in`], with each file's BUV805-A positives
+/// centred where its third number says and its negative centred and as wide
+/// as its fourth.
+fn tmem_workspace_of(
+    name: &str,
+    files: [(usize, usize, f32, (f32, f32)); 2],
+) -> std::path::PathBuf {
     let dir = workspace(name);
     let mut channels = vec!["FSC-A", "SSC-A"];
     channels.extend(FLUORESCENCE);
     let at = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
-    for (seed, file) in [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")] {
+    for ((seed, file), (count, every, positive, negative)) in
+        [(11, "sample1_FMX.fcs"), (12, "sample2_FS.fcs")]
+            .into_iter()
+            .zip(files)
+    {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
         let high = Normal::new(400_000.0f32, 40_000.0).unwrap();
-        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+        let rows: Vec<Vec<f32>> = events(seed, count)
             .into_iter()
             .enumerate()
             .map(|(i, mut row)| {
                 row[at("BUV563-A")] = high.sample(&mut rng);
-                // Positive a third of the time, as the other channels are.
-                row[at("BUV805-A")] = if i % 3 == 0 {
-                    Normal::new(40_000.0f32, 8_000.0).unwrap().sample(&mut rng)
+                row[at("BUV805-A")] = if i % every == 0 {
+                    Normal::new(positive, positive / 5.0)
+                        .unwrap()
+                        .sample(&mut rng)
                 } else {
-                    Normal::new(0.0f32, 300.0).unwrap().sample(&mut rng)
+                    Normal::new(negative.0, negative.1)
+                        .unwrap()
+                        .sample(&mut rng)
                 };
                 row
             })
@@ -2060,6 +2108,69 @@ fn a_phenotype_rule_s_markers_are_stored_as_channels() {
 }
 
 #[test]
+fn a_pinned_marker_is_stored_as_its_channel_and_must_be_one_the_gate_is_drawn_on() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let folder = marked_workspace("session-rule-phenotype-pinned");
+    let mut session = Session::open(&folder).unwrap();
+    let rule = |markers: &[&str], pinned: &[&str]| {
+        Rule::MatchThePhenotype(PhenotypeRule {
+            markers: markers.iter().map(|m| (*m).into()).collect(),
+            pinned: pinned.iter().map(|m| (*m).into()).collect(),
+            ..Default::default()
+        })
+    };
+    let written = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69", "cd4"], &["CD69"]),
+        ))
+        .unwrap();
+    assert!(
+        written
+            .resolved
+            .iter()
+            .any(|r| r == "pinned marker CD69 is the channel BUV805-A"),
+        "{:?}",
+        written.resolved
+    );
+    assert!(
+        written.now.contains("pinned to the negative"),
+        "{}",
+        written.now
+    );
+
+    let unread = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69"], &["cd4"]),
+        ))
+        .unwrap_err();
+    assert!(
+        format!("{unread:?}").contains("BV785-A is pinned but is not one of the rule's markers"),
+        "{unread:?}"
+    );
+    let off_the_plot = session
+        .update_rule(change(
+            "Tmem",
+            None,
+            "",
+            file("sample2"),
+            rule(&["CD69", "cd4"], &["cd4"]),
+        ))
+        .unwrap_err();
+    assert!(
+        format!("{off_the_plot:?}").contains("so it has no edge on BV785-A to pin"),
+        "{off_the_plot:?}"
+    );
+}
+
+#[test]
 fn a_rule_that_cannot_run_is_refused_with_what_would_and_the_file_is_left_alone() {
     let folder = marked_workspace("session-rule-refused");
     let rules_file = clingate_core::workspace::rules_file(&folder);
@@ -2440,6 +2551,77 @@ fn edge_from(
     }
 }
 
+/// teff_naive set at Tmem's lower edges, Tmem being beside it on its plot:
+/// that puts it over Tmem, which the rules list says when the rule is
+/// written, and the run, refusing it on every sample, says on the review.
+#[test]
+fn a_rule_that_puts_its_gate_over_the_one_it_follows_is_told_before_and_after_the_run() {
+    use clingate_core::gate_rules::rule::Side;
+    use clingate_core::gate_rules::rule_store::MeasuredOn;
+    let folder = with_rules("session-follow-over");
+    let mut session = Session::open(&folder).unwrap();
+    let written = session
+        .update_rule(change(
+            "teff_naive",
+            None,
+            "",
+            MeasuredOn::Itself,
+            from_gate(
+                None,
+                vec![
+                    edge_from("Tmem", "BUV805-A", Side::Lower, Side::Lower),
+                    edge_from("Tmem", "BUV563-A", Side::Lower, Side::Lower),
+                ],
+            ),
+        ))
+        .unwrap();
+    assert!(
+        written
+            .problems
+            .iter()
+            .any(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{written:?}"
+    );
+    let row = session
+        .rules_view()
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.population.starts_with("teff_naive"))
+        .unwrap();
+    assert!(
+        row.problems
+            .iter()
+            .any(|p| p.contains("it lies over Tmem on the gates as drawn")),
+        "{:?}",
+        row.problems
+    );
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let assessed = session.assess_run().unwrap();
+    let refused = assessed
+        .unplaced
+        .iter()
+        .find(|u| u.gate == "teff_naive")
+        .expect("teff_naive was not placed");
+    assert!(refused.everywhere, "{refused:?}");
+    assert_eq!(refused.samples.len(), 2);
+    assert!(refused.reason.contains("would overlap Tmem"), "{refused:?}");
+    assert!(
+        refused
+            .rule_problem
+            .as_deref()
+            .is_some_and(|p| p.contains("set its edge facing Tmem against that gate's near edge")),
+        "{refused:?}"
+    );
+    assert!(
+        refused.says().contains("change the rule"),
+        "{}",
+        refused.says()
+    );
+}
+
 #[test]
 fn a_rule_from_another_gate_is_stored_with_what_a_run_reads_and_runs() {
     use clingate_core::gate_rules::rule::Side;
@@ -2475,6 +2657,23 @@ fn a_rule_from_another_gate_is_stored_with_what_a_run_reads_and_runs() {
         .clone();
     assert_eq!(&*stored.parameter, "");
     assert_eq!(stored.measured_on, MeasuredOn::Itself);
+
+    // The two branches are drawn alike, beside each other on one plot, so
+    // the rules list says Branch B lies over Branch A.
+    let row = session
+        .rules_view()
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.population.starts_with("Branch B"))
+        .unwrap();
+    assert!(
+        row.problems
+            .iter()
+            .any(|p| p.contains("it lies over Branch A")),
+        "{:?}",
+        row.problems
+    );
 
     // It runs: the two branches are drawn alike, so Branch B is already where
     // Branch A puts it, on both samples - and nothing is refused.
@@ -3083,4 +3282,587 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
         let (lower, _) = fsc_span(&session, "Inner B", sample);
         assert!((lower - 1_000_000.0).abs() < 1.0, "{sample}: {lower}");
     }
+}
+
+// ─── valley or smear ──────────────────────────────────────────────────────────
+
+fn valley_or_smear(example: Option<&str>) -> clingate_core::gate_rules::rule::Rule {
+    clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
+            smear_example: example.map(Into::into),
+            ..Default::default()
+        },
+    )
+}
+
+/// On FSC-A, sample1 15,000 negatives at 1,000,000 and 5,000 positives at
+/// 3,000,000 with a dip between; sample2 the same negative with the 5,000
+/// trailing off it.
+fn a_dip_and_a_smear_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    let negative = Normal::new(1_000_000.0f32, 150_000.0).unwrap();
+    let positive = Normal::new(3_000_000.0f32, 150_000.0).unwrap();
+    let tail = rand_distr::Exp::new(1.0f32 / 400_000.0).unwrap();
+    for (seed, file) in [(1, "sample1_FMX.fcs"), (2, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 200);
+        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+            .into_iter()
+            .enumerate()
+            .map(|(at, mut row)| {
+                row[0] = match (at < 15_000, seed) {
+                    (true, _) => negative.sample(&mut rng),
+                    (false, 1) => positive.sample(&mut rng),
+                    (false, _) => 1_000_000.0 + tail.sample(&mut rng),
+                };
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+#[test]
+fn a_valley_or_smear_rule_is_read_on_a_file_and_names_its_example_as_a_file() {
+    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-written",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    let mut session = Session::open(&folder).unwrap();
+    let refused = session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            MeasuredOn::Itself,
+            valley_or_smear(None),
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("measured on one named file"), "{refused}");
+
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1_FMX.fcs"),
+            valley_or_smear(Some("sample2_FS.fcs")),
+        ))
+        .unwrap();
+    let stored = Session::open(&folder)
+        .unwrap()
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::named("Pos"))
+        .unwrap()
+        .clone();
+    // The metadata names the files sample1 and sample2.
+    assert_eq!(stored.measured_on, file("sample1"));
+    assert_eq!(stored.rule, valley_or_smear(Some("sample2")));
+}
+
+/// On FSC-A, sample1 as in [`a_dip_and_a_smear_on_fsc`]; sample2 the same
+/// negative, a gap to 2,000,000, 300 positives spread thin to 3,200,000 and
+/// 900 more piled up at 3,600,000.
+fn a_dip_and_thin_positives_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    let negative = Normal::new(1_000_000.0f32, 150_000.0).unwrap();
+    let positive = Normal::new(3_000_000.0f32, 150_000.0).unwrap();
+    let spread = rand_distr::Uniform::new(2_000_000.0f32, 3_200_000.0).unwrap();
+    let piled = Normal::new(3_600_000.0f32, 60_000.0).unwrap();
+    for (seed, file) in [(1, "sample1_FMX.fcs"), (2, "sample2_FS.fcs")] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 300);
+        let rows: Vec<Vec<f32>> = events(seed, 16_200)
+            .into_iter()
+            .enumerate()
+            .map(|(at, mut row)| {
+                row[0] = match (at < 15_000, seed, at < 15_300) {
+                    (true, _, _) => negative.sample(&mut rng),
+                    (false, 1, _) => positive.sample(&mut rng),
+                    (false, _, true) => spread.sample(&mut rng),
+                    (false, _, false) => piled.sample(&mut rng),
+                };
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+/// Sample2's thin positives stand too low beside the negative to count, so
+/// the rule walks past the gap below them to the dip below the pile, above
+/// 3,200,000; told to take the lowest point it walked past, it reads the dip
+/// in the gap, between the negative's last cells near 1,600,000 and the
+/// positives' first at 2,000,000. The run keeps the dip it read.
+#[test]
+fn a_valley_rule_can_gate_thin_positives_at_the_lowest_point_below_them() {
+    let dip_on_sample2 = |name: &str, lowest_before: bool| {
+        let folder = workspace_of_rectangles(name, &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))]);
+        a_dip_and_thin_positives_on_fsc(&folder);
+        let mut session = Session::open(&folder).unwrap();
+        let rule = clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+            clingate_core::gate_rules::rule::ValleyOrSmearRule {
+                lowest_before,
+                ..Default::default()
+            },
+        );
+        let written = session
+            .update_rule(change("Pos", None, "FSC-A", file("sample1_FMX.fcs"), rule))
+            .unwrap();
+        assert_eq!(
+            written
+                .now
+                .contains("at the lowest point between the negative and that dip"),
+            lowest_before,
+            "{}",
+            written.now
+        );
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        let record = clingate_core::review::RunRecord::load(&folder)
+            .unwrap()
+            .unwrap();
+        let placed = record
+            .placed
+            .iter()
+            .find(|p| {
+                p.gate == "Pos"
+                    && p.sample
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.contains("sample2"))
+            })
+            .unwrap_or_else(|| panic!("{record:#?}"));
+        let (_, here) = placed.valley.as_ref().expect("placed in a dip");
+        here.bottom
+    };
+    let first = dip_on_sample2("session-valley-thin-first", false);
+    assert!(first > 3_200_000.0, "{first}");
+    let lowest = dip_on_sample2("session-valley-thin-lowest", true);
+    assert!((1_600_000.0..2_000_000.0).contains(&lowest), "{lowest}");
+}
+
+/// Pos drawn from 2,000,000, in sample1's dip. Sample2 is a smear: with no
+/// example it is left unplaced, saying so; gated by hand and named the
+/// example, it is a reference too, and nothing is left unplaced.
+#[test]
+fn a_smear_waits_for_an_example_gated_by_hand() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-example",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    a_dip_and_a_smear_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview
+            .not_positioned
+            .iter()
+            .any(|n| n.reason.contains("no smear gated by hand")),
+        "{preview:?}"
+    );
+
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(Some("sample2")),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    let mut references: Vec<&str> = preview
+        .references
+        .iter()
+        .map(|r| r.specimen.as_str())
+        .collect();
+    references.sort();
+    assert_eq!(references, ["one", "two"]);
+}
+
+/// Asked for a dip deeper than any can be, sample1's clear dip reads as
+/// none: the reference is a smear, its own example, so sample2 - a smear
+/// that would wait for one gated by hand - is placed from it.
+#[test]
+fn a_rule_asking_for_a_deeper_dip_reads_a_shallower_one_as_a_smear() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-smallest-dip",
+        &[("p", "Pos", "", (2_000_000.0, 4_194_304.0))],
+    );
+    a_dip_and_a_smear_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    let rule = clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
+            smallest_dip: Some(1.0),
+            ..Default::default()
+        },
+    );
+    let written = session
+        .update_rule(change("Pos", None, "FSC-A", file("sample1"), rule))
+        .unwrap();
+    assert!(
+        written.now.contains("a dip under 100% deep read as none"),
+        "{}",
+        written.now
+    );
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    let two = preview
+        .would_move
+        .iter()
+        .find(|m| m.specimen == "two")
+        .unwrap_or_else(|| panic!("{preview:?}"));
+    assert_eq!(two.measured_on, "sample1_FMX.fcs");
+}
+
+/// One peak on FSC-A and nothing else, 200,000 wide: at 2,000,000 on
+/// sample1 and 2,200,000 on sample2.
+fn one_peak_each_on_fsc(dir: &std::path::Path) {
+    let mut channels = vec!["FSC-A", "SSC-A"];
+    channels.extend(FLUORESCENCE);
+    for (seed, file, centre) in [
+        (1, "sample1_FMX.fcs", 2_000_000.0f32),
+        (2, "sample2_FS.fcs", 2_200_000.0),
+    ] {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed + 300);
+        let peak = Normal::new(centre, 200_000.0).unwrap();
+        let rows: Vec<Vec<f32>> = events(seed, 20_000)
+            .into_iter()
+            .map(|mut row| {
+                row[0] = peak.sample(&mut rng);
+                row
+            })
+            .collect();
+        write_fcs(&dir.join(file), &channels, &rows);
+    }
+}
+
+/// No dip on the reference, sample1, so it is the example: Pos sits two
+/// widths above its peak, and goes two widths above sample2's, at 2,600,000 -
+/// to within half a width, the peak and width being read off a smoothed
+/// density, each good to a tenth or so.
+#[test]
+fn a_reference_that_is_a_smear_places_the_other_sample_from_itself() {
+    let folder = workspace_of_rectangles(
+        "session-valley-or-smear-smeary-reference",
+        &[("p", "Pos", "", (2_400_000.0, 4_194_304.0))],
+    );
+    one_peak_each_on_fsc(&folder);
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(preview.not_positioned.is_empty(), "{preview:?}");
+    session.apply_previewed_rules().unwrap();
+    let (lower, _) = fsc_span(&session, "Pos", "fs");
+    assert!((lower - 2_600_000.0).abs() < 100_000.0, "{lower}");
+    assert_eq!(
+        fsc_span(&session, "Pos", "fmx").0,
+        2_400_000.0,
+        "the reference"
+    );
+}
+
+/// A gating file with no position for any one sample - a template, every
+/// gate as drawn - takes the positions a run gives each specimen into the
+/// save and the export, and opens on them again.
+#[test]
+fn positions_a_run_gives_are_saved_and_exported_from_a_file_with_none() {
+    let folder = workspace_of_rectangles(
+        "session-run-positions-exported",
+        &[("p", "Pos", "", (2_400_000.0, 4_194_304.0))],
+    );
+    one_peak_each_on_fsc(&folder);
+    // sample3 is in the metadata, of sample2's specimen, but not in the
+    // workspace: not part of this gating task, so never written.
+    write_metadata(
+        &folder.join("metadata.csv"),
+        &["test", "Type", "SampleType"],
+        &[
+            ("sample1", "sample1_FMX.fcs", &["one", "one", "FMX"]),
+            ("sample2", "sample2_FS.fcs", &["two", "two", "FS"]),
+            ("sample3", "sample3_U.fcs", &["two", "two", "U"]),
+        ],
+    );
+    let mut session = Session::open(&folder).unwrap();
+    session
+        .update_rule(change(
+            "Pos",
+            None,
+            "FSC-A",
+            file("sample1"),
+            valley_or_smear(None),
+        ))
+        .unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let placed = fsc_span(&session, "Pos", "fs").0;
+    assert!(
+        (placed - 2_400_000.0).abs() > 100_000.0,
+        "{placed}: the run moved it"
+    );
+
+    session.save().unwrap();
+    let exported = session.export("positions.omiqgt", false).unwrap();
+    let document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&exported.file).unwrap()).unwrap();
+    let pos = &document["tree"]["filterContainers"]["p"];
+    assert_eq!(pos["defaultFilter"]["min"]["f1Val"], 2_400_000.0, "{pos}");
+    let for_sample2 = pos["perFileFilters"]["sample2"]["min"]["f1Val"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no position for sample2: {pos}"));
+    assert!(
+        (for_sample2 - placed).abs() < 1.0,
+        "{for_sample2} against {placed}"
+    );
+    assert!(pos["perFileFilters"].get("sample3").is_none(), "{pos}");
+
+    let reopened = Session::open(&folder).unwrap();
+    assert!((fsc_span(&reopened, "Pos", "fs").0 - placed).abs() < 1.0);
+}
+
+/// A phenotype rule for Tmem, read on sample1: BUV805-A and BUV661-A
+/// positive, BV785-A negative.
+fn phenotype_run_in(folder: std::path::PathBuf) -> clingate_core::session::RulesPreview {
+    let rule = clingate_core::gate_rules::rule::Rule::MatchThePhenotype(
+        clingate_core::gate_rules::rule::PhenotypeRule {
+            markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+            ..Default::default()
+        },
+    );
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    session.preview_rules().unwrap()
+}
+
+/// Tmem's span on each axis it is bounded on, on `sample`.
+fn tmem_spans(session: &Session, sample: &str) -> Vec<(String, f64)> {
+    session
+        .gate("Tmem", Some(sample))
+        .unwrap()
+        .extent
+        .iter()
+        .filter_map(|e| Some((e.parameter.clone(), e.upper? - e.lower?)))
+        .collect()
+}
+
+/// A phenotype rule that only moves the gate: sample2's Tmem is placed on
+/// the cells found there, the same size on every axis as sample1's, the
+/// reference.
+#[test]
+fn a_phenotype_rule_that_moves_only_keeps_the_gate_s_size() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        fit: ShapeFit::MoveOnly,
+        ..Default::default()
+    });
+    let folder = tmem_workspace_beside_teff_naive("session-phenotype-move-only");
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    let written = session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    assert!(written.now.contains("move it only"), "{}", written.now);
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview.would_move.iter().any(|m| m.specimen == "two"),
+        "{preview:?}"
+    );
+    session.apply_previewed_rules().unwrap();
+    let (reference, moved) = (tmem_spans(&session, "fmx"), tmem_spans(&session, "fs"));
+    assert!(!reference.is_empty());
+    for ((axis, drawn), (_, placed)) in reference.iter().zip(&moved) {
+        assert!(
+            (drawn - placed).abs() <= 1e-3 * drawn.abs(),
+            "{axis}: {drawn} then {placed}"
+        );
+    }
+}
+
+/// Tmem's lower edge on BUV805-A on the reference and on sample2, whose
+/// BUV805-A positives sit at 80,000 against the reference's 40,000 while its
+/// negative is the same, after a keep-shape phenotype rule pinning `pinned`.
+fn tmem_lower_edges(name: &str, pinned: &[&str]) -> (f64, f64) {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        pinned: pinned.iter().map(|m| (*m).into()).collect(),
+        ..Default::default()
+    });
+    let folder = tmem_workspace_of(
+        name,
+        [
+            (20_000, 3, 40_000.0, (0.0, 300.0)),
+            (20_000, 3, 80_000.0, (0.0, 300.0)),
+        ],
+    );
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    let lower = |sample| {
+        session
+            .gate("Tmem", Some(sample))
+            .unwrap()
+            .extent
+            .iter()
+            .find(|e| e.parameter == "BUV805-A")
+            .and_then(|e| e.lower)
+            .unwrap()
+    };
+    (lower("fmx"), lower("fs"))
+}
+
+/// The negative is the same on both samples, so a lower edge pinned to it
+/// stays where it was drawn; carried in the gap below the brighter positives,
+/// it rises with them.
+#[test]
+fn a_pinned_edge_stays_above_the_negative_wherever_the_positives_go() {
+    let (drawn, pinned) = tmem_lower_edges("session-phenotype-pinned", &["BUV805-A"]);
+    let (_, carried) = tmem_lower_edges("session-phenotype-not-pinned", &[]);
+    assert!(
+        (pinned - drawn).abs() < 0.1 * drawn.abs(),
+        "{drawn} then {pinned}"
+    );
+    assert!(carried > drawn * 1.2, "{drawn} then {carried}");
+}
+
+/// BUV805-A's negative sits at 10,000 and is 1,500 wide - 1.29 and 0.13 on
+/// the arcsinh scale - so Tmem's lower edge, drawn at 1.42, cuts its top a
+/// width above its peak: the preview says so and asks for the user's word
+/// before pinning it.
+#[test]
+fn an_edge_drawn_inside_the_negative_is_offered_for_pinning() {
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule};
+    let rule = Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+        ..Default::default()
+    });
+    let folder = tmem_workspace_of(
+        "session-phenotype-could-pin",
+        [
+            (20_000, 3, 40_000.0, (10_000.0, 1_500.0)),
+            (20_000, 3, 40_000.0, (10_000.0, 1_500.0)),
+        ],
+    );
+    out_of_tmems_way(&folder.join("gating.omiqgt"));
+    let mut session = Session::open(&rule_in(folder, rule.clone())).unwrap();
+    session
+        .update_rule(change("Tmem", None, "", file("sample1"), rule))
+        .unwrap();
+    let preview = session.preview_rules().unwrap();
+    assert!(
+        preview
+            .could_pin
+            .iter()
+            .any(|line| line.starts_with("Tmem of 1: ")
+                && line.contains("its edge on BUV805-A lies within the negative")
+                && line.contains("change nothing until they say")),
+        "{preview:?}"
+    );
+}
+
+/// A run keeps, beside its other measures, how far the edges placed from
+/// either half of a sample's events agree - for a gate whose edges are
+/// carried, not one traced afresh.
+#[test]
+fn a_run_keeps_whether_a_phenotype_gate_s_edges_agree_between_halves() {
+    use clingate_core::gate_rules::confidence::STEADY;
+    use clingate_core::gate_rules::rule::{PhenotypeRule, Rule, ShapeFit};
+    use clingate_core::review::RunRecord;
+    for (fit, scored) in [(ShapeFit::KeepShape, true), (ShapeFit::DrawPolygon, false)] {
+        let rule = Rule::MatchThePhenotype(PhenotypeRule {
+            markers: vec!["BUV805-A".into(), "BUV661-A".into(), "BV785-A".into()],
+            fit,
+            ..Default::default()
+        });
+        let folder =
+            tmem_workspace_beside_teff_naive(&format!("session-phenotype-halves-{}", fit.key()));
+        let mut session = Session::open(&rule_in(folder.clone(), rule.clone())).unwrap();
+        session
+            .update_rule(change("Tmem", None, "", file("sample1"), rule))
+            .unwrap();
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        let record = RunRecord::load(&folder).unwrap().expect("kept on apply");
+        let placed = record
+            .placed
+            .iter()
+            .find(|p| p.gate == "Tmem")
+            .unwrap_or_else(|| panic!("{record:#?}"));
+        let agreement = placed.components.iter().find(|c| c.name == STEADY);
+        assert_eq!(
+            agreement.is_some(),
+            scored,
+            "{fit:?}: {:#?}",
+            placed.components
+        );
+        if let Some(agreement) = agreement {
+            assert!(agreement.score > 0.9, "{agreement:?}");
+            assert!(agreement.detail.contains("the same cells"), "{agreement:?}");
+        }
+    }
+}
+
+/// Both samples a third positive: the same cells are found on sample2 and
+/// its gate is moved onto them.
+#[test]
+fn a_phenotype_found_on_another_sample_moves_its_gate() {
+    let preview = phenotype_run_in(tmem_workspace_beside_teff_naive("session-phenotype-found"));
+    assert_eq!(preview.not_positioned.len(), 0, "{preview:?}");
+    assert!(
+        preview.would_move.iter().any(|m| m.specimen == "two"),
+        "{preview:?}"
+    );
+}
+
+/// Sample2 one in 30 positive against one in three on sample1: a tenth as
+/// common, under the fifth a match needs, though Tmem's parent - about 5,700
+/// of sample2's 100,000 events - holds some 190 of them, well over the 50 it
+/// needs. Its gate is left alone and the preview says why.
+#[test]
+fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
+    let preview = phenotype_run_in(tmem_workspace_positive_one_in(
+        "session-phenotype-rare",
+        [(20_000, 3), (100_000, 30)],
+    ));
+    assert!(
+        preview.would_move.iter().all(|m| m.specimen != "two"),
+        "{preview:?}"
+    );
+    let refused = preview
+        .not_positioned
+        .iter()
+        .find(|n| n.sample.as_deref().is_some_and(|s| s.contains("sample2")))
+        .unwrap_or_else(|| panic!("{preview:?}"));
+    assert!(
+        refused.reason.contains("under a fifth as common")
+            && refused.reason.contains("left where it is"),
+        "{refused:?}"
+    );
 }

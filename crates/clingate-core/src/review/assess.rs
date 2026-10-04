@@ -125,6 +125,25 @@ pub struct Assessment {
     /// Worst first.
     pub flags: Vec<Flag>,
     pub gates: Vec<GateSummary>,
+    /// The placements the run could not make - see [`unplaced`].
+    pub unplaced: Vec<Unplaced>,
+}
+
+/// A gate the run could not place, for one reason, and on which samples.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Unplaced {
+    pub gate: String,
+    pub parent_gate: Option<String>,
+    /// As the run said it.
+    pub reason: String,
+    /// The samples it was refused on; none for a problem with the rule
+    /// itself, said before any sample was read.
+    pub samples: Vec<SampleRef>,
+    /// Refused on every sample the run reached it on, for this one reason:
+    /// the rule's settings or the gates as drawn, not the data.
+    pub everywhere: bool,
+    /// What checking the rule against the gates as drawn finds wrong with it.
+    pub rule_problem: Option<String>,
 }
 
 /// One placement, as the assessment reads it.
@@ -139,6 +158,8 @@ struct Item<'a> {
     in_band: bool,
     /// Kept for being a reference, not for meeting the rule.
     reference: bool,
+    /// Read on a control big enough to trust, and in its band: never flagged.
+    trusted: bool,
     line: Option<f64>,
     beyond: Option<f64>,
     shape: Option<&'a Shape>,
@@ -218,6 +239,11 @@ fn from_placed(p: &super::run_record::PlacedRecord) -> Item<'_> {
         weakest: p.weakest.as_deref(),
         in_band: p.in_band,
         reference: false,
+        trusted: crate::gate_rules::autogate::trusted_control(
+            p.read_on_control,
+            p.reference_events,
+            p.in_band,
+        ),
         line: p.to,
         beyond: p.above_the_line,
         shape: p.shape.as_ref(),
@@ -237,6 +263,7 @@ fn from_kept(k: &super::run_record::KeptRecord) -> Item<'_> {
         weakest: None,
         in_band: true,
         reference: !k.met_rule,
+        trusted: false,
         line: k.line,
         beyond: k.above_the_line,
         shape: k.shape.as_ref(),
@@ -384,6 +411,107 @@ fn pct(x: f64) -> String {
 /// Assess the run: what each placement looks like against its peers. With
 /// the gates as they stand, each flag says whether its gate has been moved
 /// since.
+impl Unplaced {
+    /// In a line, for a person: a gate refused everywhere says that its rule
+    /// needs changing, and how where the check of the rule can tell.
+    pub fn says(&self) -> String {
+        let gate = crate::gate_rules::autogate::describe(&self.gate, self.parent_gate.as_deref());
+        let rule = self
+            .rule_problem
+            .as_ref()
+            .map(|problem| format!(" The rule: {problem}."))
+            .unwrap_or_default();
+        if self.samples.is_empty() {
+            return format!("{gate}: {}.{rule}", self.reason);
+        }
+        if self.everywhere {
+            return format!(
+                "{gate} was not placed on any sample, each time because {}. That is its rule or \
+                 the gates as drawn, not the data: change the rule.{rule}",
+                self.reason
+            );
+        }
+        format!(
+            "{gate} on {}: {}.{rule}",
+            samples_named(&self.samples),
+            self.reason
+        )
+    }
+}
+
+/// How many samples, and the first few by name.
+fn samples_named(samples: &[SampleRef]) -> String {
+    const NAMED: usize = 3;
+    let names: Vec<&str> = samples
+        .iter()
+        .take(NAMED)
+        .map(|s| s.name.as_deref().unwrap_or(&s.id))
+        .collect();
+    let more = samples.len().saturating_sub(NAMED);
+    match (samples.len(), more) {
+        (1, _) => format!("1 sample ({})", names[0]),
+        (n, 0) => format!("{n} samples ({})", names.join(", ")),
+        (n, more) => format!("{n} samples ({}, and {more} more)", names.join(", ")),
+    }
+}
+
+/// The placements `run` could not make, a gate and a reason at a time: the
+/// gates refused everywhere first, then the most refused. Read against the
+/// gates as they are `now`, where given, for what is wrong with the rule.
+pub fn unplaced(run: &RunRecord, now: Option<&GateState>) -> Vec<Unplaced> {
+    let rule_problems = now
+        .map(|state| crate::gate_rules::autogate::edges_over_their_anchors(state, &run.rules))
+        .unwrap_or_default();
+    let mut found: Vec<Unplaced> = Vec::new();
+    for skipped in &run.skipped {
+        let same = |u: &&mut Unplaced| {
+            u.gate == skipped.gate
+                && u.parent_gate == skipped.parent_gate
+                && u.reason == skipped.reason
+        };
+        let at = match found.iter_mut().position(|u| same(&u)) {
+            Some(at) => at,
+            None => {
+                found.push(Unplaced {
+                    gate: skipped.gate.clone(),
+                    parent_gate: skipped.parent_gate.clone(),
+                    reason: skipped.reason.clone(),
+                    samples: Vec::new(),
+                    everywhere: false,
+                    rule_problem: rule_problems
+                        .iter()
+                        .find(|p| {
+                            *p.target.gate == *skipped.gate
+                                && p.target.parent.as_deref().is_none_or(|parent| {
+                                    Some(parent) == skipped.parent_gate.as_deref()
+                                })
+                        })
+                        .map(|p| p.reason.clone()),
+                });
+                found.len() - 1
+            }
+        };
+        if !skipped.sample.id.is_empty() {
+            found[at].samples.push(skipped.sample.clone());
+        }
+    }
+    for u in &mut found {
+        let of_gate =
+            |gate: &str, parent: &Option<String>| gate == u.gate && *parent == u.parent_gate;
+        let placed_somewhere = run.placed.iter().any(|p| of_gate(&p.gate, &p.parent_gate))
+            || run
+                .kept
+                .iter()
+                .any(|k| k.met_rule && of_gate(&k.gate, &k.parent_gate));
+        let refused_otherwise = run.skipped.iter().any(|s| {
+            of_gate(&s.gate, &s.parent_gate) && s.reason != u.reason && !s.sample.id.is_empty()
+        });
+        u.everywhere = !placed_somewhere && !refused_otherwise;
+    }
+    found.sort_by_key(|u| (!u.everywhere, std::cmp::Reverse(u.samples.len())));
+    found
+}
+
 pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> Assessment {
     let items: Vec<Item> = run
         .placed
@@ -408,9 +536,10 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
     for members in groups.values() {
         for &i in members {
             let item = &items[i];
-            if item.reference {
+            if item.reference || item.trusted {
                 // A reference is what the others are calibrated from, not a
-                // placement to judge.
+                // placement to judge; a trusted one has met its rule on
+                // plenty of control events.
                 continue;
             }
             let others: Vec<&Item> = members
@@ -670,6 +799,7 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
         placements: items.iter().filter(|i| !i.reference).count(),
         flags,
         gates: gates.into_values().collect(),
+        unplaced: unplaced(run, now.map(|(state, _)| state)),
     }
 }
 
@@ -809,6 +939,7 @@ pub fn compare_to_peers(
         weakest: weakest.as_deref(),
         in_band: true,
         reference: false,
+        trusted: false,
         line,
         beyond,
         shape: shape.as_ref(),
@@ -916,6 +1047,7 @@ mod tests {
             above_the_line: None,
             reference_events: 1000,
             in_band: true,
+            read_on_control: false,
             negative: None,
             valley: None,
             phenotype: None,
@@ -1358,6 +1490,23 @@ mod tests {
         assert_eq!(a.flags[0].reasons[0].measure, "low_confidence");
     }
 
+    /// Weak only for its count, read on a control of more than 300 events
+    /// and in its band: not flagged, for its confidence or against its peers.
+    /// At 300 events, or out of its band, or not read on a control, it is.
+    #[test]
+    fn a_placement_in_band_on_a_control_of_over_300_events_is_not_flagged() {
+        let on_control = |events: usize, in_band: bool, read_on_control: bool| {
+            let mut odd = placed(99, 2.9, population(3.0, 99), 0.1);
+            (odd.reference_events, odd.in_band, odd.read_on_control) =
+                (events, in_band, read_on_control);
+            assess(&run_with(Some(odd)), None).flags.len()
+        };
+        assert_eq!(on_control(301, true, true), 0);
+        assert_eq!(on_control(300, true, true), 1);
+        assert_eq!(on_control(301, false, true), 1);
+        assert_eq!(on_control(301, true, false), 1);
+    }
+
     #[test]
     fn too_few_samples_to_compare_flags_only_what_the_rule_said() {
         let mut run = run_with(None);
@@ -1379,5 +1528,112 @@ mod tests {
         assert!(c.position_between_peaks.unwrap() > 0.8);
         assert!(!c.reasons.is_empty());
         assert!(compare_to_peers(&run, "g", "nobody").is_err());
+    }
+
+    // ── what the run could not place ─────────────────────────────────────
+
+    fn refused(gate: &str, sample: &str, reason: &str) -> crate::review::run_record::SkippedRecord {
+        crate::review::run_record::SkippedRecord {
+            gate: gate.into(),
+            parent_gate: Some("CD4+".into()),
+            sample: SampleRef {
+                id: sample.into(),
+                name: (!sample.is_empty()).then(|| format!("{sample}_FS.fcs")),
+                sample_type: None,
+            },
+            reason: reason.into(),
+        }
+    }
+
+    const OVERLAP: &str = "it would overlap CD8+ on the same plot, so it was left where it was";
+
+    #[test]
+    fn a_gate_refused_on_every_sample_for_one_reason_is_refused_everywhere_and_comes_first() {
+        let mut run = run_of(vec![placed(0, 1.5, population(3.0, 0), 0.8)], Vec::new());
+        run.skipped = vec![
+            // CD279+ is placed on one sample, so its one refusal is the data's.
+            refused("CD279+", "f9", "no valley"),
+            refused("CD4-CD8-", "a", OVERLAP),
+            refused("CD4-CD8-", "b", OVERLAP),
+            refused("CD4-CD8-", "c", OVERLAP),
+        ];
+        let found = unplaced(&run, None);
+        let gates: Vec<(&str, usize, bool)> = found
+            .iter()
+            .map(|u| (u.gate.as_str(), u.samples.len(), u.everywhere))
+            .collect();
+        assert_eq!(gates, [("CD4-CD8-", 3, true), ("CD279+", 1, false)]);
+    }
+
+    #[test]
+    fn a_gate_refused_for_two_reasons_is_not_said_to_be_the_rule_s_fault() {
+        let mut run = run_of(Vec::new(), Vec::new());
+        run.skipped = vec![
+            refused("CD4-CD8-", "a", OVERLAP),
+            refused("CD4-CD8-", "b", "too few events"),
+        ];
+        let found = unplaced(&run, None);
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|u| !u.everywhere), "{found:?}");
+    }
+
+    #[test]
+    fn a_reference_left_where_it_was_drawn_is_not_a_placement() {
+        let mut run = run_of(Vec::new(), vec![kept_at(0, 1.0, population(3.0, 0), false)]);
+        run.skipped = vec![
+            refused("CD279+", "a", OVERLAP),
+            refused("CD279+", "b", OVERLAP),
+        ];
+        assert!(unplaced(&run, None)[0].everywhere);
+        // One that met its rule is.
+        run.kept = vec![kept_at(0, 1.0, population(3.0, 0), true)];
+        assert!(!unplaced(&run, None)[0].everywhere);
+    }
+
+    #[test]
+    fn an_unplaced_gate_says_what_happened_in_a_line() {
+        let mut run = run_of(vec![placed(0, 1.5, population(3.0, 0), 0.8)], Vec::new());
+        run.skipped = vec![
+            refused("CD279+", "a", "no valley"),
+            refused("CD279+", "b", "no valley"),
+            refused("CD279+", "c", "no valley"),
+            refused("CD279+", "d", "no valley"),
+            refused("CD4-CD8-", "a", OVERLAP),
+            refused("CD69+", "", "this rule reaches no gate"),
+        ];
+        let says: Vec<String> = unplaced(&run, None).iter().map(Unplaced::says).collect();
+        assert_eq!(
+            says,
+            [
+                format!(
+                    "CD4-CD8- of CD4+ was not placed on any sample, each time because {OVERLAP}. \
+                     That is its rule or the gates as drawn, not the data: change the rule."
+                ),
+                "CD69+ of CD4+: this rule reaches no gate.".to_string(),
+                "CD279+ of CD4+ on 4 samples (a_FS.fcs, b_FS.fcs, c_FS.fcs, and 1 more): \
+                 no valley."
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn what_is_wrong_with_the_rule_is_said_after_the_refusal() {
+        let refusal = Unplaced {
+            gate: "CD4-CD8-".into(),
+            parent_gate: None,
+            reason: OVERLAP.into(),
+            samples: vec![SampleRef {
+                id: "a".into(),
+                name: None,
+                sample_type: None,
+            }],
+            everywhere: false,
+            rule_problem: Some("its gaps reach into CD8+".into()),
+        };
+        assert_eq!(
+            refusal.says(),
+            format!("CD4-CD8- on 1 sample (a): {OVERLAP}. The rule: its gaps reach into CD8+.")
+        );
     }
 }

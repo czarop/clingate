@@ -466,16 +466,37 @@ fn evidence() -> MatchEvidence {
         purity: 0.95,
         caught: 0.9,
         pieces: 1,
+        steady: Some(0.97),
     }
 }
 
 #[test]
 fn a_clean_match_scores_well_on_every_count() {
     let c = assess_match(evidence());
-    for name in [MATCHED, PURITY, CAUGHT, ONE_CLOUD, ABUNDANCE] {
+    for name in [MATCHED, PURITY, CAUGHT, ONE_CLOUD, ABUNDANCE, STEADY] {
         assert!(part(&c, name) > 0.8, "{name}: {}", part(&c, name));
     }
     assert!(c.score > 0.8, "{c:?}");
+}
+
+#[test]
+fn edges_that_disagree_between_halves_hold_the_score_down() {
+    let c = assess_match(MatchEvidence {
+        steady: Some(0.35),
+        ..evidence()
+    });
+    assert_eq!(part(&c, STEADY), 0.35);
+    assert_eq!(c.weakest().unwrap().name, STEADY);
+    assert_eq!(c.score, 0.35);
+}
+
+#[test]
+fn a_traced_polygon_is_not_scored_on_its_edges() {
+    let c = assess_match(MatchEvidence {
+        steady: None,
+        ..evidence()
+    });
+    assert!(c.get(STEADY).is_none(), "{c:?}");
 }
 
 #[test]

@@ -273,6 +273,7 @@ pub enum Rule {
     PercentileOffset(PercentileOffsetRule),
     AboveTheNegative(AboveTheNegativeRule),
     InTheValley(ValleyRule),
+    ValleyOrSmear(ValleyOrSmearRule),
     MatchThePhenotype(PhenotypeRule),
     FromAnotherGate(FromGateRule),
     NextToGate(NextToRule),
@@ -544,6 +545,19 @@ pub struct ValleyRule {
     /// A run places it first when a rule places it.
     #[serde(default)]
     pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
+    /// Gate in the lowest point between the negative's peak and the dip
+    /// found, rather than that dip - for positives spread too thin to stand
+    /// out beside the negative. See [`lowest_valley_for_gate`].
+    ///
+    /// [`lowest_valley_for_gate`]: crate::gate_rules::threshold::lowest_valley_for_gate
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lowest_before: bool,
+    /// The shallowest dip, as a fraction of the lower peak beside it, that
+    /// counts: a sample whose dip is shallower is read as having none - a
+    /// smear, or one for the fallback. For positives that run straight off
+    /// the negative, where a wobble in them would otherwise be gated in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smallest_dip: Option<f64>,
 }
 
 impl Default for ValleyRule {
@@ -552,6 +566,8 @@ impl Default for ValleyRule {
             smoothing: 1.0,
             confidence: CountAndSeparation::default(),
             fallback: None,
+            lowest_before: false,
+            smallest_dip: None,
         }
     }
 }
@@ -580,8 +596,7 @@ impl ValleyRule {
         values: &[f64],
         reference_x: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found =
-            crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, reference_x)?;
+        let found = self.find(values, reference_x)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
@@ -599,7 +614,7 @@ impl ValleyRule {
         offset: f64,
         gate: f64,
     ) -> Result<ValleyRead, crate::gate_rules::threshold::NoValley> {
-        let found = crate::gate_rules::threshold::valley_for_gate(values, self.smoothing, gate)?;
+        let found = self.find(values, gate)?;
         Ok(ValleyRead {
             peak: found.peak,
             bottom: found.bottom,
@@ -607,6 +622,28 @@ impl ValleyRule {
             offset,
             at: found.bottom + offset,
         })
+    }
+
+    /// The dip in `values` this rule gates in, with the gate at `gate`.
+    fn find(
+        &self,
+        values: &[f64],
+        gate: f64,
+    ) -> Result<crate::gate_rules::threshold::Valley, crate::gate_rules::threshold::NoValley> {
+        use crate::gate_rules::threshold::{NoValley, lowest_valley_for_gate, valley_for_gate};
+        let found = if self.lowest_before {
+            lowest_valley_for_gate(values, self.smoothing, gate)
+        } else {
+            valley_for_gate(values, self.smoothing, gate)
+        }?;
+        match self.smallest_dip {
+            Some(smallest) if found.depth < smallest => Err(NoValley::ShallowerThanAsked {
+                bottom: found.bottom,
+                depth: found.depth,
+                smallest,
+            }),
+            _ => Ok(found),
+        }
     }
 
     /// The fallback as a rule from another gate: this gate's leading edge on
@@ -635,8 +672,121 @@ impl ValleyRule {
         if self.smoothing != 1.0 {
             how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
+        how.push_str(lowest_said(self.lowest_before));
+        how.push_str(&smallest_said(self.smallest_dip));
         if let Some(fallback) = &self.fallback {
             how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
+        }
+        how
+    }
+}
+
+/// "In the valley where there is one; where there is a smear, as on an
+/// example of one."
+///
+/// One rule for a gate that is a clear population on some samples and a
+/// smear on others. Each sample is read for a dip between its negative and
+/// its positive: with one, the gate goes in it, as [`ValleyRule`] puts it;
+/// without, it goes as far above the negative as on a hand-gated smear, as
+/// [`AboveTheNegativeRule`] puts it - or where another gate is, with
+/// `fallback`.
+///
+/// The smear example is the reference when the reference is itself a smear.
+/// When the reference has a dip, its gate says nothing about where a smear is
+/// cut, so a run stops at the first smear for a person to gate it by hand,
+/// and that sample becomes `smear_example`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValleyOrSmearRule {
+    /// Scales the bandwidth the dip is looked for with - see
+    /// [`ValleyRule::smoothing`].
+    #[serde(default = "one")]
+    pub smoothing: f64,
+    #[serde(default)]
+    pub confidence: CountAndSeparation,
+    /// On a smear, where this gate is - usually the same gate under another
+    /// parent - rather than as on the smear example.
+    #[serde(default)]
+    pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
+    /// The hand-gated sample a smear is placed from, named as a rule names a
+    /// file, once one is known.
+    #[serde(default)]
+    pub smear_example: Option<Arc<str>>,
+    /// See [`ValleyRule::lowest_before`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lowest_before: bool,
+    /// See [`ValleyRule::smallest_dip`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smallest_dip: Option<f64>,
+}
+
+impl Default for ValleyOrSmearRule {
+    fn default() -> Self {
+        Self {
+            smoothing: 1.0,
+            confidence: CountAndSeparation::default(),
+            fallback: None,
+            smear_example: None,
+            lowest_before: false,
+            smallest_dip: None,
+        }
+    }
+}
+
+/// What a valley rule's description says of `smallest_dip`.
+fn smallest_said(smallest_dip: Option<f64>) -> String {
+    smallest_dip
+        .map(|smallest| format!(", a dip under {:.0}% deep read as none", smallest * 100.0))
+        .unwrap_or_default()
+}
+
+/// What a valley rule's description says of `lowest_before`.
+fn lowest_said(lowest_before: bool) -> &'static str {
+    if lowest_before {
+        ", at the lowest point between the negative and that dip"
+    } else {
+        ""
+    }
+}
+
+impl ValleyOrSmearRule {
+    /// The rule a sample with a dip is placed by.
+    pub fn valley(&self) -> ValleyRule {
+        ValleyRule {
+            smoothing: self.smoothing,
+            confidence: self.confidence.clone(),
+            fallback: self.fallback.clone(),
+            lowest_before: self.lowest_before,
+            smallest_dip: self.smallest_dip,
+        }
+    }
+
+    /// The rule a smear is placed by, against the smear example: the gate on
+    /// a smear sits in the dim cells, so the negative is its peak, not all
+    /// that is below the gate.
+    pub fn smear(&self) -> AboveTheNegativeRule {
+        AboveTheNegativeRule {
+            find: NegativeFinder::NegativePeak,
+            confidence: self.confidence.clone(),
+            ..AboveTheNegativeRule::default()
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        let mut how = format!(
+            "in the dip between the negative and the positive, as on the reference{}{}; on a \
+             smear, ",
+            lowest_said(self.lowest_before),
+            smallest_said(self.smallest_dip)
+        );
+        match (&self.fallback, &self.smear_example) {
+            (Some(fallback), _) => how.push_str(&format!("where {} is", fallback.describe())),
+            (None, Some(example)) => {
+                how.push_str(&format!("as far above the negative as on {example}"))
+            }
+            (None, None) => how.push_str("as far above the negative as on a smear gated by hand"),
+        }
+        if self.smoothing != 1.0 {
+            how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
         }
         how
     }
@@ -655,6 +805,7 @@ impl Rule {
             // for it to return.
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
@@ -681,6 +832,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
             Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
+            Rule::ValleyOrSmear(r) => r.confidence.assess(threshold, reference_x),
             Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
                 return None;
             }
@@ -693,6 +845,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.solve(values),
             Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => Err(SolveError::BadBand { band: (0.0, 0.0) }),
@@ -705,6 +858,7 @@ impl Rule {
             Rule::PercentileOffset(r) => r.describe(),
             Rule::AboveTheNegative(r) => r.describe(),
             Rule::InTheValley(r) => r.describe(),
+            Rule::ValleyOrSmear(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
             Rule::FromAnotherGate(r) => r.describe(),
             Rule::NextToGate(r) => r.describe(),
@@ -731,6 +885,7 @@ impl Rule {
             Rule::PercentileOffset(_)
             | Rule::AboveTheNegative(_)
             | Rule::InTheValley(_)
+            | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
             | Rule::NextToGate(_) => None,
@@ -765,6 +920,7 @@ impl Rule {
         match self {
             Rule::FromAnotherGate(r) => r.anchors(),
             Rule::InTheValley(r) => r.fallback.iter().collect(),
+            Rule::ValleyOrSmear(r) => r.fallback.iter().collect(),
             Rule::NextToGate(r) => vec![&r.anchor],
             _ => Vec::new(),
         }
@@ -777,6 +933,7 @@ impl Rule {
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
             Rule::InTheValley(_) => "In the valley",
+            Rule::ValleyOrSmear(_) => "Valley or smear",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
             Rule::NextToGate(_) => "Next to another gate",
@@ -789,17 +946,20 @@ impl Rule {
 /// What to do with the outline once the population has been found.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShapeFit {
-    /// Move and resize the gate as drawn, without changing its shape.
+    /// Carry the gate as drawn edge by edge, without changing its shape.
     ///
     /// For an outline that carries meaning the data does not: a rectangle that
     /// stands for a quadrant, a shape agreed with a collaborator, a gate that
-    /// has to stay comparable with how it was drawn before. The population
-    /// decides where it sits and how big it is; what it looks like is kept.
+    /// has to stay comparable with how it was drawn before. Each edge goes
+    /// where it sits on the reference against the sample's own negative and
+    /// valley, so the gate may grow or shrink; what it looks like is kept.
     ///
     /// Also the only option that preserves the *kind* of gate - a rectangle
     /// stays a rectangle, an ellipse an ellipse.
     #[default]
     KeepShape,
+    /// Slide the gate as drawn, its size and shape unchanged.
+    MoveOnly,
     /// Draw a fresh polygon round the matched cells on every sample.
     ///
     /// For a population whose shape genuinely differs between donors, where
@@ -813,6 +973,7 @@ impl ShapeFit {
     pub fn label(self) -> &'static str {
         match self {
             ShapeFit::KeepShape => "keep the shape, move and resize it",
+            ShapeFit::MoveOnly => "move it only, the same size",
             ShapeFit::DrawPolygon => "draw a new polygon round the cells",
         }
     }
@@ -822,18 +983,28 @@ impl ShapeFit {
             ShapeFit::KeepShape => {
                 "keep the shape - move and resize it, and stay the kind of gate it is"
             }
+            ShapeFit::MoveOnly => "move only - slide it, the same size and shape",
             ShapeFit::DrawPolygon => {
                 "draw a new polygon - follow the cells, whatever shape they make"
             }
         }
     }
 
-    pub const ALL: [ShapeFit; 2] = [ShapeFit::KeepShape, ShapeFit::DrawPolygon];
+    pub const ALL: [ShapeFit; 3] = [
+        ShapeFit::KeepShape,
+        ShapeFit::MoveOnly,
+        ShapeFit::DrawPolygon,
+    ];
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|fit| fit.key() == key)
+    }
 
     /// The serialised name, which is also what the menu round-trips on.
     pub fn key(self) -> &'static str {
         match self {
             ShapeFit::KeepShape => "KeepShape",
+            ShapeFit::MoveOnly => "MoveOnly",
             ShapeFit::DrawPolygon => "DrawPolygon",
         }
     }
@@ -887,6 +1058,14 @@ pub struct PhenotypeRule {
     /// shape is kept.
     #[serde(default = "two_dozen")]
     pub vertices: usize,
+    /// The markers whose edge is pinned to their negative: the side of the
+    /// gate nearest the marker's negative keeps as many of the negative's
+    /// widths from its peak as on the reference, rather than its place
+    /// between the populations. For an edge drawn against the negative, where
+    /// what lies between it and the population varies from sample to sample.
+    /// Each must be one of the gate's two axes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<Arc<str>>,
 }
 
 fn ninety_five() -> f64 {
@@ -910,10 +1089,23 @@ impl PhenotypeRule {
                 .join(", ")
         };
         format!(
-            "find the cells that match on {markers}, then {}",
-            self.fit.label()
+            "find the cells that match on {markers}, then {}{}",
+            self.fit.label(),
+            pinned_said(&self.pinned, |m| m.to_string())
         )
     }
+}
+
+/// ", its edge on CD8 pinned to the negative", for a rule's description.
+pub fn pinned_said(pinned: &[Arc<str>], name: impl Fn(&str) -> String) -> String {
+    if pinned.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = pinned.iter().map(|m| name(m)).collect();
+    format!(
+        ", its edge on {} pinned to the negative",
+        names.join(" and ")
+    )
 }
 
 impl Default for PhenotypeRule {
@@ -924,6 +1116,7 @@ impl Default for PhenotypeRule {
             keep: ninety_five(),
             smoothing: one(),
             vertices: two_dozen(),
+            pinned: Vec::new(),
         }
     }
 }

@@ -162,6 +162,10 @@ pub struct PopulationData {
     pub events_subsample: Vec<(f32, f32)>,
     /// Where the gate sat on this sample when it was reported.
     pub gate_at: Vec<ExtentRecord>,
+    /// The gate itself as it sat there - its outline, not only its extent.
+    /// Absent in reports made before it was kept.
+    #[serde(default)]
+    pub gate: Option<flow_gates::Gate>,
 }
 
 /// What the rules decided for the reported gate on the reported sample, in
@@ -235,16 +239,6 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// The gate at `node` and the gate names above it, root first.
-fn gate_path(state: &GateState, node: &NodeId) -> Vec<String> {
-    state
-        .gate_chain_for_node(node)
-        .iter()
-        .filter_map(|id| state.population_name(id))
-        .map(|name| name.to_string())
-        .collect()
-}
-
 /// Where `gate_id` sits directly under the population at `parent`, or the
 /// root when there is none - how the gate editor names a gate: the one
 /// selected on a plot of `parent`.
@@ -253,7 +247,16 @@ pub fn node_under(
     gate_id: &crate::gates::gate_store::GateId,
     parent: Option<&NodeId>,
 ) -> Option<NodeId> {
-    let nodes = state.nodes_for_gate(gate_id);
+    let mut nodes = state.nodes_for_gate(gate_id).to_vec();
+    // A quadrant is placed in the tree by its corners, not by its own id -
+    // the id a click on it selects.
+    if nodes.is_empty()
+        && let Some(gate) = state.registered_gate(gate_id)
+    {
+        for corner in gate.get_inner_gate_ids() {
+            nodes.extend_from_slice(state.nodes_for_gate(&corner));
+        }
+    }
     nodes
         .iter()
         .find(|node| {
@@ -279,7 +282,7 @@ pub fn node_named(state: &GateState, gate_id: &str, parent_gate: Option<&str>) -
     nodes
         .iter()
         .find(|node| {
-            let path = gate_path(state, node);
+            let path = crate::gates::gate_paths::path_names(state, node);
             let parent = (path.len() > 1).then(|| path[path.len() - 2].as_str());
             parent == parent_gate
         })
@@ -405,10 +408,7 @@ fn population_data(
     let ys: Vec<f32> = points.iter().map(|p| p.1).collect();
     let xr = axis_range(axes, &x, &xs);
     let yr = axis_range(axes, &y, &ys);
-    let here = state
-        .gate_for_file(&gate_id, sample, &inputs.metadata)
-        .map(|g| extent_of(g.as_ref()))
-        .unwrap_or_default();
+    let held = state.gate_for_file(&gate_id, sample, &inputs.metadata);
 
     Ok(PopulationData {
         sample: samples.sample(sample),
@@ -419,7 +419,11 @@ fn population_data(
         ),
         density: density(&x, &y, &points, xr, yr),
         events_subsample: super::events::subsample(&points),
-        gate_at: here,
+        gate_at: held
+            .as_ref()
+            .map(|g| extent_of(g.as_ref()))
+            .unwrap_or_default(),
+        gate: held.and_then(|g| g.get_gate_ref(None).cloned()),
     })
 }
 
@@ -437,7 +441,7 @@ pub fn gather(
         .gate_for_node(&request.node)
         .cloned()
         .ok_or("that population has no gate")?;
-    let path = gate_path(state, &request.node);
+    let path = crate::gates::gate_paths::path_names(state, &request.node);
     let gate = path.last().cloned().unwrap_or_default();
     let parent_gate = (path.len() > 1).then(|| path[path.len() - 2].clone());
 
@@ -1060,6 +1064,7 @@ mod tests {
             density: density("x", "y", &[(1.0, 1.0)], (0.0, 1.0), (0.0, 1.0)),
             events_subsample: vec![(1.0, 1.0)],
             gate_at: Vec::new(),
+            gate: None,
         };
         PlacementReport {
             format: FORMAT,

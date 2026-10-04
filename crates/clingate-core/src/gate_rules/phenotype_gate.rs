@@ -1,8 +1,9 @@
 //! Turning a fitted population into a gate's geometry.
 //!
-//! The two ways a phenotype rule can end, as geometry rather than as points:
-//! the drawn shape moved and resized onto the matched cells, or a fresh
-//! polygon traced round them.
+//! The ways a phenotype rule can end, as geometry rather than as points: the
+//! drawn shape carried edge by edge onto the sample - each edge kept at the
+//! same point of the gap between the population and the cells beyond it - or
+//! slid there whole, or a fresh polygon traced round the matched cells.
 //!
 //! Kept apart from [`autogate`](super::autogate) because it is arithmetic over
 //! geometry and knows nothing about rules, reports or stores - the same split
@@ -12,7 +13,9 @@ use std::sync::Arc;
 
 use flow_gates::{GateGeometry, GateNode};
 
-use super::shape_fit::{Outline, Reshape};
+use super::phenotype::{Open, STRAY_EVENTS, STRAY_SHARE};
+use super::rule::Side;
+use super::shape_fit::Outline;
 
 /// Why a geometry could not be made.
 #[derive(Clone, Debug, PartialEq)]
@@ -37,52 +40,319 @@ impl std::fmt::Display for NoGeometry {
     }
 }
 
-/// The same shape, moved and resized onto a population.
-///
-/// Every coordinate on the two plot axes goes through the reshape; anything on
-/// a third channel is left exactly as it was. A gate can carry coordinates for
-/// channels it is not drawn on - a rectangle imported from a plot with more
-/// axes than this one - and rewriting those would move the gate on a plot
-/// nobody asked about.
-///
-/// An unbounded edge stays unbounded. `1e16` is Omiq's way of saying "this
-/// side does not close", and scaling it would turn a half-open gate into one
-/// with an arbitrary far edge that exports as a real coordinate.
-pub fn reshaped(
+/// The share of a population at each end of an axis that lies past its
+/// boundary there: its last few cells are the ones the match is least sure of.
+pub const BOUNDARY: f64 = 0.05;
+
+/// Where a population ends on one side of an axis, and where the cells beyond
+/// it begin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gap {
+    pub inside: f64,
+    /// `None` where no more than dust lies beyond - see [`Open`].
+    pub beyond: Option<f64>,
+}
+
+impl Gap {
+    /// On `side`, from the population's values on the axis and the rest of
+    /// the parent's within the gate's span on the other axis. `None` for a
+    /// population with no cells.
+    pub fn of(inside: &[f64], rest: &[f64], side: Side) -> Option<Self> {
+        let low = side == Side::Lower;
+        let edge = quantile(inside, if low { BOUNDARY } else { 1.0 - BOUNDARY })?;
+        let beyond: Vec<f64> = rest
+            .iter()
+            .copied()
+            .filter(|v| if low { *v < edge } else { *v > edge })
+            .collect();
+        let enough =
+            beyond.len() > STRAY_EVENTS && beyond.len() as f64 >= STRAY_SHARE * inside.len() as f64;
+        Some(Self {
+            inside: edge,
+            beyond: enough
+                .then(|| quantile(&beyond, if low { 1.0 - BOUNDARY } else { BOUNDARY }))
+                .flatten(),
+        })
+    }
+}
+
+/// Where `edge`, drawn between a population and the cells beyond it on the
+/// reference (`there`), goes on the sample (`here`): at the same point of the
+/// gap between them, as a person would put it. Where either has nothing
+/// beyond, as far as the population's own boundary moved.
+pub fn edge_in_gap(edge: f64, there: Gap, here: Gap) -> f64 {
+    match (there.beyond, here.beyond) {
+        (Some(beyond), Some(beyond_here)) if (there.inside - beyond).abs() > f64::EPSILON => {
+            let at = (edge - beyond) / (there.inside - beyond);
+            beyond_here + at * (here.inside - beyond_here)
+        }
+        _ => edge + here.inside - there.inside,
+    }
+}
+
+/// The value `share` of the way through `values`, or `None` for none.
+fn quantile(values: &[f64], share: f64) -> Option<f64> {
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    Some(sorted[((sorted.len() - 1) as f64 * share).round() as usize])
+}
+
+/// The side of `extent` nearest the negative of a parent's `values` on one
+/// marker, and how many of the negative's widths that side sits from its
+/// peak: below the gate, its lower side; within or above it, its upper side.
+/// `None` where the values have no negative to read.
+pub fn widths_from_negative(values: &[f64], extent: (f64, f64)) -> Option<(Side, f64)> {
+    let negative = crate::gate_rules::threshold::negative_peak(values)?;
+    let side = if negative.centre <= extent.0 {
+        Side::Lower
+    } else {
+        Side::Upper
+    };
+    let edge = if side == Side::Lower {
+        extent.0
+    } else {
+        extent.1
+    };
+    Some((side, (edge - negative.centre) / negative.spread))
+}
+
+/// Where a side `widths` of the negative's widths from its peak on the
+/// reference goes on a sample, pinned to the negative: as far from the peak
+/// of the sample's parent, `here`, in its widths.
+pub fn pinned_to_negative(widths: f64, here: &[f64]) -> Option<f64> {
+    let negative = crate::gate_rules::threshold::negative_peak(here)?;
+    Some(negative.centre + widths * negative.spread)
+}
+
+/// Whether an edge `widths` from its marker's negative lies within the
+/// negative's own spread - inside its 95th percentile - so cuts the top of
+/// the negative rather than sitting between it and the population.
+pub fn within_the_negative(widths: f64) -> bool {
+    widths.abs() <= NEAR_BOUNDARY_WIDTHS
+}
+
+/// How many widths from its peak a symmetric population's 95th percentile
+/// sits.
+const NEAR_BOUNDARY_WIDTHS: f64 = 1.645;
+
+/// A parent's `points`, and the `members` among them, split into two halves
+/// of alternate events, each with its members' indices into its own points.
+pub fn halves(points: &[(f64, f64)], members: &[usize]) -> [(Vec<(f64, f64)>, Vec<usize>); 2] {
+    let mut split: [(Vec<(f64, f64)>, Vec<usize>); 2] = Default::default();
+    for (at, point) in points.iter().enumerate() {
+        split[at % 2].0.push(*point);
+    }
+    for at in members {
+        split[at % 2].1.push(at / 2);
+    }
+    split
+}
+
+/// Of a parent's `points` that the spans `first` or `second` carries a gate
+/// to hold, the share both hold: 1 where they agree, and 1 where neither
+/// holds any.
+pub fn agreement(first: &[Carry; 2], second: &[Carry; 2], points: &[(f64, f64)]) -> f64 {
+    let holds = |carries: &[Carry; 2], point: &(f64, f64)| {
+        let within = |carry: &Carry, value: f64| {
+            carry.to.0.min(carry.to.1) <= value && value <= carry.to.0.max(carry.to.1)
+        };
+        within(&carries[0], point.0) && within(&carries[1], point.1)
+    };
+    let (mut both, mut either) = (0usize, 0usize);
+    for point in points {
+        match (holds(first, point), holds(second, point)) {
+            (true, true) => {
+                both += 1;
+                either += 1;
+            }
+            (true, false) | (false, true) => either += 1,
+            (false, false) => {}
+        }
+    }
+    if either == 0 {
+        1.0
+    } else {
+        both as f64 / either as f64
+    }
+}
+
+/// How one of a gate's axes is carried from the reference to a sample: its
+/// two edges moved, and everything between them kept in proportion, so a
+/// polygon keeps its shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Carry {
+    /// The gate's extent on the axis on the reference, and the sides of it
+    /// the gate leaves open.
+    pub extent: (f64, f64),
+    pub open: Open,
+    /// Where its edges go on the sample.
+    pub to: (f64, f64),
+    /// The side pinned to its marker's negative, which a slide keeps where
+    /// it is pinned - see [`pinned_to_negative`].
+    pub pinned: Option<Side>,
+}
+
+impl Carry {
+    /// The extent its edges are carried to - see [`Carry::never_in`].
+    pub fn carried(&self) -> (f64, f64) {
+        self.never_in(self.to)
+    }
+
+    /// The extent slid by [`Carry::shift`], its size kept.
+    pub fn slid(&self) -> (f64, f64) {
+        let by = self.shift();
+        (self.extent.0 + by, self.extent.1 + by)
+    }
+
+    /// `edges`, with a side the gate leaves open never pulled in: nothing lay
+    /// beyond it on the reference, so on a sample brighter or dimmer there is
+    /// nothing it should cut off.
+    fn never_in(&self, (low, high): (f64, f64)) -> (f64, f64) {
+        (
+            if self.open.low {
+                low.min(self.extent.0)
+            } else {
+                low
+            },
+            if self.open.high {
+                high.max(self.extent.1)
+            } else {
+                high
+            },
+        )
+    }
+
+    /// How far a gate that keeps its size slides: as far as its pinned side
+    /// moves, where one is pinned; otherwise its closed edges, on average.
+    /// Nothing where both sides are open.
+    pub fn shift(&self) -> f64 {
+        match self.pinned {
+            Some(Side::Lower) => return self.to.0 - self.extent.0,
+            Some(Side::Upper) => return self.to.1 - self.extent.1,
+            None => {}
+        }
+        let moves: Vec<f64> = [
+            (self.to.0 - self.extent.0, self.open.low),
+            (self.to.1 - self.extent.1, self.open.high),
+        ]
+        .into_iter()
+        .filter(|(_, open)| !open)
+        .map(|(by, _)| by)
+        .collect();
+        if moves.is_empty() {
+            0.0
+        } else {
+            moves.iter().sum::<f64>() / moves.len() as f64
+        }
+    }
+
+    /// How much the gate stretches along the axis: its carried extent against
+    /// its own where both edges are carried, 1 where a side is open.
+    pub fn stretch(&self) -> f64 {
+        if self.open.low || self.open.high {
+            1.0
+        } else {
+            ratio(self.carried(), self.extent)
+        }
+    }
+
+    /// `value` put as far between the ends of `onto` as it lies between the
+    /// gate's ends on the reference.
+    fn within(&self, onto: (f64, f64), value: f64) -> f64 {
+        let width = self.extent.1 - self.extent.0;
+        if width.abs() < f64::EPSILON {
+            value + ((onto.0 - self.extent.0) + (onto.1 - self.extent.1)) / 2.0
+        } else {
+            onto.0 + (value - self.extent.0) / width * (onto.1 - onto.0)
+        }
+    }
+}
+
+/// How much wider `to` is than `from`; 1 for a point.
+fn ratio(to: (f64, f64), from: (f64, f64)) -> f64 {
+    let width = from.1 - from.0;
+    if width.abs() < f64::EPSILON {
+        1.0
+    } else {
+        (to.1 - to.0) / width
+    }
+}
+
+/// The same shape with its edges on the two plot axes carried as `x` and `y`
+/// say, and everything between them kept in proportion.
+pub fn carried(
     geometry: &GateGeometry,
     params: &(Arc<str>, Arc<str>),
-    reshape: &Reshape,
+    x: &Carry,
+    y: &Carry,
+) -> Result<GateGeometry, NoGeometry> {
+    onto(geometry, params, (x, x.carried()), (y, y.carried()))
+}
+
+/// The same shape slid along the two plot axes as `x` and `y` say, its size
+/// unchanged.
+pub fn slid(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    x: &Carry,
+    y: &Carry,
+) -> Result<GateGeometry, NoGeometry> {
+    onto(geometry, params, (x, x.slid()), (y, y.slid()))
+}
+
+/// `geometry` with each axis's extent put onto the one given beside it.
+fn onto(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    (x, to_x): (&Carry, (f64, f64)),
+    (y, to_y): (&Carry, (f64, f64)),
+) -> Result<GateGeometry, NoGeometry> {
+    transformed(
+        geometry,
+        params,
+        |v| x.within(to_x, v),
+        |v| y.within(to_y, v),
+        (ratio(to_x, x.extent), ratio(to_y, y.extent)),
+    )
+}
+
+/// `geometry` with each coordinate on the two plot axes put through `x` and
+/// `y`, and an ellipse's radii scaled by `radii`.
+///
+/// Anything on a third channel is left exactly as it was. A gate can carry
+/// coordinates for channels it is not drawn on - a rectangle imported from a
+/// plot with more axes than this one - and rewriting those would move the gate
+/// on a plot nobody asked about.
+///
+/// An unbounded edge stays unbounded. `1e16` is Omiq's way of saying "this
+/// side does not close", and moving it would turn a half-open gate into one
+/// with an arbitrary far edge that exports as a real coordinate.
+fn transformed(
+    geometry: &GateGeometry,
+    params: &(Arc<str>, Arc<str>),
+    x: impl Fn(f64) -> f64,
+    y: impl Fn(f64) -> f64,
+    radii: (f64, f64),
 ) -> Result<GateGeometry, NoGeometry> {
     let move_node = |node: &GateNode| -> GateNode {
         let mut out = node.clone();
-        let x = node.get_coordinate(&params.0);
-        let y = node.get_coordinate(&params.1);
-        // Both axes at once, because the reshape is defined on a point.
-        // Missing coordinates stand in as the population's own centre, so the
-        // axis that is present moves exactly as it should and the absent one
-        // contributes nothing.
-        let from = (
-            x.map(|v| v as f64).unwrap_or(reshape.from.centre.0),
-            y.map(|v| v as f64).unwrap_or(reshape.from.centre.1),
-        );
-        let to = reshape.moved(from);
-        if let Some(v) = x {
-            out.set_coordinate(params.0.clone(), keep_unbounded(v, to.0));
+        if let Some(v) = node.get_coordinate(&params.0) {
+            out.set_coordinate(params.0.clone(), keep_unbounded(v, x(v as f64)));
         }
-        if let Some(v) = y {
-            out.set_coordinate(params.1.clone(), keep_unbounded(v, to.1));
+        if let Some(v) = node.get_coordinate(&params.1) {
+            out.set_coordinate(params.1.clone(), keep_unbounded(v, y(v as f64)));
         }
         out
     };
 
     Ok(match geometry {
         GateGeometry::Rectangle { min, max } => {
-            let (a, b) = (move_node(min), move_node(max));
-            // A negative scale cannot happen - spreads are positive - so min
-            // stays min, but the pair is normalised anyway: a rectangle whose
-            // min crept past its max is a gate that admits nothing, and it
-            // would be silent.
-            normalise(a, b, params)
+            // Normalised: a rectangle whose min crept past its max is a gate
+            // that admits nothing, and it would be silent.
+            normalise(move_node(min), move_node(max), params)
         }
         GateGeometry::Polygon { nodes, closed } => GateGeometry::Polygon {
             nodes: nodes.iter().map(move_node).collect(),
@@ -95,10 +365,8 @@ pub fn reshaped(
             angle,
         } => GateGeometry::Ellipse {
             center: move_node(center),
-            // The radii are lengths on each axis, so they take the scale
-            // without the shift.
-            radius_x: (*radius_x as f64 * reshape.scale.0) as f32,
-            radius_y: (*radius_y as f64 * reshape.scale.1) as f32,
+            radius_x: (*radius_x as f64 * radii.0) as f32,
+            radius_y: (*radius_y as f64 * radii.1) as f32,
             angle: *angle,
         },
         GateGeometry::Boolean { .. } => return Err(NoGeometry::NotAShape),
