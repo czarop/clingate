@@ -475,7 +475,9 @@ fn a_gate_far_from_its_peers_is_flagged_over_the_protocol() {
         (p.to, p.confidence) = (Some(line), 0.9);
         p
     };
-    let mut far = named("far", at(3.5));
+    // The run's own sample, so the board finds its gate as placed.
+    let mut far = model.clone();
+    far.to = Some(at(3.5));
     (far.confidence, far.read_on_control, far.reference_events, far.in_band) =
         (0.1, true, 600, true);
     record.placed = (0..5)
@@ -488,7 +490,7 @@ fn a_gate_far_from_its_peers_is_flagged_over_the_protocol() {
     assert_eq!(assessed["outcome"], "ok", "{assessed}");
     let flags = assessed["result"]["flags"].as_array().unwrap();
     assert_eq!(flags.len(), 1, "{assessed}");
-    assert_eq!(flags[0]["sample"]["id"], "far");
+    assert_eq!(flags[0]["sample"]["id"], model.sample.id.as_str());
     let reasons = flags[0]["reasons"].as_array().unwrap();
     assert_eq!(reasons.len(), 1, "{assessed}");
     assert_eq!(reasons[0]["measure"], "gate_position");

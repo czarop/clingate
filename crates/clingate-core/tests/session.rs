@@ -817,7 +817,9 @@ fn a_gate_far_from_its_peers_is_flagged_even_when_read_on_a_trusted_fmx() {
         p.to = Some(line);
         p
     };
-    let mut far = named("far", at(3.5));
+    // The run's own sample, so the board finds its gate as placed.
+    let mut far = model.clone();
+    far.to = Some(at(3.5));
     (far.confidence, far.read_on_control, far.reference_events, far.in_band) =
         (0.1, true, 600, true);
     record.placed = (0..5)
@@ -829,7 +831,7 @@ fn a_gate_far_from_its_peers_is_flagged_even_when_read_on_a_trusted_fmx() {
     let assessed = session.assess_run().unwrap();
     assert_eq!(assessed.flags.len(), 1, "{:#?}", assessed.flags);
     let flag = &assessed.flags[0];
-    assert_eq!(flag.sample.id, "far");
+    assert_eq!(flag.sample.id, model.sample.id);
     let measures: Vec<&str> = flag.reasons.iter().map(|r| r.measure).collect();
     assert_eq!(measures, ["gate_position"]);
     assert!(
