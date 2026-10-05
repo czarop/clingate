@@ -7,7 +7,8 @@ use serde::Serialize;
 
 use super::{Refusal, Session, failed, round};
 use crate::gate_rules::run::RunInputs;
-use crate::gate_rules::score::{GateScore, ScoreRow, distance};
+use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+use crate::gate_rules::score::{GateScore, ScoreRow, distance, furthest_first};
 
 /// Rows shown when no number is asked for, and the most ever shown.
 pub const SCORE_ROWS: usize = 40;
@@ -27,6 +28,25 @@ pub struct ScoreAnswer {
 }
 
 impl Session {
+    /// The target of the rule that places `query`'s gate: the one naming its
+    /// parent, else one naming no parent.
+    fn rule_target_for(&self, rules: &RuleStore, query: &str) -> Result<RuleTarget, Refusal> {
+        let (node, _) = self.one_population(query)?;
+        let (target, _, _) = self
+            .target_of(&node)
+            .ok_or_else(|| failed("that population has no gate"))?;
+        let of_gate = |parent: Option<&str>| {
+            rules
+                .entries()
+                .iter()
+                .find(|e| e.target.gate == target.gate && e.target.parent.as_deref() == parent)
+        };
+        of_gate(target.parent.as_deref())
+            .or_else(|| of_gate(None))
+            .map(|e| e.target.clone())
+            .ok_or_else(|| failed("no rule places that population"))
+    }
+
     /// Run every rule - or `population`'s alone - on the files, each gate
     /// under its parent as drawn, and say how far each lands from the gate
     /// drawn by hand. Moves nothing.
@@ -36,28 +56,9 @@ impl Session {
         max_rows: Option<usize>,
     ) -> Result<ScoreAnswer, Refusal> {
         let rules = self.rules_or_refuse()?.clone();
-        let only = match population {
-            Some(query) => {
-                let (node, _) = self.one_population(query)?;
-                let (target, _, _) = self
-                    .target_of(&node)
-                    .ok_or_else(|| failed("that population has no gate"))?;
-                let entry = rules
-                    .entries()
-                    .iter()
-                    .filter(|e| e.target.gate == target.gate)
-                    .find(|e| e.target.parent == target.parent)
-                    .or_else(|| {
-                        rules
-                            .entries()
-                            .iter()
-                            .find(|e| e.target.gate == target.gate && e.target.parent.is_none())
-                    })
-                    .ok_or_else(|| failed("no rule places that population"))?;
-                Some(entry.target.clone())
-            }
-            None => None,
-        };
+        let wanted = population
+            .map(|query| self.rule_target_for(&rules, query))
+            .transpose()?;
         let inputs = RunInputs::assemble(
             Some(&self.files),
             &self.compensation,
@@ -68,41 +69,41 @@ impl Session {
         let score = crate::gate_rules::score::score_rules(
             &self.gates,
             &inputs,
-            |target| only.as_ref().is_none_or(|o| o == target),
+            |target| wanted.as_ref().is_none_or(|w| w == target),
             &AtomicBool::new(false),
         )
         .map_err(failed)?;
 
         let name = |file: &str| self.sample_name(&Arc::from(file));
-        let r = |v: Option<f64>, places| v.map(|v| round(v, places));
+        let rounded = |value: Option<f64>, places| value.map(|v| round(v, places));
         let gates = score
             .gates
             .into_iter()
             .map(|g| GateScore {
-                median_off_iqrs: r(g.median_off_iqrs, 3),
-                worst_off_iqrs: r(g.worst_off_iqrs, 3),
-                median_holds_difference: r(g.median_holds_difference, 3),
-                worst_holds_difference: r(g.worst_holds_difference, 3),
+                median_off_iqrs: rounded(g.median_off_iqrs, 3),
+                worst_off_iqrs: rounded(g.worst_off_iqrs, 3),
+                median_holds_difference: rounded(g.median_holds_difference, 3),
+                worst_holds_difference: rounded(g.worst_holds_difference, 3),
                 worst: g.worst.iter().map(|f| name(f)).collect(),
                 ..g
             })
             .collect();
         let rows_total = score.rows.len();
         let mut rows = score.rows;
-        rows.sort_by(|a, b| distance(b).total_cmp(&distance(a)));
+        rows.sort_by(|a, b| furthest_first(&distance(a), &distance(b)));
         let shown = max_rows.unwrap_or(SCORE_ROWS).clamp(1, SCORE_ROWS_MAX);
         let rows = rows
             .into_iter()
             .take(shown)
             .map(|row| ScoreRow {
                 file: name(&row.file),
-                hand_line: r(row.hand_line, 4),
-                rule_line: r(row.rule_line, 4),
-                off_iqrs: r(row.off_iqrs, 3),
-                hand_holds: r(row.hand_holds, 5),
-                rule_holds: r(row.rule_holds, 5),
-                holds_difference: r(row.holds_difference, 3),
-                confidence: r(row.confidence, 3),
+                hand_line: rounded(row.hand_line, 4),
+                rule_line: rounded(row.rule_line, 4),
+                off_iqrs: rounded(row.off_iqrs, 3),
+                hand_holds: rounded(row.hand_holds, 5),
+                rule_holds: rounded(row.rule_holds, 5),
+                holds_difference: rounded(row.holds_difference, 3),
+                confidence: rounded(row.confidence, 3),
                 ..row
             })
             .collect();

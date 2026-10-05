@@ -478,3 +478,63 @@ fn halves_apart(seed: u64) -> polars::prelude::DataFrame {
     let ys: Vec<f32> = (0..xs.len()).map(|_| cd3.sample(&mut rng) as f32).collect();
     df![X => xs, Y => ys].unwrap()
 }
+
+/// A phenotype rule draws no line, so it is scored on what it holds: the
+/// same fractions before and after that a run reports, read here off the
+/// same samples written as files.
+#[test]
+fn a_phenotype_rule_is_scored_on_what_it_holds() {
+    use crate::file_load_tests::{scratch, write_fcs_rows};
+    let reference = sample(1, 50.0, 2_000, Positives::Smear(200.0));
+    let dimmer = sample(2, 50.0, 2_000, Positives::Smear(140.0));
+    let (report, _, _) = run(ShapeFit::KeepShape, (600.0, 3_000.0), &reference, &dimmer);
+    let placed = &report.positioned[0];
+
+    let dir = scratch("score-phenotype");
+    let files: Vec<(Arc<str>, std::path::PathBuf)> = [("reference", &reference), ("sample", &dimmer)]
+        .into_iter()
+        .map(|(name, frame)| {
+            let column = |c: &str| frame.column(c).unwrap().f32().unwrap().to_vec();
+            let rows: Vec<Vec<f32>> = column(X)
+                .into_iter()
+                .zip(column(Y))
+                .map(|(x, y)| vec![x.unwrap(), y.unwrap()])
+                .collect();
+            let path = dir.join(format!("{name}.fcs"));
+            write_fcs_rows(&path, &[(X, None), (Y, None)], &rows, &[]);
+            (Arc::from(format!("{name}.fcs").as_str()), path)
+        })
+        .collect();
+    let inputs = crate::gate_rules::run::RunInputs {
+        names: files
+            .iter()
+            .map(|(id, _)| (id.clone(), Arc::from(id.trim_end_matches(".fcs"))))
+            .collect(),
+        files,
+        compensation: Default::default(),
+        cofactors: Vec::new(),
+        metadata: specimens(),
+        rules: rule(ShapeFit::KeepShape),
+    };
+    let (state, _) = gated((600.0, 3_000.0));
+    let scored = crate::gate_rules::score::score_rules(
+        &state,
+        &inputs,
+        |_| true,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+
+    let row = scored
+        .rows
+        .iter()
+        .find(|r| r.what == "moved")
+        .unwrap_or_else(|| panic!("{scored:#?}"));
+    assert_eq!(row.file, "sample");
+    assert_eq!((row.hand_line, row.rule_line, row.off_iqrs), (None, None, None));
+    assert!((row.hand_holds.unwrap() - placed.from).abs() < 1e-9, "{row:?} {}", placed.from);
+    assert!((row.rule_holds.unwrap() - placed.to).abs() < 1e-9, "{row:?} {}", placed.to);
+    let difference = (placed.to - placed.from) * 100.0;
+    assert!((row.holds_difference.unwrap() - difference).abs() < 1e-6);
+    assert_eq!(scored.gates[0].worst_holds_difference, Some(difference.abs()));
+}

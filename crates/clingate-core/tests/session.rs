@@ -3903,11 +3903,41 @@ fn the_rules_are_scored_against_the_gating_as_drawn() {
     };
     assert_eq!(lines(&again), lines(&preview));
 
-    let alone = session.score_rules(Some("Tmem"), Some(1)).unwrap();
-    assert_eq!(alone.rows.len(), 1);
-    assert_eq!(alone.rows_total, scored.rows_total);
-    assert_eq!(alone.rows[0], scored.rows[0], "the furthest off first");
+    let first = session.score_rules(None, Some(1)).unwrap();
+    assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.rows_total, scored.rows_total);
+    assert_eq!(first.rows[0], scored.rows[0], "the furthest off first");
     assert!(session.score_rules(Some("no such gate"), None).is_err());
+}
+
+/// With rules for two gates, asking for one scores that gate alone.
+#[test]
+fn one_population_s_rule_is_scored_alone() {
+    let folder = with_rules("session-score-one");
+    let mut session = Session::open(&folder).unwrap();
+    let parameter = session.gate("teff_naive", None).unwrap().parameters[0].clone();
+    session
+        .update_rule(change(
+            "teff_naive",
+            None,
+            &parameter,
+            clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
+            clingate_core::gate_rules::rule::Rule::TailFraction(
+                clingate_core::gate_rules::rule::TailFractionRule::new((0.05, 0.1)),
+            ),
+        ))
+        .unwrap();
+    let every = session.score_rules(None, None).unwrap();
+    assert_eq!(every.gates.len(), 2, "{every:#?}");
+    let tmem = session.score_rules(Some("Tmem"), None).unwrap();
+    assert_eq!(tmem.gates.len(), 1);
+    let gate = &tmem.gates[0];
+    assert!(gate.gate.starts_with("Tmem"), "{gate:?}");
+    assert!(tmem.rows.iter().all(|r| r.gate_id == gate.gate_id));
+    assert_eq!(
+        tmem.rows_total,
+        every.rows.iter().filter(|r| r.gate_id == gate.gate_id).count()
+    );
 }
 
 #[test]

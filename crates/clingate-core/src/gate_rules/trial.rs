@@ -120,6 +120,30 @@ pub struct Trial {
     pub rows: Vec<Row>,
 }
 
+/// The sample id `file`'s metadata gives under `pairing`.
+pub(crate) fn specimen_name(
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+    pairing: &crate::gate_rules::rule_store::SamplePairing,
+    file: &str,
+) -> Option<String> {
+    metadata
+        .get(file)
+        .and_then(|row| row.get(&pairing.sample_id_column))
+        .map(|s| s.to_string())
+}
+
+/// The sample type `file`'s metadata gives under `pairing`.
+pub(crate) fn sample_type_name(
+    metadata: &crate::omiq::metadata::MetaDataFileMap,
+    pairing: &crate::gate_rules::rule_store::SamplePairing,
+    file: &str,
+) -> Option<String> {
+    metadata
+        .get(file)
+        .and_then(|row| pairing.sample_type_of(row))
+        .map(|t| t.to_string())
+}
+
 /// The workspace's rules with only `target`'s rule, set to `rule`: the
 /// pairing and hand-picked references kept, every other gate left out so
 /// that nothing else is measured.
@@ -178,18 +202,8 @@ pub fn try_rules(
     let files_read = inputs.files.len();
     let metadata = &inputs.metadata;
     let pairing = &inputs.rules.pairing;
-    let sample_type = |file: &str| -> Option<String> {
-        metadata
-            .get(file)
-            .and_then(|row| pairing.sample_type_of(row))
-            .map(|t| t.to_string())
-    };
-    let specimen = |file: &str| -> Option<String> {
-        metadata
-            .get(file)
-            .and_then(|row| row.get(&pairing.sample_id_column))
-            .map(|s| s.to_string())
-    };
+    let sample_type = |file: &str| sample_type_name(metadata, pairing, file);
+    let specimen = |file: &str| specimen_name(metadata, pairing, file);
 
     // What each gated sample would hold, candidate by candidate.
     let mut rows: BTreeMap<(String, String), Row> = BTreeMap::new();

@@ -515,8 +515,9 @@ fn each_sample_is_scored_by_how_far_the_rule_s_line_is_from_the_hand_line() {
         assert_eq!(row.hand_line, Some(0.0));
         assert!((row.rule_line.unwrap() - rule_line).abs() < 1e-3, "{row:?}");
         let off = row.off_iqrs.unwrap();
+        // The same interpolation both ways round, so only rounding differs.
         assert!(
-            (off - rule_line / iqr).abs() < 0.02 * off.abs(),
+            (off - rule_line / iqr).abs() < 1e-6 * off.abs(),
             "{file}: {off} against {}",
             rule_line / iqr
         );
@@ -546,6 +547,7 @@ fn a_rule_the_hand_gating_already_meets_scores_nothing_off() {
         assert_eq!(row.holds_difference, Some(0.0));
     }
     assert_eq!(scored.gates[0].worst_off_iqrs, Some(0.0));
+    assert!(scored.gates[0].worst.is_empty(), "none is off");
 }
 
 /// A gate is scored under its parent as drawn, whatever the rule above it
@@ -605,7 +607,6 @@ fn a_gate_is_scored_under_its_parent_as_drawn() {
     );
 }
 
-
 /// A sample the rule cannot place is listed with why, and scored on nothing.
 #[test]
 fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
@@ -623,6 +624,69 @@ fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
     }
     let gate = &scored.gates[0];
     assert_eq!(gate.scored, 0);
-    assert_eq!(gate.not_placed, scored.rows.len());
+    assert_eq!(gate.not_placed, 4, "one for each of the four specimens");
     assert_eq!((gate.worst_off_iqrs, gate.worst.len()), (None, 0));
+}
+
+/// A rule on a parameter the files do not hold measures nothing: each
+/// specimen is still listed, with why.
+#[test]
+fn a_sample_the_rule_cannot_measure_is_said_too() {
+    let written = write("score-unmeasured", &FILES);
+    let mut rule = band(Pool::Specimen, MeasuredOn::Itself);
+    rule.parameter = Arc::from("CD3");
+    let scored = score(&gates(), &written, store(rule));
+    assert_eq!(scored.gates.len(), 1, "{scored:#?}");
+    assert_eq!(scored.gates[0].not_placed, 4);
+    for row in &scored.rows {
+        assert_eq!(row.what, "not placed");
+        assert_eq!((row.hand_line, row.hand_holds), (None, None));
+        assert!(row.why_not.is_some(), "{row:?}");
+    }
+}
+
+/// The sample a rule calibrates from is listed as the reference and not
+/// scored.
+#[test]
+fn the_reference_is_listed_and_not_scored() {
+    let written = write("score-reference", &FILES);
+    let scored = score(
+        &gates(),
+        &written,
+        store(band(Pool::Specimen, MeasuredOn::File(Arc::from("d1_fs")))),
+    );
+    let references: Vec<_> = scored.rows.iter().filter(|r| r.what == "reference").collect();
+    assert!(!references.is_empty(), "{:#?}", scored.rows);
+    assert!(references.iter().all(|r| r.off_iqrs.is_none() && r.rule_line.is_none()));
+    let gate = &scored.gates[0];
+    assert_eq!(gate.references, references.len());
+    assert_eq!(gate.scored + gate.not_placed + gate.references, scored.rows.len());
+}
+
+/// Asked for one gate, only that gate's rule is run.
+#[test]
+fn only_the_rules_asked_for_are_scored() {
+    let written = write("score-which", &FILES);
+    let mut both = store(band(Pool::Specimen, MeasuredOn::Itself));
+    both.insert(
+        RuleTarget::named("Lymph"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.45, 0.55))),
+        },
+    );
+    let drawn = gates_with_lymph_from(-1_000.0);
+    let child = RuleTarget::under("CD69+", "Lymph");
+    let scored = crate::gate_rules::score::score_rules(
+        &drawn,
+        &inputs(&written, &FILES, both.clone()),
+        |target| *target == child,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(scored.gates.len(), 1);
+    assert!(scored.rows.iter().all(|r| r.gate_id == "cd69"));
+    assert_eq!(score(&drawn, &written, both).gates.len(), 2);
 }
