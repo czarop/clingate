@@ -3866,3 +3866,52 @@ fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
         "{refused:?}"
     );
 }
+
+/// Scored against the gating as drawn, each sample's lines are the ones a
+/// preview of the same rules moves the gate from and to; scoring moves
+/// nothing, and one population's rule can be scored alone.
+#[test]
+fn the_rules_are_scored_against_the_gating_as_drawn() {
+    let folder = with_rules("session-score");
+    let mut session = Session::open(&folder).unwrap();
+    let scored = session.score_rules(None, None).unwrap();
+    let preview = session.preview_rules().unwrap();
+
+    assert_eq!(scored.gates.len(), 1);
+    assert!(!preview.would_move.is_empty());
+    assert_eq!(scored.gates[0].gate, preview.would_move[0].gate);
+    for moved in &preview.would_move {
+        let row = scored
+            .rows
+            .iter()
+            .find(|r| r.file == moved.measured_on)
+            .unwrap_or_else(|| panic!("{} not scored: {scored:#?}", moved.measured_on));
+        assert_eq!(row.what, "moved");
+        assert_eq!(row.hand_line, Some(moved.from), "{row:?}");
+        assert_eq!(row.rule_line, Some(moved.to), "{row:?}");
+        assert_eq!(row.off_iqrs.unwrap().signum(), (moved.to - moved.from).signum());
+    }
+    let kept: Vec<_> = scored.rows.iter().filter(|r| r.what == "kept").collect();
+    assert_eq!(kept.len(), preview.already_in_place.len(), "{scored:#?}");
+    assert!(kept.iter().all(|r| r.off_iqrs == Some(0.0)));
+    assert_eq!(scored.rows_total, scored.rows.len());
+
+    // Nothing moved: a second preview proposes the same.
+    let again = session.preview_rules().unwrap();
+    let lines = |p: &clingate_core::session::RulesPreview| {
+        p.would_move.iter().map(|m| (m.from, m.to)).collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&again), lines(&preview));
+
+    let alone = session.score_rules(Some("Tmem"), Some(1)).unwrap();
+    assert_eq!(alone.rows.len(), 1);
+    assert_eq!(alone.rows_total, scored.rows_total);
+    assert_eq!(alone.rows[0], scored.rows[0], "the furthest off first");
+    assert!(session.score_rules(Some("no such gate"), None).is_err());
+}
+
+#[test]
+fn scoring_needs_rules() {
+    let session = Session::open(&workspace("session-score-none")).unwrap();
+    assert!(session.score_rules(None, None).is_err());
+}

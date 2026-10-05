@@ -116,7 +116,7 @@ pub struct NotPositioned {
 }
 
 impl Session {
-    fn rules_or_refuse(&self) -> Result<&crate::gate_rules::rule_store::RuleStore, Refusal> {
+    pub(super) fn rules_or_refuse(&self) -> Result<&crate::gate_rules::rule_store::RuleStore, Refusal> {
         self.rules.as_ref().ok_or_else(|| {
             failed(format!(
                 "this workspace has no rules: the Gate Rules tab saves them as {} in the \

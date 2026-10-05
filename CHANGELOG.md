@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Scoring the rules against hand gating** (`score_rules` in the tools for
+  Claude). On a workspace gated by hand, every rule - or one population's -
+  runs on the full files, each gate under its parent as drawn so one wrong
+  gate cannot make those below it look wrong, each file read once. Per gate
+  and sample it says how far the rule's line is from the hand-drawn one in
+  that sample's parent's interquartile ranges, and the rule's % of the parent
+  minus the hand gate's; each gate is summed up in a line, furthest off
+  first. It answers "is this ruleset closer than the last one?" after every
+  change. Nothing is moved.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several

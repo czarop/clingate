@@ -51,7 +51,8 @@ Distributions, gate edges and comparisons are in the units the plots are drawn \
 in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
-compare_to_peers, gate_profile, gate_picture, try_rules, preview_rules - only \
+compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
+preview_rules - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -104,6 +105,13 @@ and what they flag. \
 4. update_rule only on the user's word. \
 Do not picture every gate or try every setting: a few well-chosen \
 candidates per gate is the point.
+
+When the user has gated a workspace by hand and asks how close the rules come \
+to it, score_rules runs every rule - or one population's - on the files, each \
+gate under its parent as drawn, and says per gate and sample how far the \
+rule's line is from theirs, in that sample's parent's interquartile ranges, \
+and the difference in % of the parent. Show the user the gates and samples \
+furthest off; it moves nothing.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -335,6 +343,15 @@ pub struct TryRules {
     pub candidates: serde_json::Value,
     /// How many samples to list, most telling first (default 30, at most 300). The summaries
     /// always count every sample.
+    pub max_rows: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScoreRulesArgs {
+    /// The population whose rule to score, by its gate names. Leave out for every rule.
+    pub population: Option<String>,
+    /// How many samples to list, furthest from the hand gating first (default 40, at most
+    /// 400). The gates' lines always count every sample.
     pub max_rows: Option<usize>,
 }
 
@@ -843,6 +860,18 @@ impl Clingate {
             s.try_rules(&args.population, &candidates, args.max_rows)
         })
         .await
+    }
+
+    /// Score the rules against the gating drawn by hand: every rule, or one population's, run
+    /// on the files with each gate under its parent as drawn, and per gate and sample how far
+    /// the rule's line is from the hand-drawn one in that sample's parent's interquartile
+    /// ranges, and the rule's % of the parent minus the hand gate's. Each gate in a line,
+    /// furthest off first, then the samples furthest off. Moves nothing. Reads the samples'
+    /// events: only when the user asks for it.
+    #[tool(annotations(read_only_hint = true))]
+    async fn score_rules(&self, Parameters(args): Parameters<ScoreRulesArgs>) -> String {
+        self.run(move |s| s.score_rules(args.population.as_deref(), args.max_rows))
+            .await
     }
 
     /// What a gate's populations look like across the dataset, on each of its two markers, by

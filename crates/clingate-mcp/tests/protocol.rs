@@ -201,6 +201,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "explain_gate_positioning",
         "rule_guide",
         "try_rules",
+        "score_rules",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1173,4 +1174,39 @@ fn a_phenotype_rule_pins_an_edge_to_the_negative_over_the_protocol() {
         guide.to_string().contains("Pinned or in the gap"),
         "{guide}"
     );
+}
+
+/// The rules scored against the gating as drawn, over the protocol: each
+/// sample's lines are the ones a preview moves its gate from and to.
+#[test]
+fn the_rules_are_scored_over_the_protocol() {
+    let folder = workspace_with_rules("score");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let scored = server.call("score_rules", json!({}));
+    assert_eq!(scored["outcome"], "ok", "{scored}");
+    let preview = server.call("preview_rules", json!({}));
+    let moves = preview["result"]["would_move"].as_array().unwrap();
+    assert!(!moves.is_empty(), "{preview}");
+    let rows = scored["result"]["rows"].as_array().unwrap();
+    for moved in moves {
+        let row = rows
+            .iter()
+            .find(|r| r["file"] == moved["measured_on"])
+            .unwrap_or_else(|| panic!("{moved} not scored: {scored}"));
+        assert_eq!(row["hand_line"], moved["from"], "{row}");
+        assert_eq!(row["rule_line"], moved["to"], "{row}");
+    }
+    assert_eq!(scored["result"]["gates"][0]["gate"], moves[0]["gate"]);
+
+    let one = server.call("score_rules", json!({"population": "Tmem", "max_rows": 1}));
+    assert_eq!(one["outcome"], "ok", "{one}");
+    assert_eq!(one["result"]["rows"].as_array().unwrap().len(), 1);
+    let unknown = server.call("score_rules", json!({"population": "no such gate"}));
+    assert_ne!(unknown["outcome"], "ok", "{unknown}");
 }

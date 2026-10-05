@@ -24,6 +24,7 @@ mod replay;
 mod review;
 mod rule_check;
 mod rules;
+mod score;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
@@ -38,6 +39,7 @@ pub use review::{FLAGS_SHOWN, Reported, Reviewed, RunAssessment};
 pub use rules::{
     RulesPreview, RulesView, TRIAL_ROWS, TRIAL_ROWS_MAX, TrialAnswer, TrialCandidate, TrialRow,
 };
+pub use score::{SCORE_ROWS, SCORE_ROWS_MAX, ScoreAnswer};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

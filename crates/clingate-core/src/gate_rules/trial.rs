@@ -123,7 +123,7 @@ pub struct Trial {
 /// The workspace's rules with only `target`'s rule, set to `rule`: the
 /// pairing and hand-picked references kept, every other gate left out so
 /// that nothing else is measured.
-fn only(base: &RuleStore, target: &RuleTarget, rule: &GateRule) -> RuleStore {
+pub(crate) fn only(base: &RuleStore, target: &RuleTarget, rule: &GateRule) -> RuleStore {
     let mut store = base.clone();
     let others: Vec<RuleTarget> = store
         .entries()

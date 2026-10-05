@@ -62,9 +62,14 @@ fn rect(id: &str, name: &str, x0: f32) -> Arc<dyn DrawableGate> {
 }
 
 fn gates() -> GateState {
+    gates_with_lymph_from(-BIG)
+}
+
+/// The gates, with Lymph's left edge at `lymph_from`.
+fn gates_with_lymph_from(lymph_from: f32) -> GateState {
     let mut state = GateState::default();
     for (id, name, x0, parent) in [
-        ("lymph", "Lymph", -BIG, None),
+        ("lymph", "Lymph", lymph_from, None),
         ("cd69", "CD69+", 0.0, Some("lymph")),
     ] {
         let gate = rect(id, name, x0);
@@ -147,6 +152,24 @@ fn fmx() -> MeasuredOn {
     MeasuredOn::Partner(Arc::from("FMX"))
 }
 
+fn inputs(
+    written: &[(Arc<str>, PathBuf)],
+    files: &[(&str, &str, &str, &str)],
+    rules: RuleStore,
+) -> RunInputs {
+    RunInputs {
+        files: written.to_vec(),
+        compensation: crate::compensation::groups::Compensation::default(),
+        names: files
+            .iter()
+            .map(|(f, ..)| (Arc::from(format!("{f}.fcs").as_str()), Arc::from(*f)))
+            .collect::<std::collections::HashMap<_, _, FxBuildHasher>>(),
+        cofactors: Vec::new(),
+        metadata: metadata(files),
+        rules,
+    }
+}
+
 fn run(
     state: &GateState,
     written: &[(Arc<str>, PathBuf)],
@@ -155,17 +178,7 @@ fn run(
 ) -> RunOutcome {
     run_rules(
         state,
-        &RunInputs {
-            files: written.to_vec(),
-            compensation: crate::compensation::groups::Compensation::default(),
-            names: files
-                .iter()
-                .map(|(f, ..)| (Arc::from(format!("{f}.fcs").as_str()), Arc::from(*f)))
-                .collect::<std::collections::HashMap<_, _, FxBuildHasher>>(),
-            cofactors: Vec::new(),
-            metadata: metadata(files),
-            rules,
-        },
+        &inputs(written, files, rules),
         |_| {},
         &AtomicBool::new(false),
     )
@@ -440,4 +453,176 @@ fn a_line_read_on_a_big_enough_fmx_and_in_band_is_not_flagged() {
         placed.iter().map(|p| p.confidence).collect::<Vec<_>>()
     );
     assert_eq!(outcome.report.needs_review(floor).count(), 0);
+}
+
+// ─── scored against the gating drawn by hand ──────────────────────────────────
+
+fn score(
+    state: &GateState,
+    written: &[(Arc<str>, PathBuf)],
+    rules: RuleStore,
+) -> crate::gate_rules::score::Score {
+    crate::gate_rules::score::score_rules(
+        state,
+        &inputs(written, &FILES, rules),
+        |_| true,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+
+/// The X values of `file`, as written.
+fn values_of(file: &str) -> Vec<f32> {
+    let (seed, (_, _, kind, at)) = FILES
+        .iter()
+        .enumerate()
+        .find(|(_, (f, ..))| *f == file)
+        .unwrap();
+    events(centre_of(at), seed as u64 + 1, *kind == "FS")
+        .into_iter()
+        .map(|row| row[0])
+        .collect()
+}
+
+/// Each sample read on itself: the rule's line is where a run puts it, the
+/// hand line is the drawn 0, and the distance is in that sample's own
+/// interquartile range, counted here from the events written.
+#[test]
+fn each_sample_is_scored_by_how_far_the_rule_s_line_is_from_the_hand_line() {
+    let written = write("score-each", &FILES);
+    let rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    let placed = applied(&gates(), &run(&gates(), &written, &FILES, rules.clone()), &FILES);
+    let scored = score(&gates(), &written, rules);
+
+    assert_eq!(scored.gates.len(), 1);
+    // The full stains: the FMX files are what a rule reads, not what it gates.
+    assert_eq!(scored.rows.len(), 4, "{:#?}", scored.rows);
+    for row in &scored.rows {
+        let file = row.file.trim_end_matches(".fcs");
+        let mut values = values_of(file);
+        values.sort_by(f32::total_cmp);
+        // Linear between the order statistics either side of rank q(n - 1).
+        let quartile = |q: f64| {
+            let rank = q * (values.len() - 1) as f64;
+            let (lo, hi) = (values[rank.floor() as usize], values[rank.ceil() as usize]);
+            lo as f64 + (hi - lo) as f64 * rank.fract()
+        };
+        let iqr = quartile(0.75) - quartile(0.25);
+        let rule_line = line(&placed, file, &FILES) as f64;
+        let above = values.iter().filter(|v| **v as f64 > rule_line).count();
+
+        assert_eq!(row.what, "moved", "{row:?}");
+        assert_eq!(row.hand_line, Some(0.0));
+        assert!((row.rule_line.unwrap() - rule_line).abs() < 1e-3, "{row:?}");
+        let off = row.off_iqrs.unwrap();
+        assert!(
+            (off - rule_line / iqr).abs() < 0.02 * off.abs(),
+            "{file}: {off} against {}",
+            rule_line / iqr
+        );
+        assert_eq!(row.hand_holds, Some(1.0), "the drawn gate holds everything");
+        let holds = above as f64 / values.len() as f64;
+        assert!((row.rule_holds.unwrap() - holds).abs() < 0.002, "{row:?}");
+        assert!((row.holds_difference.unwrap() - (holds - 1.0) * 100.0).abs() < 0.2);
+    }
+    let gate = &scored.gates[0];
+    assert_eq!((gate.scored, gate.not_placed), (4, 0));
+    let worst = scored.rows.iter().map(|r| r.off_iqrs.unwrap().abs()).fold(0.0, f64::max);
+    assert_eq!(gate.worst_off_iqrs, Some(worst));
+    assert_eq!(gate.worst[0], scored.rows[0].file, "worst first");
+}
+
+/// A band the drawn gate already sits in: the rule would leave it, so it is
+/// exactly where the hand put it.
+#[test]
+fn a_rule_the_hand_gating_already_meets_scores_nothing_off() {
+    let written = write("score-kept", &FILES);
+    let mut rule = band(Pool::Specimen, MeasuredOn::Itself);
+    rule.rule = Rule::TailFraction(TailFractionRule::new((0.5, 1.0)));
+    let scored = score(&gates(), &written, store(rule));
+    for row in &scored.rows {
+        assert_eq!(row.what, "kept", "{row:?}");
+        assert_eq!(row.off_iqrs, Some(0.0));
+        assert_eq!(row.holds_difference, Some(0.0));
+    }
+    assert_eq!(scored.gates[0].worst_off_iqrs, Some(0.0));
+}
+
+/// A gate is scored under its parent as drawn, whatever the rule above it
+/// would do: the same answer with and without a rule that moves the parent.
+#[test]
+fn a_gate_is_scored_under_its_parent_as_drawn() {
+    let written = write("score-parent", &FILES);
+    // An edge a rule can move, left of every event.
+    let drawn = gates_with_lymph_from(-1_000.0);
+    let child = band(Pool::Specimen, MeasuredOn::Itself);
+    let alone = score(&drawn, &written, store(child.clone()));
+
+    let mut both = store(child);
+    both.insert(
+        RuleTarget::named("Lymph"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.45, 0.55))),
+        },
+    );
+    let with_parent = score(&drawn, &written, both.clone());
+    assert_eq!(
+        with_parent.gates.len(),
+        2,
+        "{:?}",
+        reasons(&run(&drawn, &written, &FILES, both.clone()))
+    );
+    let child_rows = |s: &crate::gate_rules::score::Score| {
+        s.rows
+            .iter()
+            .filter(|r| r.gate_id == "cd69")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(child_rows(&with_parent), child_rows(&alone));
+
+    // A run moves the parent first and reads the child under it, so its
+    // child lines differ: the parent rule really does change the child.
+    let run_both = run(&drawn, &written, &FILES, both);
+    let child_line = |file: &str| {
+        run_both
+            .report
+            .positioned
+            .iter()
+            .find(|p| &*p.gate_id == "cd69" && &*p.file == file)
+            .map(|p| p.to)
+            .unwrap()
+    };
+    assert!(
+        alone
+            .rows
+            .iter()
+            .any(|r| (r.rule_line.unwrap() - child_line(&r.file)).abs() > 1.0),
+        "the parent rule moved nothing under it, so this proves nothing"
+    );
+}
+
+
+/// A sample the rule cannot place is listed with why, and scored on nothing.
+#[test]
+fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
+    let written = write("score-unplaced", &FILES);
+    let scored = score(
+        &gates(),
+        &written,
+        store(band(Pool::Specimen, MeasuredOn::Partner(Arc::from("FMO")))),
+    );
+    assert!(!scored.rows.is_empty());
+    for row in &scored.rows {
+        assert_eq!(row.what, "not placed", "{row:?}");
+        assert!(row.why_not.is_some());
+        assert_eq!((row.off_iqrs, row.holds_difference), (None, None));
+    }
+    let gate = &scored.gates[0];
+    assert_eq!(gate.scored, 0);
+    assert_eq!(gate.not_placed, scored.rows.len());
+    assert_eq!((gate.worst_off_iqrs, gate.worst.len()), (None, 0));
 }
