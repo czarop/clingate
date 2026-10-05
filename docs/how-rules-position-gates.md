@@ -357,8 +357,10 @@ counts as 0). **The overall confidence is the minimum**, and the lowest
 component is reported as "weakest" (`Confidence::from_components`). The
 population the numbers are counted on is the one the placement is judged on
 (3.1-3.5). Limits (`ConfidenceLimits`, can be changed per rule in the rules
-file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
-`displacement_limit = 0.5`.
+file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`. Neither
+how far a gate moved from the reference nor how common a population is
+against the reference counts against a placement: activation markers and
+donors vary that much in the data a rule is right on.
 
 | component | score |
 |-----------|-------|
@@ -366,12 +368,11 @@ file): `events_full = 10000`, `events_floor = 100`, `swing_half = 1`,
 | events in the gate | `1 - 1/sqrt(k)`, `k` = the smaller of admitted and excluded events |
 | stability of the gate's contents | `1 / (1 + swing)`; the gate is nudged +-0.1 x the interquartile range (IQR) of the judged population; `swing = abs(held when nudged back - held when nudged forward) / held` |
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
-| distance moved from the reference | band and percentile rules only: `1 - (abs(to - from) / IQR) / 0.5`, where `from` is the sample's line **before the run** (not the reference file's line) |
 | depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
 | no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
 | held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
-| phenotype rule | events matching, purity, how much of the population is caught, one cloud, abundance against the reference, and - where its edges are carried - whether edges placed from either half of the events hold the same cells (`confidence::assess_match`, `phenotype_gate::agreement`) |
+| phenotype rule | events matching, purity, how much of the population is caught, one cloud, and - where its edges are carried - whether edges placed from either half of the events hold the same cells (`confidence::assess_match`, `phenotype_gate::agreement`) |
 
 The Gate Rules tab and the Review tab flag a placement below 0.30 - unless
 its rule read a control (the specimen's FMX, or the run's) of more than 300
@@ -542,8 +543,7 @@ These are properties of the code as it stands, not settled choices:
 6. **Kept when in band** is judged on the gate as it stands on the
    reference file, so a gate kept as "met the rule" is never re-examined for
    position relative to its peers until the review.
-7. **Confidence limits are uncalibrated guesses** except
-   `displacement_limit`, which came from one workflow's hand moves.
+7. **Confidence limits are uncalibrated guesses.**
 
 ## 8. The rules file
 
@@ -587,4 +587,4 @@ Rule kinds and their fields:
 `{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and
 FromAnotherGate also takes
 `"confidence": {"limits": {"events_full": 10000, "events_floor": 100,
-"swing_half": 1.0, "displacement_limit": 0.5}}`.
+"swing_half": 1.0}}`. A `displacement_limit` in an older file is ignored.

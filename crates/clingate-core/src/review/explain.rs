@@ -212,10 +212,6 @@ mod tests {
         assert!(doc.contains(&format!("`events_floor = {}`", limits.events_floor)));
         assert!(doc.contains(&format!("`swing_half = {}`", limits.swing_half)));
         assert!(doc.contains(&format!(
-            "`displacement_limit = {}`",
-            limits.displacement_limit
-        )));
-        assert!(doc.contains(&format!(
             "within {:.0}% of the smaller of the right\nfraction and what it leaves out, or {} of the events kept",
             super::super::replay::TOLERANCE_RELATIVE * 100.0,
             super::super::replay::TOLERANCE_EVENTS

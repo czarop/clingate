@@ -233,18 +233,12 @@ mod tests {
         use crate::gate_rules::confidence::ConfidenceLimits;
         let limits = ConfidenceLimits::default();
         assert_eq!(
-            (
-                limits.events_full,
-                limits.events_floor,
-                limits.swing_half,
-                limits.displacement_limit
-            ),
-            (10_000.0, 100.0, 1.0, 0.5)
+            (limits.events_full, limits.events_floor, limits.swing_half),
+            (10_000.0, 100.0, 1.0)
         );
         assert!(CHOOSING.contains("`events_full` (10,000"));
         assert!(CHOOSING.contains("`events_floor` (100"));
         assert!(CHOOSING.contains("`swing_half` (1"));
-        assert!(CHOOSING.contains("`displacement_limit` (0.5"));
 
         let text = |kind| find(kind).unwrap().text;
         // The right-side check reads down to a quarter of the peak.

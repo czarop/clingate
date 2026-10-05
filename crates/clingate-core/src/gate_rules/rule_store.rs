@@ -287,12 +287,12 @@ impl GateRule {
     /// and negating the answer back. That is exact for anything built on order
     /// statistics, which both current rules are, and it means a "negative" gate
     /// needs no rule of its own.
-    pub fn solve(&self, values: &[f64], reference: Option<f64>) -> Result<Solved, SolveError> {
+    pub fn solve(&self, values: &[f64]) -> Result<Solved, SolveError> {
         match self.bound {
-            Bound::Above => self.rule.apply(values, reference),
+            Bound::Above => self.rule.apply(values),
             Bound::Below => {
                 let mirrored: Vec<f64> = values.iter().map(|v| -v).collect();
-                let solved = self.rule.apply(&mirrored, reference.map(|r| -r))?;
+                let solved = self.rule.apply(&mirrored)?;
                 Ok(Solved {
                     threshold: Threshold {
                         x: -solved.threshold.x,

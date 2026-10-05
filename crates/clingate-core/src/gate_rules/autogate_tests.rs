@@ -1624,8 +1624,8 @@ fn sweep_with_a_long_move(
 #[test]
 fn moving_off_the_reference_is_not_held_against_an_above_the_negative_gate() {
     // Moving the gate to wherever this sample's negative is *is* the rule. A
-    // displacement penalty marked 15 of 32 correct placements as zero
-    // confidence on a real run, so the flag stopped meaning anything.
+    // penalty for distance from the reference marked 15 of 32 correct
+    // placements as zero confidence on a real run.
     let (mut state, _) = one_positive_gate();
     let map = two_specimens();
     let mut store = above_the_negative_rule("fs_qc");
@@ -1651,52 +1651,9 @@ fn moving_off_the_reference_is_not_held_against_an_above_the_negative_gate() {
         "the gate should have travelled a long way here, or this proves nothing - moved {}",
         placed.to - placed.from
     );
-    assert_ne!(
-        placed.weakest,
-        Some(crate::gate_rules::confidence::DISPLACEMENT),
-        "distance from the reference is the intended behaviour here, not a fault"
-    );
     assert!(
         placed.confidence > 0.0,
         "and it should not be scored to zero for doing what it was asked"
-    );
-}
-
-#[test]
-fn a_band_rule_is_still_judged_on_how_far_it_moved() {
-    // The check is meaningful there: a band rule should land near where the
-    // equivalent gate was drawn, so a long trip is evidence something is wrong.
-    // Only above-the-negative is exempt.
-    use crate::gate_rules::confidence::DISPLACEMENT;
-    use crate::gate_rules::rule::{AboveTheNegativeRule, Rule, TailFractionRule};
-    use crate::gate_rules::threshold::{Status, Threshold};
-
-    let t = Threshold {
-        x: 900.0,
-        events_admitted: 30,
-        fraction_admitted: 0.003,
-        parent_events: 10_000,
-        count_swing: 0.1,
-        parent_spread: 100.0,
-        status: Status::InBand,
-    };
-
-    let band = Rule::TailFraction(TailFractionRule::new((0.002, 0.005)));
-    assert!(
-        band.assess(&t, Some(500.0))
-            .expect("a band rule is judged on a threshold")
-            .get(DISPLACEMENT)
-            .is_some(),
-        "a band rule keeps the displacement check"
-    );
-    let above = Rule::AboveTheNegative(AboveTheNegativeRule::default());
-    assert!(
-        above
-            .assess(&t, None)
-            .expect("above-the-negative is judged on a threshold")
-            .get(DISPLACEMENT)
-            .is_none(),
-        "above-the-negative is assessed without it"
     );
 }
 

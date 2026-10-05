@@ -97,9 +97,7 @@ impl Confidence {
 /// How a rule's results are judged. Each rule names its own, so the components
 /// can be particular to what that rule actually did.
 pub trait ConfidenceModel {
-    /// `reference_x` is where the same gate sits on the QC or template sample,
-    /// when there is one.
-    fn assess(&self, threshold: &Threshold, reference_x: Option<f64>) -> Confidence;
+    fn assess(&self, threshold: &Threshold) -> Confidence;
 }
 
 // ─── The model both threshold rules start on ──────────────────────────────────
@@ -109,14 +107,12 @@ pub const EVENTS: &str = "parent event count";
 pub const ADMITTED: &str = "events in the gate";
 pub const STABILITY: &str = "stability of the gate's contents";
 pub const BAND: &str = "rule satisfied";
-pub const DISPLACEMENT: &str = "distance moved from the reference";
 pub const VALLEY: &str = "depth of the valley it sat in";
 pub const RIGHT_SIDE: &str = "the negative's right side against the reference";
 pub const MATCHED: &str = "events matching the phenotype";
 pub const PURITY: &str = "how much else the gate holds";
 pub const CAUGHT: &str = "how much of the population the gate holds";
 pub const ONE_CLOUD: &str = "whether the matched cells form one cloud";
-pub const ABUNDANCE: &str = "how common the population is, against the reference";
 pub const STEADY: &str = "whether the edges agree between halves of the events";
 pub const FALLBACK: &str = "no valley, so placed from another gate";
 pub const HELD_BACK: &str = "held back off another gate";
@@ -138,15 +134,6 @@ pub struct ConfidenceLimits {
     /// 1 means nudging the edge changes the gate's contents by as much as it
     /// holds.
     pub swing_half: f64,
-    /// Displacement from the reference gate, as a multiple of the parent's
-    /// interquartile width, at which the move is too large to trust.
-    ///
-    /// Calibrated against a real workflow: across 41 gates that carried
-    /// per-file positions over 117 files, the whole range a gate was moved by
-    /// hand had a median of 0.18 arcsinh units against interquartile widths
-    /// around 2 to 3 - about 0.07 of the spread - and the largest single move
-    /// in the document was near 0.5. A limit of 2 would never have fired.
-    pub displacement_limit: f64,
 }
 
 impl Default for ConfidenceLimits {
@@ -156,24 +143,21 @@ impl Default for ConfidenceLimits {
             events_full: 10_000.0,
             events_floor: 100.0,
             swing_half: 1.0,
-            // Half an interquartile width is the largest hand adjustment seen
-            // in a real workflow; see the field.
-            displacement_limit: 0.5,
         }
     }
 }
 
 /// The model both starting rules use: how much data there was, how much of it
-/// landed in the gate, how cleanly the edge separates it, whether the rule was
-/// satisfiable, and how far the gate travelled.
+/// landed in the gate, how cleanly the edge separates it, and whether the rule
+/// was satisfiable.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CountAndSeparation {
     pub limits: ConfidenceLimits,
 }
 
 impl ConfidenceModel for CountAndSeparation {
-    fn assess(&self, t: &Threshold, reference_x: Option<f64>) -> Confidence {
-        let mut components = vec![
+    fn assess(&self, t: &Threshold) -> Confidence {
+        let components = vec![
             Component::new(
                 EVENTS,
                 event_count_score(t.parent_events as f64, &self.limits),
@@ -196,13 +180,6 @@ impl ConfidenceModel for CountAndSeparation {
             ),
             Component::new(BAND, band_score(t), band_detail(t)),
         ];
-        if let Some(reference) = reference_x {
-            components.push(Component::new(
-                DISPLACEMENT,
-                displacement_score(t, reference, &self.limits),
-                displacement_detail(t, reference),
-            ));
-        }
         Confidence::from_components(components)
     }
 }
@@ -308,33 +285,6 @@ fn band_detail(t: &Threshold) -> String {
     }
 }
 
-/// Distance from the reference position, against the spread of the population.
-fn displacement_score(t: &Threshold, reference: f64, limits: &ConfidenceLimits) -> f64 {
-    if t.parent_spread <= 0.0 {
-        return 0.0;
-    }
-    let moved = (t.x - reference).abs() / t.parent_spread;
-    // The limit comes from the rules file. At 0 or below no move is
-    // tolerated: an unmoved gate scores 1 and any move 0. Dividing by it
-    // scored an unmoved gate 0 / 0 (B-CONF-2).
-    if limits.displacement_limit <= 0.0 {
-        return if moved == 0.0 { 1.0 } else { 0.0 };
-    }
-    (1.0 - moved / limits.displacement_limit).clamp(0.0, 1.0)
-}
-
-fn displacement_detail(t: &Threshold, reference: f64) -> String {
-    if t.parent_spread <= 0.0 {
-        return "the population has no interquartile spread to measure against".into();
-    }
-    format!(
-        "moved {:.4} from {:.4}, {:.2} times the interquartile spread",
-        t.x - reference,
-        reference,
-        (t.x - reference).abs() / t.parent_spread
-    )
-}
-
 // ─── The side of the negative above-the-negative does not read ───────────────
 
 /// Where the gate sits against the negative's right side, here and on the
@@ -425,9 +375,6 @@ pub struct MatchEvidence {
     /// Events matching the phenotype, and the parent they came from.
     pub matched: usize,
     pub parent: usize,
-    /// The same on the reference, for comparing how common the population is.
-    pub reference_matched: usize,
-    pub reference_parent: usize,
     /// The fraction of what the fitted gate holds that is the population.
     pub purity: f64,
     /// The fraction of the population the fitted gate holds.
@@ -438,15 +385,6 @@ pub struct MatchEvidence {
     /// the share both hold; `None` where no edges were placed.
     pub steady: Option<f64>,
 }
-
-/// How far the abundance may differ from the reference's before it counts
-/// against the placement.
-///
-/// A population really does vary between donors - that is the thing being
-/// measured - so a factor of three either way is not evidence of anything. A
-/// hundredfold difference is: either the population is not there, or the
-/// signature has matched something else.
-const ABUNDANCE_TOLERANCE: f64 = 3.0;
 
 /// Judge a phenotype rule's placement.
 pub fn assess_match(found: MatchEvidence) -> Confidence {
@@ -517,42 +455,5 @@ pub fn assess_match(found: MatchEvidence) -> Confidence {
             ),
         ));
     }
-    components.push(abundance(found));
     Confidence::from_components(components)
-}
-
-/// How this sample's abundance compares with the reference's.
-///
-/// Scored on the ratio rather than the difference, because a population at 5%
-/// and one at 0.05% differ by a hundredfold whichever way round they are, and
-/// the same five percentage points between 40% and 45% mean nothing.
-fn abundance(found: MatchEvidence) -> Component {
-    let here = fraction(found.matched, found.parent);
-    let there = fraction(found.reference_matched, found.reference_parent);
-    if !(here > 0.0) || !(there > 0.0) {
-        return Component::new(
-            ABUNDANCE,
-            0.0,
-            "one of the two samples matched nothing, so there is nothing to compare",
-        );
-    }
-    let ratio = (here / there).max(there / here);
-    // 1 at equal, falling through a half at the tolerance and on from there.
-    let score = 1.0 / (1.0 + (ratio - 1.0).max(0.0) / (ABUNDANCE_TOLERANCE - 1.0));
-    Component::new(
-        ABUNDANCE,
-        score,
-        format!(
-            "{:.3}% here against {:.3}% on the reference",
-            here * 100.0,
-            there * 100.0
-        ),
-    )
-}
-
-fn fraction(part: usize, whole: usize) -> f64 {
-    if whole == 0 {
-        return 0.0;
-    }
-    part as f64 / whole as f64
 }

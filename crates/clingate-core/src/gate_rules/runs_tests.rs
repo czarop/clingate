@@ -416,12 +416,14 @@ fn a_run_failing_one_marker_on_two_parents_says_so_for_each() {
 #[test]
 fn a_line_read_on_a_big_enough_fmx_and_in_band_is_not_flagged() {
     let written = write("runs-fmx-trusted", &FILES);
-    let outcome = run(
-        &gates(),
-        &written,
-        &FILES,
-        store(band(Pool::Specimen, fmx())),
-    );
+    // Counted against 100,000 events rather than 10,000, 600 scores
+    // ln(600 / 100) / ln(100,000 / 100) = 0.26, under the review floor.
+    let mut rule = band(Pool::Specimen, fmx());
+    let Rule::TailFraction(tail) = &mut rule.rule else {
+        unreachable!("band() makes a tail-fraction rule")
+    };
+    tail.confidence.limits.events_full = 100_000.0;
+    let outcome = run(&gates(), &written, &FILES, store(rule));
     let placed = &outcome.report.positioned;
     assert_eq!(placed.len(), 4, "{:?}", reasons(&outcome));
     for p in placed {

@@ -6,8 +6,8 @@
 use super::confidence::*;
 use super::threshold::*;
 
-fn assess(t: &Threshold, reference: Option<f64>) -> Confidence {
-    CountAndSeparation::default().assess(t, reference)
+fn assess(t: &Threshold) -> Confidence {
+    CountAndSeparation::default().assess(t)
 }
 
 fn part(c: &Confidence, name: &str) -> f64 {
@@ -31,7 +31,7 @@ fn clean() -> Vec<f64> {
 #[test]
 fn a_clean_placement_scores_well() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert_eq!(t.status, Status::InBand);
     assert!(c.score > 0.7, "score was {} ({:?})", c.score, c);
@@ -47,7 +47,7 @@ fn a_thin_parent_population_drags_the_score_down() {
     values.extend(std::iter::repeat_n(8.0, 10));
 
     let t = tail_fraction(&values, (0.09, 0.11)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert!(
         part(&c, EVENTS) < 0.5,
@@ -65,7 +65,7 @@ fn a_handful_of_events_in_the_gate_is_flagged_despite_a_large_parent() {
     values.extend([8.0, 8.1, 8.2, 8.3]);
 
     let t = tail_fraction(&values, (0.0002, 0.0005)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert_eq!(part(&c, EVENTS), 1.0, "the parent population is ample");
     assert!(
@@ -90,11 +90,11 @@ fn an_edge_buried_in_the_population_scores_worse_than_one_in_a_gap() {
     let gap_score = CountAndSeparation {
         limits: limits.clone(),
     }
-    .assess(&in_gap, None);
+    .assess(&in_gap);
     let cloud_score = CountAndSeparation {
         limits: limits.clone(),
     }
-    .assess(&in_cloud, None);
+    .assess(&in_cloud);
 
     assert!(
         part(&cloud_score, STABILITY) < part(&gap_score, STABILITY),
@@ -119,32 +119,10 @@ fn stability_survives_the_event_counts_a_real_gate_sees() {
         "the gap measure would have scored ~{:.5}",
         gap / t.parent_spread
     );
-    let stability = part(&assess(&t, None), STABILITY);
+    let stability = part(&assess(&t), STABILITY);
     assert!(
         (0.01..0.99).contains(&stability),
         "stability has to land somewhere rankable, got {stability}"
-    );
-}
-
-/// Half an interquartile width is the largest hand adjustment in a real
-/// workflow, so a move of that size must read as a warning, and a typical move -
-/// around 0.07 of the spread - must not.
-#[test]
-fn displacement_is_calibrated_to_real_hand_adjustments() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-
-    let typical = assess(&t, Some(t.x - 0.07 * t.parent_spread));
-    let largest = assess(&t, Some(t.x - 0.5 * t.parent_spread));
-
-    assert!(
-        part(&typical, DISPLACEMENT) > 0.8,
-        "a routine adjustment must not be flagged, got {}",
-        part(&typical, DISPLACEMENT)
-    );
-    assert_eq!(
-        part(&largest, DISPLACEMENT),
-        0.0,
-        "the largest move seen in a real file is the limit"
     );
 }
 
@@ -154,7 +132,7 @@ fn a_rule_that_could_not_be_satisfied_scores_below_one() {
     let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
 
     let t = tail_fraction(&values, (0.002, 0.005)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert_eq!(
         t.status,
@@ -172,73 +150,9 @@ fn a_rule_that_could_not_be_satisfied_scores_below_one() {
 #[test]
 fn a_satisfied_rule_is_not_penalised_for_its_band() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert_eq!(part(&c, BAND), 1.0);
-}
-
-// ─── displacement ─────────────────────────────────────────────────────────────
-
-#[test]
-fn a_gate_that_barely_moved_keeps_its_confidence() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let limits = ConfidenceLimits::default();
-
-    let c = CountAndSeparation {
-        limits: limits.clone(),
-    }
-    .assess(&t, Some(t.x));
-
-    assert_eq!(
-        c.get(DISPLACEMENT).map(|d| d.score),
-        Some(1.0),
-        "no movement at all"
-    );
-}
-
-#[test]
-fn a_gate_dragged_a_long_way_from_its_reference_is_flagged() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let limits = ConfidenceLimits::default();
-
-    // Three interquartile widths away, far past the limit.
-    let far = t.x + 3.0 * t.parent_spread;
-    let c = CountAndSeparation {
-        limits: limits.clone(),
-    }
-    .assess(&t, Some(far));
-
-    assert_eq!(c.get(DISPLACEMENT).map(|d| d.score), Some(0.0));
-    assert_eq!(c.score, 0.0);
-    assert_eq!(c.weakest().unwrap().name, DISPLACEMENT);
-}
-
-#[test]
-fn displacement_is_read_against_the_spread_not_in_raw_units() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let limits = ConfidenceLimits::default();
-
-    // A quarter of an interquartile width is half the limit of 0.5, so the
-    // component comes out at a half.
-    let moved = t.x + 0.25 * t.parent_spread;
-    let c = CountAndSeparation {
-        limits: limits.clone(),
-    }
-    .assess(&t, Some(moved));
-
-    let displacement = part(&c, DISPLACEMENT);
-    assert!(
-        (displacement - 0.5).abs() < 1e-9,
-        "expected half, got {displacement}"
-    );
-}
-
-#[test]
-fn no_reference_means_no_displacement_component() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let c = assess(&t, None);
-
-    assert_eq!(c.get(DISPLACEMENT), None);
 }
 
 // ─── the combination rule ─────────────────────────────────────────────────────
@@ -253,13 +167,12 @@ fn the_score_is_the_weakest_component_not_the_product() {
     values.extend(std::iter::repeat_n(8.0, 25));
 
     let t = tail_fraction(&values, (0.02, 0.03)).unwrap();
-    let c = assess(&t, Some(t.x));
+    let c = assess(&t);
 
     let weakest = part(&c, EVENTS)
         .min(part(&c, ADMITTED))
         .min(part(&c, STABILITY))
-        .min(part(&c, BAND))
-        .min(part(&c, DISPLACEMENT));
+        .min(part(&c, BAND));
     assert_eq!(c.score, weakest);
 
     let product = part(&c, EVENTS) * part(&c, ADMITTED) * part(&c, STABILITY) * part(&c, BAND);
@@ -281,7 +194,7 @@ fn one_bad_component_is_not_rescued_by_the_others() {
 
     // Ample parent, clean gap, satisfiable band - but a single event in the gate.
     let t = tail_fraction(&values, (0.00005, 0.00015)).unwrap();
-    let c = assess(&t, None);
+    let c = assess(&t);
 
     assert_eq!(t.events_admitted, 1);
     assert_eq!(c.score, 0.0, "one event cannot support a placement: {c:?}");
@@ -310,8 +223,8 @@ fn a_gate_keeping_almost_everything_is_scored_on_what_it_excludes() {
     use crate::gate_rules::confidence::ADMITTED;
     let model = CountAndSeparation::default();
 
-    let keeps_most = model.assess(&holding(39_880, 40_000), None);
-    let keeps_few = model.assess(&holding(120, 40_000), None);
+    let keeps_most = model.assess(&holding(39_880, 40_000));
+    let keeps_few = model.assess(&holding(120, 40_000));
 
     let a = keeps_most.get(ADMITTED).unwrap().score;
     let b = keeps_few.get(ADMITTED).unwrap().score;
@@ -327,7 +240,7 @@ fn the_detail_names_both_sides() {
     use crate::gate_rules::confidence::ADMITTED;
     let model = CountAndSeparation::default();
     let detail = model
-        .assess(&holding(39_880, 40_000), None)
+        .assess(&holding(39_880, 40_000))
         .get(ADMITTED)
         .unwrap()
         .detail
@@ -341,7 +254,7 @@ fn a_gate_that_excludes_nothing_is_not_a_placement() {
     // Its edge sits off the end of the data - nothing constrains where.
     use crate::gate_rules::confidence::ADMITTED;
     let model = CountAndSeparation::default();
-    let all = model.assess(&holding(40_000, 40_000), None);
+    let all = model.assess(&holding(40_000, 40_000));
     assert_eq!(all.get(ADMITTED).unwrap().score, 0.0);
 }
 
@@ -349,7 +262,7 @@ fn a_gate_that_excludes_nothing_is_not_a_placement() {
 fn a_comfortable_split_still_scores_well() {
     use crate::gate_rules::confidence::ADMITTED;
     let model = CountAndSeparation::default();
-    let even = model.assess(&holding(20_000, 40_000), None);
+    let even = model.assess(&holding(20_000, 40_000));
     assert!(even.get(ADMITTED).unwrap().score > 0.99);
 }
 
@@ -392,26 +305,6 @@ fn a_measured_component_keeps_its_own_detail() {
     );
 }
 
-/// Was B-CONF-2: the limits are read from the rules file, and
-/// `displacement_score` divided by `displacement_limit` where
-/// `stability_score` guards its own divisor. A limit of 0 scored a gate that
-/// did not move at all as 0 / 0. A limit of 0 now means no move is
-/// tolerated.
-#[test]
-fn a_zero_displacement_limit_still_scores_an_unmoved_gate() {
-    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
-    let model = CountAndSeparation {
-        limits: ConfidenceLimits {
-            displacement_limit: 0.0,
-            ..ConfidenceLimits::default()
-        },
-    };
-    let c = model.assess(&t, Some(t.x));
-    assert_eq!(part(&c, DISPLACEMENT), 1.0, "an unmoved gate");
-    let c = model.assess(&t, Some(t.x + 0.5));
-    assert_eq!(part(&c, DISPLACEMENT), 0.0, "a gate that moved at all");
-}
-
 #[test]
 fn scores_are_clamped_into_zero_to_one() {
     assert_eq!(Component::new("x", 1.7, "").score, 1.0);
@@ -435,7 +328,7 @@ fn a_zero_swing_scale_falls_back_rather_than_dividing_by_zero() {
             ..ConfidenceLimits::default()
         },
     };
-    let s = part(&model.assess(&t, None), STABILITY);
+    let s = part(&model.assess(&t), STABILITY);
     assert!(s.is_finite() && s > 0.0, "{s}");
 }
 
@@ -445,7 +338,6 @@ fn limits_survive_the_rules_file() {
         events_full: 5_000.0,
         events_floor: 50.0,
         swing_half: 0.5,
-        displacement_limit: 0.25,
     };
     let text = serde_json::to_string(&CountAndSeparation {
         limits: limits.clone(),
@@ -455,14 +347,30 @@ fn limits_survive_the_rules_file() {
     assert_eq!(back.limits, limits);
 }
 
+/// Rules files written while a gate was also scored on how far it moved from
+/// its reference carry that limit; they must still load.
+#[test]
+fn a_rules_file_with_the_old_displacement_limit_still_loads() {
+    let back: CountAndSeparation = serde_json::from_str(
+        r#"{"limits":{"events_full":5000.0,"events_floor":50.0,"swing_half":0.5,"displacement_limit":0.5}}"#,
+    )
+    .unwrap();
+    assert_eq!(back.limits.events_full, 5_000.0);
+}
+
+#[test]
+fn a_placement_is_not_scored_on_how_far_it_moved() {
+    let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();
+    let names: Vec<&str> = assess(&t).components.iter().map(|c| c.name).collect();
+    assert_eq!(names, [EVENTS, ADMITTED, STABILITY, BAND]);
+}
+
 // ─── The phenotype model ─────────────────────────────────────────────────────
 
 fn evidence() -> MatchEvidence {
     MatchEvidence {
         matched: 2_000,
         parent: 20_000,
-        reference_matched: 1_800,
-        reference_parent: 20_000,
         purity: 0.95,
         caught: 0.9,
         pieces: 1,
@@ -473,7 +381,7 @@ fn evidence() -> MatchEvidence {
 #[test]
 fn a_clean_match_scores_well_on_every_count() {
     let c = assess_match(evidence());
-    for name in [MATCHED, PURITY, CAUGHT, ONE_CLOUD, ABUNDANCE, STEADY] {
+    for name in [MATCHED, PURITY, CAUGHT, ONE_CLOUD, STEADY] {
         assert!(part(&c, name) > 0.8, "{name}: {}", part(&c, name));
     }
     assert!(c.score > 0.8, "{c:?}");
@@ -538,45 +446,6 @@ fn several_clouds_divide_the_one_cloud_score() {
     assert_eq!(score(1), 1.0);
     assert_eq!(score(2), 0.5);
     assert_eq!(score(4), 0.25);
-}
-
-#[test]
-fn abundance_is_judged_by_ratio_either_way_round() {
-    let with = |matched| {
-        part(
-            &assess_match(MatchEvidence {
-                matched,
-                ..evidence()
-            }),
-            ABUNDANCE,
-        )
-    };
-    // The reference is 9%. A third of that and three times it score the same,
-    // and both score a half - the tolerance.
-    assert!((with(600) - 0.5).abs() < 1e-9, "{}", with(600));
-    assert!((with(5_400) - 0.5).abs() < 1e-9, "{}", with(5_400));
-    assert_eq!(with(1_800), 1.0);
-    assert!(with(18) < 0.05, "a hundredfold is evidence: {}", with(18));
-}
-
-#[test]
-fn nothing_matched_on_either_side_leaves_nothing_to_compare() {
-    let none_here = assess_match(MatchEvidence {
-        matched: 0,
-        ..evidence()
-    });
-    assert_eq!(part(&none_here, ABUNDANCE), 0.0);
-    assert_eq!(part(&none_here, MATCHED), 0.0);
-    let none_there = assess_match(MatchEvidence {
-        reference_matched: 0,
-        ..evidence()
-    });
-    assert_eq!(part(&none_there, ABUNDANCE), 0.0);
-    let no_parent = assess_match(MatchEvidence {
-        reference_parent: 0,
-        ..evidence()
-    });
-    assert_eq!(part(&no_parent, ABUNDANCE), 0.0);
 }
 
 // ─── the negative's right side against the reference ────────────────────────
