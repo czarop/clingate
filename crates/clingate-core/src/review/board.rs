@@ -1,6 +1,7 @@
 //! A run's placements, sorted into what a reviewer works through.
 //!
-//! The assessment says which placements look unlike their peers. A reviewer
+//! The assessment says which placements have their gate far from their peers'
+//! or were placed unsure. A reviewer
 //! then works through them - looking, fixing, reporting, or deciding a flag
 //! was wrong - and the review is done when nothing is left to look at. The
 //! board is that list, sorted into piles:

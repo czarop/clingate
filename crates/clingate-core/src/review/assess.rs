@@ -304,7 +304,8 @@ fn median(values: &mut [f64]) -> Option<f64> {
 }
 
 /// Where `item`'s gate sits against where `peers` put theirs, said if it is
-/// [`POSITION_LIMIT`] or more of its parent's IQRs away.
+/// [`POSITION_LIMIT`] or more of its parent's IQRs away. A placement with no
+/// population kept, or one with no spread, has no position to judge.
 fn position_against_peers(item: &Item, peers: &[&Item]) -> Option<Reason> {
     let here = item.against_spread()?;
     let mut theirs: Vec<f64> = peers.iter().filter_map(|p| p.against_spread()).collect();
@@ -323,9 +324,6 @@ fn position_against_peers(item: &Item, peers: &[&Item]) -> Option<Reason> {
     })
 }
 
-/// Assess the run: what each placement looks like against its peers. With
-/// the gates as they stand, each flag says whether its gate has been moved
-/// since.
 impl Unplaced {
     /// In a line, for a person: a gate refused everywhere says that its rule
     /// needs changing, and how where the check of the rule can tell.
@@ -427,6 +425,9 @@ pub fn unplaced(run: &RunRecord, now: Option<&GateState>) -> Vec<Unplaced> {
     found
 }
 
+/// Assess the run: flag each placement whose gate sits far from its peers',
+/// whose rule was unsure, or that missed its band. With the gates as they
+/// stand, each flag says whether its gate has been moved since.
 pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> Assessment {
     let items: Vec<Item> = run
         .placed
@@ -1087,6 +1088,21 @@ mod tests {
         };
         assert!(flagged(1.9).is_empty());
         assert!(flagged(-1.9).is_empty());
+
+        // Exactly at the limit: a parent with its quartiles at -0.5 and 0.5
+        // reads a line at x as x IQRs from its median, with nothing rounded.
+        let exact = Shape {
+            events: 101,
+            percentiles: (0..=100).map(|i| i as f64 / 50.0 - 1.0).collect(),
+            peaks: Vec::new(),
+        };
+        let mut all: Vec<PlacedRecord> = (0..10)
+            .map(|n| placed(n, 1.0, exact.clone(), 0.8))
+            .collect();
+        all.push(placed(99, 3.0, exact.clone(), 0.8));
+        let flags = assess(&run_of(all, Vec::new()), None).flags;
+        assert_eq!(flags.len(), 1, "{flags:#?}");
+        assert_eq!(flags[0].severity, FLAG);
         for off in [2.1, -2.1] {
             let flags = flagged(off);
             assert_eq!(flags.len(), 1, "{off}: {flags:#?}");

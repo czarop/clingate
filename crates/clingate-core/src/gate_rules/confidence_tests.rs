@@ -387,6 +387,22 @@ fn a_clean_match_scores_well_on_every_count() {
     assert!(c.score > 0.8, "{c:?}");
 }
 
+/// How common the population is, against the reference, is not scored:
+/// donors differ that much in data the rule is right on.
+#[test]
+fn a_match_is_not_scored_on_how_common_its_population_is() {
+    let c = assess_match(evidence());
+    let names: Vec<&str> = c.components.iter().map(|c| c.name).collect();
+    assert_eq!(names, [MATCHED, PURITY, CAUGHT, ONE_CLOUD, STEADY]);
+    // A hundredth as common scores the same, save for the count itself.
+    let rare = assess_match(MatchEvidence {
+        matched: 1_000,
+        parent: 1_000_000,
+        ..evidence()
+    });
+    assert_eq!(rare.score, part(&rare, MATCHED).min(c.score));
+}
+
 #[test]
 fn edges_that_disagree_between_halves_hold_the_score_down() {
     let c = assess_match(MatchEvidence {

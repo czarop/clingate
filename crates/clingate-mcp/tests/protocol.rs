@@ -1236,3 +1236,13 @@ fn a_phenotype_rule_pins_an_edge_to_the_negative_over_the_protocol() {
         "{guide}"
     );
 }
+
+#[test]
+fn the_instructions_quote_the_review_s_own_limit() {
+    let limit = clingate_core::review::assess::POSITION_LIMIT;
+    assert!(
+        clingate_mcp::INSTRUCTIONS
+            .contains(&format!("gate sits {limit} or more of its parent's IQRs")),
+        "the instructions no longer say how far from its peers a gate is flagged"
+    );
+}

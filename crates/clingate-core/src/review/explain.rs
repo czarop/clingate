@@ -59,7 +59,7 @@ pub const SOURCES: &[Source] = &[
     },
     Source {
         path: "review/assess.rs",
-        holds: "flagging placements unlike their peers, the typical peer",
+        holds: "flagging gates far from their peers', the typical peer",
         text: include_str!("assess.rs"),
     },
     Source {
