@@ -189,6 +189,7 @@ mod tests {
             "fn negative_peak",
             "fn refine_from",
             "fn typical_of",
+            "fn position_against_peers",
             "fn replay_run",
         ] {
             assert!(
@@ -230,6 +231,10 @@ mod tests {
         assert!(doc.contains(&format!(
             "below {:.2} is flagged",
             super::super::assess::REVIEW_FLOOR
+        )));
+        assert!(doc.contains(&format!(
+            "its gate sits {} or more of its parent's IQRs from where its peers put",
+            super::super::assess::POSITION_LIMIT
         )));
         assert!(doc.contains(&format!(
             "control (the specimen's FMX, or the run's) of more than {}\nevents",

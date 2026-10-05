@@ -1,29 +1,22 @@
 //! Assessing a rules run: which placements need a person to look at them.
 //!
-//! A placement's own confidence says how sure the rule was on that sample,
-//! judged against its reference. What it cannot say is whether the sample,
-//! and the gate on it, look like the rest of the run. This does: for each
-//! gate the rules placed, each sample is compared with its **peers** - the
-//! other samples of the same kind (the sample type the pairing names) whose
-//! placement the rule was confident in - on:
+//! A placement is flagged when:
 //!
-//! - **where the gate sits against the sample's own peaks**: between its
-//!   negative and its positive, as a fraction of the way from one to the
-//!   other. Percent positive can move for real reasons - a different
-//!   timepoint, a stimulated sample - but a gate that sits in the valley on
-//!   fifty samples and in the middle of the positive on one has been placed
-//!   differently;
-//! - **where it sits against the sample's spread**, in interquartile ranges
-//!   from its median, for a population with no second peak;
-//! - **what it lets through** - the fraction beyond the line;
-//! - **the distribution itself**: shifted, wider or narrower than its peers,
-//!   or with a different number of peaks - what usually explains the rest;
-//! - and the rule's own confidence, and whether it reached its band.
+//! - **its gate sits [`POSITION_LIMIT`] or more of its parent's interquartile
+//!   ranges from where its peers put theirs.** Each gate's position is read
+//!   in its own parent's IQRs from that parent's median, and compared with
+//!   the median of its **peers** - the other samples of the same kind (the
+//!   sample type the pairing names) whose placement the rule was confident
+//!   in. A plain distance rather than a score against how much the peers
+//!   vary: percent positive, spread and shape vary between donors in data a
+//!   rule is right on, and peers that agree closely made a small difference
+//!   look enormous;
+//! - the rule's own confidence is below [`REVIEW_FLOOR`] - unless it read a
+//!   control big enough to trust and reached its band;
+//! - or it could not reach its band.
 //!
-//! Each comparison is a robust z-score against the peers (median and median
-//! absolute deviation, leaving the sample itself out). Whatever is unusual
-//! is said in words, with the sample's value and the peers' typical one, so
-//! a person - or Claude - can see why it was flagged.
+//! Each is said in words, with the numbers, so a person - or Claude - can
+//! see why it was flagged.
 //!
 //! Everything here is read from the run kept in the workspace, so assessing
 //! a run reads no files and gives the same answer every time, in the app and
@@ -48,20 +41,21 @@ pub const REVIEW_FLOOR: f64 = 0.30;
 /// Fewer confident peers than this, and the sample is compared with every
 /// other sample of its kind instead.
 pub const MIN_PEERS: usize = 3;
-/// A comparison scoring this far from its peers is said; this far and more
-/// is worth a look.
-pub const NOTABLE: f64 = 2.0;
+/// A gate this many of its parent's IQRs from where its peers put theirs, or
+/// more, is flagged.
+pub const POSITION_LIMIT: f64 = 2.0;
+/// A reason this severe, or more, flags its placement.
 pub const FLAG: f64 = 3.0;
 
 /// One thing unusual about a placement.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Reason {
-    /// What was compared - see [`Measure`].
+    /// What was found: `gate_position`, `low_confidence` or `outside_band`.
     pub measure: &'static str,
     /// In words, with the numbers.
     pub says: String,
-    /// How unusual, on the same scale for every measure: 2 is notable, 3 and
-    /// over worth a look.
+    /// How unusual, on the same scale for every measure: [`FLAG`] and over
+    /// is worth a look.
     pub severity: f64,
 }
 
@@ -158,7 +152,8 @@ struct Item<'a> {
     in_band: bool,
     /// Kept for being a reference, not for meeting the rule.
     reference: bool,
-    /// Read on a control big enough to trust, and in its band: never flagged.
+    /// Read on a control big enough to trust, and in its band: not flagged
+    /// for its confidence.
     trusted: bool,
     line: Option<f64>,
     beyond: Option<f64>,
@@ -194,18 +189,6 @@ impl Item<'_> {
         let iqr = shape.iqr();
         let line = self.line?;
         (iqr > 0.0).then(|| (line - shape.median()) / iqr)
-    }
-
-    fn measure(&self, measure: Measure) -> Option<f64> {
-        match measure {
-            Measure::BetweenPeaks => self.between_peaks(),
-            Measure::AgainstSpread => self.against_spread(),
-            // On the log-odds scale: what a gate lets through differs by
-            // proportion - 12% against 20% is as far as 1.2% against 2% -
-            // not by percentage points.
-            Measure::FractionBeyond => self.fraction_beyond().map(logit),
-            Measure::Shift | Measure::Spread => None,
-        }
     }
 
     /// The fraction of this sample's population beyond the line, on the
@@ -272,29 +255,12 @@ fn from_kept(k: &super::run_record::KeptRecord) -> Item<'_> {
     }
 }
 
-/// How to judge where a sample's gate sits against its peers': as a
-/// fraction of the way between its negative and positive peaks where the
-/// sample and most of its peers have both, and otherwise against the spread,
-/// which every population has.
-///
-/// Chosen by the sample alone, a sample with a second peak among peers with
-/// one was compared only with the few peers that also had two - the other
-/// outliers - and so looked ordinary.
-fn position_measure(item: &Item, peers: &[&Item]) -> Measure {
-    let with_two = peers.iter().filter(|p| p.between_peaks().is_some()).count();
-    if item.between_peaks().is_some() && with_two >= MIN_PEERS && with_two * 2 >= peers.len() {
-        Measure::BetweenPeaks
-    } else {
-        Measure::AgainstSpread
-    }
-}
-
 /// The peer to show beside a flagged placement: of its peers that are not
 /// flagged themselves, the one whose gate sits nearest the middle of theirs.
 ///
 /// Never another flagged placement - an outlier beside an outlier shows
-/// nothing - and so, for placements compared on the same measure with the
-/// same peers, the same sample each time.
+/// nothing - and so, for placements compared with the same peers, the same
+/// sample each time.
 fn typical_of(
     gate_id: &str,
     peers: &[(SampleRef, Option<f64>)],
@@ -324,63 +290,6 @@ fn typical_of(
         .or_else(|| unflagged.first().map(|(s, _)| s.clone()))
 }
 
-/// The comparisons, each with the least spread among peers it is judged
-/// against - so a run of near-identical peers does not make a hair's
-/// difference look enormous.
-#[derive(Clone, Copy)]
-enum Measure {
-    BetweenPeaks,
-    AgainstSpread,
-    FractionBeyond,
-    Shift,
-    Spread,
-}
-
-impl Measure {
-    fn key(self) -> &'static str {
-        match self {
-            Measure::BetweenPeaks => "gate_between_peaks",
-            Measure::AgainstSpread => "gate_against_spread",
-            Measure::FractionBeyond => "fraction_beyond_line",
-            Measure::Shift => "distribution_shift",
-            Measure::Spread => "distribution_spread",
-        }
-    }
-
-    /// The smallest scale a peer spread is taken to have.
-    fn floor(self) -> f64 {
-        match self {
-            Measure::BetweenPeaks => 0.04,
-            Measure::AgainstSpread => 0.08,
-            // In log-odds: about a sixth either way, relative.
-            Measure::FractionBeyond => 0.15,
-            Measure::Shift => 0.08,
-            Measure::Spread => 0.06,
-        }
-    }
-
-    /// How much an unusual value here counts: the gate's position is what is
-    /// being judged; what it lets through, and the distribution, can differ
-    /// for real reasons and explain rather than accuse.
-    fn weight(self) -> f64 {
-        match self {
-            Measure::BetweenPeaks | Measure::AgainstSpread => 1.0,
-            Measure::FractionBeyond => 0.75,
-            Measure::Shift => 0.6,
-            Measure::Spread => 0.5,
-        }
-    }
-}
-
-fn logit(p: f64) -> f64 {
-    let p = p.clamp(1e-4, 1.0 - 1e-4);
-    (p / (1.0 - p)).ln()
-}
-
-fn logistic(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
-}
-
 fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -394,18 +303,24 @@ fn median(values: &mut [f64]) -> Option<f64> {
     })
 }
 
-/// How far `x` is from `peers`, in robust standard deviations: the median
-/// and 1.4826 times the median absolute deviation, no smaller than `floor`.
-fn robust_z(x: f64, peers: &[f64], floor: f64) -> Option<(f64, f64)> {
-    let mut v = peers.to_vec();
-    let centre = median(&mut v)?;
-    let mut dev: Vec<f64> = peers.iter().map(|p| (p - centre).abs()).collect();
-    let mad = median(&mut dev)? * 1.4826;
-    Some(((x - centre) / mad.max(floor), centre))
-}
-
-fn pct(x: f64) -> String {
-    format!("{:.1}%", x * 100.0)
+/// Where `item`'s gate sits against where `peers` put theirs, said if it is
+/// [`POSITION_LIMIT`] or more of its parent's IQRs away.
+fn position_against_peers(item: &Item, peers: &[&Item]) -> Option<Reason> {
+    let here = item.against_spread()?;
+    let mut theirs: Vec<f64> = peers.iter().filter_map(|p| p.against_spread()).collect();
+    if theirs.len() < MIN_PEERS {
+        return None;
+    }
+    let typical = median(&mut theirs)?;
+    let off = here - typical;
+    (off.abs() >= POSITION_LIMIT).then(|| Reason {
+        measure: "gate_position",
+        says: format!(
+            "the gate sits {here:.2} IQRs from the median, where its peers put it at \
+             {typical:.2}: {off:+.2} IQRs from them"
+        ),
+        severity: FLAG * off.abs() / POSITION_LIMIT,
+    })
 }
 
 /// Assess the run: what each placement looks like against its peers. With
@@ -536,10 +451,9 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
     for members in groups.values() {
         for &i in members {
             let item = &items[i];
-            if item.reference || item.trusted {
-                // A reference is what the others are calibrated from, not a
-                // placement to judge; a trusted one has met its rule on
-                // plenty of control events.
+            if item.reference {
+                // What the others are calibrated from, not a placement to
+                // judge.
                 continue;
             }
             let others: Vec<&Item> = members
@@ -555,10 +469,12 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
                 (others, false)
             };
 
-            let position = position_measure(item, &peers);
             let mut reasons = Vec::new();
+            // A trusted placement's confidence is held down by its control's
+            // count, not by anything wrong with where it went.
             if let Some(c) = item.confidence
                 && c < REVIEW_FLOOR
+                && !item.trusted
             {
                 reasons.push(Reason {
                     measure: "low_confidence",
@@ -577,125 +493,7 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
                 });
             }
 
-            if peers.len() >= MIN_PEERS {
-                let measures: [(Measure, Option<f64>); 2] = [
-                    (position, item.measure(position)),
-                    (
-                        Measure::FractionBeyond,
-                        item.measure(Measure::FractionBeyond),
-                    ),
-                ];
-                for (measure, here) in measures {
-                    let Some(here) = here else { continue };
-                    let theirs: Vec<f64> =
-                        peers.iter().filter_map(|p| p.measure(measure)).collect();
-                    if theirs.len() < MIN_PEERS {
-                        continue;
-                    }
-                    let Some((z, typical)) = robust_z(here, &theirs, measure.floor()) else {
-                        continue;
-                    };
-                    let severity = z.abs() * measure.weight();
-                    if severity < NOTABLE {
-                        continue;
-                    }
-                    let says = match measure {
-                        Measure::BetweenPeaks => format!(
-                            "the gate sits {:.0}% of the way from the negative peak to the positive, where its peers put it at {:.0}%",
-                            here * 100.0,
-                            typical * 100.0
-                        ),
-                        Measure::AgainstSpread => format!(
-                            "the gate sits {here:.2} IQRs from the median, where its peers put it at {typical:.2}"
-                        ),
-                        _ => format!(
-                            "{} of the population is beyond the line, against {} typically",
-                            pct(logistic(here)),
-                            pct(logistic(typical))
-                        ),
-                    };
-                    reasons.push(Reason {
-                        measure: measure.key(),
-                        says,
-                        severity,
-                    });
-                }
-
-                // The distribution itself: what usually explains the rest.
-                if let Some(shape) = item.shape {
-                    let shapes: Vec<&Shape> = peers.iter().filter_map(|p| p.shape).collect();
-                    if shapes.len() >= MIN_PEERS {
-                        let mut iqrs: Vec<f64> = shapes.iter().map(|s| s.iqr()).collect();
-                        let typical_iqr = median(&mut iqrs).unwrap_or(0.0);
-                        if typical_iqr > 0.0 {
-                            let medians: Vec<f64> =
-                                shapes.iter().map(|s| s.median() / typical_iqr).collect();
-                            if let Some((z, typical)) = robust_z(
-                                shape.median() / typical_iqr,
-                                &medians,
-                                Measure::Shift.floor(),
-                            ) {
-                                let severity = z.abs() * Measure::Shift.weight();
-                                if severity >= NOTABLE {
-                                    reasons.push(Reason {
-                                        measure: Measure::Shift.key(),
-                                        says: format!(
-                                            "the population's median is {:+.2} IQRs from its peers'",
-                                            shape.median() / typical_iqr - typical
-                                        ),
-                                        severity,
-                                    });
-                                }
-                            }
-                            let spreads: Vec<f64> =
-                                shapes.iter().map(|s| (s.iqr().max(1e-12)).ln()).collect();
-                            if let Some((z, typical)) = robust_z(
-                                shape.iqr().max(1e-12).ln(),
-                                &spreads,
-                                Measure::Spread.floor(),
-                            ) {
-                                let severity = z.abs() * Measure::Spread.weight();
-                                if severity >= NOTABLE {
-                                    reasons.push(Reason {
-                                        measure: Measure::Spread.key(),
-                                        says: format!(
-                                            "the population is {:.1}x as spread as its peers'",
-                                            (shape.iqr().max(1e-12).ln() - typical).exp()
-                                        ),
-                                        severity,
-                                    });
-                                }
-                            }
-                        }
-                        // One peak where the peers have two, or the reverse.
-                        let has_two = |s: &Shape| s.peaks.len() >= 2;
-                        let peers_two = shapes.iter().filter(|s| has_two(s)).count();
-                        let majority_two = peers_two * 4 >= shapes.len() * 3;
-                        let majority_one = peers_two * 4 <= shapes.len();
-                        if (majority_two && !has_two(shape)) || (majority_one && has_two(shape)) {
-                            reasons.push(Reason {
-                                measure: "peaks",
-                                says: format!(
-                                    "the population has {} where {} of its {} peers have {}",
-                                    if has_two(shape) {
-                                        "two peaks"
-                                    } else {
-                                        "one peak"
-                                    },
-                                    if majority_two {
-                                        peers_two
-                                    } else {
-                                        shapes.len() - peers_two
-                                    },
-                                    shapes.len(),
-                                    if majority_two { "two" } else { "one" }
-                                ),
-                                severity: NOTABLE + 0.5,
-                            });
-                        }
-                    }
-                }
-            }
+            reasons.extend(position_against_peers(item, &peers));
 
             let severity = reasons.iter().map(|r| r.severity).fold(0.0, f64::max);
             if severity < FLAG {
@@ -705,7 +503,7 @@ pub fn assess(run: &RunRecord, now: Option<(&GateState, &MetaDataFileMap)>) -> A
             candidates.push(
                 peers
                     .iter()
-                    .map(|p| (p.sample.clone(), p.measure(position)))
+                    .map(|p| (p.sample.clone(), p.against_spread()))
                     .collect::<Vec<_>>(),
             );
             flags.push(Flag {
@@ -1190,7 +988,7 @@ mod tests {
         assert_eq!(flag.sample.id, "k1");
         assert!(!flag.moved);
         assert_eq!(flag.confidence, None);
-        assert_eq!(flag.reasons[0].measure, "gate_between_peaks");
+        assert_eq!(flag.reasons[0].measure, "gate_position");
     }
 
     #[test]
@@ -1246,59 +1044,60 @@ mod tests {
             .iter()
             .find(|f| f.sample.id == "f99")
             .expect("flagged");
-        assert_eq!(flag.reasons[0].measure, "gate_against_spread", "{flag:#?}");
+        assert_eq!(flag.reasons[0].measure, "gate_position", "{flag:#?}");
         assert!(flag.reasons[0].says.contains("IQRs from the median"));
         assert!(a.flags.iter().all(|f| f.sample.id == "f99"));
     }
 
+    /// A population three times as wide as its peers', or with one peak
+    /// where they have two, is how donors differ: with its gate where its
+    /// peers put theirs, it is not flagged.
     #[test]
-    fn an_unusual_distribution_is_said_alongside_what_flagged_it() {
-        // The rule was unsure (the flag); the reasons say why the sample
-        // might be different: wider, shifted, one peak where its peers have two.
-        let mut wide = placed(97, 1.5, one_peak(1.0, 3.0, 97), 0.1);
-        wide.to = Some(1.5);
-        let a = assess(&run_with(Some(wide)), None);
-        let flag = &a.flags[0];
-        let measures: Vec<&str> = flag.reasons.iter().map(|r| r.measure).collect();
-        assert!(measures.contains(&"low_confidence"), "{measures:?}");
-        assert!(measures.contains(&"distribution_spread"), "{measures:?}");
-        assert!(measures.contains(&"peaks"), "{measures:?}");
-        let spread = flag
-            .reasons
+    fn a_differently_shaped_population_gated_like_its_peers_is_not_flagged() {
+        let peers = run_with(None);
+        let wide = one_peak(1.0, 3.0, 97);
+        let mut at: Vec<f64> = peers
+            .placed
             .iter()
-            .find(|r| r.measure == "distribution_spread")
-            .unwrap();
-        assert!(spread.says.contains("as spread as its peers"));
-        let peaks = flag.reasons.iter().find(|r| r.measure == "peaks").unwrap();
-        assert!(
-            peaks
-                .says
-                .contains("one peak where 10 of its 10 peers have two"),
-            "{}",
-            peaks.says
-        );
+            .map(|p| {
+                let shape = p.shape.as_ref().unwrap();
+                (p.to.unwrap() - shape.median()) / shape.iqr()
+            })
+            .collect();
+        at.sort_by(f64::total_cmp);
+        let typical = (at[4] + at[5]) / 2.0;
+        let line = wide.median() + typical * wide.iqr();
+        let a = assess(&run_with(Some(placed(97, line, wide, 0.9))), None);
+        assert!(a.flags.is_empty(), "{:#?}", a.flags);
+    }
 
-        let shifted = placed(98, 1.5, population(3.0, 98), 0.1);
-        let mut shifted = shifted;
-        shifted.shape = Some({
-            let mut s = population(3.0, 98);
-            for v in &mut s.percentiles {
-                *v += 5.0;
-            }
-            for p in &mut s.peaks {
-                p.at += 5.0;
-            }
-            s
-        });
-        let a = assess(&run_with(Some(shifted)), None);
-        let shift = a.flags[0]
-            .reasons
-            .iter()
-            .find(|r| r.measure == "distribution_shift");
-        assert!(shift.is_some(), "{:#?}", a.flags[0].reasons);
-        // Reasons are worst first.
-        for w in a.flags[0].reasons.windows(2) {
-            assert!(w[0].severity >= w[1].severity);
+    /// Two of its parent's IQRs from its peers is the line: 1.9 is not
+    /// flagged, 2.1 is, either side.
+    #[test]
+    fn a_gate_two_parent_iqrs_from_its_peers_is_flagged() {
+        let shape = one_peak(0.0, 1.0, 5);
+        let iqr = shape.iqr();
+        let peers: Vec<PlacedRecord> = (0..10)
+            .map(|n| placed(n, 1.0, shape.clone(), 0.8))
+            .collect();
+        let flagged = |off: f64| {
+            let mut all = peers.clone();
+            all.push(placed(99, 1.0 + off * iqr, shape.clone(), 0.8));
+            assess(&run_of(all, Vec::new()), None).flags
+        };
+        assert!(flagged(1.9).is_empty());
+        assert!(flagged(-1.9).is_empty());
+        for off in [2.1, -2.1] {
+            let flags = flagged(off);
+            assert_eq!(flags.len(), 1, "{off}: {flags:#?}");
+            assert_eq!(flags[0].reasons[0].measure, "gate_position");
+            assert!(
+                flags[0].reasons[0]
+                    .says
+                    .contains(&format!("{off:+.2} IQRs from them")),
+                "{}",
+                flags[0].reasons[0].says
+            );
         }
     }
 
@@ -1417,18 +1216,10 @@ mod tests {
         for f in a.flags.iter().filter(|f| f.sample.id.starts_with("f9")) {
             let measures: Vec<&str> = f.reasons.iter().map(|r| r.measure).collect();
             assert!(
-                measures.contains(&"gate_against_spread"),
+                measures.contains(&"gate_position"),
                 "{}: where its gate sits was not compared: {measures:?}",
                 f.sample.id
             );
-            // Not against the other outliers: what it lets through is set
-            // against the majority's fraction.
-            let beyond = f
-                .reasons
-                .iter()
-                .find(|r| r.measure == "fraction_beyond_line")
-                .unwrap();
-            assert!(beyond.says.contains("against 0."), "{}", beyond.says);
         }
     }
 
@@ -1454,12 +1245,7 @@ mod tests {
         assert_eq!(a.flags.len(), 1, "{:#?}", a.flags);
         let flag = &a.flags[0];
         assert_eq!(flag.sample.id, "f99");
-        assert_eq!(flag.reasons[0].measure, "gate_between_peaks", "{flag:#?}");
-        assert!(
-            flag.reasons[0]
-                .says
-                .contains("of the way from the negative")
-        );
+        assert_eq!(flag.reasons[0].measure, "gate_position", "{flag:#?}");
         assert!(flag.confident_peers && flag.peers == 10);
         // Beside it, a peer that placed the gate in the valley.
         let peer = flag.typical_peer.as_ref().expect("a typical peer");
@@ -1477,7 +1263,7 @@ mod tests {
             .flags
             .iter()
             .flat_map(|f| f.reasons.iter().map(|r| r.measure))
-            .filter(|m| *m == "gate_between_peaks")
+            .filter(|m| *m == "gate_position")
             .collect();
         assert!(gate_reasons.is_empty(), "{:#?}", a.flags);
     }
@@ -1491,12 +1277,12 @@ mod tests {
     }
 
     /// Weak only for its count, read on a control of more than 300 events
-    /// and in its band: not flagged, for its confidence or against its peers.
-    /// At 300 events, or out of its band, or not read on a control, it is.
+    /// and in its band: not flagged for its confidence. At 300 events, or out
+    /// of its band, or not read on a control, it is.
     #[test]
-    fn a_placement_in_band_on_a_control_of_over_300_events_is_not_flagged() {
+    fn a_placement_in_band_on_a_control_of_over_300_events_is_not_flagged_for_its_confidence() {
         let on_control = |events: usize, in_band: bool, read_on_control: bool| {
-            let mut odd = placed(99, 2.9, population(3.0, 99), 0.1);
+            let mut odd = placed(99, 1.5, population(3.0, 99), 0.1);
             (odd.reference_events, odd.in_band, odd.read_on_control) =
                 (events, in_band, read_on_control);
             assess(&run_with(Some(odd)), None).flags.len()
@@ -1505,6 +1291,18 @@ mod tests {
         assert_eq!(on_control(300, true, true), 1);
         assert_eq!(on_control(301, false, true), 1);
         assert_eq!(on_control(301, true, false), 1);
+    }
+
+    /// The CD218a gates an FMX with background pushed far right: trusted for
+    /// its count, but far from where its peers put theirs.
+    #[test]
+    fn a_placement_on_a_trusted_control_is_still_flagged_for_where_its_gate_sits() {
+        let mut odd = placed(99, 2.9, population(3.0, 99), 0.1);
+        (odd.reference_events, odd.in_band, odd.read_on_control) = (301, true, true);
+        let a = assess(&run_with(Some(odd)), None);
+        assert_eq!(a.flags.len(), 1, "{:#?}", a.flags);
+        let measures: Vec<&str> = a.flags[0].reasons.iter().map(|r| r.measure).collect();
+        assert_eq!(measures, ["gate_position"]);
     }
 
     #[test]

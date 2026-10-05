@@ -384,27 +384,25 @@ run does not pause on such a placement either.
 
 `review::assess` compares each placement with its **peers**: the other
 samples of the same sample type whose placement was confident (>= 0.5) and in
-band; fewer than 3 such peers and every sample of that type is used. Each
-comparison is a robust z-score (median and MAD, the sample left out) - 2 is
-notable, 3 or more is flagged - on:
+band; fewer than 3 such peers and every sample of that type is used. A
+placement is flagged when:
 
-- where the gate sits between the sample's own negative and positive peaks,
-  as a fraction of the way from one to the other (when the sample and at
-  least half of - and at least 3 - peers have two peaks), otherwise in IQRs
-  from its median (weight 1);
-- the fraction of the sample's events beyond the line, in log-odds
-  (weight 0.75);
-- the distribution: median shift (weight 0.6) and spread (weight 0.5);
-- the rule's confidence (below 0.30 is flagged whatever the peers say), and
-  whether it reached its band.
+- its gate sits 2 or more of its parent's IQRs from where its peers put
+  theirs (`POSITION_LIMIT`, `position_against_peers`). Each gate's position
+  is read in its own parent's IQRs from that parent's median, and compared
+  with the median of the peers' (at least 3 of them). A placement read on a
+  trusted control is judged on this too;
+- the rule's confidence: below 0.30 is flagged, unless it read a control of
+  more than 300 events and reached its band;
+- or it did not reach its band.
 
-A placement read on a control of more than 300 events that reached its band
-is not flagged on any of these.
+Nothing else about the population - how much lies beyond the line, how wide
+it is, where its median is, how many peaks it has - is flagged: donors and
+activation markers vary that much in data a rule is right on.
 
-Each z has a floor on the peer spread, so near-identical peers do not make a
-hair's difference look enormous (`Measure::floor`). The "typical peer" shown
-beside a flagged sample is, of its peers that are not flagged themselves, the
-one whose gate position measure is nearest the peers' median (`typical_of`).
+The "typical peer" shown beside a flagged sample is, of its peers that are
+not flagged themselves, the one whose gate position is nearest the peers'
+median (`typical_of`).
 
 The placements the run could not make are listed with the flags
 (`review::assess::unplaced`), a gate and a reason at a time. A gate refused on

@@ -98,9 +98,6 @@ biological population, whose frequency is the thing being measured.
   population's interquartile width changes what the gate holds.
 - *rule satisfied* - whether any position held a fraction in the band;
   outside it, how far.
-- *distance moved from the reference* - how far the gate moved from where it
-  stood on this sample before the run, in interquartile widths; half a width
-  scores 0.
 
 ## Checking it
 

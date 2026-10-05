@@ -793,6 +793,52 @@ fn looks_right_moves_a_flagged_placement_to_passed_and_back() {
     assert!(back.flags.iter().any(|f| is_fmx(f)));
 }
 
+/// Five samples with their gate 1 IQR above their median, and one with its
+/// gate 3.5 IQRs above: 2.5 IQRs from its peers, past the limit of 2. Read on
+/// an FMX of 600 events and in its band, it is trusted for its low
+/// confidence - but not for where its gate sits.
+#[test]
+fn a_gate_far_from_its_peers_is_flagged_even_when_read_on_a_trusted_fmx() {
+    use clingate_core::review::RunRecord;
+    let (folder, session) = applied_with_confidence("session-far-from-peers", |_| 0.9);
+    let mut record = RunRecord::load(&folder).unwrap().unwrap();
+    let model = record
+        .placed
+        .iter()
+        .find(|p| p.shape.is_some())
+        .expect("a placement with its population kept")
+        .clone();
+    let shape = model.shape.clone().unwrap();
+    let at = |iqrs: f64| shape.median() + iqrs * shape.iqr();
+    let named = |name: &str, line: f64| {
+        let mut p = model.clone();
+        p.sample.id = name.into();
+        p.sample.name = Some(name.into());
+        p.to = Some(line);
+        p
+    };
+    let mut far = named("far", at(3.5));
+    (far.confidence, far.read_on_control, far.reference_events, far.in_band) =
+        (0.1, true, 600, true);
+    record.placed = (0..5)
+        .map(|n| named(&format!("peer{n}"), at(1.0)))
+        .chain([far])
+        .collect();
+    record.save(&folder).unwrap();
+
+    let assessed = session.assess_run().unwrap();
+    assert_eq!(assessed.flags.len(), 1, "{:#?}", assessed.flags);
+    let flag = &assessed.flags[0];
+    assert_eq!(flag.sample.id, "far");
+    let measures: Vec<&str> = flag.reasons.iter().map(|r| r.measure).collect();
+    assert_eq!(measures, ["gate_position"]);
+    assert!(
+        flag.reasons[0].says.contains("+2.50 IQRs from them"),
+        "{}",
+        flag.reasons[0].says
+    );
+}
+
 #[test]
 fn looks_right_and_peer_comparison_need_a_placement_the_run_made() {
     use clingate_core::review::RunRecord;

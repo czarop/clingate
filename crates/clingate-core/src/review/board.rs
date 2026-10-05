@@ -364,7 +364,7 @@ mod tests {
             weakest: None,
             severity,
             reasons: vec![Reason {
-                measure: "gate_between_peaks",
+                measure: "gate_position",
                 says: "odd".into(),
                 severity,
             }],

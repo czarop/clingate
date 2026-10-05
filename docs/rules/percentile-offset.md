@@ -48,5 +48,3 @@ aim at, where a person would put the line "just clear of the negative".
 ## What its confidence says
 
 As tail fraction's, except *rule satisfied* is always 1 (there is no band).
-*Distance moved from the reference* compares with where the gate stood on
-this sample before the run.
