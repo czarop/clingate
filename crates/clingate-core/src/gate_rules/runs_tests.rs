@@ -15,9 +15,11 @@ use rustc_hash::FxBuildHasher;
 
 use crate::file_load_tests::{scratch, write_fcs_rows};
 use crate::gate_rules::autogate::{apply_placements, extent_on};
-use crate::gate_rules::rule::{BandAim, Pool, Rule, TailFractionRule};
+use crate::gate_rules::fit::{FitSettings, Fit, MOST_CANDIDATES, RankBy, fit_rule};
+use crate::gate_rules::rule::{BandAim, Pool, Rule, TailFractionRule, ValleyRule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::gate_rules::run::{RunInputs, RunOutcome, run_rules};
+use crate::gate_rules::score::{least_agreeing_first, summarise};
 use crate::gates::GateState;
 use crate::gates::gate_store::GateSource;
 use crate::gates::gate_traits::DrawableGate;
@@ -464,9 +466,18 @@ fn score(
     written: &[(Arc<str>, PathBuf)],
     rules: RuleStore,
 ) -> crate::gate_rules::score::Score {
+    score_files(state, written, &FILES, rules)
+}
+
+fn score_files(
+    state: &GateState,
+    written: &[(Arc<str>, PathBuf)],
+    files: &[(&str, &str, &str, &str)],
+    rules: RuleStore,
+) -> crate::gate_rules::score::Score {
     crate::gate_rules::score::score_rules(
         state,
-        &inputs(written, &FILES, rules),
+        &inputs(written, files, rules),
         |_| true,
         crate::gate_rules::score::ScoreSettings::default(),
         &AtomicBool::new(false),
@@ -658,7 +669,7 @@ fn a_sample_the_rule_cannot_place_is_scored_as_holding_nothing() {
 }
 
 /// A rule on a parameter the files do not hold measures nothing: each
-/// specimen is still listed, with why.
+/// specimen is still listed, with why, and counted off.
 #[test]
 fn a_sample_the_rule_cannot_measure_is_said_too() {
     let written = write("score-unmeasured", &FILES);
@@ -667,6 +678,7 @@ fn a_sample_the_rule_cannot_measure_is_said_too() {
     let scored = score(&gates(), &written, store(rule));
     assert_eq!(scored.gates.len(), 1, "{scored:#?}");
     assert_eq!(scored.gates[0].not_placed, 4);
+    assert_eq!(scored.gates[0].off, 4, "each would be gated by hand");
     for row in &scored.rows {
         assert_eq!(row.what, "not placed");
         assert_eq!((row.hand_edge, row.hand_holds), (None, None));
@@ -719,4 +731,154 @@ fn only_the_rules_asked_for_are_scored() {
     assert_eq!(scored.gates.len(), 1);
     assert!(scored.rows.iter().all(|r| r.gate_id == "cd69"));
     assert_eq!(score(&drawn, &written, both).gates.len(), 2);
+}
+
+fn fit(
+    written: &[(Arc<str>, PathBuf)],
+    files: &[(&str, &str, &str, &str)],
+    rules: RuleStore,
+    candidates: &[GateRule],
+    settings: FitSettings,
+) -> Result<Fit, String> {
+    fit_rule(
+        &gates(),
+        &inputs(written, files, rules),
+        &RuleTarget::under("CD69+", "Lymph"),
+        candidates,
+        crate::gate_rules::score::ScoreSettings::default(),
+        settings,
+        &AtomicBool::new(false),
+    )
+}
+
+/// Every candidate, and the rule as it stands, scored on one reading of the
+/// files exactly as the scorer scores it alone - those measuring alike on one
+/// measurement, one measured apart - and the closest to the hand gating
+/// first.
+#[test]
+fn each_candidate_is_scored_as_the_scorer_scores_it_alone() {
+    let written = write("fit-alone", &FILES);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let kept = GateRule {
+        rule: Rule::TailFraction(TailFractionRule::new((0.5, 1.0))),
+        ..current.clone()
+    };
+    let valley = GateRule {
+        rule: Rule::InTheValley(ValleyRule::default()),
+        ..current.clone()
+    };
+    let refused = band(Pool::Specimen, MeasuredOn::Partner(Arc::from("FMO")));
+    // The drawn gate's right edge is unbounded: nothing to measure.
+    let unbounded = GateRule {
+        bound: Bound::Below,
+        ..current.clone()
+    };
+    let candidates = [unbounded.clone(), refused.clone(), valley.clone(), kept.clone()];
+    let found = fit(&written, &FILES, store(current.clone()), &candidates, FitSettings::default()).unwrap();
+
+    assert_eq!(found.candidates.len(), 5, "the rule as it stands is tried too");
+    assert_eq!(found.fit_on, ["D1", "D2", "D3", "D4"]);
+    assert!(found.checked_on.is_empty(), "four specimens are too few to split");
+    for candidate in &found.candidates {
+        let alone = score(&gates(), &written, store(candidate.rule.clone()));
+        assert_eq!(candidate.fit.as_ref(), alone.gates.first(), "{}", candidate.said);
+        assert_eq!((&candidate.check, candidate.place_on_check), (&None, None));
+        assert_eq!(candidate.current, candidate.rule == current);
+    }
+    // The hand gate already meets the wide band, and sits where the valley
+    // rule reads it on the reference: both agree on every sample, a tie.
+    let ranked: Vec<&GateRule> = found.candidates.iter().map(|c| &c.rule).collect();
+    assert_eq!(ranked, [&valley, &kept, &current, &refused, &unbounded]);
+    for (candidate, place) in found.candidates.iter().zip(1..) {
+        assert_eq!((candidate.place_by_typical, candidate.among_best), (place, place <= 2));
+    }
+    assert_eq!(found.candidates[1].fit.as_ref().unwrap().typical_agreement, Some(1.0));
+
+    let by_off = fit(
+        &written,
+        &FILES,
+        store(current),
+        &candidates,
+        FitSettings {
+            rank_by: RankBy::Off,
+            ..FitSettings::default()
+        },
+    )
+    .unwrap();
+    let places: Vec<usize> = by_off.candidates.iter().map(|c| c.place_by_off).collect();
+    assert_eq!(places, [1, 2, 3, 4, 5]);
+}
+
+/// Eight donors: (file, donor, type, where the donor's negative sits).
+const EIGHT: [(&str, &str, &str, &str); 16] = [
+    ("e1_fmx", "D1", "FMX", "300"),
+    ("e1_fs", "D1", "FS", "300"),
+    ("e2_fmx", "D2", "FMX", "320"),
+    ("e2_fs", "D2", "FS", "320"),
+    ("e3_fmx", "D3", "FMX", "340"),
+    ("e3_fs", "D3", "FS", "340"),
+    ("e4_fmx", "D4", "FMX", "360"),
+    ("e4_fs", "D4", "FS", "360"),
+    ("e5_fmx", "D5", "FMX", "300"),
+    ("e5_fs", "D5", "FS", "300"),
+    ("e6_fmx", "D6", "FMX", "320"),
+    ("e6_fs", "D6", "FS", "320"),
+    ("e7_fmx", "D7", "FMX", "340"),
+    ("e7_fs", "D7", "FS", "340"),
+    ("e8_fmx", "D8", "FMX", "360"),
+    ("e8_fs", "D8", "FS", "360"),
+];
+
+/// Enough specimens to split: ranked on the odd donors, checked on the even,
+/// each half summed up from its own samples alone.
+#[test]
+fn candidates_are_ranked_on_half_the_specimens_and_checked_on_the_other() {
+    let written = write("fit-halves", &EIGHT);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let found = fit(&written, &EIGHT, store(current.clone()), &[], FitSettings::default()).unwrap();
+    assert_eq!(found.fit_on, ["D1", "D3", "D5", "D7"]);
+    assert_eq!(found.checked_on, ["D2", "D4", "D6", "D8"]);
+
+    let all = score_files(&gates(), &written, &EIGHT, store(current));
+    let only_of = |donors: [&str; 4]| {
+        let mut rows: Vec<_> = all
+            .rows
+            .iter()
+            .filter(|row| donors.contains(&row.specimen.as_deref().unwrap()))
+            .cloned()
+            .collect();
+        rows.sort_by(least_agreeing_first);
+        summarise("cd69".into(), &rows)
+    };
+    let candidate = &found.candidates[0];
+    let (fitted, checked) = (candidate.fit.as_ref().unwrap(), candidate.check.as_ref().unwrap());
+    assert_eq!(fitted, &only_of(["D1", "D3", "D5", "D7"]));
+    assert_eq!(checked, &only_of(["D2", "D4", "D6", "D8"]));
+    assert_eq!((fitted.scored, checked.scored), (4, 4), "a full stain per donor");
+    assert!(fitted.off_samples.iter().all(|f| ["e1_fs", "e3_fs", "e5_fs", "e7_fs"].iter().any(|d| f.starts_with(d))));
+    assert_eq!(candidate.place_on_check, Some(1));
+}
+
+/// Refused before a file is read: nothing to try, too much to try, or a tie
+/// wider than any agreement.
+#[test]
+fn a_search_with_nothing_or_too_much_to_try_is_refused() {
+    let nothing = fit(&[], &FILES, RuleStore::default(), &[], FitSettings::default());
+    assert_eq!(nothing.unwrap_err(), "no candidate rule to try");
+
+    let many: Vec<GateRule> = (1..=MOST_CANDIDATES + 1)
+        .map(|at| GateRule {
+            rule: Rule::TailFraction(TailFractionRule::new((0.0, at as f64 / 100.0))),
+            ..band(Pool::Specimen, MeasuredOn::Itself)
+        })
+        .collect();
+    let too_many = fit(&[], &FILES, RuleStore::default(), &many, FitSettings::default());
+    assert!(too_many.unwrap_err().starts_with(&format!("at most {MOST_CANDIDATES}")));
+
+    let wide = FitSettings {
+        tie_within: 2.0,
+        ..FitSettings::default()
+    };
+    let one = [band(Pool::Specimen, MeasuredOn::Itself)];
+    assert!(fit(&[], &FILES, RuleStore::default(), &one, wide).unwrap_err().contains("tie_within"));
 }

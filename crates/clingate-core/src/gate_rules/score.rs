@@ -26,7 +26,7 @@ use crate::gate_rules::autogate::{
     LineReading, Measurement, Placement, Report, admitted_by, describe, solve_all_reporting,
 };
 use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
-use crate::gate_rules::run::{RunInputs, measure_many};
+use crate::gate_rules::run::{Measured, RunInputs, measure_many};
 use crate::gate_rules::threshold::interquartile_spread;
 use crate::gate_rules::trial::{only, sample_type_name, specimen_name};
 use crate::gates::GateState;
@@ -486,8 +486,44 @@ impl RunRows<'_> {
     }
 }
 
+/// `store` solved on what was `measured` and read back against the gates as
+/// drawn: a row for every sample, and the rules refused before any sample was
+/// read.
+pub(crate) fn solved_rows(
+    gates: &GateState,
+    metadata: &MetaDataFileMap,
+    store: &RuleStore,
+    (measurements, unmeasured): &Measured,
+    settings: ScoreSettings,
+    cancel: &AtomicBool,
+) -> (Vec<ScoreRow>, Vec<String>) {
+    let (report, placements) = solve_all_reporting(
+        gates,
+        store,
+        measurements,
+        unmeasured,
+        metadata,
+        |_, _| {},
+        cancel,
+    );
+    let refused = report
+        .skipped
+        .iter()
+        .filter(|s| s.file.is_empty())
+        .map(|s| format!("{}: {}", describe(&s.gate, s.parent_gate.as_deref()), s.reason))
+        .collect();
+    let run = RunRows {
+        settings,
+        gates,
+        metadata,
+        store,
+        measurements,
+    };
+    (run.rows(&report, &placements), refused)
+}
+
 /// One gate summed up, from its rows least agreeing first.
-fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
+pub(crate) fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
     let count = |what: &str| rows.iter().filter(|row| row.what == what).count();
     let placed = rows
         .iter()
@@ -505,9 +541,12 @@ fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
             Some((row.agreement?, precision))
         })
         .collect();
-    let off: Vec<&&ScoreRow> = scored
+    let off: Vec<&ScoreRow> = rows
         .iter()
-        .filter(|row| matches!((row.agreement, row.off_line), (Some(a), Some(line)) if a < line))
+        .filter(|row| match (row.agreement, row.off_line) {
+            (Some(agreement), Some(line)) => agreement < line,
+            _ => row.what == "not placed",
+        })
         .collect();
     GateScore {
         gate: rows[0].gate.clone(),
@@ -573,31 +612,11 @@ pub fn score_rules(
     }
 
     let mut by_gate: BTreeMap<String, Vec<ScoreRow>> = BTreeMap::new();
-    for (store, (measurements, unmeasured)) in stores.iter().zip(&measured) {
-        let (report, placements) = solve_all_reporting(
-            gates,
-            store,
-            measurements,
-            unmeasured,
-            &inputs.metadata,
-            |_, _| {},
-            cancel,
-        );
-        for refused in report.skipped.iter().filter(|s| s.file.is_empty()) {
-            problems.push(format!(
-                "{}: {}",
-                describe(&refused.gate, refused.parent_gate.as_deref()),
-                refused.reason
-            ));
-        }
-        let run = RunRows {
-            settings,
-            gates,
-            metadata: &inputs.metadata,
-            store,
-            measurements,
-        };
-        for row in run.rows(&report, &placements) {
+    for (store, measured) in stores.iter().zip(&measured) {
+        let (rows, refused) =
+            solved_rows(gates, &inputs.metadata, store, measured, settings, cancel);
+        problems.extend(refused);
+        for row in rows {
             by_gate.entry(row.gate_id.clone()).or_default().push(row);
         }
     }

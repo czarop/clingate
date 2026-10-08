@@ -508,6 +508,22 @@ pub fn measure_file_at(
     Ok((out, unmeasured))
 }
 
+/// Whether [`measure_population`] measures alike for `a` and `b`, so one
+/// measurement serves both: they differ only in how they solve, and in how
+/// many events are kept, which nothing solves on.
+pub(crate) fn measured_alike(a: &GateRule, b: &GateRule) -> bool {
+    match (&a.rule, &b.rule) {
+        (x, y) if x.reads_another_gate() || y.reads_another_gate() => {
+            x.reads_another_gate() && y.reads_another_gate()
+        }
+        (Rule::MatchThePhenotype(x), Rule::MatchThePhenotype(y)) => {
+            x.markers == y.markers && a.measured_on == b.measured_on
+        }
+        (Rule::MatchThePhenotype(_), _) | (_, Rule::MatchThePhenotype(_)) => false,
+        _ => a.parameter == b.parameter && a.bound == b.bound,
+    }
+}
+
 /// One gate's parent population, measured for its rule: the events on the
 /// gate's axes, and what the rule reads - the line and each event's distance
 /// from it, or the marker panel for a phenotype rule.

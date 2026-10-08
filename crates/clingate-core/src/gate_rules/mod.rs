@@ -19,6 +19,7 @@ pub mod autogate;
 pub mod choices;
 pub(crate) mod clearance;
 pub mod confidence;
+pub mod fit;
 pub mod guide;
 pub(crate) mod next_to;
 pub mod phenotype;
