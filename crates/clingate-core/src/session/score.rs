@@ -130,7 +130,8 @@ impl Session {
                    events, falling to 0 when they share none; caught is how much of the hand \
                    gate's events the rule's gate holds, extra how much of the rule's gate is \
                    beyond the hand gate - which way it is off. A sample is off below its \
-                   off_line, which a sample of few events has lower. A gate with a high \
+                   off_line, which a sample of few events has lower; one the rule could \
+                   not place agrees 0, as it would be gated by hand. A gate with a high \
                    typical and a low lowest agreement has a few samples far off \
                    (off_samples); a low typical is every sample a little off. \
                    shift_iqrs and edge_off_iqrs say where the rule's gate sits against the \

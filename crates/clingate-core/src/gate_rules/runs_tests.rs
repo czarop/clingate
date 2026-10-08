@@ -630,9 +630,10 @@ fn a_gate_is_scored_under_its_parent_as_drawn() {
     );
 }
 
-/// A sample the rule cannot place is listed with why, and scored on nothing.
+/// A sample the rule cannot place is listed with why, and scored as a gate
+/// holding nothing: it would be gated by hand.
 #[test]
-fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
+fn a_sample_the_rule_cannot_place_is_scored_as_holding_nothing() {
     let written = write("score-unplaced", &FILES);
     let scored = score(
         &gates(),
@@ -643,12 +644,17 @@ fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
     for row in &scored.rows {
         assert_eq!(row.what, "not placed", "{row:?}");
         assert!(row.why_not.is_some());
-        assert_eq!((row.agreement, row.holds_difference), (None, None));
+        let hand = values_of(row.file.trim_end_matches(".fcs")).len();
+        let events = row.events.unwrap();
+        assert_eq!((events.hand, events.rule, events.both), (hand, 0, 0), "{row:?}");
+        assert_eq!((row.agreement, row.caught, row.extra), (Some(0.0), Some(0.0), None));
+        assert_eq!(row.off_line, Some(0.8 - 1.0 / (hand as f64).sqrt()));
+        assert_eq!(row.holds_difference, None);
     }
     let gate = &scored.gates[0];
-    assert_eq!(gate.scored, 0);
-    assert_eq!(gate.not_placed, 4, "one for each of the four specimens");
-    assert_eq!((gate.lowest_agreement, gate.off_samples.len()), (None, 0));
+    assert_eq!((gate.scored, gate.not_placed), (0, 4), "one for each of the four specimens");
+    assert_eq!((gate.typical_agreement, gate.lowest_agreement), (Some(0.0), Some(0.0)));
+    assert_eq!((gate.off, gate.off_samples.len()), (4, 4));
 }
 
 /// A rule on a parameter the files do not hold measures nothing: each

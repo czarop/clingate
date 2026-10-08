@@ -113,7 +113,8 @@ gate under its parent as drawn, and compares the rule's gate with theirs by the 
 events both hold, whatever their shape: their agreement (1 only for exactly the \
 same events), how much of their gate the rule's catches, and how much it holds \
 beyond it. A sample is off below a line the user can set (off_below), which a \
-gate of few cells may fall further below (noise_widths). Per gate, the typical \
+gate of few cells may fall further below (noise_widths); a sample the rule \
+cannot place agrees 0. Per gate, the typical \
 and lowest agreement and the samples that are off tell a few samples far off \
 from every sample a little off. Show the user the gates and samples least in \
 agreement; it moves nothing.

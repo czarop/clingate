@@ -10,7 +10,8 @@
 //! of gate. A gate of a few dozen cells cannot be placed as precisely as one
 //! of thousands, so it may fall further below the line that calls a sample
 //! off, and counts for less in its gate's typical agreement (see
-//! [`ScoreSettings`]). Beside it: how far the events the rule's gate holds
+//! [`ScoreSettings`]). A sample the rule cannot place is scored as a gate
+//! holding nothing, since it would be gated by hand. Beside it: how far the events the rule's gate holds
 //! sit from those the hand gate holds, and for a rule that moves one edge,
 //! how far it moved it. Nothing is moved or recorded.
 
@@ -127,7 +128,8 @@ pub struct ScoreRow {
     pub specimen: Option<String>,
     pub sample_type: Option<String>,
     /// "moved", "kept" (the hand gate already meets the rule), "reference"
-    /// (what the rule calibrates from, not scored) or "not placed".
+    /// (what the rule calibrates from, not scored) or "not placed" (scored as
+    /// a gate holding nothing).
     pub what: &'static str,
     /// The events each gate holds, and those both hold.
     pub events: Option<Shared>,
@@ -168,14 +170,15 @@ pub struct GateScore {
     pub scored: usize,
     pub not_placed: usize,
     pub references: usize,
-    /// The typical and the lowest agreement: a high typical and a low lowest
-    /// is a few samples far off, a low typical is all of them a little off.
+    /// The typical and the lowest agreement, a sample the rule could not
+    /// place counting as 0: a high typical and a low lowest is a few samples
+    /// far off, a low typical is all of them a little off.
     /// The typical is the median with each sample counted by the square root
     /// of its events - how precisely its agreement is measured.
     pub typical_agreement: Option<f64>,
     pub lowest_agreement: Option<f64>,
-    /// How many scored samples are below their off line, and the first
-    /// [`OFF_NAMED`] of them, furthest off first.
+    /// How many samples are below their off line - every one the rule could
+    /// not place among them - and the first [`OFF_NAMED`], furthest off first.
     pub off: usize,
     pub off_samples: Vec<String>,
     /// Typically: how much of the hand gate the rule catches, and how much
@@ -201,8 +204,8 @@ pub struct Score {
     pub rows: Vec<ScoreRow>,
 }
 
-/// Least agreeing first; rows with no agreement - not placed, references -
-/// last.
+/// Least agreeing first; rows with no agreement - references, samples not
+/// measured - last.
 pub fn least_agreeing_first(a: &ScoreRow, b: &ScoreRow) -> std::cmp::Ordering {
     let key = |row: &ScoreRow| row.agreement.unwrap_or(f64::INFINITY);
     key(a).total_cmp(&key(b))
@@ -397,11 +400,6 @@ impl RunRows<'_> {
             .unwrap_or_default();
         let rule_holds = admitted_by(rule, &measured.index);
         ScoreRow {
-            events,
-            agreement: events.map(|e| e.agreement()),
-            caught: events.and_then(|e| e.caught()),
-            extra: events.and_then(|e| e.extra()),
-            off_line: events.map(|e| self.settings.off_line(e)),
             rule_holds,
             holds_difference: rule_holds
                 .zip(bare.hand_holds)
@@ -413,7 +411,38 @@ impl RunRows<'_> {
                 .as_ref()
                 .zip(rule_edge)
                 .and_then(|(line, at)| off_in_iqrs(line, at)),
-            ..bare
+            ..self.judged(bare, events)
+        }
+    }
+
+    /// `row` with the agreement `events` give, and the line it is off below.
+    fn judged(&self, row: ScoreRow, events: Option<Shared>) -> ScoreRow {
+        ScoreRow {
+            events,
+            agreement: events.map(|e| e.agreement()),
+            caught: events.and_then(|e| e.caught()),
+            extra: events.and_then(|e| e.extra()),
+            off_line: events.map(|e| self.settings.off_line(e)),
+            ..row
+        }
+    }
+
+    /// A row for a sample the rule could not place, scored as a gate holding
+    /// nothing: it would be gated by hand.
+    fn refused(&self, measured: &Measurement, reason: &str) -> ScoreRow {
+        let held_by_hand = self
+            .hand_gate(measured)
+            .as_ref()
+            .and_then(single)
+            .and_then(|hand| measured.index.event_index.count_in_gate(hand).ok());
+        let events = held_by_hand.map(|hand| Shared {
+            hand,
+            rule: 0,
+            both: 0,
+        });
+        ScoreRow {
+            why_not: Some(reason.to_string()),
+            ..self.judged(self.bare(measured, "not placed"), events)
         }
     }
 
@@ -449,10 +478,7 @@ impl RunRows<'_> {
         }
         for refused in &report.unplaced {
             rows.push(match self.measurement(&refused.gate_id, &refused.file) {
-                Some(measured) => ScoreRow {
-                    why_not: Some(refused.reason.clone()),
-                    ..self.bare(measured, "not placed")
-                },
+                Some(measured) => self.refused(measured, &refused.reason),
                 None => unmeasured_row(self.metadata, self.store, refused),
             });
         }
@@ -463,10 +489,11 @@ impl RunRows<'_> {
 /// One gate summed up, from its rows least agreeing first.
 fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
     let count = |what: &str| rows.iter().filter(|row| row.what == what).count();
-    let scored: Vec<&ScoreRow> = rows
+    let placed = rows
         .iter()
         .filter(|row| matches!(row.what, "moved" | "kept"))
-        .collect();
+        .count();
+    let scored: Vec<&ScoreRow> = rows.iter().filter(|row| row.agreement.is_some()).collect();
     let all = |of: fn(&ScoreRow) -> Option<f64>| -> Vec<f64> {
         scored.iter().filter_map(|row| of(row)).collect()
     };
@@ -485,7 +512,7 @@ fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
     GateScore {
         gate: rows[0].gate.clone(),
         gate_id,
-        scored: scored.len(),
+        scored: placed,
         not_placed: count("not placed"),
         references: count("reference"),
         lowest_agreement: agreements.iter().copied().reduce(f64::min),

@@ -14,7 +14,7 @@
   A sample is off below a line the user can set; one of a few dozen cells
   may fall further below it than one of thousands, by a settable number of
   counting-noise widths, and counts for less in its gate's typical
-  agreement. Beside it, how far the rule's gate sits from the hand gate in
+  agreement. A sample the rule cannot place agrees 0. Beside it, how far the rule's gate sits from the hand gate in
   the parent's interquartile ranges, and for a rule that moves one edge, how
   far it moves it. Each gate is summed up in a line - typical and lowest
   agreement, and which samples are off - so a few samples far off read
