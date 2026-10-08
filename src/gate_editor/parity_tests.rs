@@ -1434,21 +1434,16 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
     assert_eq!(app.standing().undo_steps, steps);
 }
 
-/// Searching every rule from the Rules tab keeps, for the one rule, what
-/// `fit_rule` keeps: the same inputs make the same search.
+/// Picking the best rule for every gate on the Rules tab keeps, for the one
+/// rule, what `pick_rule` keeps: the same inputs make the same pick.
 #[test]
-fn a_search_from_the_rules_tab_keeps_what_the_tools_keep() {
-    use clingate_core::gate_rules::searches::{kept, search_every_rule};
-    use clingate_core::session::FitAsk;
+fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
+    use clingate_core::gate_rules::searches::{kept, pick_every_rule};
 
-    let (tools, ours) = twins("search");
+    let (tools, ours) = twins("pick");
     let session = Session::open(&tools).unwrap();
-    let ask = FitAsk {
-        defaults: true,
-        ..FitAsk::default()
-    };
     session
-        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .pick_rules(None, Default::default(), Default::default())
         .unwrap();
     let theirs = kept(&tools).unwrap();
 
@@ -1456,7 +1451,7 @@ fn a_search_from_the_rules_tab_keeps_what_the_tools_keep() {
     app.open(&ours);
     let every = app.with(|held| {
         let (inputs, _) = held.rules_run.inputs_now();
-        search_every_rule(
+        pick_every_rule(
             &held.gates.peek(),
             &inputs,
             Default::default(),

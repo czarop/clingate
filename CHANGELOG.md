@@ -39,9 +39,21 @@
   tab, on that gate's population, draws the candidate's gate dashed in
   magenta over the gate as drawn and steps through them one at a time, so
   close candidates can be told apart by eye; "Use this rule" takes the one
-  shown as the gate's rule. "Search every rule" on the Gate Rules tab makes
-  the search for every rule at once, reading the files once for all of
-  them, and lists each gate's best candidate beside the rule as it stands.
+  shown as the gate's rule.
+
+- **Picking the best rule for every gate** ("Pick the best rule for every
+  gate" on the Gate Rules tab, and `pick_rule` in the tools for Claude).
+  For each gate a rule places, every kind of rule that can place it is
+  tried once, started from the hand gating - a band around what the hand
+  gates hold on the FMX and on the sample, above the negative read two
+  ways, the valley with and without a smear - and then the settings of the
+  best kind are searched, and of the next kind when it came close. The
+  files are read once for every gate. Each gate's best rule is listed
+  beside the rule as it stands, those it improves most first, with a mark
+  where even the best is far from the hand gating; Use takes one, Use the
+  best takes every one that improves on its gate's rule, and the closest
+  are on the Gallery tab to compare by eye. Gates placed from another gate
+  are left as they are.
 
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's

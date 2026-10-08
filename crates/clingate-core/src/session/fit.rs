@@ -45,6 +45,17 @@ pub struct FitAnswer {
 }
 
 impl Session {
+    /// `candidate` as the tools show it: scores rounded, samples by name, and
+    /// without the gates it places, which are kept for the gallery.
+    pub(super) fn shown_candidate(&self, candidate: Candidate) -> Candidate {
+        Candidate {
+            fit: candidate.fit.map(|g| self.shown_gate(g)),
+            check: candidate.check.map(|g| self.shown_gate(g)),
+            placed: Vec::new(),
+            ..candidate
+        }
+    }
+
     /// Try settings for `population`'s rule against the gating drawn by hand,
     /// each scored as [`Session::score_rules`] scores a rule and ranked as
     /// `fit` says - see [`crate::gate_rules::fit`] - and keep the closest for
@@ -104,12 +115,7 @@ impl Session {
             .candidates
             .into_iter()
             .take(shown)
-            .map(|candidate| Candidate {
-                fit: candidate.fit.map(|g| self.shown_gate(g)),
-                check: candidate.check.map(|g| self.shown_gate(g)),
-                placed: Vec::new(),
-                ..candidate
-            })
+            .map(|candidate| self.shown_candidate(candidate))
             .collect();
         Ok(FitAnswer {
             gate: found.gate,

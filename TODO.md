@@ -159,11 +159,21 @@ ranks them by it.
       over the gate as drawn, one at a time, and can take its rule.
 - [ ] **Mark the samples a candidate is off on** in the gallery, and say
       which ones it could not place - the search knows both.
-- [x] **Search from the app.** The Gate Rules tab's "Search every rule"
-      searches every rule with settings to try, the files read once, and
-      lists each gate's best against the rule as it stands.
-- [ ] **Search one rule, or a chosen few, from the app** - and with
+- [x] **Pick the best rule - kind and settings - for every gate.** The
+      Gate Rules tab's "Pick the best rule for every gate" and the
+      `pick_rule` tool: each kind tried once from the hand gating, then the
+      best kind's settings searched, on one reading of the files; Use, or
+      Use the best for every gate.
+- [ ] **Pick for one gate, or a chosen few, from the app** - and with
       settings other than the defaults (the ranking, the tie, the split).
+- [ ] **Pick for a gate with no rule yet.** A pick starts from the rule a
+      gate has, which says the marker and the edge it moves; a gate without
+      one would need them read from how it is drawn.
+- [ ] **Time a pick on a real workspace.** Each kind is tried once and only
+      the best kind's settings searched, but a valley's 30 settings each
+      take a density per sample. If it is too slow, keep each sample's
+      density per smoothing and share it between the settings that differ
+      only in the dip they look for.
 
 ## clingate
 

@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::atomic::AtomicBool;
 
-use crate::gate_rules::fit::{Candidate, Fit, FitSettings, default_asks, fit_rules};
+use crate::gate_rules::fit::{Candidate, Fit, FitSettings};
+use crate::gate_rules::pick::{Picking, pick_rules};
 use crate::gate_rules::rule_store::RuleTarget;
-use crate::gate_rules::run::{Progress, RunInputs};
+use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::score::ScoreSettings;
 use crate::gates::GateState;
 
@@ -100,29 +101,35 @@ pub fn keep_all(folder: &Path, searches: Vec<Search>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Every rule's search, and the rules that could not be searched, with why.
+/// Every gate's search, and the gates that could not be searched, with why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EveryRule {
     pub searches: Vec<Search>,
     pub not_searched: Vec<String>,
 }
 
-/// Search every rule in `inputs` with settings to try, each with its default
-/// candidates, the files read once for all of them - see [`fit_rules`].
-pub fn search_every_rule(
+/// Pick the best rule for every gate a rule places, other than from another
+/// gate - see [`pick_rules`] - and keep what each search found.
+pub fn pick_every_rule(
     gates: &GateState,
     inputs: &RunInputs,
     settings: ScoreSettings,
     fit: FitSettings,
     cancel: &AtomicBool,
-    progress: impl Fn(Progress) + Sync,
+    progress: impl Fn(Picking) + Sync,
 ) -> Result<EveryRule, String> {
-    let asks = default_asks(&inputs.rules);
+    let targets: Vec<RuleTarget> = inputs
+        .rules
+        .entries()
+        .iter()
+        .filter(|entry| !entry.rule.rule.reads_another_gate())
+        .map(|entry| entry.target.clone())
+        .collect();
     let mut every = EveryRule {
         searches: Vec::new(),
         not_searched: Vec::new(),
     };
-    for (target, found) in fit_rules(gates, inputs, &asks, settings, fit, cancel, progress)? {
+    for (target, found) in pick_rules(gates, inputs, &targets, settings, fit, cancel, progress)? {
         match found {
             Ok(found) => every.searches.push(Search::of(&found, &target)),
             Err(why) => every

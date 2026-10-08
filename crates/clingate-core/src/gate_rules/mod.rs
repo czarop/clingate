@@ -24,6 +24,7 @@ pub mod guide;
 pub(crate) mod next_to;
 pub mod phenotype;
 pub mod phenotype_gate;
+pub mod pick;
 pub mod profile;
 pub mod rule;
 pub mod rule_store;

@@ -297,6 +297,34 @@ pub fn gated_rank(pairing: &SamplePairing, file: &FileId, metadata: &MetaDataFil
         .unwrap_or(0)
 }
 
+/// Which of `measurements` a run reads each specimen's answer from, by
+/// specimen and gate: the file of it ranked highest by [`gated_rank`].
+pub fn gated_of_each_specimen(
+    pairing: &SamplePairing,
+    measurements: &[Measurement],
+    metadata: &MetaDataFileMap,
+) -> FxHashMap<(Arc<str>, GateId), usize> {
+    let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    for (i, m) in measurements.iter().enumerate() {
+        let Some(specimen) = specimen_of(pairing, &m.file, metadata) else {
+            continue;
+        };
+        let key = (specimen.group.clone(), m.gate_id.clone());
+        match chosen.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(i);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let held = &measurements[*slot.get()];
+                if gated_rank(pairing, &m.file, metadata) > gated_rank(pairing, &held.file, metadata) {
+                    slot.insert(i);
+                }
+            }
+        }
+    }
+    chosen
+}
+
 /// Give this specimen its own copy of the gate, leaving every other specimen -
 /// and the global position a person drew - untouched.
 ///
@@ -2055,25 +2083,7 @@ pub fn solve_all_reporting(
             ),
         });
     }
-    for (i, m) in measurements.iter().enumerate() {
-        let Some(specimen) = specimen_of(&store.pairing, &m.file, metadata) else {
-            continue;
-        };
-        let key = (specimen.group.clone(), m.gate_id.clone());
-        match chosen.entry(key) {
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(i);
-            }
-            std::collections::hash_map::Entry::Occupied(mut slot) => {
-                let held = &measurements[*slot.get()];
-                if gated_rank(&store.pairing, &m.file, metadata)
-                    > gated_rank(&store.pairing, &held.file, metadata)
-                {
-                    slot.insert(i);
-                }
-            }
-        }
-    }
+    chosen.extend(gated_of_each_specimen(&store.pairing, measurements, metadata));
 
     report.unplaced.extend(never_measured(
         unmeasured,

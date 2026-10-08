@@ -211,7 +211,7 @@ pub fn least_agreeing_first(a: &ScoreRow, b: &ScoreRow) -> std::cmp::Ordering {
     key(a).total_cmp(&key(b))
 }
 
-fn median(mut values: Vec<f64>) -> Option<f64> {
+pub(crate) fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let n = values.len();
     (n > 0).then(|| (values[(n - 1) / 2] + values[n / 2]) / 2.0)

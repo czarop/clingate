@@ -203,6 +203,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "try_rules",
         "score_rules",
         "fit_rule",
+        "pick_rule",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1362,6 +1363,46 @@ fn a_rule_s_settings_are_searched_over_the_protocol() {
         json!({"population": "teff_naive"}),
     ] {
         let answer = server.call("fit_rule", refused.clone());
+        assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");
+    }
+}
+
+/// The best rule picked over the protocol, for one gate and for every gate,
+/// kept for the gallery; refused without a rule to start from or with a
+/// ranking it does not know.
+#[test]
+fn the_best_rule_is_picked_over_the_protocol() {
+    let folder = workspace_with_rules("pick");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let one = server.call("pick_rule", json!({"population": "Tmem"}));
+    assert_eq!(one["outcome"], "ok", "{one}");
+    let picked = one["result"]["picked"].as_array().unwrap();
+    assert_eq!(picked.len(), 1, "{one}");
+    let gate = &picked[0];
+    assert!(gate["best"]["rule"]["rule"]["kind"].is_string(), "{gate}");
+    assert_eq!(gate["as_it_stands"]["current"], true, "{gate}");
+    assert!(gate["fits_well"].is_boolean());
+    assert!(gate["tried"].as_u64().unwrap() >= 6, "{gate}");
+    assert!(gate["best"].get("placed").is_none(), "{gate}");
+    let kept = clingate_core::gate_rules::searches::kept(&folder).unwrap();
+    assert_eq!(kept.len(), 1, "kept for the gallery");
+
+    let every = server.call("pick_rule", json!({}));
+    assert_eq!(every["outcome"], "ok", "{every}");
+    assert_eq!(every["result"]["picked"].as_array().unwrap().len(), 1);
+
+    for refused in [
+        json!({"population": "teff_naive"}),
+        json!({"rank_by": "best"}),
+        json!({"tie_within": 2.0}),
+    ] {
+        let answer = server.call("pick_rule", refused.clone());
         assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");
     }
 }

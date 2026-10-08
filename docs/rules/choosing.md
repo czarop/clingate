@@ -132,7 +132,20 @@ looked at side by side before choosing: they and the rule as it stands are
 kept in the workspace (`rules/searches.json`, the latest search of each
 rule), and the Gallery tab, on the gate's population, draws each one's gate
 dashed over the gate as drawn, one candidate at a time, with a button to
-take its rule. The Gate Rules tab's "Search every rule" makes the same
-search for every rule with settings to try at once - the files read once
-for all of them - and lists each gate's best beside the rule as it stands,
-those where the best does most better first.
+take its rule.
+
+To pick the kind of rule as well as its settings, pick it (`pick_rule`, or
+"Pick the best rule for every gate" on the Gate Rules tab). For each gate
+it tries every kind that can place it, once each, started from the hand
+gating: a band around what the hand-drawn gates hold, on the FMX and on
+the sample itself; above the negative, found both ways; the valley, with
+and without a smear. Then it searches the settings of the best kind - and
+of the next kind when its typical agreement came within 0.05 of the best -
+and ranks everything tried together. One reading of the files serves
+every gate and both stages. Each gate's best rule is listed beside the
+rule as it stands, those it improves most first; one whose best is still
+typically below the off line has no rule close to the hand gating and may
+be better gated by hand. Nothing changes until a pick is taken - Use, or
+Use the best for every gate - and saved. A phenotype rule is tried only
+with its own settings, and a gate placed from another gate is left as it
+is.
