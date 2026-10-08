@@ -202,6 +202,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "rule_guide",
         "try_rules",
         "score_rules",
+        "fit_rule",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1291,6 +1292,72 @@ fn the_rules_are_scored_over_the_protocol() {
     for refused in [json!({"off_below": 2.0}), json!({"noise_widths": -1.0})] {
         let answer = server.call("score_rules", refused);
         assert_eq!(answer["outcome"], "failed", "{answer}");
+    }
+}
+
+/// A rule's settings searched over the protocol: the defaults for its kind
+/// when no candidates are given, candidates beside the rule as it stands
+/// when they are, ranked as asked, and settings out of range refused.
+#[test]
+fn a_rule_s_settings_are_searched_over_the_protocol() {
+    let folder = workspace_with_rules("fit");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let found = server.call("fit_rule", json!({"population": "Tmem", "shown": 64}));
+    assert_eq!(found["outcome"], "ok", "{found}");
+    let result = &found["result"];
+    // Five widths of the band, each aimed two ways; the band as it stands is one.
+    assert_eq!(result["candidates_total"], 10, "{found}");
+    assert_eq!(result["rank_by"], "typical");
+    let candidates = result["candidates"].as_array().unwrap();
+    assert_eq!(candidates.iter().filter(|c| c["current"] == true).count(), 1);
+    assert_eq!(candidates[0]["place_by_typical"], 1);
+    assert_eq!(candidates[0]["among_best"], true);
+    assert!(candidates[0]["fit"]["typical_agreement"].is_number(), "{found}");
+    assert!(candidates[0]["check"].is_null(), "two specimens are too few to split");
+
+    let parameter = candidates[0]["rule"]["parameter"].clone();
+    let valley = json!({
+        "parameter": parameter,
+        "bound": "Above",
+        "measured_on": "Itself",
+        "rule": {"kind": "InTheValley"},
+    });
+    let given = server.call(
+        "fit_rule",
+        json!({"population": "Tmem", "candidates": [valley], "rank_by": "off"}),
+    );
+    assert_eq!(given["outcome"], "ok", "{given}");
+    assert_eq!(given["result"]["candidates_total"], 2, "{given}");
+    assert_eq!(given["result"]["rank_by"], "off");
+    let places: Vec<&Value> = given["result"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["place_by_off"])
+        .collect();
+    assert_eq!(places, [1, 2]);
+    let with_defaults = server.call(
+        "fit_rule",
+        json!({"population": "Tmem", "candidates": [valley], "defaults": true, "shown": 3}),
+    );
+    assert_eq!(with_defaults["result"]["candidates_total"], 11, "{with_defaults}");
+    assert_eq!(with_defaults["result"]["candidates"].as_array().unwrap().len(), 3);
+
+    for refused in [
+        json!({"population": "Tmem", "rank_by": "best"}),
+        json!({"population": "Tmem", "tie_within": 2.0}),
+        json!({"population": "Tmem", "off_below": 2.0}),
+        json!({"population": "Tmem", "candidates": [{"rule": "valley"}]}),
+        json!({"population": "teff_naive"}),
+    ] {
+        let answer = server.call("fit_rule", refused.clone());
+        assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");
     }
 }
 

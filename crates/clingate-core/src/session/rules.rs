@@ -309,6 +309,25 @@ impl Session {
             .unwrap_or_else(|| file.to_string())
     }
 
+    /// `candidates` with their markers and samples named as a run reads them,
+    /// each checked against `target`'s gate.
+    pub(super) fn resolved_candidates(
+        &self,
+        target: &crate::gate_rules::rule_store::RuleTarget,
+        candidates: &[crate::gate_rules::rule_store::GateRule],
+    ) -> Result<Vec<crate::gate_rules::rule_store::GateRule>, Refusal> {
+        let mut resolved = Vec::with_capacity(candidates.len());
+        for (at, candidate) in candidates.iter().enumerate() {
+            let (rule, _) = self
+                .resolve_rule(candidate.clone())
+                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
+            self.check_target(target, &rule)
+                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
+            resolved.push(rule);
+        }
+        Ok(resolved)
+    }
+
     /// Try up to four candidate rules for one population's gate on the files
     /// as they are, moving nothing - see [`crate::gate_rules::trial`]. The
     /// workspace's pairing and hand-picked references are used; its other
@@ -323,15 +342,7 @@ impl Session {
         let (target, _, _) = self
             .target_of(&node)
             .ok_or_else(|| failed("that population has no gate"))?;
-        let mut resolved = Vec::with_capacity(candidates.len());
-        for (at, candidate) in candidates.iter().enumerate() {
-            let (rule, _) = self
-                .resolve_rule(candidate.clone())
-                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
-            self.check_target(&target, &rule)
-                .map_err(|e| failed(format!("candidate {}: {e}", at + 1)))?;
-            resolved.push(rule);
-        }
+        let resolved = self.resolved_candidates(&target, candidates)?;
         let candidates = resolved.as_slice();
         let rules = self.rules.clone().unwrap_or_default();
         let inputs = RunInputs::assemble(

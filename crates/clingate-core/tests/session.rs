@@ -4030,3 +4030,118 @@ fn scoring_needs_rules() {
     let session = Session::open(&workspace("session-score-none")).unwrap();
     assert!(session.score_rules(None, None, Default::default()).is_err());
 }
+
+/// The rule's own settings searched by default: every candidate scored as
+/// score_rules scores it once it is the workspace's rule, the rule as it
+/// stands among them, and nothing moved.
+#[test]
+fn a_rule_s_settings_are_searched_against_the_gating_as_drawn() {
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit");
+    let mut session = Session::open(&folder).unwrap();
+    let before = session.preview_rules().unwrap();
+    let ask = FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+
+    // Five widths of the band, each aimed two ways; the band as it stands is one.
+    assert_eq!(found.candidates_total, 10, "{found:#?}");
+    assert_eq!(found.candidates.iter().filter(|c| c.current).count(), 1);
+    assert!(found.checked_on.is_empty(), "two specimens are too few to split");
+    assert_eq!(found.fit_on, ["one", "two"]);
+    let places: Vec<usize> = found.candidates.iter().map(|c| c.place_by_typical).collect();
+    assert_eq!(places, (1..=10).collect::<Vec<_>>());
+    let lines = |p: &clingate_core::session::RulesPreview| {
+        p.would_move.iter().map(|m| (m.from, m.to)).collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&session.preview_rules().unwrap()), lines(&before));
+
+    for candidate in [&found.candidates[0], found.candidates.last().unwrap()] {
+        let rule = candidate.rule.clone();
+        session
+            .update_rule(change("Tmem", None, &rule.parameter, rule.measured_on.clone(), rule.rule))
+            .unwrap();
+        let scored = session.score_rules(Some("Tmem"), None, Default::default()).unwrap();
+        assert_eq!(candidate.fit.as_ref(), scored.gates.first(), "{}", candidate.said);
+    }
+}
+
+/// Candidates given are tried beside the rule as it stands, named as the
+/// tools name a parameter, without the default settings unless asked for
+/// too; fewer can be shown than were tried.
+#[test]
+fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
+    use clingate_core::gate_rules::rule::{Rule, ValleyRule};
+    use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-given");
+    let session = Session::open(&folder).unwrap();
+    let channel = session.gate("Tmem", None).unwrap().parameters[0].clone();
+    let valley = GateRule {
+        parameter: channel.trim_end_matches("-A").into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::InTheValley(ValleyRule::default()),
+    };
+    let ask = |defaults, shown| FitAsk {
+        candidates: vec![valley.clone()],
+        defaults,
+        shown,
+    };
+    let given = session
+        .fit_rule("Tmem", ask(false, None), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(given.candidates_total, 2, "{given:#?}");
+    let tried = given.candidates.iter().find(|c| !c.current).unwrap();
+    assert_eq!(&*tried.rule.parameter, channel.as_str(), "read by its channel");
+
+    let with_defaults = session
+        .fit_rule("Tmem", ask(true, Some(3)), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(with_defaults.candidates_total, 11, "the valley and the band's ten");
+    assert_eq!(with_defaults.candidates.len(), 3);
+}
+
+/// Ranked by samples off when asked; refused with nothing to try, or with
+/// settings out of range.
+#[test]
+fn a_search_is_ranked_as_asked_and_refused_with_nothing_to_try() {
+    use clingate_core::gate_rules::fit::{FitSettings, RankBy};
+    use clingate_core::gate_rules::score::ScoreSettings;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-ranked");
+    let session = Session::open(&folder).unwrap();
+    let defaults = || FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let by_off = FitSettings {
+        rank_by: RankBy::Off,
+        ..FitSettings::default()
+    };
+    let found = session
+        .fit_rule("Tmem", defaults(), Default::default(), by_off)
+        .unwrap();
+    let places: Vec<usize> = found.candidates.iter().map(|c| c.place_by_off).collect();
+    assert_eq!(places, (1..=found.candidates_total).collect::<Vec<_>>());
+
+    let unruled = session.fit_rule("teff_naive", defaults(), Default::default(), Default::default());
+    assert!(unruled.unwrap_err().to_string().contains("give candidate rules"));
+    let wide = FitSettings {
+        tie_within: 2.0,
+        ..FitSettings::default()
+    };
+    assert!(session.fit_rule("Tmem", defaults(), Default::default(), wide).is_err());
+    let off_line = ScoreSettings {
+        off_below: 1.5,
+        noise_widths: 0.0,
+    };
+    assert!(session.fit_rule("Tmem", defaults(), off_line, Default::default()).is_err());
+    assert!(session.fit_rule("no such gate", defaults(), Default::default(), Default::default()).is_err());
+}

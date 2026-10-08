@@ -21,6 +21,18 @@
   differently from every sample a little off. It answers "is this ruleset
   closer than the last one?" after every change. Nothing is moved.
 
+- **Searching a rule's settings against hand gating** (`fit_rule` in the
+  tools for Claude). For one gate, the rule as it stands, any candidates
+  Claude gives, and by default every combination of a few values of each
+  setting that matters for its kind are scored as `score_rules` scores a
+  rule - the files read once, candidates that read the population alike
+  solved on one measurement. With eight specimens or more they are ranked
+  on half of them and checked on the other half, so a setting tuned to a
+  couple of samples shows. Ranked by typical agreement, a near-tie going to
+  the fewest samples off, or by fewest off first; each candidate says where
+  it stands both ways, and the best and those tied with it are marked for
+  comparing by eye. Nothing is moved.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several

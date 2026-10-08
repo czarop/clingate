@@ -27,24 +27,52 @@ pub struct ScoreAnswer {
     pub next: &'static str,
 }
 
+/// The target of the rule in `rules` that places `gate`: the one naming its
+/// parent, else one naming no parent.
+pub(super) fn ruled(rules: &RuleStore, gate: &RuleTarget) -> Option<RuleTarget> {
+    let of_gate = |parent: Option<&str>| {
+        rules
+            .entries()
+            .iter()
+            .find(|e| e.target.gate == gate.gate && e.target.parent.as_deref() == parent)
+    };
+    of_gate(gate.parent.as_deref())
+        .or_else(|| of_gate(None))
+        .map(|e| e.target.clone())
+}
+
 impl Session {
-    /// The target of the rule that places `query`'s gate: the one naming its
-    /// parent, else one naming no parent.
-    fn rule_target_for(&self, rules: &RuleStore, query: &str) -> Result<RuleTarget, Refusal> {
+    /// The gate `query` names, under its parent.
+    pub(super) fn gate_target(&self, query: &str) -> Result<RuleTarget, Refusal> {
         let (node, _) = self.one_population(query)?;
-        let (target, _, _) = self
-            .target_of(&node)
-            .ok_or_else(|| failed("that population has no gate"))?;
-        let of_gate = |parent: Option<&str>| {
-            rules
-                .entries()
-                .iter()
-                .find(|e| e.target.gate == target.gate && e.target.parent.as_deref() == parent)
-        };
-        of_gate(target.parent.as_deref())
-            .or_else(|| of_gate(None))
-            .map(|e| e.target.clone())
+        self.target_of(&node)
+            .map(|(target, _, _)| target)
+            .ok_or_else(|| failed("that population has no gate"))
+    }
+
+    /// The target of the rule that places `query`'s gate.
+    fn rule_target_for(&self, rules: &RuleStore, query: &str) -> Result<RuleTarget, Refusal> {
+        ruled(rules, &self.gate_target(query)?)
             .ok_or_else(|| failed("no rule places that population"))
+    }
+
+    /// `gate` as the tools show it: samples by name, numbers rounded.
+    pub(super) fn shown_gate(&self, gate: GateScore) -> GateScore {
+        let rounded = |value: Option<f64>| value.map(|v| round(v, 3));
+        GateScore {
+            typical_agreement: rounded(gate.typical_agreement),
+            lowest_agreement: rounded(gate.lowest_agreement),
+            off_samples: gate
+                .off_samples
+                .iter()
+                .map(|file| self.sample_name(&Arc::from(file.as_str())))
+                .collect(),
+            median_caught: rounded(gate.median_caught),
+            median_extra: rounded(gate.median_extra),
+            median_holds_difference: rounded(gate.median_holds_difference),
+            median_edge_off_iqrs: rounded(gate.median_edge_off_iqrs),
+            ..gate
+        }
     }
 
     /// Run every rule - or `population`'s alone - on the files, each gate
@@ -78,20 +106,7 @@ impl Session {
 
         let name = |file: &str| self.sample_name(&Arc::from(file));
         let rounded = |value: Option<f64>, places| value.map(|v| round(v, places));
-        let gates = score
-            .gates
-            .into_iter()
-            .map(|g| GateScore {
-                typical_agreement: rounded(g.typical_agreement, 3),
-                lowest_agreement: rounded(g.lowest_agreement, 3),
-                off_samples: g.off_samples.iter().map(|f| name(f)).collect(),
-                median_caught: rounded(g.median_caught, 3),
-                median_extra: rounded(g.median_extra, 3),
-                median_holds_difference: rounded(g.median_holds_difference, 3),
-                median_edge_off_iqrs: rounded(g.median_edge_off_iqrs, 3),
-                ..g
-            })
-            .collect();
+        let gates = score.gates.into_iter().map(|g| self.shown_gate(g)).collect();
         let rows_total = score.rows.len();
         let mut rows = score.rows;
         rows.sort_by(least_agreeing_first);

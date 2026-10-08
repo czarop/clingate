@@ -140,8 +140,14 @@ commit (`b7a77c4`).
 ## Fitting rules to hand gating
 
 The scorer (`gate_rules::score`, the `score_rules` tool) compares a ruleset
-with a workspace gated by hand, event by event. Next is a search over each
-gate's settings, ranked by it.
+with a workspace gated by hand, event by event; the search
+(`gate_rules::fit`, the `fit_rule` tool) tries a gate's rule settings and
+ranks them by it.
+
+- [ ] **Try the search on a hand-gated workspace** and settle what ranks
+      best: typical agreement with ties to the fewest off, or fewest off
+      first - and whether the default grids, the tie of 0.02 and the split
+      at eight specimens suit runs of 20 to 40 samples.
 
 - [ ] **Quadrant gates in the score.** A quadrant gate is four gates in one;
       `admitted_by` returns nothing for it, so the score skips it. Score each
