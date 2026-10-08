@@ -486,11 +486,24 @@ fn values_of(file: &str) -> Vec<f32> {
         .collect()
 }
 
-/// Each sample read on itself: the rule's line is where a run puts it, the
-/// hand line is the drawn 0, and the distance is in that sample's own
-/// interquartile range, counted here from the events written.
+/// Linear between the order statistics either side of rank q(n - 1).
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    let rank = q * (sorted.len() - 1) as f64;
+    let (lo, hi) = (sorted[rank.floor() as usize], sorted[rank.ceil() as usize]);
+    lo + (hi - lo) * rank.fract()
+}
+
+fn middle(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    (sorted[(n - 1) / 2] + sorted[n / 2]) / 2.0
+}
+
+/// Each sample read on itself. The drawn gate holds every event from 0 up;
+/// the rule's line is where a run puts it, so its gate holds the events from
+/// there up, all of them inside the drawn one. Every number is counted here
+/// from the events written.
 #[test]
-fn each_sample_is_scored_by_how_far_the_rule_s_line_is_from_the_hand_line() {
+fn each_sample_is_scored_by_the_events_both_gates_hold() {
     let written = write("score-each", &FILES);
     let rules = store(band(Pool::Specimen, MeasuredOn::Itself));
     let placed = applied(&gates(), &run(&gates(), &written, &FILES, rules.clone()), &FILES);
@@ -501,55 +514,62 @@ fn each_sample_is_scored_by_how_far_the_rule_s_line_is_from_the_hand_line() {
     assert_eq!(scored.rows.len(), 4, "{:#?}", scored.rows);
     for row in &scored.rows {
         let file = row.file.trim_end_matches(".fcs");
-        let mut values = values_of(file);
-        values.sort_by(f32::total_cmp);
-        // Linear between the order statistics either side of rank q(n - 1).
-        let quartile = |q: f64| {
-            let rank = q * (values.len() - 1) as f64;
-            let (lo, hi) = (values[rank.floor() as usize], values[rank.ceil() as usize]);
-            lo as f64 + (hi - lo) as f64 * rank.fract()
-        };
-        let iqr = quartile(0.75) - quartile(0.25);
+        let mut values: Vec<f64> = values_of(file).into_iter().map(f64::from).collect();
+        values.sort_by(f64::total_cmp);
         let rule_line = line(&placed, file, &FILES) as f64;
-        let above = values.iter().filter(|v| **v as f64 > rule_line).count();
+        let held: Vec<f64> = values.iter().copied().filter(|v| *v >= rule_line).collect();
+        let (hand, rule) = (values.len(), held.len());
 
         assert_eq!(row.what, "moved", "{row:?}");
-        assert_eq!(row.hand_line, Some(0.0));
-        assert!((row.rule_line.unwrap() - rule_line).abs() < 1e-3, "{row:?}");
-        let off = row.off_iqrs.unwrap();
+        let events = row.events.unwrap();
+        assert_eq!((events.hand, events.rule, events.both), (hand, rule, rule), "{row:?}");
+        assert_eq!(row.caught, Some(rule as f64 / hand as f64));
+        assert_eq!(row.extra, Some(0.0));
+        let total = (hand + rule) as f64;
+        let agreement = 1.0 - ((hand - rule) as f64 - 2.0 * total.sqrt()) / total;
+        assert!((row.agreement.unwrap() - agreement).abs() < 1e-12, "{row:?}");
+
+        // Every event is kept, so the shift is read on all of them; the
+        // second axis is one value throughout, with no spread to read it in.
+        let iqr = quantile(&values, 0.75) - quantile(&values, 0.25);
+        let shift = (middle(&held) - middle(&values)) / iqr;
+        assert_eq!(row.shift_iqrs.len(), 1, "{row:?}");
+        assert_eq!(row.shift_iqrs[0].0, X);
+        assert!((row.shift_iqrs[0].1 - shift).abs() < 1e-3 * shift, "{row:?} {shift}");
+
+        assert_eq!(row.hand_edge, Some(0.0));
+        assert!((row.rule_edge.unwrap() - rule_line).abs() < 1e-3, "{row:?}");
+        let off = row.edge_off_iqrs.unwrap();
         // The same interpolation both ways round, so only rounding differs.
-        assert!(
-            (off - rule_line / iqr).abs() < 1e-6 * off.abs(),
-            "{file}: {off} against {}",
-            rule_line / iqr
-        );
+        assert!((off - rule_line / iqr).abs() < 1e-6 * off, "{file}: {off}");
         assert_eq!(row.hand_holds, Some(1.0), "the drawn gate holds everything");
-        let holds = above as f64 / values.len() as f64;
-        assert!((row.rule_holds.unwrap() - holds).abs() < 0.002, "{row:?}");
-        assert!((row.holds_difference.unwrap() - (holds - 1.0) * 100.0).abs() < 0.2);
+        assert!((row.holds_difference.unwrap() - (rule as f64 / hand as f64 - 1.0) * 100.0).abs() < 1e-3);
     }
     let gate = &scored.gates[0];
     assert_eq!((gate.scored, gate.not_placed), (4, 0));
-    let worst = scored.rows.iter().map(|r| r.off_iqrs.unwrap().abs()).fold(0.0, f64::max);
-    assert_eq!(gate.worst_off_iqrs, Some(worst));
-    assert_eq!(gate.worst[0], scored.rows[0].file, "worst first");
+    let lowest = scored.rows.iter().filter_map(|r| r.agreement).fold(1.0, f64::min);
+    assert_eq!(gate.lowest_agreement, Some(lowest));
+    assert_eq!(gate.off, 4, "the rule holds a few % of a gate drawn round everything");
+    assert_eq!(gate.off_samples[0], scored.rows[0].file, "least agreeing first");
+    assert_eq!(gate.median_extra, Some(0.0));
 }
 
-/// A band the drawn gate already sits in: the rule would leave it, so it is
-/// exactly where the hand put it.
+/// A band the drawn gate already sits in: the rule would leave it, so it
+/// holds exactly what the hand gate holds.
 #[test]
-fn a_rule_the_hand_gating_already_meets_scores_nothing_off() {
+fn a_rule_the_hand_gating_already_meets_agrees_entirely() {
     let written = write("score-kept", &FILES);
     let mut rule = band(Pool::Specimen, MeasuredOn::Itself);
     rule.rule = Rule::TailFraction(TailFractionRule::new((0.5, 1.0)));
     let scored = score(&gates(), &written, store(rule));
     for row in &scored.rows {
         assert_eq!(row.what, "kept", "{row:?}");
-        assert_eq!(row.off_iqrs, Some(0.0));
-        assert_eq!(row.holds_difference, Some(0.0));
+        assert_eq!((row.agreement, row.caught, row.extra), (Some(1.0), Some(1.0), Some(0.0)));
+        assert_eq!((row.edge_off_iqrs, row.holds_difference), (Some(0.0), Some(0.0)));
     }
-    assert_eq!(scored.gates[0].worst_off_iqrs, Some(0.0));
-    assert!(scored.gates[0].worst.is_empty(), "none is off");
+    let gate = &scored.gates[0];
+    assert_eq!((gate.median_agreement, gate.off), (Some(1.0), 0));
+    assert!(gate.off_samples.is_empty());
 }
 
 /// A gate is scored under its parent as drawn, whatever the rule above it
@@ -604,7 +624,7 @@ fn a_gate_is_scored_under_its_parent_as_drawn() {
         alone
             .rows
             .iter()
-            .any(|r| (r.rule_line.unwrap() - child_line(&r.file)).abs() > 1.0),
+            .any(|r| (r.rule_edge.unwrap() - child_line(&r.file)).abs() > 1.0),
         "the parent rule moved nothing under it, so this proves nothing"
     );
 }
@@ -622,12 +642,12 @@ fn a_sample_the_rule_cannot_place_is_said_and_not_scored() {
     for row in &scored.rows {
         assert_eq!(row.what, "not placed", "{row:?}");
         assert!(row.why_not.is_some());
-        assert_eq!((row.off_iqrs, row.holds_difference), (None, None));
+        assert_eq!((row.agreement, row.holds_difference), (None, None));
     }
     let gate = &scored.gates[0];
     assert_eq!(gate.scored, 0);
     assert_eq!(gate.not_placed, 4, "one for each of the four specimens");
-    assert_eq!((gate.worst_off_iqrs, gate.worst.len()), (None, 0));
+    assert_eq!((gate.lowest_agreement, gate.off_samples.len()), (None, 0));
 }
 
 /// A rule on a parameter the files do not hold measures nothing: each
@@ -642,7 +662,7 @@ fn a_sample_the_rule_cannot_measure_is_said_too() {
     assert_eq!(scored.gates[0].not_placed, 4);
     for row in &scored.rows {
         assert_eq!(row.what, "not placed");
-        assert_eq!((row.hand_line, row.hand_holds), (None, None));
+        assert_eq!((row.hand_edge, row.hand_holds), (None, None));
         assert!(row.why_not.is_some(), "{row:?}");
     }
 }
@@ -659,7 +679,7 @@ fn the_reference_is_listed_and_not_scored() {
     );
     let references: Vec<_> = scored.rows.iter().filter(|r| r.what == "reference").collect();
     assert!(!references.is_empty(), "{:#?}", scored.rows);
-    assert!(references.iter().all(|r| r.off_iqrs.is_none() && r.rule_line.is_none()));
+    assert!(references.iter().all(|r| r.agreement.is_none() && r.rule_edge.is_none()));
     let gate = &scored.gates[0];
     assert_eq!(gate.references, references.len());
     assert_eq!(gate.scored + gate.not_placed + gate.references, scored.rows.len());

@@ -109,10 +109,13 @@ candidates per gate is the point.
 
 When the user has gated a workspace by hand and asks how close the rules come \
 to it, score_rules runs every rule - or one population's - on the files, each \
-gate under its parent as drawn, and says per gate and sample how far the \
-rule's line is from theirs, in that sample's parent's interquartile ranges, \
-and the difference in % of the parent. Show the user the gates and samples \
-furthest off; it moves nothing.
+gate under its parent as drawn, and compares the rule's gate with theirs by the \
+events both hold, whatever their shape: an agreement that forgives counting \
+noise (more for a gate of few cells), how much of their gate the rule's \
+catches, and how much it holds beyond it. Per gate, the median and lowest \
+agreement and the samples that are off tell a few samples far off from every \
+sample a little off. Show the user the gates and samples least in agreement; \
+it moves nothing.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -351,8 +354,8 @@ pub struct TryRules {
 pub struct ScoreRulesArgs {
     /// The population whose rule to score, by its gate names. Leave out for every rule.
     pub population: Option<String>,
-    /// How many samples to list, furthest from the hand gating first (default 40, at most
-    /// 400). The gates' lines always count every sample.
+    /// How many samples to list, least in agreement with the hand gating first (default 40,
+    /// at most 400). The gates' lines always count every sample.
     pub max_rows: Option<usize>,
 }
 
@@ -865,11 +868,13 @@ impl Clingate {
     }
 
     /// Score the rules against the gating drawn by hand: every rule, or one population's, run
-    /// on the files with each gate under its parent as drawn, and per gate and sample how far
-    /// the rule's line is from the hand-drawn one in that sample's parent's interquartile
-    /// ranges, and the rule's % of the parent minus the hand gate's. Each gate in a line,
-    /// furthest off first, then the samples furthest off. Moves nothing. Reads the samples'
-    /// events: only when the user asks for it.
+    /// on the files with each gate under its parent as drawn, and per gate and sample the
+    /// events the rule's gate and the hand gate both hold - an agreement forgiving counting
+    /// noise, how much of the hand gate the rule catches and how much it holds beyond it -
+    /// with how far the rule's gate sits from the hand gate and, for a rule that moves one
+    /// edge, how far it moves it. Each gate in a line, the most samples off first, then the
+    /// samples least in agreement. Moves nothing. Reads the samples' events: only when the
+    /// user asks for it.
     #[tool(annotations(read_only_hint = true))]
     async fn score_rules(&self, Parameters(args): Parameters<ScoreRulesArgs>) -> String {
         self.run(move |s| s.score_rules(args.population.as_deref(), args.max_rows))

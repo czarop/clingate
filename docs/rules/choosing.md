@@ -107,6 +107,7 @@ current files without applying them (`try_rules`), compare with the
 hand-gated reference and with what should be consistent (QC samples across
 plates), and - once runs have been reviewed - replay them (`replay_rules`)
 to see what each fixes and breaks. On a workspace gated by hand, score the
-rules against it (`score_rules`): each gate under its parent as drawn, how
-far the rule's line lands from the hand-drawn one in the sample's own
-parent's interquartile ranges, and how much more or less it holds.
+rules against it (`score_rules`): each gate under its parent as drawn, and
+the events the rule's gate shares with the hand-drawn one - how much of
+yours it catches, how much it holds beyond it, and one agreement that
+forgives counting noise.

@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::{Refusal, Session, failed, round};
 use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
-use crate::gate_rules::score::{GateScore, ScoreRow, distance, furthest_first};
+use crate::gate_rules::score::{GateScore, ScoreRow, least_agreeing_first};
 
 /// Rows shown when no number is asked for, and the most ever shown.
 pub const SCORE_ROWS: usize = 40;
@@ -19,10 +19,10 @@ pub const SCORE_ROWS_MAX: usize = 400;
 pub struct ScoreAnswer {
     pub files_read: usize,
     pub problems: Vec<String>,
-    /// Each gate in a line, furthest from the hand gating first.
+    /// Each gate in a line, the most samples off first.
     pub gates: Vec<GateScore>,
     pub rows_total: usize,
-    /// The samples furthest from the hand gating, across every gate.
+    /// The samples least like the hand gating, across every gate.
     pub rows: Vec<ScoreRow>,
     pub next: &'static str,
 }
@@ -80,26 +80,36 @@ impl Session {
             .gates
             .into_iter()
             .map(|g| GateScore {
-                median_off_iqrs: rounded(g.median_off_iqrs, 3),
-                worst_off_iqrs: rounded(g.worst_off_iqrs, 3),
+                median_agreement: rounded(g.median_agreement, 3),
+                lowest_agreement: rounded(g.lowest_agreement, 3),
+                off_samples: g.off_samples.iter().map(|f| name(f)).collect(),
+                median_caught: rounded(g.median_caught, 3),
+                median_extra: rounded(g.median_extra, 3),
                 median_holds_difference: rounded(g.median_holds_difference, 3),
-                worst_holds_difference: rounded(g.worst_holds_difference, 3),
-                worst: g.worst.iter().map(|f| name(f)).collect(),
+                median_edge_off_iqrs: rounded(g.median_edge_off_iqrs, 3),
                 ..g
             })
             .collect();
         let rows_total = score.rows.len();
         let mut rows = score.rows;
-        rows.sort_by(|a, b| furthest_first(&distance(a), &distance(b)));
+        rows.sort_by(least_agreeing_first);
         let shown = max_rows.unwrap_or(SCORE_ROWS).clamp(1, SCORE_ROWS_MAX);
         let rows = rows
             .into_iter()
             .take(shown)
             .map(|row| ScoreRow {
                 file: name(&row.file),
-                hand_line: rounded(row.hand_line, 4),
-                rule_line: rounded(row.rule_line, 4),
-                off_iqrs: rounded(row.off_iqrs, 3),
+                agreement: rounded(row.agreement, 3),
+                caught: rounded(row.caught, 3),
+                extra: rounded(row.extra, 3),
+                shift_iqrs: row
+                    .shift_iqrs
+                    .iter()
+                    .map(|(axis, off)| (axis.clone(), round(*off, 3)))
+                    .collect(),
+                hand_edge: rounded(row.hand_edge, 4),
+                rule_edge: rounded(row.rule_edge, 4),
+                edge_off_iqrs: rounded(row.edge_off_iqrs, 3),
                 hand_holds: rounded(row.hand_holds, 5),
                 rule_holds: rounded(row.rule_holds, 5),
                 holds_difference: rounded(row.holds_difference, 3),
@@ -113,12 +123,16 @@ impl Session {
             gates,
             rows_total,
             rows,
-            next: "off_iqrs is the rule's line minus the hand-drawn one, in that sample's \
-                   parent's interquartile ranges; holds_difference is the rule's % of the \
-                   parent minus the hand gate's, in percentage points. Each gate was read \
-                   under its parent as drawn. Nothing has moved. try_rules compares other \
-                   rules for one gate; score_rules again after update_rule shows whether a \
-                   change brought the rules closer to the hand gating",
+            next: "agreement is 1 when the rule's gate holds the same events as the hand \
+                   gate to within counting noise, falling to 0 when they share none; caught \
+                   is how much of the hand gate's events the rule's gate holds, extra how \
+                   much of the rule's gate is beyond the hand gate - which way it is off. \
+                   A gate with a high median and a low lowest agreement has a few samples \
+                   far off (off_samples); a low median is every sample a little off. \
+                   shift_iqrs and edge_off_iqrs say where the rule's gate sits against the \
+                   hand gate. Each gate was read under its parent as drawn; nothing has \
+                   moved. Show the user the gates and samples furthest off; score_rules \
+                   again after update_rule shows whether a change brought the rules closer",
         })
     }
 }

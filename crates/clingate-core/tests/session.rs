@@ -3935,13 +3935,17 @@ fn the_rules_are_scored_against_the_gating_as_drawn() {
             .find(|r| r.file == moved.measured_on)
             .unwrap_or_else(|| panic!("{} not scored: {scored:#?}", moved.measured_on));
         assert_eq!(row.what, "moved");
-        assert_eq!(row.hand_line, Some(moved.from), "{row:?}");
-        assert_eq!(row.rule_line, Some(moved.to), "{row:?}");
-        assert_eq!(row.off_iqrs.unwrap().signum(), (moved.to - moved.from).signum());
+        assert_eq!(row.hand_edge, Some(moved.from), "{row:?}");
+        assert_eq!(row.rule_edge, Some(moved.to), "{row:?}");
+        assert_eq!(row.edge_off_iqrs.unwrap().signum(), (moved.to - moved.from).signum());
+        let events = row.events.expect("both gates counted");
+        assert!(events.both <= events.hand.min(events.rule), "{row:?}");
+        let agreement = row.agreement.unwrap();
+        assert!((0.0..=1.0).contains(&agreement), "{row:?}");
     }
     let kept: Vec<_> = scored.rows.iter().filter(|r| r.what == "kept").collect();
     assert_eq!(kept.len(), preview.already_in_place.len(), "{scored:#?}");
-    assert!(kept.iter().all(|r| r.off_iqrs == Some(0.0)));
+    assert!(kept.iter().all(|r| r.agreement == Some(1.0) && r.edge_off_iqrs == Some(0.0)));
     assert_eq!(scored.rows_total, scored.rows.len());
 
     // Nothing moved: a second preview proposes the same.

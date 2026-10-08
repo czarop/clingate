@@ -1261,8 +1261,10 @@ fn the_rules_are_scored_over_the_protocol() {
             .iter()
             .find(|r| r["file"] == moved["measured_on"])
             .unwrap_or_else(|| panic!("{moved} not scored: {scored}"));
-        assert_eq!(row["hand_line"], moved["from"], "{row}");
-        assert_eq!(row["rule_line"], moved["to"], "{row}");
+        assert_eq!(row["hand_edge"], moved["from"], "{row}");
+        assert_eq!(row["rule_edge"], moved["to"], "{row}");
+        assert!(row["agreement"].as_f64().is_some(), "{row}");
+        assert!(row["events"]["both"].as_u64().is_some(), "{row}");
     }
     assert_eq!(scored["result"]["gates"][0]["gate"], moves[0]["gate"]);
 

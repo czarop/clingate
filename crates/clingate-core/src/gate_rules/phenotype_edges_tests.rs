@@ -479,15 +479,16 @@ fn halves_apart(seed: u64) -> polars::prelude::DataFrame {
     df![X => xs, Y => ys].unwrap()
 }
 
-/// A phenotype rule draws no line, so it is scored on what it holds: the
-/// same fractions before and after that a run reports, read here off the
-/// same samples written as files.
+/// A phenotype rule draws no single line, so it is scored on the events its
+/// gate shares with the hand gate: counted here inside the drawn rectangle
+/// and the one a run moves it to, on the same samples written as files.
 #[test]
-fn a_phenotype_rule_is_scored_on_what_it_holds() {
+fn a_phenotype_rule_is_scored_on_the_events_it_shares_with_the_hand_gate() {
     use crate::file_load_tests::{scratch, write_fcs_rows};
     let reference = sample(1, 50.0, 2_000, Positives::Smear(200.0));
     let dimmer = sample(2, 50.0, 2_000, Positives::Smear(140.0));
-    let (report, _, _) = run(ShapeFit::KeepShape, (600.0, 3_000.0), &reference, &dimmer);
+    let drawn = (600.0, 3_000.0);
+    let (report, moved_x, moved_y) = run(ShapeFit::KeepShape, drawn, &reference, &dimmer);
     let placed = &report.positioned[0];
 
     let dir = scratch("score-phenotype");
@@ -531,10 +532,26 @@ fn a_phenotype_rule_is_scored_on_what_it_holds() {
         .find(|r| r.what == "moved")
         .unwrap_or_else(|| panic!("{scored:#?}"));
     assert_eq!(row.file, "sample");
-    assert_eq!((row.hand_line, row.rule_line, row.off_iqrs), (None, None, None));
+    assert_eq!((row.hand_edge, row.rule_edge, row.edge_off_iqrs), (None, None, None));
+
+    // Rectangle edges count as inside, as the plots count them.
+    let within = |range: (f32, f32), v: f32| range.0.min(range.1) <= v && v <= range.0.max(range.1);
+    let column = |c: &str| dimmer.column(c).unwrap().f32().unwrap().to_vec();
+    let (mut hand, mut rule, mut both) = (0, 0, 0);
+    for (x, y) in column(X).into_iter().zip(column(Y)) {
+        let (x, y) = (x.unwrap(), y.unwrap());
+        let in_hand = within(drawn, x) && within((300.0, 700.0), y);
+        let in_rule = within(moved_x, x) && within(moved_y, y);
+        hand += usize::from(in_hand);
+        rule += usize::from(in_rule);
+        both += usize::from(in_hand && in_rule);
+    }
+    let events = row.events.unwrap();
+    assert_eq!((events.hand, events.rule, events.both), (hand, rule, both), "{row:?}");
+    assert!(hand != both || rule != both, "the gate moved, or this proves little");
+    assert_eq!(row.caught, Some(both as f64 / hand as f64));
+    assert_eq!(row.extra, Some((rule - both) as f64 / rule as f64));
     assert!((row.hand_holds.unwrap() - placed.from).abs() < 1e-9, "{row:?} {}", placed.from);
     assert!((row.rule_holds.unwrap() - placed.to).abs() < 1e-9, "{row:?} {}", placed.to);
-    let difference = (placed.to - placed.from) * 100.0;
-    assert!((row.holds_difference.unwrap() - difference).abs() < 1e-6);
-    assert_eq!(scored.gates[0].worst_holds_difference, Some(difference.abs()));
+    assert_eq!(scored.gates[0].median_caught, row.caught);
 }
