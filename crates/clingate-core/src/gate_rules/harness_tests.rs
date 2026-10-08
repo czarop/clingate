@@ -424,7 +424,7 @@ fn score_against_manual(rows: &[Row], band: (f64, f64)) {
         let Ok(solved) = rule.solve(&r.values) else {
             continue;
         };
-        let confidence = model.assess(&solved, Some(r.manual_x));
+        let confidence = model.assess(&solved);
         let diff = solved.x - r.manual_x;
         diffs.push(diff.abs());
         println!(
@@ -572,7 +572,7 @@ fn score_from_rules(store: &RuleStore, rows: &[Row], metadata: &MetaDataFileMap)
             continue;
         };
 
-        let Ok(solved) = rule.solve(&reference.values, Some(row.manual_x)) else {
+        let Ok(solved) = rule.solve(&reference.values) else {
             continue;
         };
         let diff = solved.threshold.x - row.manual_x;

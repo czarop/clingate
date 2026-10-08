@@ -442,6 +442,68 @@ fn a_rule_over_the_gate_it_follows_is_listed_and_its_refusals_assessed_over_the_
     );
 }
 
+/// One sample's gate 2.5 of its parent's IQRs from where five peers put
+/// theirs, read on a trusted FMX: flagged for where it sits, and said so.
+#[test]
+fn a_gate_far_from_its_peers_is_flagged_over_the_protocol() {
+    use clingate_core::review::RunRecord;
+    let folder = workspace_with_rules("far-from-peers");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+
+    let mut record = RunRecord::load(&folder).unwrap().unwrap();
+    let model = record
+        .placed
+        .iter()
+        .find(|p| p.shape.is_some())
+        .expect("a placement with its population kept")
+        .clone();
+    let shape = model.shape.clone().unwrap();
+    let at = |iqrs: f64| shape.median() + iqrs * shape.iqr();
+    let named = |name: &str, line: f64| {
+        let mut p = model.clone();
+        p.sample.id = name.into();
+        p.sample.name = Some(name.into());
+        (p.to, p.confidence) = (Some(line), 0.9);
+        p
+    };
+    // The run's own sample, so the board finds its gate as placed.
+    let mut far = model.clone();
+    far.to = Some(at(3.5));
+    (far.confidence, far.read_on_control, far.reference_events, far.in_band) =
+        (0.1, true, 600, true);
+    record.placed = (0..5)
+        .map(|n| named(&format!("peer{n}"), at(1.0)))
+        .chain([far])
+        .collect();
+    record.save(&folder).unwrap();
+
+    let assessed = server.call("assess_run", json!({}));
+    assert_eq!(assessed["outcome"], "ok", "{assessed}");
+    let flags = assessed["result"]["flags"].as_array().unwrap();
+    assert_eq!(flags.len(), 1, "{assessed}");
+    assert_eq!(flags[0]["sample"]["id"], model.sample.id.as_str());
+    let reasons = flags[0]["reasons"].as_array().unwrap();
+    assert_eq!(reasons.len(), 1, "{assessed}");
+    assert_eq!(reasons[0]["measure"], "gate_position");
+    assert!(
+        reasons[0]["says"]
+            .as_str()
+            .unwrap()
+            .contains("+2.50 IQRs from them"),
+        "{assessed}"
+    );
+}
+
 #[test]
 fn a_rules_run_is_reviewed_over_the_protocol_as_in_the_app() {
     let folder = workspace_with_rules("review");
@@ -1209,4 +1271,14 @@ fn the_rules_are_scored_over_the_protocol() {
     assert_eq!(one["result"]["rows"].as_array().unwrap().len(), 1);
     let unknown = server.call("score_rules", json!({"population": "no such gate"}));
     assert_ne!(unknown["outcome"], "ok", "{unknown}");
+}
+
+#[test]
+fn the_instructions_quote_the_review_s_own_limit() {
+    let limit = clingate_core::review::assess::POSITION_LIMIT;
+    assert!(
+        clingate_mcp::INSTRUCTIONS
+            .contains(&format!("gate sits {limit} or more of its parent's IQRs")),
+        "the instructions no longer say how far from its peers a gate is flagged"
+    );
 }

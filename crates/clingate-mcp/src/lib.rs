@@ -76,9 +76,10 @@ to, and never replace a file unless the user has said to replace that file.
 If the overview says an earlier session left unsaved changes, ask the user \
 whether to restore or discard them.
 
-To review a rules run, start with assess_run: it lists the placements that look \
-unlike their peers or that the rule was unsure of, with reasons, and costs \
-little, and the gates the run could not place. compare_to_peers then shows one \
+To review a rules run, start with assess_run: it lists the placements whose \
+gate sits 2 or more of its parent's IQRs from where its peers put theirs, or \
+that the rule was unsure of, with reasons, and costs little, and the gates the \
+run could not place. compare_to_peers then shows one \
 sample beside its peers in numbers. Present what you find to the user; the \
 flags are for a person to judge. A gate the run could not place on any sample \
 needs its rule changed: tell the user what is wrong with it, and change it only \
@@ -742,9 +743,10 @@ impl Clingate {
         self.run(|s| s.discard_unsaved_changes()).await
     }
 
-    /// Assess the last applied rules run: which placements look unlike their peers - the
-    /// other samples of the same kind that the rule placed confidently - or that the rule was
-    /// unsure of, each with its reasons in words, worst first; each gate across the run in a
+    /// Assess the last applied rules run: which placements have their gate 2 or more of the
+    /// parent's IQRs from where their peers - the other samples of the same kind that the rule
+    /// placed confidently - put theirs, or that the rule was unsure of, each with its reasons in
+    /// words, worst first; each gate across the run in a
     /// line; and the placements the run could not make, those refused on every sample first.
     /// Reads no files: it works from the run the workspace keeps.
     #[tool(annotations(read_only_hint = true))]

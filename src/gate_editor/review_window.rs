@@ -316,7 +316,7 @@ fn unplaced_title(unplaced: &[Unplaced]) -> String {
 fn pile_hint(pile: Pile) -> &'static str {
     match pile {
         Pile::NeedsALook => {
-            "Placements that look unlike their peers - the other samples of the same kind the rule placed confidently - or that the rule was unsure of, worst first. Open one in the editor to fix it, report it, or mark it as looking right."
+            "Placements whose gate sits 2 or more of its parent's IQRs from where their peers - the other samples of the same kind the rule placed confidently - put theirs, or that the rule was unsure of, worst first. Open one in the editor to fix it, report it, or mark it as looking right."
         }
         Pile::Passed => {
             "Placements like their peers', and flagged ones judged to look right. Worth a skim: the flags are a guide, not a guarantee."

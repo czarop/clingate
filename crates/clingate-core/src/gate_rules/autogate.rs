@@ -2686,7 +2686,7 @@ fn pooled_line(
         };
         let mut confidence = rule
             .rule
-            .assess(&threshold, Some(first_line.current))
+            .assess(&threshold)
             .ok_or_else(|| "this rule is not judged on a threshold".to_string())?;
         confidence.components.push(pooled);
         let confidence =
@@ -2911,7 +2911,7 @@ fn position_one(
             }
             None => {
                 let solved = rule
-                    .solve(&reference_line.values, Some(line.current))
+                    .solve(&reference_line.values)
                     .map_err(|e| e.to_string())?;
                 let moved = translate_edge_to(
                     &current_gate,
@@ -2981,18 +2981,9 @@ fn position_one(
             }
         },
     };
-    // Above-the-negative is *meant* to move the gate off the reference's
-    // position - that is the whole rule - so scoring it on how far it travelled
-    // marks every correct placement as suspect. It put 15 of 32 gates at zero
-    // confidence on a run where all of them were right.
-    let judge_displacement = !matches!(
-        &rule.rule,
-        crate::gate_rules::rule::Rule::AboveTheNegative(_)
-            | crate::gate_rules::rule::Rule::InTheValley(_)
-    );
     let mut confidence = rule
         .rule
-        .assess(&threshold, judge_displacement.then_some(line.current))
+        .assess(&threshold)
         .ok_or_else(|| "this rule is not judged on a threshold".to_string())?;
 
     // Where the gate sits against the negative's right side, which the rule
@@ -3617,8 +3608,6 @@ fn position_by_phenotype(
         crate::gate_rules::confidence::assess_match(crate::gate_rules::confidence::MatchEvidence {
             matched: found.members.len(),
             parent: here.points.len(),
-            reference_matched: inside.len(),
-            reference_parent: there.points.len(),
             purity,
             caught,
             pieces,

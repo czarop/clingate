@@ -96,10 +96,9 @@ for the whole specimen, so its FMX shows the same gate.
   starts to complain: `events_full` (10,000: parent events at which count is
   no worry), `events_floor` (100: below this a placement is worth nothing),
   `swing_half` (1: how unstable a nudge may make the contents before the
-  stability score halves), `displacement_limit` (0.5: how far, in
-  interquartile widths, a band or percentile rule may move the gate before
-  it is doubted). These were set by judgement, and are worth tuning against
-  reviewed runs.
+  stability score halves). These were set by judgement, and are worth
+  tuning against reviewed runs. A `displacement_limit` in an older rules
+  file is ignored: how far a gate moved is not held against it.
 
 ## How to check a choice
 

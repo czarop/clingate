@@ -174,8 +174,6 @@ real dip a width above a wide negative reads the same.
 - *how much of the population the gate holds*.
 - *whether the matched cells form one cloud* - two clouds cannot be one
   outline.
-- *how common the population is, against the reference* - scored on the
-  ratio: three times more or less common halves the score.
 - *whether the edges agree between halves of the events* - the edges are
   placed twice more, once from each half of the sample's events (alternate
   events), and of the cells either placement holds, the share both hold is

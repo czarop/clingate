@@ -59,7 +59,7 @@ pub const SOURCES: &[Source] = &[
     },
     Source {
         path: "review/assess.rs",
-        holds: "flagging placements unlike their peers, the typical peer",
+        holds: "flagging gates far from their peers', the typical peer",
         text: include_str!("assess.rs"),
     },
     Source {
@@ -189,6 +189,7 @@ mod tests {
             "fn negative_peak",
             "fn refine_from",
             "fn typical_of",
+            "fn position_against_peers",
             "fn replay_run",
         ] {
             assert!(
@@ -212,10 +213,6 @@ mod tests {
         assert!(doc.contains(&format!("`events_floor = {}`", limits.events_floor)));
         assert!(doc.contains(&format!("`swing_half = {}`", limits.swing_half)));
         assert!(doc.contains(&format!(
-            "`displacement_limit = {}`",
-            limits.displacement_limit
-        )));
-        assert!(doc.contains(&format!(
             "within {:.0}% of the smaller of the right\nfraction and what it leaves out, or {} of the events kept",
             super::super::replay::TOLERANCE_RELATIVE * 100.0,
             super::super::replay::TOLERANCE_EVENTS
@@ -234,6 +231,10 @@ mod tests {
         assert!(doc.contains(&format!(
             "below {:.2} is flagged",
             super::super::assess::REVIEW_FLOOR
+        )));
+        assert!(doc.contains(&format!(
+            "its gate sits {} or more of its parent's IQRs from where its peers put",
+            super::super::assess::POSITION_LIMIT
         )));
         assert!(doc.contains(&format!(
             "control (the specimen's FMX, or the run's) of more than {}\nevents",
