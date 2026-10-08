@@ -920,3 +920,87 @@ fn the_closest_candidates_and_the_rule_as_it_stands_keep_their_gates() {
         assert_eq!(left, line(&ran, &gate.file, &FILES), "{}", gate.file);
     }
 }
+
+/// Rules searched together, on one reading of the files, come out exactly as
+/// each searched alone; a search that cannot be made says why in its place;
+/// and the reading and the trying are reported as they go.
+#[test]
+fn rules_searched_together_come_out_as_each_searched_alone() {
+    use crate::gate_rules::fit::{Ask, default_asks, fit_rules};
+    use crate::gate_rules::run::Progress;
+    use crate::gate_rules::score::ScoreSettings;
+    use crate::gate_rules::searches::search_every_rule;
+
+    let written = write("fit-together", &FILES);
+    let drawn = gates_with_lymph_from(-1_000.0);
+    let mut rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    rules.insert(
+        RuleTarget::named("Lymph"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.45, 0.55))),
+        },
+    );
+    let inputs = inputs(&written, &FILES, rules.clone());
+    let mut asks = default_asks(&rules);
+    asks.push(Ask {
+        target: RuleTarget::named("Nowhere"),
+        candidates: Vec::new(),
+    });
+    let heard = std::sync::Mutex::new(Vec::new());
+    let cancel = AtomicBool::new(false);
+    let together = fit_rules(
+        &drawn,
+        &inputs,
+        &asks,
+        ScoreSettings::default(),
+        FitSettings::default(),
+        &cancel,
+        |step| heard.lock().unwrap().push(step),
+    )
+    .unwrap();
+
+    assert_eq!(together.len(), 3);
+    for ((target, found), ask) in together.iter().zip(&asks).take(2) {
+        assert_eq!(target, &ask.target);
+        let alone = fit_rule(
+            &drawn,
+            &inputs,
+            target,
+            &ask.candidates,
+            ScoreSettings::default(),
+            FitSettings::default(),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(found.as_ref().unwrap(), &alone, "{}", target.describe());
+    }
+    assert_eq!(together[2].1, Err("no candidate rule to try".to_string()));
+
+    // Each band tried at five widths, aimed two ways; the rule as it stands is one.
+    let tried = 2 * 10;
+    let heard = heard.into_inner().unwrap();
+    let files = FILES.len();
+    assert!(heard.contains(&Progress::Measuring { done: files, total: files }), "{heard:?}");
+    assert!(heard.contains(&Progress::Solving { done: tried, total: tried }), "{heard:?}");
+
+    let every = search_every_rule(
+        &drawn,
+        &inputs,
+        ScoreSettings::default(),
+        FitSettings::default(),
+        &cancel,
+        |_| {},
+    )
+    .unwrap();
+    assert!(every.not_searched.is_empty(), "{:?}", every.not_searched);
+    let searched: Vec<&RuleTarget> = every.searches.iter().map(|s| &s.target).collect();
+    assert_eq!(searched, [&asks[0].target, &asks[1].target]);
+    for (search, (_, found)) in every.searches.iter().zip(&together) {
+        let found = found.as_ref().unwrap();
+        let best = found.candidates.iter().filter(|c| c.among_best || c.current).count();
+        assert_eq!(search.candidates.len(), best.min(crate::gate_rules::searches::MOST_KEPT + 1));
+    }
+}

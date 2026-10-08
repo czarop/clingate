@@ -6,8 +6,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::gate_rules::fit::{Candidate, Fit};
+use std::sync::atomic::AtomicBool;
+
+use crate::gate_rules::fit::{Candidate, Fit, FitSettings, default_asks, fit_rules};
 use crate::gate_rules::rule_store::RuleTarget;
+use crate::gate_rules::run::{Progress, RunInputs};
+use crate::gate_rules::score::ScoreSettings;
+use crate::gates::GateState;
 
 /// What a kept search is written as.
 pub const FORMAT: u32 = 1;
@@ -78,15 +83,54 @@ pub fn kept(folder: &Path) -> anyhow::Result<Vec<Search>> {
 
 /// Keep `search` in `folder`, in place of an earlier search of the same rule.
 pub fn keep(folder: &Path, search: Search) -> anyhow::Result<()> {
+    keep_all(folder, vec![search])
+}
+
+/// Keep each of `searches` in `folder`, in place of an earlier search of the
+/// same rule.
+pub fn keep_all(folder: &Path, searches: Vec<Search>) -> anyhow::Result<()> {
     // A file that cannot be read is replaced: it holds nothing a search cannot
     // make again.
-    let mut searches = kept(folder).unwrap_or_default();
-    searches.retain(|kept| kept.target != search.target);
-    searches.push(search);
+    let mut all = kept(folder).unwrap_or_default();
+    all.retain(|kept| searches.iter().all(|new| new.target != kept.target));
+    all.extend(searches);
     let path = searches_file(folder);
     crate::workspace::make_parent(&path)?;
-    std::fs::write(path, serde_json::to_string(&searches)?)?;
+    std::fs::write(path, serde_json::to_string(&all)?)?;
     Ok(())
+}
+
+/// Every rule's search, and the rules that could not be searched, with why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EveryRule {
+    pub searches: Vec<Search>,
+    pub not_searched: Vec<String>,
+}
+
+/// Search every rule in `inputs` with settings to try, each with its default
+/// candidates, the files read once for all of them - see [`fit_rules`].
+pub fn search_every_rule(
+    gates: &GateState,
+    inputs: &RunInputs,
+    settings: ScoreSettings,
+    fit: FitSettings,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+) -> Result<EveryRule, String> {
+    let asks = default_asks(&inputs.rules);
+    let mut every = EveryRule {
+        searches: Vec::new(),
+        not_searched: Vec::new(),
+    };
+    for (target, found) in fit_rules(gates, inputs, &asks, settings, fit, cancel, progress)? {
+        match found {
+            Ok(found) => every.searches.push(Search::of(&found, &target)),
+            Err(why) => every
+                .not_searched
+                .push(format!("{}: {why}", target.describe())),
+        }
+    }
+    Ok(every)
 }
 
 #[cfg(test)]
@@ -194,6 +238,28 @@ mod tests {
         let targets: Vec<&RuleTarget> = searches.iter().map(|s| &s.target).collect();
         assert_eq!(targets, [&cd25, &cd69]);
         assert_eq!(uppers(&searches[1]), [0.03]);
+    }
+
+    #[test]
+    fn searches_kept_together_replace_each_one_s_earlier_search() {
+        let folder = scratch("searches-kept-together");
+        let (cd69, cd25, cd8) = (
+            RuleTarget::named("CD69+"),
+            RuleTarget::named("CD25+"),
+            RuleTarget::named("CD8+"),
+        );
+        let search = |upper, target: &RuleTarget| {
+            Search::of(&fit_of(vec![candidate(upper, true, false)]), target)
+        };
+        keep_all(&folder, vec![search(0.01, &cd69), search(0.02, &cd25)]).unwrap();
+        keep_all(&folder, vec![search(0.03, &cd69), search(0.04, &cd8)]).unwrap();
+        let searches = kept(&folder).unwrap();
+        let kept_as: Vec<(&RuleTarget, Vec<f64>)> =
+            searches.iter().map(|s| (&s.target, uppers(s))).collect();
+        assert_eq!(
+            kept_as,
+            [(&cd25, vec![0.02]), (&cd69, vec![0.03]), (&cd8, vec![0.04])]
+        );
     }
 
     #[test]

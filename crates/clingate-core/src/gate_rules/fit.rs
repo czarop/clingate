@@ -9,7 +9,7 @@
 //! candidates are ranked on one half and checked on the other.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use crate::gate_rules::rule::{
     ShapeFit, TailFractionRule, ValleyOrSmearRule, ValleyRule,
 };
 use crate::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget, human_order};
-use crate::gate_rules::run::{RunInputs, measure_many};
+use crate::gate_rules::run::{Progress, RunInputs, measure_many};
 use crate::gate_rules::score::{
     GateScore, PlacedGate, ScoreRow, ScoreSettings, Solved, least_agreeing_first, solved_rows,
     summarise,
@@ -380,22 +380,39 @@ fn measured_once(
     (stores, shape_of)
 }
 
-/// Try the rule `target` has now, if any, and each of `candidates` as its
-/// rule, each scored against the gates as drawn by `settings`, and rank them
-/// as `fit` says. Moves nothing.
-pub fn fit_rule(
-    gates: &GateState,
-    inputs: &RunInputs,
-    target: &RuleTarget,
-    candidates: &[GateRule],
-    settings: ScoreSettings,
-    fit: FitSettings,
-    cancel: &AtomicBool,
-) -> Result<Fit, String> {
-    let settings = settings.checked()?;
-    let fit = fit.checked()?;
-    let current = inputs.rules.get(target);
-    let tried = without_repeats(current.into_iter().chain(candidates).cloned().collect());
+/// One rule's search: its target, and the candidates tried beside the rule
+/// as it stands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ask {
+    pub target: RuleTarget,
+    pub candidates: Vec<GateRule>,
+}
+
+/// A search of every rule in `rules` with settings to try, each with its
+/// default candidates.
+pub fn default_asks(rules: &RuleStore) -> Vec<Ask> {
+    rules
+        .entries()
+        .iter()
+        .map(|entry| Ask {
+            target: entry.target.clone(),
+            candidates: default_candidates(&entry.rule),
+        })
+        .filter(|ask| ask.candidates.len() > 1)
+        .collect()
+}
+
+/// The rules tried for `ask`: the rule as it stands, if any, then its
+/// candidates, each once.
+fn tried_for(base: &RuleStore, ask: &Ask) -> Result<Vec<GateRule>, String> {
+    let current = base.get(&ask.target);
+    let tried = without_repeats(
+        current
+            .into_iter()
+            .chain(&ask.candidates)
+            .cloned()
+            .collect(),
+    );
     if tried.is_empty() {
         return Err("no candidate rule to try".into());
     }
@@ -405,47 +422,24 @@ pub fn fit_rule(
             tried.len()
         ));
     }
+    Ok(tried)
+}
 
-    let (stores, shape_of) = measured_once(&inputs.rules, target, &tried);
-    let (measured, mut problems) = measure_many(
-        gates,
-        &inputs.files,
-        &inputs.compensation,
-        &inputs.names,
-        &inputs.cofactors,
-        &inputs.metadata,
-        &stores,
-        None,
-        cancel,
-        |_, _| {},
-    );
-    if cancel.load(Ordering::Relaxed) {
-        return Err("stopped".into());
-    }
-    let scored: Vec<Solved> = tried
-        .par_iter()
-        .zip(&shape_of)
-        .map(|(rule, &shape)| {
-            let store = only(&inputs.rules, target, rule);
-            solved_rows(
-                gates,
-                &inputs.metadata,
-                &store,
-                &measured[shape],
-                settings,
-                cancel,
-            )
-        })
-        .collect();
-    if cancel.load(Ordering::Relaxed) {
-        return Err("stopped".into());
-    }
+/// `scored`, one for each of `tried` in turn, ranked as `fit` says.
+fn ranked_fit(
+    target: &RuleTarget,
+    tried: &[GateRule],
+    current: Option<&GateRule>,
+    scored: &[Solved],
+    fit: FitSettings,
+    mut problems: Vec<String>,
+    files_read: usize,
+) -> Fit {
     for refused in scored.iter().flat_map(|solved| &solved.refused) {
         if !problems.contains(refused) {
             problems.push(refused.clone());
         }
     }
-
     let (fit_on, checked_on) = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
     let fits: Vec<Option<GateScore>> = scored
         .iter()
@@ -490,15 +484,141 @@ pub fn fit_rule(
             }
         })
         .collect();
-    Ok(Fit {
+    Fit {
         gate: describe(&target.gate, target.parent.as_deref()),
-        files_read: inputs.files.len(),
+        files_read,
         problems,
         fit_on,
         checked_on,
         rank_by: fit.rank_by,
         candidates,
-    })
+    }
+}
+
+/// Search each of `asks`, the files read once for all of them: every
+/// candidate scored against the gates as drawn by `settings`, ranked as `fit`
+/// says. A search that cannot be made says why in its place; `progress` hears
+/// how far the reading and the trying have got. Moves nothing.
+pub fn fit_rules(
+    gates: &GateState,
+    inputs: &RunInputs,
+    asks: &[Ask],
+    settings: ScoreSettings,
+    fit: FitSettings,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+) -> Result<Vec<(RuleTarget, Result<Fit, String>)>, String> {
+    let settings = settings.checked()?;
+    let fit = fit.checked()?;
+    let tried: Vec<Result<Vec<GateRule>, String>> = asks
+        .iter()
+        .map(|ask| tried_for(&inputs.rules, ask))
+        .collect();
+
+    let mut stores = Vec::new();
+    let mut jobs: Vec<(usize, &GateRule, usize)> = Vec::new();
+    for (at, (ask, rules)) in asks.iter().zip(&tried).enumerate() {
+        let Ok(rules) = rules else {
+            continue;
+        };
+        let (own, shape_of) = measured_once(&inputs.rules, &ask.target, rules);
+        let first = stores.len();
+        stores.extend(own);
+        jobs.extend(
+            rules
+                .iter()
+                .zip(shape_of)
+                .map(|(rule, shape)| (at, rule, first + shape)),
+        );
+    }
+    let (measured, problems) = if stores.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        measure_many(
+            gates,
+            &inputs.files,
+            &inputs.compensation,
+            &inputs.names,
+            &inputs.cofactors,
+            &inputs.metadata,
+            &stores,
+            None,
+            cancel,
+            |done, total| progress(Progress::Measuring { done, total }),
+        )
+    };
+    if cancel.load(Ordering::Relaxed) {
+        return Err("stopped".into());
+    }
+
+    let done = AtomicUsize::new(0);
+    let total = jobs.len();
+    let solved: Vec<Solved> = jobs
+        .par_iter()
+        .map(|&(at, rule, shape)| {
+            let store = only(&inputs.rules, &asks[at].target, rule);
+            let solved = solved_rows(
+                gates,
+                &inputs.metadata,
+                &store,
+                &measured[shape],
+                settings,
+                cancel,
+            );
+            let done = done.fetch_add(1, Ordering::Relaxed) + 1;
+            progress(Progress::Solving { done, total });
+            solved
+        })
+        .collect();
+    if cancel.load(Ordering::Relaxed) {
+        return Err("stopped".into());
+    }
+
+    let mut by_ask: Vec<Vec<Solved>> = asks.iter().map(|_| Vec::new()).collect();
+    for (&(at, ..), solved) in jobs.iter().zip(solved) {
+        by_ask[at].push(solved);
+    }
+    Ok(asks
+        .iter()
+        .zip(tried)
+        .zip(by_ask)
+        .map(|((ask, rules), scored)| {
+            let found = rules.map(|rules| {
+                ranked_fit(
+                    &ask.target,
+                    &rules,
+                    inputs.rules.get(&ask.target),
+                    &scored,
+                    fit,
+                    problems.clone(),
+                    inputs.files.len(),
+                )
+            });
+            (ask.target.clone(), found)
+        })
+        .collect())
+}
+
+/// Try the rule `target` has now, if any, and each of `candidates` as its
+/// rule - see [`fit_rules`].
+pub fn fit_rule(
+    gates: &GateState,
+    inputs: &RunInputs,
+    target: &RuleTarget,
+    candidates: &[GateRule],
+    settings: ScoreSettings,
+    fit: FitSettings,
+    cancel: &AtomicBool,
+) -> Result<Fit, String> {
+    let ask = Ask {
+        target: target.clone(),
+        candidates: candidates.to_vec(),
+    };
+    let (_, found) = fit_rules(gates, inputs, &[ask], settings, fit, cancel, |_| {})?
+        .into_iter()
+        .next()
+        .ok_or("no search was made")?;
+    found
 }
 
 #[cfg(test)]
@@ -660,6 +780,22 @@ mod tests {
     fn a_rule_placed_from_another_gate_has_only_itself_to_try() {
         let rule = on_x(next_to());
         assert_eq!(default_candidates(&rule), vec![rule]);
+    }
+
+    #[test]
+    fn every_rule_with_settings_to_try_is_asked_for_with_its_defaults() {
+        let band = on_x(Rule::TailFraction(TailFractionRule::new((0.01, 0.02))));
+        let mut rules = RuleStore::default();
+        rules.insert(RuleTarget::named("CD69+"), band.clone());
+        rules.insert(RuleTarget::named("CD69-"), on_x(next_to()));
+        let asks = default_asks(&rules);
+        assert_eq!(
+            asks.len(),
+            1,
+            "a rule placed from another gate has nothing to try"
+        );
+        assert_eq!(asks[0].target, RuleTarget::named("CD69+"));
+        assert_eq!(asks[0].candidates, default_candidates(&band));
     }
 
     #[test]
