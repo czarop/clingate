@@ -128,4 +128,8 @@ falls down the ranking on the half it was not chosen on. The ranking is by
 typical agreement, a tie (within `tie_within`, 0.02) going to the fewest
 samples off, or by the fewest samples off first; each candidate says where
 it stands both ways, and the best and those tied with it are marked, to be
-looked at side by side before choosing.
+looked at side by side before choosing: they and the rule as it stands are
+kept in the workspace (`rules/searches.json`, the latest search of each
+rule), and the Gallery tab, on the gate's population, draws each one's gate
+dashed over the gate as drawn, one candidate at a time, with a button to
+take its rule.

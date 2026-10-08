@@ -153,11 +153,14 @@ ranks them by it.
       `admitted_by` returns nothing for it, so the score skips it. Score each
       quadrant on its own - which events each holds against the hand-drawn
       quadrants - and sum the gate up over the four.
-- [ ] **Flick between close candidates on the plots.** When the search finds
-      two or three settings for a gate that score nearly alike, show them on
-      the Review tab or the gallery so the user can switch between the gate
-      positions each would give, sample by sample, beside the hand-drawn gate,
-      and pick by eye.
+- [x] **Flick between close candidates on the plots.** A search keeps its
+      best, those tied with it and the rule as it stands in
+      `rules/searches.json`; the Gallery tab draws each one's gate dashed
+      over the gate as drawn, one at a time, and can take its rule.
+- [ ] **Mark the samples a candidate is off on** in the gallery, and say
+      which ones it could not place - the search knows both.
+- [ ] **Search from the app.** The search runs only through the tools for
+      Claude; a button on the Gate Rules tab would let the user run it too.
 
 ## clingate
 

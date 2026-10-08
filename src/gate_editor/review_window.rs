@@ -654,6 +654,7 @@ fn ReviewTile(
                                     x: drawn.x.clone(),
                                     y: drawn.y.clone(),
                                     size,
+                                    candidate: None,
                                 }
                             }
                         }
@@ -670,6 +671,7 @@ fn ReviewTile(
                                         x: drawn.x.clone(),
                                         y: drawn.y.clone(),
                                         size,
+                                        candidate: None,
                                     }
                                 }
                             }

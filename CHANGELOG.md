@@ -33,6 +33,14 @@
   it stands both ways, and the best and those tied with it are marked for
   comparing by eye. Nothing is moved.
 
+- **A search's closest candidates on the gallery.** A search keeps its best
+  candidates, those tied with them and the rule as it stands in the
+  workspace, with where each puts the gate on every sample. The Gallery
+  tab, on that gate's population, draws the candidate's gate dashed in
+  magenta over the gate as drawn and steps through them one at a time, so
+  close candidates can be told apart by eye; "Use this rule" takes the one
+  shown as the gate's rule.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several
