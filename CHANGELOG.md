@@ -387,6 +387,22 @@
 
 ### Changed
 
+- **Fewer review flags: a gate is flagged for where it sits, not for how its
+  sample differs.** A run's review now flags a placement whose gate sits 2 or
+  more of its parent's interquartile ranges from where its peers put theirs,
+  read as a plain distance rather than a score against how closely the peers
+  agree. Placements read on a trusted FMX are judged on this too, so a gate
+  pushed right by background in its FMX is caught. Low confidence and a
+  missed band are still flagged. How much lies beyond the line, the
+  population's spread, its median and its number of peaks are no longer
+  flagged: they vary between donors in data a rule is right on.
+
+- **A placement's confidence no longer counts how far it moved from the
+  reference, or how common its population is against the reference.** A band
+  rule read on each specimen's FMX is meant to move with it, and populations
+  vary between donors; both put correct placements at zero confidence. A
+  `displacement_limit` in an older rules file is ignored.
+
 - **A plot no longer needs every channel the scaling file names.** The cofactors
   handed to `apply_arcsinh_transforms` come from the axis settings, which
   describe the whole panel; it errors on the first name it cannot find, so one

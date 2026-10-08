@@ -95,7 +95,6 @@ that broadens does not throw the gate out.
   satisfied* (always 1) - counted on the reference population.
 - *depth of the valley it sat in* - this sample's dip depth against the
   reference's.
-- Not scored on distance moved: finding each sample's own dip is the rule.
 - Placed by the fallback: one component, *no valley, so placed from another
   gate*, at 0.25 - below the Review tab's 0.30, so every one comes up for
   review, and above the 0.2 at which a run pauses, so it does not stop the

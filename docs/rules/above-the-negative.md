@@ -67,8 +67,6 @@ drifts or broadens from run to run carries the gate with it.
   (below) flags this.
 - **Read on itself it does nothing** unless `scale` or `nudge` is set: the
   calibration and the placement read the same negative.
-- **Not scored on distance moved.** Moving to each sample's own negative is
-  the rule; a long move is not held against it.
 
 ## What its confidence says
 

@@ -33,7 +33,7 @@ fn two_tailed() -> Vec<f64> {
 #[test]
 fn a_gate_that_keeps_the_top_solves_on_the_top() {
     let solved = gate_rule(Bound::Above, (0.009, 0.011))
-        .solve(&two_tailed(), None)
+        .solve(&two_tailed())
         .unwrap();
 
     assert_eq!(solved.threshold.events_admitted, 100);
@@ -47,10 +47,10 @@ fn a_gate_that_keeps_the_bottom_is_the_mirror_of_one_that_keeps_the_top() {
     let values = two_tailed();
     let band = (0.009, 0.011);
 
-    let above = gate_rule(Bound::Above, band).solve(&values, None).unwrap();
+    let above = gate_rule(Bound::Above, band).solve(&values).unwrap();
     let mirrored: Vec<f64> = values.iter().map(|v| -v).collect();
     let below = gate_rule(Bound::Below, band)
-        .solve(&mirrored, None)
+        .solve(&mirrored)
         .unwrap();
 
     assert!(
@@ -70,7 +70,7 @@ fn a_gate_that_keeps_the_bottom_admits_the_low_tail() {
     let values = two_tailed();
     let rule = gate_rule(Bound::Below, (0.009, 0.011));
 
-    let solved = rule.solve(&values, None).unwrap();
+    let solved = rule.solve(&values).unwrap();
 
     assert!(solved.threshold.x < -1.0, "x was {}", solved.threshold.x);
     assert_eq!(
@@ -99,24 +99,6 @@ fn counting_follows_the_side_the_gate_keeps() {
         gate_rule(Bound::Below, (0.0, 1.0)).admitted(&values, -1.5),
         1
     );
-}
-
-/// The displacement component compares against a reference, which has to be
-/// mirrored with everything else or a gate that had not moved would read as
-/// having moved twice its own position.
-#[test]
-fn a_reference_is_mirrored_with_the_values() {
-    let values = two_tailed();
-    let rule = gate_rule(Bound::Below, (0.009, 0.011));
-
-    let unmoved = rule.solve(&values, None).unwrap();
-    let scored = rule.solve(&values, Some(unmoved.threshold.x)).unwrap();
-
-    let displacement = scored
-        .confidence
-        .get("distance moved from the reference")
-        .expect("scored against a reference");
-    assert_eq!(displacement.score, 1.0, "{}", displacement.detail);
 }
 
 // ─── finding the sample a rule is measured on ─────────────────────────────────

@@ -18,29 +18,11 @@ fn population(negatives: usize, positives: usize) -> Vec<f64> {
 fn a_rule_solves_and_scores_in_one_step() {
     let rule = TailFractionRule::new((0.09, 0.11));
 
-    let solved = rule.apply(&population(9_000, 1_000), None).unwrap();
+    let solved = rule.apply(&population(9_000, 1_000)).unwrap();
 
     assert_eq!(solved.threshold.status, Status::InBand);
     assert_eq!(solved.threshold.events_admitted, 1_000);
     assert!(solved.confidence.score > 0.7, "{:?}", solved.confidence);
-}
-
-#[test]
-fn a_rule_passes_its_reference_through_to_the_score() {
-    let rule = TailFractionRule::new((0.09, 0.11));
-    let values = population(9_000, 1_000);
-
-    let unmoved = rule.apply(&values, None).unwrap();
-    let far = unmoved.threshold.x + 3.0 * unmoved.threshold.parent_spread;
-    let moved = rule.apply(&values, Some(far)).unwrap();
-
-    assert_eq!(
-        unmoved.confidence.get(DISPLACEMENT),
-        None,
-        "no reference given"
-    );
-    assert_eq!(moved.confidence.weakest().unwrap().name, DISPLACEMENT);
-    assert_eq!(moved.confidence.score, 0.0);
 }
 
 #[test]
@@ -62,14 +44,14 @@ fn a_rule_carries_its_own_confidence_parameters() {
     };
 
     let strict_events = strict
-        .apply(&values, None)
+        .apply(&values)
         .unwrap()
         .confidence
         .get(EVENTS)
         .unwrap()
         .score;
     let lenient_events = lenient
-        .apply(&values, None)
+        .apply(&values)
         .unwrap()
         .confidence
         .get(EVENTS)
@@ -88,7 +70,7 @@ fn a_percentile_rule_solves_through_the_same_trait() {
     let rule = PercentileOffsetRule::new(99.0, 0.5);
     let values: Vec<f64> = (0..=100).map(|i| i as f64).collect();
 
-    let solved = rule.apply(&values, None).unwrap();
+    let solved = rule.apply(&values).unwrap();
 
     assert_eq!(solved.threshold.x, 99.5);
     assert_eq!(solved.threshold.status, Status::NoBand);
@@ -102,7 +84,7 @@ fn a_percentile_rule_solves_through_the_same_trait() {
 #[test]
 fn a_rule_reports_an_empty_population_rather_than_scoring_one() {
     let rule = TailFractionRule::new((0.002, 0.005));
-    assert_eq!(rule.apply(&[], None), Err(SolveError::NoEvents));
+    assert_eq!(rule.apply(&[]), Err(SolveError::NoEvents));
 }
 
 // ─── the stored form ──────────────────────────────────────────────────────────
@@ -111,10 +93,10 @@ fn a_rule_reports_an_empty_population_rather_than_scoring_one() {
 fn the_enum_dispatches_to_the_variant() {
     let values = population(9_000, 1_000);
     let direct = TailFractionRule::new((0.09, 0.11))
-        .apply(&values, None)
+        .apply(&values)
         .unwrap();
     let through_enum = Rule::TailFraction(TailFractionRule::new((0.09, 0.11)))
-        .apply(&values, None)
+        .apply(&values)
         .unwrap();
 
     assert_eq!(direct, through_enum);
@@ -721,7 +703,7 @@ fn a_calibrated_rule_cannot_be_solved_from_one_population() {
     ] {
         assert!(rule.solve(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
         assert!(
-            rule.apply(&[1.0, 2.0, 3.0], None).is_err(),
+            rule.apply(&[1.0, 2.0, 3.0]).is_err(),
             "{}",
             rule.kind()
         );
@@ -737,7 +719,7 @@ fn every_rule_but_the_phenotype_is_judged_on_its_threshold() {
         Rule::AboveTheNegative(AboveTheNegativeRule::default()),
         Rule::InTheValley(ValleyRule::default()),
     ] {
-        assert!(rule.assess(&t, None).is_some(), "{}", rule.kind());
+        assert!(rule.assess(&t).is_some(), "{}", rule.kind());
     }
 }
 

@@ -53,8 +53,8 @@ pub struct Threshold {
     /// matters: move this gate slightly, and does the answer change?
     pub count_swing: f64,
     /// The interquartile width of the parent population, for reading
-    /// `separation` and any displacement against the scale of the data rather
-    /// than in absolute units.
+    /// `count_swing` against the scale of the data rather than in absolute
+    /// units.
     pub parent_spread: f64,
     pub status: Status,
 }

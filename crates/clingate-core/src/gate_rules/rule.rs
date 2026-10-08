@@ -46,11 +46,10 @@ pub trait PositioningRule {
     /// One line for the report and the Gate Rules tab.
     fn describe(&self) -> String;
 
-    /// Solve and score in one step. `reference_x` is where the same gate sits on
-    /// the QC or template sample, when there is one.
-    fn apply(&self, values: &[f64], reference_x: Option<f64>) -> Result<Solved, SolveError> {
+    /// Solve and score in one step.
+    fn apply(&self, values: &[f64]) -> Result<Solved, SolveError> {
         let threshold = self.solve(values)?;
-        let confidence = self.confidence_model().assess(&threshold, reference_x);
+        let confidence = self.confidence_model().assess(&threshold);
         Ok(Solved {
             threshold,
             confidence,
@@ -794,10 +793,10 @@ impl ValleyOrSmearRule {
 
 impl Rule {
     /// Solve and score, dispatching to the variant's own implementation.
-    pub fn apply(&self, values: &[f64], reference_x: Option<f64>) -> Result<Solved, SolveError> {
+    pub fn apply(&self, values: &[f64]) -> Result<Solved, SolveError> {
         match self {
-            Rule::TailFraction(r) => r.apply(values, reference_x),
-            Rule::PercentileOffset(r) => r.apply(values, reference_x),
+            Rule::TailFraction(r) => r.apply(values),
+            Rule::PercentileOffset(r) => r.apply(values),
             // Calibrated against another sample, so it cannot be solved from
             // one population alone - see `AboveTheNegativeRule`. The phenotype
             // rule is not a threshold at all: it does not move an edge along
@@ -822,17 +821,13 @@ impl Rule {
     /// rather than some stand-in score is deliberate: a number on the same
     /// scale as the others, arrived at from different evidence, would be
     /// compared with them.
-    pub fn assess(
-        &self,
-        threshold: &Threshold,
-        reference_x: Option<f64>,
-    ) -> Option<crate::gate_rules::confidence::Confidence> {
+    pub fn assess(&self, threshold: &Threshold) -> Option<crate::gate_rules::confidence::Confidence> {
         Some(match self {
-            Rule::TailFraction(r) => r.confidence_model().assess(threshold, reference_x),
-            Rule::PercentileOffset(r) => r.confidence_model().assess(threshold, reference_x),
-            Rule::AboveTheNegative(r) => r.confidence.assess(threshold, reference_x),
-            Rule::InTheValley(r) => r.confidence.assess(threshold, reference_x),
-            Rule::ValleyOrSmear(r) => r.confidence.assess(threshold, reference_x),
+            Rule::TailFraction(r) => r.confidence_model().assess(threshold),
+            Rule::PercentileOffset(r) => r.confidence_model().assess(threshold),
+            Rule::AboveTheNegative(r) => r.confidence.assess(threshold),
+            Rule::InTheValley(r) => r.confidence.assess(threshold),
+            Rule::ValleyOrSmear(r) => r.confidence.assess(threshold),
             Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
                 return None;
             }
