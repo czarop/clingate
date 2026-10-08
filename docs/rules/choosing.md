@@ -132,4 +132,7 @@ looked at side by side before choosing: they and the rule as it stands are
 kept in the workspace (`rules/searches.json`, the latest search of each
 rule), and the Gallery tab, on the gate's population, draws each one's gate
 dashed over the gate as drawn, one candidate at a time, with a button to
-take its rule.
+take its rule. The Gate Rules tab's "Search every rule" makes the same
+search for every rule with settings to try at once - the files read once
+for all of them - and lists each gate's best beside the rule as it stands,
+those where the best does most better first.

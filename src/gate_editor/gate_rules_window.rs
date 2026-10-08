@@ -1843,6 +1843,8 @@ pub fn GateRulesWindow() -> Element {
                 }
             }
 
+            crate::gate_editor::search_panel::SearchPanel {}
+
             // ── the sidecar ───────────────────────────────────────────────
             fieldset { class: "gate_rules-form",
                 legend { "Rules file" }

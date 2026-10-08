@@ -159,8 +159,11 @@ ranks them by it.
       over the gate as drawn, one at a time, and can take its rule.
 - [ ] **Mark the samples a candidate is off on** in the gallery, and say
       which ones it could not place - the search knows both.
-- [ ] **Search from the app.** The search runs only through the tools for
-      Claude; a button on the Gate Rules tab would let the user run it too.
+- [x] **Search from the app.** The Gate Rules tab's "Search every rule"
+      searches every rule with settings to try, the files read once, and
+      lists each gate's best against the rule as it stands.
+- [ ] **Search one rule, or a chosen few, from the app** - and with
+      settings other than the defaults (the ranking, the tie, the split).
 
 ## clingate
 

@@ -39,7 +39,9 @@
   tab, on that gate's population, draws the candidate's gate dashed in
   magenta over the gate as drawn and steps through them one at a time, so
   close candidates can be told apart by eye; "Use this rule" takes the one
-  shown as the gate's rule.
+  shown as the gate's rule. "Search every rule" on the Gate Rules tab makes
+  the search for every rule at once, reading the files once for all of
+  them, and lists each gate's best candidate beside the rule as it stands.
 
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
