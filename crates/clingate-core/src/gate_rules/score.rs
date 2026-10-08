@@ -161,7 +161,7 @@ pub struct ScoreRow {
 }
 
 /// One gate across every sample.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GateScore {
     pub gate_id: String,
     pub gate: String,
@@ -486,9 +486,26 @@ impl RunRows<'_> {
     }
 }
 
+/// Where a rule puts a gate on one sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacedGate {
+    pub gate_id: String,
+    pub file: String,
+    pub gate: flow_gates::Gate,
+}
+
+/// A rule solved and read back against the gates as drawn.
+pub(crate) struct Solved {
+    /// A row for every sample.
+    pub rows: Vec<ScoreRow>,
+    /// The rules refused before any sample was read.
+    pub refused: Vec<String>,
+    /// The gate on every sample the rule moved it on.
+    pub placed: Vec<PlacedGate>,
+}
+
 /// `store` solved on what was `measured` and read back against the gates as
-/// drawn: a row for every sample, and the rules refused before any sample was
-/// read.
+/// drawn.
 pub(crate) fn solved_rows(
     gates: &GateState,
     metadata: &MetaDataFileMap,
@@ -496,7 +513,7 @@ pub(crate) fn solved_rows(
     (measurements, unmeasured): &Measured,
     settings: ScoreSettings,
     cancel: &AtomicBool,
-) -> (Vec<ScoreRow>, Vec<String>) {
+) -> Solved {
     let (report, placements) = solve_all_reporting(
         gates,
         store,
@@ -512,6 +529,18 @@ pub(crate) fn solved_rows(
         .filter(|s| s.file.is_empty())
         .map(|s| format!("{}: {}", describe(&s.gate, s.parent_gate.as_deref()), s.reason))
         .collect();
+    let placed = report
+        .positioned
+        .iter()
+        .zip(&placements)
+        .filter_map(|(moved, placement)| {
+            Some(PlacedGate {
+                gate_id: moved.gate_id.to_string(),
+                file: moved.file.to_string(),
+                gate: single(&placement.gate)?.clone(),
+            })
+        })
+        .collect();
     let run = RunRows {
         settings,
         gates,
@@ -519,7 +548,11 @@ pub(crate) fn solved_rows(
         store,
         measurements,
     };
-    (run.rows(&report, &placements), refused)
+    Solved {
+        rows: run.rows(&report, &placements),
+        refused,
+        placed,
+    }
 }
 
 /// One gate summed up, from its rows least agreeing first.
@@ -613,10 +646,9 @@ pub fn score_rules(
 
     let mut by_gate: BTreeMap<String, Vec<ScoreRow>> = BTreeMap::new();
     for (store, measured) in stores.iter().zip(&measured) {
-        let (rows, refused) =
-            solved_rows(gates, &inputs.metadata, store, measured, settings, cancel);
-        problems.extend(refused);
-        for row in rows {
+        let solved = solved_rows(gates, &inputs.metadata, store, measured, settings, cancel);
+        problems.extend(solved.refused);
+        for row in solved.rows {
             by_gate.entry(row.gate_id.clone()).or_default().push(row);
         }
     }

@@ -1297,7 +1297,8 @@ fn the_rules_are_scored_over_the_protocol() {
 
 /// A rule's settings searched over the protocol: the defaults for its kind
 /// when no candidates are given, candidates beside the rule as it stands
-/// when they are, ranked as asked, and settings out of range refused.
+/// when they are, ranked as asked, the closest kept for the gallery, and
+/// settings out of range refused.
 #[test]
 fn a_rule_s_settings_are_searched_over_the_protocol() {
     let folder = workspace_with_rules("fit");
@@ -1320,6 +1321,10 @@ fn a_rule_s_settings_are_searched_over_the_protocol() {
     assert_eq!(candidates[0]["among_best"], true);
     assert!(candidates[0]["fit"]["typical_agreement"].is_number(), "{found}");
     assert!(candidates[0]["check"].is_null(), "two specimens are too few to split");
+    assert!(candidates.iter().all(|c| c.get("placed").is_none()), "{found}");
+    let kept = clingate_core::gate_rules::searches::kept(&folder).unwrap();
+    assert_eq!(kept.len(), 1, "kept for the gallery");
+    assert_eq!(kept[0].gate, result["gate"].as_str().unwrap());
 
     let parameter = candidates[0]["rule"]["parameter"].clone();
     let valley = json!({

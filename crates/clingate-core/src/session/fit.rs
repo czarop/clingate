@@ -13,6 +13,7 @@ use crate::gate_rules::fit::{
 use crate::gate_rules::rule_store::GateRule;
 use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::score::ScoreSettings;
+use crate::gate_rules::searches::{self, Search};
 
 /// Candidates shown when no number is asked for.
 pub const FIT_SHOWN: usize = 10;
@@ -46,7 +47,8 @@ pub struct FitAnswer {
 impl Session {
     /// Try settings for `population`'s rule against the gating drawn by hand,
     /// each scored as [`Session::score_rules`] scores a rule and ranked as
-    /// `fit` says - see [`crate::gate_rules::fit`]. Moves nothing.
+    /// `fit` says - see [`crate::gate_rules::fit`] - and keep the closest for
+    /// the gallery. Moves no gate.
     pub fn fit_rule(
         &self,
         population: &str,
@@ -90,6 +92,12 @@ impl Session {
             &AtomicBool::new(false),
         )
         .map_err(failed)?;
+        let mut problems = found.problems.clone();
+        if let Err(e) = searches::keep(&self.folder, Search::of(&found, &target)) {
+            problems.push(format!(
+                "the closest candidates could not be kept for the gallery: {e}"
+            ));
+        }
         let candidates_total = found.candidates.len();
         let shown = ask.shown.unwrap_or(FIT_SHOWN).clamp(1, MOST_CANDIDATES);
         let candidates = found
@@ -99,13 +107,14 @@ impl Session {
             .map(|candidate| Candidate {
                 fit: candidate.fit.map(|g| self.shown_gate(g)),
                 check: candidate.check.map(|g| self.shown_gate(g)),
+                placed: Vec::new(),
                 ..candidate
             })
             .collect();
         Ok(FitAnswer {
             gate: found.gate,
             files_read: found.files_read,
-            problems: found.problems,
+            problems,
             fit_on: found.fit_on,
             checked_on: found.checked_on,
             rank_by: found.rank_by,
@@ -118,8 +127,10 @@ impl Session {
                    place_by_off say where each stands ranked either way. among_best marks the \
                    best and those tied with it: show the user how each places the gate beside \
                    theirs before choosing, and the samples off under the best (off_samples), \
-                   which may be easier gated by hand than fitted. Nothing has moved; \
-                   update_rule with the chosen rule, on the user's word",
+                   which may be easier gated by hand than fitted. The best, those tied with it \
+                   and the rule as it stands are kept for the app: on the Gallery tab, the \
+                   gate's population shows each one's gate over the user's, to step through. \
+                   No gate has moved; update_rule with the chosen rule, on the user's word",
         })
     }
 }

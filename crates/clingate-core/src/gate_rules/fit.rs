@@ -22,7 +22,8 @@ use crate::gate_rules::rule::{
 use crate::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget, human_order};
 use crate::gate_rules::run::{RunInputs, measure_many};
 use crate::gate_rules::score::{
-    GateScore, ScoreRow, ScoreSettings, least_agreeing_first, solved_rows, summarise,
+    GateScore, PlacedGate, ScoreRow, ScoreSettings, Solved, least_agreeing_first, solved_rows,
+    summarise,
 };
 use crate::gate_rules::trial::only;
 use crate::gates::GateState;
@@ -208,7 +209,7 @@ impl FitSettings {
 }
 
 /// One candidate, ranked.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub rule: GateRule,
     /// The rule in a line.
@@ -226,6 +227,11 @@ pub struct Candidate {
     pub place_on_check: Option<usize>,
     /// The best, or tied with it: worth looking at side by side.
     pub among_best: bool,
+    /// Where it puts the gate on each sample it moves it on - kept only for
+    /// the best, those tied with it and the rule as it stands, the ones to
+    /// look at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placed: Vec<PlacedGate>,
 }
 
 /// Every candidate for one gate, best first.
@@ -416,7 +422,7 @@ pub fn fit_rule(
     if cancel.load(Ordering::Relaxed) {
         return Err("stopped".into());
     }
-    let scored: Vec<(Vec<ScoreRow>, Vec<String>)> = tried
+    let scored: Vec<Solved> = tried
         .par_iter()
         .zip(&shape_of)
         .map(|(rule, &shape)| {
@@ -434,20 +440,20 @@ pub fn fit_rule(
     if cancel.load(Ordering::Relaxed) {
         return Err("stopped".into());
     }
-    for refused in scored.iter().flat_map(|(_, refused)| refused) {
+    for refused in scored.iter().flat_map(|solved| &solved.refused) {
         if !problems.contains(refused) {
             problems.push(refused.clone());
         }
     }
 
-    let (fit_on, checked_on) = halves(scored.iter().flat_map(|(rows, _)| rows), fit.split);
+    let (fit_on, checked_on) = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
     let fits: Vec<Option<GateScore>> = scored
         .iter()
-        .map(|(rows, _)| summed_on(rows, &fit_on))
+        .map(|solved| summed_on(&solved.rows, &fit_on))
         .collect();
     let checks: Vec<Option<GateScore>> = scored
         .iter()
-        .map(|(rows, _)| summed_on(rows, &checked_on))
+        .map(|solved| summed_on(&solved.rows, &checked_on))
         .collect();
     let on_fit: Vec<Option<&GateScore>> = fits.iter().map(Option::as_ref).collect();
     let on_check: Vec<Option<&GateScore>> = checks.iter().map(Option::as_ref).collect();
@@ -463,16 +469,25 @@ pub fn fit_rule(
     let candidates = order
         .iter()
         .enumerate()
-        .map(|(at, &i)| Candidate {
-            rule: tried[i].clone(),
-            said: tried[i].rule.describe(),
-            current: current == Some(&tried[i]),
-            fit: fits[i].clone(),
-            check: checks[i].clone(),
-            place_by_typical: place_of(&by_typical, i),
-            place_by_off: place_of(&by_off, i),
-            place_on_check: checked.as_ref().map(|order| place_of(order, i)),
-            among_best: at < among_best,
+        .map(|(at, &i)| {
+            let current = current == Some(&tried[i]);
+            let among_best = at < among_best;
+            Candidate {
+                rule: tried[i].clone(),
+                said: tried[i].rule.describe(),
+                current,
+                fit: fits[i].clone(),
+                check: checks[i].clone(),
+                place_by_typical: place_of(&by_typical, i),
+                place_by_off: place_of(&by_off, i),
+                place_on_check: checked.as_ref().map(|order| place_of(order, i)),
+                among_best,
+                placed: if among_best || current {
+                    scored[i].placed.clone()
+                } else {
+                    Vec::new()
+                },
+            }
         })
         .collect();
     Ok(Fit {

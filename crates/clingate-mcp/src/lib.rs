@@ -132,8 +132,10 @@ few samples. Rank by typical agreement (rank_by 'typical') or by fewest \
 samples off ('off'); each candidate says where it stands both ways. Narrow or \
 extend the defaults from the gate's profile by giving candidates. Show the \
 user the best and those tied with it (among_best), and the samples off under \
-each - some may be easier gated by hand than fitted - and change the rule only \
-on their word.
+each - some may be easier gated by hand than fitted. They are kept for the \
+app: on the Gallery tab, the gate's population shows each one's gate over \
+the user's, one candidate at a time, so the user can compare them by eye. \
+Change the rule only on their word.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -964,9 +966,10 @@ impl Clingate {
     /// scored as score_rules scores a rule and ranked. With eight specimens or more, ranked
     /// on half of them and checked on the other half. Each candidate's score on both halves,
     /// its place ranked by typical agreement and by samples off, and whether it is the best
-    /// or tied with it. Moves nothing. Reads the samples' events: only when the user asks
-    /// for it.
-    #[tool(annotations(read_only_hint = true))]
+    /// or tied with it. The best, those tied with it and the rule as it stands are kept in the
+    /// workspace, for the app's Gallery tab to show over the user's gate. Moves no gate.
+    /// Reads the samples' events: only when the user asks for it.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn fit_rule(&self, Parameters(args): Parameters<FitRuleArgs>) -> String {
         let settings = score_settings(args.off_below, args.noise_widths);
         self.run(move |s| {

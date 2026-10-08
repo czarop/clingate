@@ -882,3 +882,41 @@ fn a_search_with_nothing_or_too_much_to_try_is_refused() {
     let one = [band(Pool::Specimen, MeasuredOn::Itself)];
     assert!(fit(&[], &FILES, RuleStore::default(), &one, wide).unwrap_err().contains("tie_within"));
 }
+
+/// The best, those tied with it and the rule as it stands keep where they
+/// put the gate on each sample they move it on - where a run puts it - and
+/// no other candidate does.
+#[test]
+fn the_closest_candidates_and_the_rule_as_it_stands_keep_their_gates() {
+    let written = write("fit-placed", &FILES);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let kept = GateRule {
+        rule: Rule::TailFraction(TailFractionRule::new((0.5, 1.0))),
+        ..current.clone()
+    };
+    let other = GateRule {
+        rule: Rule::TailFraction(TailFractionRule::aimed((0.05, 0.06), BandAim::Middle)),
+        ..current.clone()
+    };
+    let found = fit(
+        &written,
+        &FILES,
+        store(current.clone()),
+        &[kept.clone(), other.clone()],
+        FitSettings::default(),
+    )
+    .unwrap();
+    let of = |rule: &GateRule| found.candidates.iter().find(|c| &c.rule == rule).unwrap();
+    assert!(of(&kept).among_best, "{found:#?}");
+    assert!(of(&kept).placed.is_empty(), "it leaves every gate as drawn");
+    assert!(!of(&other).among_best && of(&other).placed.is_empty());
+
+    let ran = applied(&gates(), &run(&gates(), &written, &FILES, store(current.clone())), &FILES);
+    let placed = &of(&current).placed;
+    assert_eq!(placed.len(), 4, "a full stain per donor");
+    for gate in placed {
+        assert_eq!(gate.gate_id, "cd69");
+        let left = extent_on(&gate.gate.geometry, X).unwrap().0;
+        assert_eq!(left, line(&ran, &gate.file, &FILES), "{}", gate.file);
+    }
+}

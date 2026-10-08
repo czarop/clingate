@@ -28,6 +28,7 @@ pub mod profile;
 pub mod rule;
 pub mod rule_store;
 pub mod run;
+pub mod searches;
 pub mod score;
 pub mod shape_fit;
 pub mod threshold;
