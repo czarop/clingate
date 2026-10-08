@@ -3922,7 +3922,7 @@ fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
 fn the_rules_are_scored_against_the_gating_as_drawn() {
     let folder = with_rules("session-score");
     let mut session = Session::open(&folder).unwrap();
-    let scored = session.score_rules(None, None).unwrap();
+    let scored = session.score_rules(None, None, Default::default()).unwrap();
     let preview = session.preview_rules().unwrap();
 
     assert_eq!(scored.gates.len(), 1);
@@ -3955,11 +3955,11 @@ fn the_rules_are_scored_against_the_gating_as_drawn() {
     };
     assert_eq!(lines(&again), lines(&preview));
 
-    let first = session.score_rules(None, Some(1)).unwrap();
+    let first = session.score_rules(None, Some(1), Default::default()).unwrap();
     assert_eq!(first.rows.len(), 1);
     assert_eq!(first.rows_total, scored.rows_total);
     assert_eq!(first.rows[0], scored.rows[0], "the furthest off first");
-    assert!(session.score_rules(Some("no such gate"), None).is_err());
+    assert!(session.score_rules(Some("no such gate"), None, Default::default()).is_err());
 }
 
 /// With rules for two gates, asking for one scores that gate alone.
@@ -3979,9 +3979,9 @@ fn one_population_s_rule_is_scored_alone() {
             ),
         ))
         .unwrap();
-    let every = session.score_rules(None, None).unwrap();
+    let every = session.score_rules(None, None, Default::default()).unwrap();
     assert_eq!(every.gates.len(), 2, "{every:#?}");
-    let tmem = session.score_rules(Some("Tmem"), None).unwrap();
+    let tmem = session.score_rules(Some("Tmem"), None, Default::default()).unwrap();
     assert_eq!(tmem.gates.len(), 1);
     let gate = &tmem.gates[0];
     assert!(gate.gate.starts_with("Tmem"), "{gate:?}");
@@ -3992,8 +3992,41 @@ fn one_population_s_rule_is_scored_alone() {
     );
 }
 
+/// The off line and its allowance for few events are the caller's: each
+/// scored sample is judged against the line asked for, every sample below it
+/// is counted off, and settings out of range are refused.
+#[test]
+fn how_a_score_is_judged_can_be_set() {
+    use clingate_core::gate_rules::score::ScoreSettings;
+    let folder = with_rules("session-score-settings");
+    let session = Session::open(&folder).unwrap();
+    let exact = ScoreSettings {
+        off_below: 1.0,
+        noise_widths: 0.0,
+    };
+    let scored = session.score_rules(None, Some(400), exact).unwrap();
+    let judged: Vec<_> = scored.rows.iter().filter(|r| r.agreement.is_some()).collect();
+    assert!(!judged.is_empty(), "{scored:#?}");
+    assert!(judged.iter().all(|r| r.off_line == Some(1.0)), "{scored:#?}");
+    let short = judged.iter().filter(|r| r.agreement < r.off_line).count();
+    assert_eq!(scored.gates[0].off, short);
+    let lower = ScoreSettings {
+        off_below: 0.5,
+        noise_widths: 0.0,
+    };
+    let rows = session.score_rules(None, Some(400), lower).unwrap().rows;
+    assert!(rows.iter().filter(|r| r.agreement.is_some()).all(|r| r.off_line == Some(0.5)));
+    for refused in [(1.5, 0.0), (0.8, -1.0)] {
+        let settings = ScoreSettings {
+            off_below: refused.0,
+            noise_widths: refused.1,
+        };
+        assert!(session.score_rules(None, None, settings).is_err(), "{refused:?}");
+    }
+}
+
 #[test]
 fn scoring_needs_rules() {
     let session = Session::open(&workspace("session-score-none")).unwrap();
-    assert!(session.score_rules(None, None).is_err());
+    assert!(session.score_rules(None, None, Default::default()).is_err());
 }

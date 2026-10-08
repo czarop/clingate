@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::{Refusal, Session, failed, round};
 use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
-use crate::gate_rules::score::{GateScore, ScoreRow, least_agreeing_first};
+use crate::gate_rules::score::{GateScore, ScoreRow, ScoreSettings, least_agreeing_first};
 
 /// Rows shown when no number is asked for, and the most ever shown.
 pub const SCORE_ROWS: usize = 40;
@@ -48,12 +48,13 @@ impl Session {
     }
 
     /// Run every rule - or `population`'s alone - on the files, each gate
-    /// under its parent as drawn, and say how far each lands from the gate
-    /// drawn by hand. Moves nothing.
+    /// under its parent as drawn, and say how closely each agrees with the
+    /// gate drawn by hand, judged by `settings`. Moves nothing.
     pub fn score_rules(
         &self,
         population: Option<&str>,
         max_rows: Option<usize>,
+        settings: ScoreSettings,
     ) -> Result<ScoreAnswer, Refusal> {
         let rules = self.rules_or_refuse()?.clone();
         let wanted = population
@@ -70,6 +71,7 @@ impl Session {
             &self.gates,
             &inputs,
             |target| wanted.as_ref().is_none_or(|w| w == target),
+            settings,
             &AtomicBool::new(false),
         )
         .map_err(failed)?;
@@ -80,7 +82,7 @@ impl Session {
             .gates
             .into_iter()
             .map(|g| GateScore {
-                median_agreement: rounded(g.median_agreement, 3),
+                typical_agreement: rounded(g.typical_agreement, 3),
                 lowest_agreement: rounded(g.lowest_agreement, 3),
                 off_samples: g.off_samples.iter().map(|f| name(f)).collect(),
                 median_caught: rounded(g.median_caught, 3),
@@ -102,6 +104,7 @@ impl Session {
                 agreement: rounded(row.agreement, 3),
                 caught: rounded(row.caught, 3),
                 extra: rounded(row.extra, 3),
+                off_line: rounded(row.off_line, 3),
                 shift_iqrs: row
                     .shift_iqrs
                     .iter()
@@ -123,12 +126,13 @@ impl Session {
             gates,
             rows_total,
             rows,
-            next: "agreement is 1 when the rule's gate holds the same events as the hand \
-                   gate to within counting noise, falling to 0 when they share none; caught \
-                   is how much of the hand gate's events the rule's gate holds, extra how \
-                   much of the rule's gate is beyond the hand gate - which way it is off. \
-                   A gate with a high median and a low lowest agreement has a few samples \
-                   far off (off_samples); a low median is every sample a little off. \
+            next: "agreement is 1 only when the rule's gate holds exactly the hand gate's \
+                   events, falling to 0 when they share none; caught is how much of the hand \
+                   gate's events the rule's gate holds, extra how much of the rule's gate is \
+                   beyond the hand gate - which way it is off. A sample is off below its \
+                   off_line, which a sample of few events has lower. A gate with a high \
+                   typical and a low lowest agreement has a few samples far off \
+                   (off_samples); a low typical is every sample a little off. \
                    shift_iqrs and edge_off_iqrs say where the rule's gate sits against the \
                    hand gate. Each gate was read under its parent as drawn; nothing has \
                    moved. Show the user the gates and samples furthest off; score_rules \

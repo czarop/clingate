@@ -468,6 +468,7 @@ fn score(
         state,
         &inputs(written, &FILES, rules),
         |_| true,
+        crate::gate_rules::score::ScoreSettings::default(),
         &AtomicBool::new(false),
     )
     .unwrap()
@@ -526,8 +527,8 @@ fn each_sample_is_scored_by_the_events_both_gates_hold() {
         assert_eq!(row.caught, Some(rule as f64 / hand as f64));
         assert_eq!(row.extra, Some(0.0));
         let total = (hand + rule) as f64;
-        let agreement = 1.0 - ((hand - rule) as f64 - 2.0 * total.sqrt()) / total;
-        assert!((row.agreement.unwrap() - agreement).abs() < 1e-12, "{row:?}");
+        assert_eq!(row.agreement, Some(2.0 * rule as f64 / total), "{row:?}");
+        assert_eq!(row.off_line, Some(0.8 - 1.0 / total.sqrt()), "{row:?}");
 
         // Every event is kept, so the shift is read on all of them; the
         // second axis is one value throughout, with no spread to read it in.
@@ -568,7 +569,7 @@ fn a_rule_the_hand_gating_already_meets_agrees_entirely() {
         assert_eq!((row.edge_off_iqrs, row.holds_difference), (Some(0.0), Some(0.0)));
     }
     let gate = &scored.gates[0];
-    assert_eq!((gate.median_agreement, gate.off), (Some(1.0), 0));
+    assert_eq!((gate.typical_agreement, gate.off), (Some(1.0), 0));
     assert!(gate.off_samples.is_empty());
 }
 
@@ -705,6 +706,7 @@ fn only_the_rules_asked_for_are_scored() {
         &drawn,
         &inputs(&written, &FILES, both.clone()),
         |target| *target == child,
+        crate::gate_rules::score::ScoreSettings::default(),
         &AtomicBool::new(false),
     )
     .unwrap();

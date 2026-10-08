@@ -5,19 +5,21 @@
 //! wrong too - on the full files, each read once for every gate. On each
 //! sample the rule's gate and the hand-drawn one are compared by the events
 //! they hold: how many of the hand gate's events the rule's gate also holds,
-//! how many it holds that the hand gate does not, and one agreement that
-//! forgives a difference no bigger than counting noise - which is large for
-//! a gate of a few dozen cells and small for one of thousands. That works for
-//! any shape of gate. Beside it: how far the events the rule's gate holds sit
-//! from those the hand gate holds, and for a rule that moves one edge, how
-//! far it moved it. Nothing is moved or recorded.
+//! how many it holds that the hand gate does not, and their agreement - 1
+//! only when the two hold exactly the same events. That works for any shape
+//! of gate. A gate of a few dozen cells cannot be placed as precisely as one
+//! of thousands, so it may fall further below the line that calls a sample
+//! off, and counts for less in its gate's typical agreement (see
+//! [`ScoreSettings`]). Beside it: how far the events the rule's gate holds
+//! sit from those the hand gate holds, and for a rule that moves one edge,
+//! how far it moved it. Nothing is moved or recorded.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use flow_gates::EventIndex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::gate_rules::autogate::{
     LineReading, Measurement, Placement, Report, admitted_by, describe, solve_all_reporting,
@@ -30,11 +32,6 @@ use crate::gates::GateState;
 use crate::gates::gate_traits::DrawableGate;
 use crate::omiq::metadata::MetaDataFileMap;
 
-/// How many counting-noise widths of disagreement are forgiven: a gate of
-/// `n` events is not placed more precisely than about `sqrt(n)` of them.
-pub const NOISE_WIDTHS: f64 = 2.0;
-/// A sample agreeing less than this with the hand gating is off.
-pub const OFF_BELOW: f64 = 0.8;
 /// How many of a gate's off samples are named.
 pub const OFF_NAMED: usize = 5;
 /// Fewer kept events than this in either gate, and no shift is read.
@@ -59,18 +56,64 @@ impl Shared {
         (self.rule > 0).then(|| (self.rule - self.both) as f64 / self.rule as f64)
     }
 
-    /// 1 less the events held by only one of the two gates, as a share of
-    /// both gates' events, after forgiving [`NOISE_WIDTHS`] counting-noise
-    /// widths of them: 1 for gates that agree to within counting noise,
-    /// 0 for gates holding none of the same events.
+    /// The events both gates hold, against the two gates' events together,
+    /// counted twice over: 1 for gates holding exactly the same events, 0 for
+    /// gates holding none of the same. Two empty gates agree.
     pub fn agreement(&self) -> f64 {
-        let total = (self.hand + self.rule) as f64;
-        if total == 0.0 {
+        let total = self.total();
+        if total == 0 {
             return 1.0;
         }
-        let apart = total - 2.0 * self.both as f64;
-        let forgiven = NOISE_WIDTHS * total.sqrt();
-        1.0 - (apart - forgiven).max(0.0) / total
+        2.0 * self.both as f64 / total as f64
+    }
+
+    /// Both gates' events together.
+    pub fn total(&self) -> usize {
+        self.hand + self.rule
+    }
+}
+
+/// How a score is judged. Both are judgement until set against gating the
+/// user trusts.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScoreSettings {
+    /// A sample whose gate agrees less than this with the hand gate's is off.
+    pub off_below: f64,
+    /// How far a sample of few events may fall below `off_below` and not be
+    /// off, in counting-noise widths: `noise_widths / sqrt(n)` for `n` events
+    /// in the two gates together. 0 holds every sample to the same line.
+    pub noise_widths: f64,
+}
+
+impl Default for ScoreSettings {
+    fn default() -> Self {
+        Self {
+            off_below: 0.8,
+            noise_widths: 1.0,
+        }
+    }
+}
+
+impl ScoreSettings {
+    /// Refused unless `off_below` is a share and `noise_widths` is not
+    /// negative.
+    pub fn checked(self) -> Result<Self, String> {
+        if !(0.0..=1.0).contains(&self.off_below) {
+            return Err(format!("off_below is an agreement, 0 to 1 - not {}", self.off_below));
+        }
+        if !(self.noise_widths >= 0.0 && self.noise_widths.is_finite()) {
+            return Err(format!("noise_widths is 0 or more - not {}", self.noise_widths));
+        }
+        Ok(self)
+    }
+
+    /// The agreement below which a sample holding `events` is off.
+    pub fn off_line(&self, events: Shared) -> f64 {
+        let total = events.total();
+        if total == 0 {
+            return self.off_below;
+        }
+        self.off_below - self.noise_widths / (total as f64).sqrt()
     }
 }
 
@@ -92,6 +135,9 @@ pub struct ScoreRow {
     pub agreement: Option<f64>,
     pub caught: Option<f64>,
     pub extra: Option<f64>,
+    /// The agreement below which this sample is off - lower for a sample of
+    /// few events (see [`ScoreSettings::off_line`]).
+    pub off_line: Option<f64>,
     /// The fraction of the parent each gate holds, and the rule's % less the
     /// hand gate's, in percentage points.
     pub hand_holds: Option<f64>,
@@ -122,11 +168,13 @@ pub struct GateScore {
     pub scored: usize,
     pub not_placed: usize,
     pub references: usize,
-    /// The typical and the lowest agreement: a high median and a low lowest
-    /// is a few samples far off, a low median is all of them a little off.
-    pub median_agreement: Option<f64>,
+    /// The typical and the lowest agreement: a high typical and a low lowest
+    /// is a few samples far off, a low typical is all of them a little off.
+    /// The typical is the median with each sample counted by the square root
+    /// of its events - how precisely its agreement is measured.
+    pub typical_agreement: Option<f64>,
     pub lowest_agreement: Option<f64>,
-    /// How many scored samples agree less than [`OFF_BELOW`], and the first
+    /// How many scored samples are below their off line, and the first
     /// [`OFF_NAMED`] of them, furthest off first.
     pub off: usize,
     pub off_samples: Vec<String>,
@@ -164,6 +212,24 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let n = values.len();
     (n > 0).then(|| (values[(n - 1) / 2] + values[n / 2]) / 2.0)
+}
+
+/// The value at which half the weight lies on either side; the plain median
+/// where nothing carries weight.
+fn weighted_median(mut weighed: Vec<(f64, f64)>) -> Option<f64> {
+    let total: f64 = weighed.iter().map(|(_, weight)| weight).sum();
+    if total <= 0.0 {
+        return median(weighed.into_iter().map(|(value, _)| value).collect());
+    }
+    weighed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut below = 0.0;
+    weighed
+        .into_iter()
+        .find(|(_, weight)| {
+            below += weight;
+            below >= total / 2.0
+        })
+        .map(|(value, _)| value)
 }
 
 /// How far `rule_edge` is from the hand edge `line` was read at, in its
@@ -243,6 +309,7 @@ fn unmeasured_row(
         agreement: None,
         caught: None,
         extra: None,
+        off_line: None,
         hand_holds: None,
         rule_holds: None,
         holds_difference: None,
@@ -257,6 +324,7 @@ fn unmeasured_row(
 
 /// One rule's run, read back sample by sample.
 struct RunRows<'a> {
+    settings: ScoreSettings,
     gates: &'a GateState,
     metadata: &'a MetaDataFileMap,
     store: &'a RuleStore,
@@ -289,6 +357,7 @@ impl RunRows<'_> {
             agreement: None,
             caught: None,
             extra: None,
+            off_line: None,
             hand_holds: self
                 .hand_gate(measured)
                 .and_then(|gate| admitted_by(&gate, &measured.index)),
@@ -332,6 +401,7 @@ impl RunRows<'_> {
             agreement: events.map(|e| e.agreement()),
             caught: events.and_then(|e| e.caught()),
             extra: events.and_then(|e| e.extra()),
+            off_line: events.map(|e| self.settings.off_line(e)),
             rule_holds,
             holds_difference: rule_holds
                 .zip(bare.hand_holds)
@@ -401,9 +471,16 @@ fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
         scored.iter().filter_map(|row| of(row)).collect()
     };
     let agreements = all(|row| row.agreement);
+    let weighed: Vec<(f64, f64)> = scored
+        .iter()
+        .filter_map(|row| {
+            let precision = (row.events?.total() as f64).sqrt();
+            Some((row.agreement?, precision))
+        })
+        .collect();
     let off: Vec<&&ScoreRow> = scored
         .iter()
-        .filter(|row| row.agreement.is_some_and(|a| a < OFF_BELOW))
+        .filter(|row| matches!((row.agreement, row.off_line), (Some(a), Some(line)) if a < line))
         .collect();
     GateScore {
         gate: rows[0].gate.clone(),
@@ -412,7 +489,7 @@ fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
         not_placed: count("not placed"),
         references: count("reference"),
         lowest_agreement: agreements.iter().copied().reduce(f64::min),
-        median_agreement: median(agreements),
+        typical_agreement: weighted_median(weighed),
         off: off.len(),
         off_samples: off
             .iter()
@@ -428,18 +505,20 @@ fn summarise(gate_id: String, rows: &[ScoreRow]) -> GateScore {
 
 /// Most samples off first, then the lowest typical agreement.
 fn most_off_first(a: &GateScore, b: &GateScore) -> std::cmp::Ordering {
-    let typical = |g: &GateScore| g.median_agreement.unwrap_or(f64::INFINITY);
+    let typical = |g: &GateScore| g.typical_agreement.unwrap_or(f64::INFINITY);
     b.off.cmp(&a.off).then(typical(a).total_cmp(&typical(b)))
 }
 
 /// Score every rule in `inputs` that `which` accepts against the gates as
-/// drawn in `gates`, moving nothing.
+/// drawn in `gates`, judged by `settings`, moving nothing.
 pub fn score_rules(
     gates: &GateState,
     inputs: &RunInputs,
     which: impl Fn(&RuleTarget) -> bool,
+    settings: ScoreSettings,
     cancel: &AtomicBool,
 ) -> Result<Score, String> {
+    let settings = settings.checked()?;
     let stores: Vec<RuleStore> = inputs
         .rules
         .entries()
@@ -485,6 +564,7 @@ pub fn score_rules(
             ));
         }
         let run = RunRows {
+            settings,
             gates,
             metadata: &inputs.metadata,
             store,
@@ -547,25 +627,45 @@ mod tests {
         Shared { hand, rule, both }
     }
 
-    /// 10,000 events each, 9,000 shared: 2,000 held by one gate only, of
-    /// which 2 x sqrt(20,000) = 282.8 are forgiven - 1 - 1,717.2 / 20,000.
+    /// Twice the shared events over both gates' events: 1 only for the same
+    /// events exactly.
     #[test]
-    fn agreement_forgives_only_counting_noise_on_a_big_gate() {
-        let a = shared(10_000, 10_000, 9_000).agreement();
-        assert!((a - (1.0 - (2_000.0 - 2.0 * 20_000f64.sqrt()) / 20_000.0)).abs() < 1e-12);
-        assert!((a - 0.914_14).abs() < 1e-5, "{a}");
+    fn agreement_is_the_share_of_events_both_gates_hold() {
+        assert_eq!(shared(10_000, 10_000, 9_000).agreement(), 0.9);
+        assert_eq!(shared(20, 20, 15).agreement(), 0.75);
+        assert_eq!(shared(1_000, 600, 600).agreement(), 0.75);
         assert_eq!(shared(10_000, 10_000, 10_000).agreement(), 1.0);
-        let none = shared(10_000, 10_000, 0).agreement();
-        assert!((none - 2.0 * 20_000f64.sqrt() / 20_000.0).abs() < 1e-12, "{none}");
+        assert_eq!(shared(10_000, 10_000, 0).agreement(), 0.0);
+        assert_eq!(shared(0, 0, 0).agreement(), 1.0, "two empty gates agree");
     }
 
-    /// 20 events each, 15 shared: the 10 held by one gate only are within
-    /// 2 x sqrt(40) = 12.6 of counting noise, so the two agree.
+    /// The same 0.75 agreement: on 40 events the line is 0.8 - 1 / sqrt(40)
+    /// = 0.6419, so it is not off; on 4,000 it is 0.8 - 1 / sqrt(4,000) =
+    /// 0.7842, so it is. With no allowance both are held to 0.8.
     #[test]
-    fn a_small_gate_is_forgiven_more() {
-        assert_eq!(shared(20, 20, 15).agreement(), 1.0);
-        // The same shares on a hundred times the events are not forgiven.
-        assert!(shared(2_000, 2_000, 1_500).agreement() < 0.8);
+    fn a_small_gate_may_fall_further_below_the_off_line() {
+        let settings = ScoreSettings::default();
+        let small = settings.off_line(shared(20, 20, 15));
+        let big = settings.off_line(shared(2_000, 2_000, 1_500));
+        assert!((small - 0.641_886).abs() < 1e-6, "{small}");
+        assert!((big - 0.784_189).abs() < 1e-6, "{big}");
+        assert!(0.75 > small && 0.75 < big);
+        let strict = ScoreSettings {
+            noise_widths: 0.0,
+            ..settings
+        };
+        assert_eq!(strict.off_line(shared(20, 20, 15)), 0.8);
+        assert_eq!(strict.off_line(shared(0, 0, 0)), 0.8);
+    }
+
+    #[test]
+    fn settings_out_of_range_are_refused() {
+        let with = |off_below, noise_widths| ScoreSettings { off_below, noise_widths }.checked();
+        assert!(with(0.8, 1.0).is_ok());
+        assert!(with(0.0, 0.0).is_ok() && with(1.0, 3.0).is_ok());
+        for (off_below, noise_widths) in [(1.2, 1.0), (-0.1, 1.0), (0.8, -1.0), (0.8, f64::NAN), (f64::NAN, 1.0)] {
+            assert!(with(off_below, noise_widths).is_err(), "{off_below} {noise_widths}");
+        }
     }
 
     #[test]
@@ -575,10 +675,11 @@ mod tests {
         let too_loose = shared(600, 1_000, 600);
         assert_eq!((too_loose.caught(), too_loose.extra()), (Some(1.0), Some(0.4)));
         let empty = shared(0, 0, 0);
-        assert_eq!((empty.caught(), empty.extra(), empty.agreement()), (None, None, 1.0));
+        assert_eq!((empty.caught(), empty.extra()), (None, None));
     }
 
-    fn row(agreement: Option<f64>) -> ScoreRow {
+    /// A scored row for a sample whose gates hold `events`.
+    fn row(events: Shared, settings: ScoreSettings) -> ScoreRow {
         let mut row = unmeasured_row(
             &Default::default(),
             &RuleStore::default(),
@@ -592,35 +693,62 @@ mod tests {
             },
         );
         row.what = "moved";
-        row.agreement = agreement;
+        row.events = Some(events);
+        row.agreement = Some(events.agreement());
+        row.off_line = Some(settings.off_line(events));
         row
+    }
+
+    /// Samples of 1,000 events in each gate, `both` of them shared: an
+    /// agreement of `both` / 1,000.
+    fn rows_sharing(both: &[usize], settings: ScoreSettings) -> Vec<ScoreRow> {
+        let mut rows: Vec<ScoreRow> = both
+            .iter()
+            .map(|&both| row(shared(1_000, 1_000, both), settings))
+            .collect();
+        rows.sort_by(least_agreeing_first);
+        rows
     }
 
     /// A few samples far off and every sample a little off read differently:
     /// the first by its lowest agreement and its off samples, the second by
-    /// its median.
+    /// its typical agreement. On 2,000 events the off line is 0.8 -
+    /// 1 / sqrt(2,000) = 0.7776.
     #[test]
     fn a_few_far_off_is_told_apart_from_all_a_little_off() {
-        let mut few: Vec<ScoreRow> = [0.3, 0.5, 0.97, 0.98, 0.98, 0.99, 0.99]
-            .into_iter()
-            .map(|a| row(Some(a)))
-            .collect();
-        few.sort_by(least_agreeing_first);
-        let few = summarise("g".into(), &few);
-        assert_eq!((few.median_agreement, few.lowest_agreement, few.off), (Some(0.98), Some(0.3), 2));
+        let settings = ScoreSettings::default();
+        let few = summarise("g".into(), &rows_sharing(&[300, 500, 970, 980, 980, 990, 990], settings));
+        assert_eq!((few.typical_agreement, few.lowest_agreement, few.off), (Some(0.98), Some(0.3), 2));
 
-        let all: Vec<ScoreRow> = [0.84, 0.85, 0.85, 0.86, 0.86, 0.87, 0.88]
-            .into_iter()
-            .map(|a| row(Some(a)))
-            .collect();
-        let all = summarise("g".into(), &all);
-        assert_eq!((all.median_agreement, all.lowest_agreement, all.off), (Some(0.86), Some(0.84), 0));
+        let all = summarise("g".into(), &rows_sharing(&[840, 850, 850, 860, 860, 870, 880], settings));
+        assert_eq!((all.typical_agreement, all.lowest_agreement, all.off), (Some(0.86), Some(0.84), 0));
 
-        let edge: Vec<ScoreRow> = [0.79, 0.8, 0.81].into_iter().map(|a| row(Some(a))).collect();
-        assert_eq!(summarise("g".into(), &edge).off, 1, "under {OFF_BELOW} is off, at it is not");
+        let at_the_line = ScoreSettings {
+            noise_widths: 0.0,
+            ..settings
+        };
+        let edge = summarise("g".into(), &rows_sharing(&[790, 800, 810], at_the_line));
+        assert_eq!(edge.off, 1, "under the line is off, on it is not");
 
         let mut gates = [all, few];
         gates.sort_by(most_off_first);
         assert_eq!(gates[0].off, 2, "the gate with samples off comes first");
+    }
+
+    /// Two small samples at 0.5 and 0.6 and one of 10,000 events at 0.9: the
+    /// plain median is 0.6, but the weights - sqrt(16) = 4, sqrt(20) = 4.5
+    /// and sqrt(10,000) = 100 - put half of the weight at 0.9.
+    #[test]
+    fn a_sample_of_few_events_counts_for_less_in_the_typical_agreement() {
+        let settings = ScoreSettings::default();
+        let mut rows = vec![
+            row(shared(8, 8, 4), settings),
+            row(shared(10, 10, 6), settings),
+            row(shared(5_000, 5_000, 4_500), settings),
+        ];
+        rows.sort_by(least_agreeing_first);
+        let gate = summarise("g".into(), &rows);
+        assert_eq!(gate.typical_agreement, Some(0.9));
+        assert_eq!(gate.lowest_agreement, Some(0.5));
     }
 }

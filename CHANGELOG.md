@@ -10,11 +10,13 @@
   gate cannot make those below it look wrong, each file read once. Gates
   are compared by the events they hold, so any shape scores alike: per
   sample, how much of the hand gate the rule's gate catches, how much it
-  holds beyond it, and one agreement that forgives a difference within
-  counting noise - more for a gate of a few dozen cells than for one of
-  thousands. Beside it, how far the rule's gate sits from the hand gate in
+  holds beyond it, and their agreement - 1 only for exactly the same events.
+  A sample is off below a line the user can set; one of a few dozen cells
+  may fall further below it than one of thousands, by a settable number of
+  counting-noise widths, and counts for less in its gate's typical
+  agreement. Beside it, how far the rule's gate sits from the hand gate in
   the parent's interquartile ranges, and for a rule that moves one edge, how
-  far it moves it. Each gate is summed up in a line - median and lowest
+  far it moves it. Each gate is summed up in a line - typical and lowest
   agreement, and which samples are off - so a few samples far off read
   differently from every sample a little off. It answers "is this ruleset
   closer than the last one?" after every change. Nothing is moved.

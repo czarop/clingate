@@ -109,5 +109,5 @@ plates), and - once runs have been reviewed - replay them (`replay_rules`)
 to see what each fixes and breaks. On a workspace gated by hand, score the
 rules against it (`score_rules`): each gate under its parent as drawn, and
 the events the rule's gate shares with the hand-drawn one - how much of
-yours it catches, how much it holds beyond it, and one agreement that
-forgives counting noise.
+yours it catches, how much it holds beyond it, and their agreement, with a
+sample of few cells allowed further below the line that calls it off.

@@ -1273,6 +1273,25 @@ fn the_rules_are_scored_over_the_protocol() {
     assert_eq!(one["result"]["rows"].as_array().unwrap().len(), 1);
     let unknown = server.call("score_rules", json!({"population": "no such gate"}));
     assert_ne!(unknown["outcome"], "ok", "{unknown}");
+
+    // Each scored sample is judged against the line asked for.
+    let exact = server.call(
+        "score_rules",
+        json!({"off_below": 1.0, "noise_widths": 0.0, "max_rows": 400}),
+    );
+    assert_eq!(exact["outcome"], "ok", "{exact}");
+    let judged: Vec<&Value> = exact["result"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["agreement"].is_number())
+        .collect();
+    assert!(!judged.is_empty(), "{exact}");
+    assert!(judged.iter().all(|r| r["off_line"] == 1.0), "{exact}");
+    for refused in [json!({"off_below": 2.0}), json!({"noise_widths": -1.0})] {
+        let answer = server.call("score_rules", refused);
+        assert_eq!(answer["outcome"], "failed", "{answer}");
+    }
 }
 
 #[test]

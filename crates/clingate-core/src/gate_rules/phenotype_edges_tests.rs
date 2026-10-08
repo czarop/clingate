@@ -522,6 +522,7 @@ fn a_phenotype_rule_is_scored_on_the_events_it_shares_with_the_hand_gate() {
         &state,
         &inputs,
         |_| true,
+        crate::gate_rules::score::ScoreSettings::default(),
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap();
