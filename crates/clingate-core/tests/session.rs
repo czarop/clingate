@@ -4205,6 +4205,34 @@ fn a_search_keeps_its_closest_candidates_for_the_gallery() {
     assert_eq!(kept(&folder).unwrap().len(), 1, "the same rule's search replaced");
 }
 
+/// A search whose closest candidates cannot be kept for the gallery still
+/// answers, and says they were not kept.
+#[test]
+fn a_search_that_cannot_be_kept_still_answers() {
+    use clingate_core::gate_rules::searches::searches_file;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-unkept");
+    std::fs::create_dir_all(searches_file(&folder)).unwrap();
+    let session = Session::open(&folder).unwrap();
+    let not_kept = |problems: &[String]| problems.iter().any(|p| p.contains("could not be kept"));
+
+    let ask = FitAsk {
+        defaults: true,
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+    assert!(!found.candidates.is_empty());
+    assert!(not_kept(&found.problems), "{:?}", found.problems);
+
+    let picked = session
+        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    assert!(not_kept(&picked.problems), "{:?}", picked.problems);
+}
+
 /// A rule picked for a gate - the kinds tried in order, the first that
 /// passes searched - scores as fit_rule scores the same rule, sits beside
 /// the rule as it stands, and is kept for the gallery with whether it

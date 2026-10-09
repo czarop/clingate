@@ -198,8 +198,9 @@ do the same things through the app's own buttons' code and through these
 tools, and fail if the two ever come out differently.
 
 `answer_omiq_compensation` and the edits change only the open session.
-`save_gating` and `export_gating` write to disk, and the recovery copy is
-kept up to date as Claude edits. Claude is told to change, save or export
+`save_gating` and `export_gating` write to disk, `fit_rule` and `pick_rule`
+keep their closest candidates in `rules/searches.json` for the Gallery tab,
+and the recovery copy is kept up to date as Claude edits. Claude is told to change, save or export
 only when the user says to, and to ask the user before restoring or
 discarding earlier unsaved changes.
 

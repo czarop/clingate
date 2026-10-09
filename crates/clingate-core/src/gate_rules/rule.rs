@@ -913,11 +913,13 @@ impl Rule {
         matches!(self, Rule::FromAnotherGate(_) | Rule::NextToGate(_))
     }
 
-    /// The smoothings of the densities this rule reads its line with - see
-    /// [`crate::gate_rules::density`].
+    /// The smoothings of the densities this rule reads its line with, each
+    /// once - see [`crate::gate_rules::density`]. They must be those its
+    /// placement reads, or a search works out densities nothing reads.
     pub fn smoothings_read(&self) -> Vec<f64> {
         match self {
             Rule::InTheValley(r) => vec![r.smoothing],
+            Rule::ValleyOrSmear(r) if r.smoothing == 1.0 => vec![1.0],
             Rule::ValleyOrSmear(r) => vec![r.smoothing, 1.0],
             Rule::AboveTheNegative(_) => vec![1.0],
             _ => Vec::new(),

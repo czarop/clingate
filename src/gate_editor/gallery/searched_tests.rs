@@ -6,6 +6,11 @@
 
 use std::sync::Arc;
 
+use flow_fcs::TransformType;
+
+use clingate_core::axis_store::PlotMapper;
+use clingate_core::gate_rules::autogate::extent_on;
+use clingate_core::gate_rules::rule_store::{GateRule, RuleStore};
 use clingate_core::gate_rules::searches::{Search, kept};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::NodeId;
@@ -13,7 +18,10 @@ use clingate_core::session::{FitAsk, Session};
 use clingate_core::test_workspace::two_samples_with_a_rule;
 
 use super::overlay::Flat;
-use super::searched::{CANDIDATE_STROKE, as_candidate, drawn_here, placed_on, said, searches_here};
+use super::searched::{
+    CANDIDATE_STROKE, as_candidate, can_take, candidate_shapes, drawn_here, placed_on, said,
+    searches_here, still_as_searched,
+};
 
 /// The workspace after a search of Tmem's rule, the searches it keeps,
 /// Tmem's node and its gate's two parameters.
@@ -160,4 +168,91 @@ fn a_candidate_is_said_with_its_score_and_whether_it_is_the_rule_as_it_stands() 
             "{line}"
         );
     }
+}
+
+fn with_rule(search: &Search, rule: &GateRule) -> RuleStore {
+    let mut rules = RuleStore::default();
+    rules.insert(search.target.clone(), rule.clone());
+    rules
+}
+
+/// Any candidate but the gate's rule now can be taken, back and forth among
+/// them, until the gate's rule becomes one the search never tried.
+#[test]
+fn a_candidate_can_be_taken_only_while_the_gate_has_a_rule_the_search_tried() {
+    let (_, searches, _, _) = searched("gallery-search-take");
+    let search = &searches[0];
+    let current = search.candidates.iter().find(|c| c.current).unwrap();
+    let other = search.candidates.iter().find(|c| !c.current).unwrap();
+
+    let as_it_stood = with_rule(search, &current.rule);
+    assert!(still_as_searched(search, &as_it_stood));
+    assert!(!can_take(search, current, &as_it_stood), "already the rule");
+    assert!(can_take(search, other, &as_it_stood));
+
+    let taken = with_rule(search, &other.rule);
+    assert!(can_take(search, current, &taken), "and back again");
+    assert!(!can_take(search, other, &taken));
+
+    let mut edited = current.rule.clone();
+    edited.parameter = "FSC-A".into();
+    let edited = with_rule(search, &edited);
+    assert!(!still_as_searched(search, &edited));
+    assert!(search.candidates.iter().all(|c| !can_take(search, c, &edited)));
+    assert!(!can_take(search, other, &RuleStore::default()), "the rule deleted");
+}
+
+/// A linear plot 600 pixels square over `x` and `y`, data ranges in hand.
+fn plot_over(x: (f32, f32), y: (f32, f32)) -> PlotMapper {
+    PlotMapper::new(
+        600.0,
+        600.0,
+        x.0..=x.1,
+        y.0..=y.1,
+        x.0..=x.1,
+        y.0..=y.1,
+        TransformType::Linear,
+        TransformType::Linear,
+    )
+}
+
+/// The dashed outline sits where the candidate puts the gate: its corners
+/// are the gate's extents taken to pixels.
+#[test]
+fn a_candidate_s_outline_is_drawn_dashed_where_it_puts_the_gate() {
+    let (_, searches, _, (x, y)) = searched("gallery-search-outline");
+    let current = searches[0].candidates.iter().find(|c| c.current).unwrap();
+    let placed = &current.placed[0];
+    let x_extent = extent_on(&placed.gate.geometry, &x).unwrap();
+    let y_extent = extent_on(&placed.gate.geometry, &y).unwrap();
+    let pad = |(lo, hi): (f32, f32)| (lo - (hi - lo), hi + (hi - lo));
+    let mapper = plot_over(pad(x_extent), pad(y_extent));
+
+    let shapes = candidate_shapes(placed, &x, &y, &mapper);
+    let points: Vec<(f32, f32)> = shapes
+        .iter()
+        .flat_map(|shape| match shape {
+            Flat::Path {
+                points,
+                stroke,
+                dashed,
+                ..
+            } => {
+                assert_eq!((*stroke, *dashed), (CANDIDATE_STROKE, true));
+                points.clone()
+            }
+            other => panic!("a path, not {other:?}"),
+        })
+        .collect();
+    assert!(!points.is_empty());
+    let (left, bottom) = mapper.data_to_pixel(x_extent.0, y_extent.0, None, None);
+    let (right, top) = mapper.data_to_pixel(x_extent.1, y_extent.1, None, None);
+    let least = |at: fn(&(f32, f32)) -> f32| points.iter().map(at).fold(f32::INFINITY, f32::min);
+    let most = |at: fn(&(f32, f32)) -> f32| points.iter().map(at).fold(f32::NEG_INFINITY, f32::max);
+    let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+    assert!(close(least(|p| p.0), left) && close(most(|p| p.0), right), "{points:?}");
+    assert!(close(least(|p| p.1), top.min(bottom)), "{points:?}");
+    assert!(close(most(|p| p.1), top.max(bottom)), "{points:?}");
+
+    assert!(candidate_shapes(placed, &x, "FSC-A", &mapper).is_empty());
 }

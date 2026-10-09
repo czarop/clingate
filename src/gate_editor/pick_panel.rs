@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dioxus::prelude::*;
 
-use clingate_core::gate_rules::fit::{Candidate, FitSettings};
+use clingate_core::gate_rules::fit::FitSettings;
 use clingate_core::gate_rules::pick::{
     KindTried, PickSettings, Picking, gain, keep_settings, kept_settings,
 };
@@ -18,7 +18,9 @@ use clingate_core::gate_rules::score::ScoreSettings;
 use clingate_core::gate_rules::searches::{Search, keep_all, kept, pick_every_rule};
 
 use crate::components::toast::{note, say, use_toast, warn};
+use crate::gate_editor::gallery::searched::standing;
 use crate::gate_editor::gate_rules_window::{RulesRun, use_stop_run_on_change};
+use crate::gate_editor::route::Tab;
 use crate::gate_editor::workspace_window::{GateStore, Loaded};
 
 /// Where a gate's pick stands against the rules as they are now.
@@ -27,7 +29,7 @@ pub(crate) enum Choice {
     /// The gate's rule is the pick.
     InUse,
     /// The gate still has the rule the pick was made against, and the pick
-    /// is another: it can be taken.
+    /// differs from it: it can be taken.
     Better(GateRule),
     /// The gate's rule has changed since the pick was made.
     Changed,
@@ -143,25 +145,14 @@ pub(crate) struct Line {
     pub gate: String,
     pub best: String,
     pub as_it_stands: String,
-    /// How much higher the best's typical agreement is than the rule it was
-    /// picked against.
+    /// How much higher the pick's typical agreement is than the rule it was
+    /// picked against - below 0 where a kind earlier in order passes.
     pub gain: Option<f64>,
     /// Whether the best passed the cut-off; false is only the closest.
     pub passed: Option<bool>,
     /// How each kind tried did.
     pub tried: String,
     pub choice: Choice,
-}
-
-/// A candidate's score in a few words.
-fn standing(candidate: &Candidate) -> String {
-    match &candidate.fit {
-        Some(fit) => match fit.typical_agreement {
-            Some(typical) => format!("typical {typical:.2}, {} off", fit.off),
-            None => format!("{} off", fit.off),
-        },
-        None => "not scored".to_string(),
-    }
 }
 
 /// The kept picks as lines against `rules`: those flagged first, then those
@@ -194,8 +185,9 @@ pub(crate) fn lines(searches: &[Search], rules: &RuleStore) -> Vec<Line> {
     lines
 }
 
-/// The picks that can be taken: each gate's best where the gate still has
-/// the rule it was picked against.
+/// The picks taken all at once: each gate's pick where the gate still has
+/// the rule it was picked against and the pick differs from it - whatever
+/// its gain, as the kinds go in the user's order of preference.
 pub(crate) fn takeable(lines: &[Line]) -> Vec<(RuleTarget, GateRule)> {
     lines
         .iter()
@@ -206,6 +198,7 @@ pub(crate) fn takeable(lines: &[Line]) -> Vec<(RuleTarget, GateRule)> {
         .collect()
 }
 
+/// The Gate Rules tab's pick of the best rule for every gate, and its list.
 #[component]
 pub fn PickPanel() -> Element {
     let run_with = RulesRun::from_context();
@@ -217,10 +210,15 @@ pub fn PickPanel() -> Element {
     let mut progress = use_signal(|| None::<Picking>);
     let mut cancel = use_signal(|| None::<Arc<AtomicBool>>);
     use_stop_run_on_change(cancel);
-    // Counted up after each pick, so the kept picks are read again.
+    let active = use_context::<Signal<Tab>>();
+    // Counted up after each pick, so the kept picks are read again - as they
+    // are each time the tab comes to the front, for a pick by the tools.
     let mut picked = use_signal(|| 0u64);
     let searches = use_memo(move || {
         picked();
+        if active() != Tab::Rules {
+            return Vec::new();
+        }
         loaded
             .read()
             .folder
@@ -488,6 +486,7 @@ pub fn PickPanel() -> Element {
 mod tests {
     use std::sync::Arc;
 
+    use clingate_core::gate_rules::fit::Candidate;
     use clingate_core::gate_rules::rule::{Rule, TailFractionRule, ValleyRule};
     use clingate_core::gate_rules::rule_store::{Bound, MeasuredOn};
     use clingate_core::gate_rules::score::GateScore;
@@ -592,6 +591,34 @@ mod tests {
         assert_eq!(choice(&picked, &RuleStore::default()), Choice::Changed);
     }
 
+    /// With no rule before, there is nothing to gain over: the pick is said
+    /// against "no rule", listed last and still taken.
+    #[test]
+    fn a_pick_for_a_gate_that_had_no_rule_can_be_taken() {
+        let searches = [
+            picked("CD25+", vec![candidate(valley(), 0.90, 1, false)], true),
+            picked(
+                "CD4+",
+                vec![
+                    candidate(valley(), 0.72, 5, false),
+                    candidate(band(), 0.50, 9, true),
+                ],
+                true,
+            ),
+        ];
+        let listed = lines(&searches, &rules(&[("CD4+", band())]));
+        assert_eq!(listed[1].gate, "CD25+");
+        assert_eq!(listed[1].as_it_stands, "no rule");
+        assert_eq!(listed[1].gain, None);
+        assert_eq!(
+            takeable(&listed),
+            [
+                (RuleTarget::named("CD4+"), valley()),
+                (RuleTarget::named("CD25+"), valley())
+            ]
+        );
+    }
+
     #[test]
     fn the_flagged_gates_come_first_then_where_the_best_does_most_better() {
         let searches = [
@@ -620,16 +647,25 @@ mod tests {
                 ],
                 false,
             ),
+            picked(
+                "CD3+",
+                vec![
+                    candidate(valley(), 0.96, 0, false),
+                    candidate(band(), 0.99, 0, true),
+                ],
+                true,
+            ),
         ];
         let now = rules(&[
             ("CD25+", band()),
             ("CD69+", band()),
             ("CD4+", band()),
             ("CD8+", band()),
+            ("CD3+", band()),
         ]);
         let listed = lines(&searches, &now);
         let gates: Vec<&str> = listed.iter().map(|l| l.gate.as_str()).collect();
-        assert_eq!(gates, ["CD8+", "CD4+", "CD25+", "CD69+"]);
+        assert_eq!(gates, ["CD8+", "CD4+", "CD25+", "CD69+", "CD3+"]);
         assert_eq!(
             listed[0].passed,
             Some(false),
@@ -642,9 +678,10 @@ mod tests {
             [
                 (RuleTarget::named("CD8+"), valley()),
                 (RuleTarget::named("CD4+"), valley()),
-                (RuleTarget::named("CD25+"), valley())
+                (RuleTarget::named("CD25+"), valley()),
+                (RuleTarget::named("CD3+"), valley())
             ],
-            "a flagged pick can still be taken"
+            "a flagged pick can still be taken, and one earlier in order whatever it gains"
         );
         assert_eq!(
             lines(

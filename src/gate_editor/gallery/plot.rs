@@ -28,8 +28,8 @@ use clingate_core::gates::gate_traits::DrawableGate;
 use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
 use super::cache::{Fingerprint, PlotCache, scaling_digest};
-use super::overlay::{Flat, StaticGates, flatten, flatten_gates};
-use super::searched::{as_candidate, drawn_here};
+use super::overlay::{Flat, StaticGates, flatten_gates};
+use super::searched::candidate_shapes;
 use clingate_core::gate_rules::score::PlacedGate;
 use super::render::{PlotImage, PlotJob, render_plot};
 use super::select;
@@ -246,11 +246,13 @@ pub fn GalleryPlot(
             &labelled_from,
             (setup.fingerprint.x.clone(), setup.fingerprint.y.clone()),
         );
-        if let Some(placed) = candidate.read().as_ref()
-            && let Some(gate) = drawn_here(placed, &setup.fingerprint.x, &setup.fingerprint.y)
-        {
-            let outline = gate.draw_self(false, None, &picture.mapper, &None);
-            shapes.extend(as_candidate(flatten(outline, &picture.mapper)));
+        if let Some(placed) = candidate.read().as_ref() {
+            shapes.extend(candidate_shapes(
+                placed,
+                &setup.fingerprint.x,
+                &setup.fingerprint.y,
+                &picture.mapper,
+            ));
         }
         shapes
     });

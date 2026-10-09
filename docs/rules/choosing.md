@@ -161,8 +161,8 @@ on the Gate Rules tab and kept with the workspace
 (`rules/pick_settings.json`); the tools for Claude use them unless told
 otherwise.
 
-Every kind is first tried as the hand gating starts it, all together, and
-the first in order that passes has its settings searched; the best of its
+Every kind but the phenotype is first tried as the hand gating starts it,
+all together, and the first in order that passes has its settings searched; the best of its
 settings that also pass is the pick. When none passes as started, each
 kind's settings are searched in turn, in order, until one passes. When none
 does, the closest of everything tried is shown, flagged: that gate may be
@@ -170,5 +170,6 @@ better gated by hand. Each gate's pick is listed beside the rule as it
 stands with how each kind did, the flagged gates first. The files are read
 once, and again only for the phenotype, for the gates that come to it.
 Nothing changes until a pick is taken - Use, or Use the best for every gate
-- and saved. A phenotype rule is tried only with its own settings, and a
-gate placed from another gate is left as it is.
+whose rule it differs from - and saved. A gate whose rule is a phenotype
+is tried only as a phenotype, its settings searched; a gate placed from
+another gate is left as it is.
