@@ -55,7 +55,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, preview_rules - only \
+fit_rule, pick_rule, preview_rules - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -132,8 +132,20 @@ few samples. Rank by typical agreement (rank_by 'typical') or by fewest \
 samples off ('off'); each candidate says where it stands both ways. Narrow or \
 extend the defaults from the gate's profile by giving candidates. Show the \
 user the best and those tied with it (among_best), and the samples off under \
-each - some may be easier gated by hand than fitted - and change the rule only \
-on their word.
+each - some may be easier gated by hand than fitted. They are kept for the \
+app: on the Gallery tab, the gate's population shows each one's gate over \
+the user's, one candidate at a time, so the user can compare them by eye. \
+Change the rule only on their word.
+
+To pick the best rule for a gate - its kind as well as its settings - or for \
+every gate, pick_rule tries every kind that can place it, each started from \
+the user's hand gating, then searches the best kind's settings (and the \
+next's, when it came close), on one reading of the files. Per gate it gives \
+the best rule beside the rule as it stands, how much closer it comes (gain), \
+and whether it fits the hand gating well: a gate that does not may be better \
+gated by hand. For many gates it takes a while - say so. Show the user the \
+gates where the best does most better, and update_rule only with the rules \
+they choose; the closest are on the Gallery tab to compare by eye.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -412,6 +424,24 @@ pub struct FitRuleArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PickRuleArgs {
+    /// The population whose gate to pick a rule for, by its gate names. Leave out for every
+    /// gate a rule places, other than from another gate.
+    pub population: Option<String>,
+    /// As fit_rule: "typical" (default) or "off".
+    pub rank_by: Option<String>,
+    /// As fit_rule: typical agreements no further apart than this are a tie (default 0.02).
+    pub tie_within: Option<f64>,
+    /// As fit_rule: rank on half the specimens and check on the other half (default true).
+    pub split: Option<bool>,
+    /// As score_rules: the agreement below which a sample is off (default 0.8). A gate whose
+    /// best rule is typically below it does not fit well.
+    pub off_below: Option<f64>,
+    /// As score_rules: how far below off_below a sample of few events may fall (default 1).
+    pub noise_widths: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GateProfileArgs {
     /// The population whose gate to profile, by its gate names. Leave out for every gate, a
     /// line each.
@@ -470,6 +500,20 @@ fn candidate_rules(value: serde_json::Value) -> Result<Vec<GateRule>, Refusal> {
             "the candidates could not be read ({e}): give a list of whole rules, each the rule \
              part of {RULE_CHANGES}"
         ),
+    })
+}
+
+/// The ranking asked for, the defaults where none is.
+fn fit_settings(
+    rank_by_name: Option<&str>,
+    tie_within: Option<f64>,
+    split: Option<bool>,
+) -> Result<FitSettings, Refusal> {
+    let defaults = FitSettings::default();
+    Ok(FitSettings {
+        rank_by: rank_by(rank_by_name)?,
+        tie_within: tie_within.unwrap_or(defaults.tie_within),
+        split: split.unwrap_or(defaults.split),
     })
 }
 
@@ -964,9 +1008,10 @@ impl Clingate {
     /// scored as score_rules scores a rule and ranked. With eight specimens or more, ranked
     /// on half of them and checked on the other half. Each candidate's score on both halves,
     /// its place ranked by typical agreement and by samples off, and whether it is the best
-    /// or tied with it. Moves nothing. Reads the samples' events: only when the user asks
-    /// for it.
-    #[tool(annotations(read_only_hint = true))]
+    /// or tied with it. The best, those tied with it and the rule as it stands are kept in the
+    /// workspace, for the app's Gallery tab to show over the user's gate. Moves no gate.
+    /// Reads the samples' events: only when the user asks for it.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn fit_rule(&self, Parameters(args): Parameters<FitRuleArgs>) -> String {
         let settings = score_settings(args.off_below, args.noise_widths);
         self.run(move |s| {
@@ -974,18 +1019,32 @@ impl Clingate {
                 Some(value) => candidate_rules(value)?,
                 None => Vec::new(),
             };
-            let defaults = FitSettings::default();
-            let fit = FitSettings {
-                rank_by: rank_by(args.rank_by.as_deref())?,
-                tie_within: args.tie_within.unwrap_or(defaults.tie_within),
-                split: args.split.unwrap_or(defaults.split),
-            };
+            let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
             let ask = FitAsk {
                 defaults: args.defaults.unwrap_or(candidates.is_empty()),
                 candidates,
                 shown: args.shown,
             };
             s.fit_rule(&args.population, ask, settings, fit)
+        })
+        .await
+    }
+
+    /// Pick the best rule for one population's gate, or every gate a rule places other than
+    /// from another gate: every kind of rule that can place it - a band read on the FMX and on
+    /// the sample, above the negative read two ways, the valley with and without a smear -
+    /// each started from the user's hand gating, then the settings of the best kind (and of
+    /// the next, when it came close) searched, all on one reading of the files and ranked as
+    /// fit_rule ranks. Per gate: the best rule beside the rule as it stands, how much closer it
+    /// comes, whether it fits the hand gating well, and the others tied with it - kept for the
+    /// app's Gallery tab. Changes no rule and moves no gate. Reads the samples' events: only
+    /// when the user asks for it.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn pick_rule(&self, Parameters(args): Parameters<PickRuleArgs>) -> String {
+        let settings = score_settings(args.off_below, args.noise_widths);
+        self.run(move |s| {
+            let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
+            s.pick_rules(args.population.as_deref(), settings, fit)
         })
         .await
     }

@@ -29,6 +29,8 @@ use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 
 use super::cache::{Fingerprint, PlotCache, scaling_digest};
 use super::overlay::{Flat, StaticGates, flatten_gates};
+use super::searched::candidate_shapes;
+use clingate_core::gate_rules::score::PlacedGate;
 use super::render::{PlotImage, PlotJob, render_plot};
 use super::select;
 
@@ -93,6 +95,9 @@ pub fn GalleryPlot(
     x: Param,
     y: Param,
     size: u32,
+    /// A search's candidate gate on this sample, drawn over the gates as
+    /// drawn.
+    candidate: ReadSignal<Option<PlacedGate>>,
 ) -> Element {
     let gate_store = use_context::<SyncStore<GateState>>();
     let metadata_store =
@@ -233,14 +238,23 @@ pub fn GalleryPlot(
         let registry = registry.read();
         let labelled_from =
             super::overlay::drawn_by_id(&setup.drawn, |id| registry.get(id).cloned());
-        flatten_gates(
+        let mut shapes = flatten_gates(
             &setup.drawn,
             &picture.stats,
             selected.as_ref(),
             &picture.mapper,
             &labelled_from,
             (setup.fingerprint.x.clone(), setup.fingerprint.y.clone()),
-        )
+        );
+        if let Some(placed) = candidate.read().as_ref() {
+            shapes.extend(candidate_shapes(
+                placed,
+                &setup.fingerprint.x,
+                &setup.fingerprint.y,
+                &picture.mapper,
+            ));
+        }
+        shapes
     });
 
     let side = size;

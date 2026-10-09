@@ -1433,3 +1433,38 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
     assert_eq!(shown_t(&mut app, "s1").0.len(), 7);
     assert_eq!(app.standing().undo_steps, steps);
 }
+
+/// Picking the best rule for every gate on the Rules tab keeps, for the one
+/// rule, what `pick_rule` keeps: the same inputs make the same pick.
+#[test]
+fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
+    use clingate_core::gate_rules::searches::{kept, pick_every_rule};
+
+    let (tools, ours) = twins("pick");
+    let session = Session::open(&tools).unwrap();
+    session
+        .pick_rules(None, Default::default(), Default::default())
+        .unwrap();
+    let theirs = kept(&tools).unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let every = app.with(|held| {
+        let (inputs, _) = held.rules_run.inputs_now();
+        pick_every_rule(
+            &held.gates.peek(),
+            &inputs,
+            Default::default(),
+            Default::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap()
+    });
+    assert!(every.not_searched.is_empty(), "{:?}", every.not_searched);
+    assert_eq!(every.searches.len(), 1);
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(every.searches[0].target, theirs[0].target);
+    assert!(!theirs[0].candidates.is_empty());
+    assert_eq!(every.searches[0].candidates, theirs[0].candidates);
+}

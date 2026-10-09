@@ -92,9 +92,7 @@ fn a_rule_reports_an_empty_population_rather_than_scoring_one() {
 #[test]
 fn the_enum_dispatches_to_the_variant() {
     let values = population(9_000, 1_000);
-    let direct = TailFractionRule::new((0.09, 0.11))
-        .apply(&values)
-        .unwrap();
+    let direct = TailFractionRule::new((0.09, 0.11)).apply(&values).unwrap();
     let through_enum = Rule::TailFraction(TailFractionRule::new((0.09, 0.11)))
         .apply(&values)
         .unwrap();
@@ -702,11 +700,7 @@ fn a_calibrated_rule_cannot_be_solved_from_one_population() {
         Rule::InTheValley(ValleyRule::default()),
     ] {
         assert!(rule.solve(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
-        assert!(
-            rule.apply(&[1.0, 2.0, 3.0]).is_err(),
-            "{}",
-            rule.kind()
-        );
+        assert!(rule.apply(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
     }
 }
 
@@ -810,4 +804,41 @@ fn how_a_gate_meets_another_is_written_as_the_rules_file_writes_it() {
     }
     assert_eq!(Meet::from_key("Sideways"), None);
     assert_eq!(Meet::default(), Meet::GrowSide);
+}
+
+#[test]
+fn a_rule_names_the_smoothings_it_reads_densities_at() {
+    let valley = ValleyRule {
+        smoothing: 0.75,
+        ..ValleyRule::default()
+    };
+    let either = ValleyOrSmearRule {
+        smoothing: 1.5,
+        ..ValleyOrSmearRule::default()
+    };
+    assert_eq!(Rule::InTheValley(valley).smoothings_read(), [0.75]);
+    assert_eq!(
+        Rule::ValleyOrSmear(either).smoothings_read(),
+        [1.5, 1.0],
+        "its own for the dip, the negative's for a smear"
+    );
+    assert_eq!(
+        Rule::ValleyOrSmear(ValleyOrSmearRule::default()).smoothings_read(),
+        [1.0],
+        "one density when the two are the same"
+    );
+    assert_eq!(
+        Rule::AboveTheNegative(AboveTheNegativeRule::default()).smoothings_read(),
+        [1.0]
+    );
+    assert!(
+        Rule::TailFraction(TailFractionRule::new((0.1, 0.2)))
+            .smoothings_read()
+            .is_empty()
+    );
+    assert!(
+        Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.1))
+            .smoothings_read()
+            .is_empty()
+    );
 }

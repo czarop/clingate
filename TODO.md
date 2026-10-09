@@ -153,11 +153,25 @@ ranks them by it.
       `admitted_by` returns nothing for it, so the score skips it. Score each
       quadrant on its own - which events each holds against the hand-drawn
       quadrants - and sum the gate up over the four.
-- [ ] **Flick between close candidates on the plots.** When the search finds
-      two or three settings for a gate that score nearly alike, show them on
-      the Review tab or the gallery so the user can switch between the gate
-      positions each would give, sample by sample, beside the hand-drawn gate,
-      and pick by eye.
+- [x] **Flick between close candidates on the plots.** A search keeps its
+      best, those tied with it and the rule as it stands in
+      `rules/searches.json`; the Gallery tab draws each one's gate dashed
+      over the gate as drawn, one at a time, and can take its rule.
+- [ ] **Mark the samples a candidate is off on** in the gallery, and say
+      which ones it could not place - the search knows both.
+- [x] **Pick the best rule - kind and settings - for every gate.** The
+      Gate Rules tab's "Pick the best rule for every gate" and the
+      `pick_rule` tool: each kind tried once from the hand gating, then the
+      best kind's settings searched, on one reading of the files; Use, or
+      Use the best for every gate.
+- [ ] **Pick for one gate, or a chosen few, from the app** - and with
+      settings other than the defaults (the ranking, the tie, the split).
+- [ ] **Pick for a gate with no rule yet.** A pick starts from the rule a
+      gate has, which says the marker and the edge it moves; a gate without
+      one would need them read from how it is drawn.
+- [ ] **Time a pick on a real workspace.** What is left to speed up is one
+      density per sample at each of the 5 smoothings tried, each summing the
+      events near each of 512 points.
 
 ## clingate
 

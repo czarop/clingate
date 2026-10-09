@@ -33,6 +33,29 @@
   it stands both ways, and the best and those tied with it are marked for
   comparing by eye. Nothing is moved.
 
+- **A search's closest candidates on the gallery.** A search keeps its best
+  candidates, those tied with them and the rule as it stands in the
+  workspace, with where each puts the gate on every sample it moves it on.
+  The Gallery tab, on that gate's population, draws the candidate's gate
+  dashed in magenta over the gate as drawn - no dashed outline where it
+  does not move the gate - and steps through them one at a time, so close
+  candidates can be told apart by eye; "Use this rule" takes the one shown
+  as the gate's rule, while the gate still has a rule the search tried.
+
+- **Picking the best rule for every gate** ("Pick the best rule for every
+  gate" on the Gate Rules tab, and `pick_rule` in the tools for Claude).
+  For each gate a rule places, every kind of rule that can place it is
+  tried once, started from the hand gating - a band around what the hand
+  gates hold on the FMX and on the sample, above the negative read two
+  ways, the valley with and without a smear - and then the settings of the
+  best kind are searched, and of the next kind when it came close. The
+  files are read once for every gate. Each gate's best rule is listed
+  beside the rule as it stands, those it improves most first, with a mark
+  where even the best is far from the hand gating; Use takes one, Use the
+  best takes every one that improves on its gate's rule, and the closest
+  are on the Gallery tab to compare by eye. Gates placed from another gate
+  are left as they are.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several
@@ -415,6 +438,19 @@
   and the rules run from FCS files on disk.
 
 ### Changed
+
+- **Searching and picking rules are many times faster, and rules runs
+  faster, with the same results.** The smoothed density a valley, valley-or-smear or
+  above-the-negative rule reads is worked out once for each population and
+  smoothing and shared - by every candidate a search tries, and by every
+  sample a run calibrates on the same reference, which each worked it out
+  again. A search works out the densities a batch of candidates will read
+  side by side before solving them, so none waits while another works out the
+  one it needs. Each density adds up only the events within reach of each
+  point; the rest add exactly nothing, so it comes out the same to the last
+  digit. A population's spread and shape are worked out once, not at every
+  placement. On 20 donors of 300,000 events, a valley rule's 30 settings are
+  searched in 34 seconds rather than 8 minutes 30.
 
 - **Fewer review flags: a gate is flagged for where it sits, not for how its
   sample differs.** A run's review now flags a placement whose gate sits 2 or

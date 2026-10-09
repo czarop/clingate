@@ -69,10 +69,16 @@ fn gates() -> GateState {
 
 /// The gates, with Lymph's left edge at `lymph_from`.
 fn gates_with_lymph_from(lymph_from: f32) -> GateState {
+    gates_with(lymph_from, 0.0)
+}
+
+/// The gates, with Lymph's left edge at `lymph_from` and CD69+'s at
+/// `cd69_from`.
+fn gates_with(lymph_from: f32, cd69_from: f32) -> GateState {
     let mut state = GateState::default();
     for (id, name, x0, parent) in [
         ("lymph", "Lymph", lymph_from, None),
-        ("cd69", "CD69+", 0.0, Some("lymph")),
+        ("cd69", "CD69+", cd69_from, Some("lymph")),
     ] {
         let gate = rect(id, name, x0);
         state.place_gate(&[Arc::from(id)], &gate, &GateSource::Global);
@@ -881,4 +887,280 @@ fn a_search_with_nothing_or_too_much_to_try_is_refused() {
     };
     let one = [band(Pool::Specimen, MeasuredOn::Itself)];
     assert!(fit(&[], &FILES, RuleStore::default(), &one, wide).unwrap_err().contains("tie_within"));
+}
+
+/// The best, those tied with it and the rule as it stands keep where they
+/// put the gate on each sample they move it on - where a run puts it - and
+/// no other candidate does.
+#[test]
+fn the_closest_candidates_and_the_rule_as_it_stands_keep_their_gates() {
+    let written = write("fit-placed", &FILES);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let kept = GateRule {
+        rule: Rule::TailFraction(TailFractionRule::new((0.5, 1.0))),
+        ..current.clone()
+    };
+    let other = GateRule {
+        rule: Rule::TailFraction(TailFractionRule::aimed((0.05, 0.06), BandAim::Middle)),
+        ..current.clone()
+    };
+    let found = fit(
+        &written,
+        &FILES,
+        store(current.clone()),
+        &[kept.clone(), other.clone()],
+        FitSettings::default(),
+    )
+    .unwrap();
+    let of = |rule: &GateRule| found.candidates.iter().find(|c| &c.rule == rule).unwrap();
+    assert!(of(&kept).among_best, "{found:#?}");
+    assert!(of(&kept).placed.is_empty(), "it leaves every gate as drawn");
+    assert!(!of(&other).among_best && of(&other).placed.is_empty());
+
+    let ran = applied(&gates(), &run(&gates(), &written, &FILES, store(current.clone())), &FILES);
+    let placed = &of(&current).placed;
+    assert_eq!(placed.len(), 4, "a full stain per donor");
+    for gate in placed {
+        assert_eq!(gate.gate_id, "cd69");
+        let left = extent_on(&gate.gate.geometry, X).unwrap().0;
+        assert_eq!(left, line(&ran, &gate.file, &FILES), "{}", gate.file);
+    }
+}
+
+/// Rules searched together, on one reading of the files, come out exactly as
+/// each searched alone; a search that cannot be made says why in its place;
+/// and the reading and the trying are reported as they go.
+#[test]
+fn rules_searched_together_come_out_as_each_searched_alone() {
+    use crate::gate_rules::fit::{Ask, default_candidates, fit_rules};
+    use crate::gate_rules::run::Progress;
+    use crate::gate_rules::score::ScoreSettings;
+
+    let written = write("fit-together", &FILES);
+    let drawn = gates_with_lymph_from(-1_000.0);
+    let mut rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    rules.insert(
+        RuleTarget::named("Lymph"),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::TailFraction(TailFractionRule::new((0.45, 0.55))),
+        },
+    );
+    let inputs = inputs(&written, &FILES, rules.clone());
+    let mut asks: Vec<Ask> = rules
+        .entries()
+        .iter()
+        .map(|entry| Ask {
+            target: entry.target.clone(),
+            candidates: default_candidates(&entry.rule),
+        })
+        .collect();
+    asks.push(Ask {
+        target: RuleTarget::named("Nowhere"),
+        candidates: Vec::new(),
+    });
+    let heard = std::sync::Mutex::new(Vec::new());
+    let cancel = AtomicBool::new(false);
+    let together = fit_rules(
+        &drawn,
+        &inputs,
+        &asks,
+        ScoreSettings::default(),
+        FitSettings::default(),
+        &cancel,
+        |step| heard.lock().unwrap().push(step),
+    )
+    .unwrap();
+
+    assert_eq!(together.len(), 3);
+    for ((target, found), ask) in together.iter().zip(&asks).take(2) {
+        assert_eq!(target, &ask.target);
+        let alone = fit_rule(
+            &drawn,
+            &inputs,
+            target,
+            &ask.candidates,
+            ScoreSettings::default(),
+            FitSettings::default(),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(found.as_ref().unwrap(), &alone, "{}", target.describe());
+    }
+    assert_eq!(together[2].1, Err("no candidate rule to try".to_string()));
+
+    // Each band tried at five widths, aimed two ways; the rule as it stands is one.
+    let tried = 2 * 10;
+    let heard = heard.into_inner().unwrap();
+    let files = FILES.len();
+    assert!(heard.contains(&Progress::Measuring { done: files, total: files }), "{heard:?}");
+    assert!(heard.contains(&Progress::Solving { done: tried, total: tried }), "{heard:?}");
+}
+
+/// The share of `file`'s events above `line`, counted from what was written.
+fn share_above(file: &str, line: f32) -> f64 {
+    let values = values_of(file);
+    values.iter().filter(|v| **v > line).count() as f64 / values.len() as f64
+}
+
+/// Between two numbers, as a median of two is.
+fn midway(mut shares: Vec<f64>) -> f64 {
+    shares.sort_by(f64::total_cmp);
+    (shares[1] + shares[2]) / 2.0
+}
+
+/// What the hand-drawn gates hold is read on the files a run gates - each
+/// donor's full stain - and on what the rule reads for each: the full stain
+/// itself, or its FMX.
+#[test]
+fn what_the_hand_gates_hold_is_read_where_the_rule_reads() {
+    use crate::gate_rules::pick::held_by_hand;
+    use crate::gate_rules::run::measure_many;
+
+    let written = write("pick-held", &FILES);
+    let drawn = gates_with(-BIG, 500.0);
+    let read = |measured_on: MeasuredOn| {
+        let rule = band(Pool::Specimen, measured_on);
+        let inputs = inputs(&written, &FILES, store(rule.clone()));
+        let (measured, _) = measure_many(
+            &drawn,
+            &inputs.files,
+            &inputs.compensation,
+            &inputs.names,
+            &inputs.cofactors,
+            &inputs.metadata,
+            std::slice::from_ref(&inputs.rules),
+            None,
+            &AtomicBool::new(false),
+            |_, _| {},
+        );
+        held_by_hand(&rule, &measured[0].0, &inputs.rules, &inputs.metadata).unwrap()
+    };
+    let full_stains = ["d1_fs", "d2_fs", "d3_fs", "d4_fs"];
+    let fmxs = ["d1_fmx", "d2_fmx", "d3_fmx", "d4_fmx"];
+    let on_itself = midway(full_stains.iter().map(|f| share_above(f, 500.0)).collect());
+    let on_fmx = midway(fmxs.iter().map(|f| share_above(f, 500.0)).collect());
+    assert!((read(MeasuredOn::Itself) - on_itself).abs() < 1e-12, "{on_itself}");
+    assert!((read(fmx()) - on_fmx).abs() < 1e-12, "{on_fmx}");
+    assert!(on_itself > 0.2, "the positives are a quarter of a full stain");
+}
+
+/// A band far from the hand gates: the pick tries every kind of rule once,
+/// searches the best kind's settings, and finds a rule much closer - scored
+/// exactly as the scorer scores it alone - reporting each step as it goes.
+#[test]
+fn the_best_rule_is_picked_from_every_kind_and_its_settings_searched() {
+    use crate::gate_rules::pick::{Picking, pick_rules};
+    use crate::gate_rules::score::ScoreSettings;
+
+    let written = write("pick-best", &FILES);
+    let drawn = gates_with(-BIG, 500.0);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let target = RuleTarget::under("CD69+", "Lymph");
+    let heard = std::sync::Mutex::new(Vec::new());
+    let picked = pick_rules(
+        &drawn,
+        &inputs(&written, &FILES, store(current.clone())),
+        std::slice::from_ref(&target),
+        ScoreSettings::default(),
+        FitSettings::default(),
+        &AtomicBool::new(false),
+        |step| heard.lock().unwrap().push(step),
+    )
+    .unwrap();
+    assert_eq!(picked.len(), 1);
+    let found = picked[0].1.as_ref().unwrap();
+    let typical = |c: &crate::gate_rules::fit::Candidate| c.fit.as_ref().unwrap().typical_agreement.unwrap();
+    let best = &found.candidates[0];
+    let as_it_stands = found.candidates.iter().find(|c| c.current).unwrap();
+    assert!(!best.current, "{found:#?}");
+    assert!(typical(best) >= 0.9, "{}: {}", best.said, typical(best));
+    assert!(typical(best) > typical(as_it_stands) + 0.3);
+
+    let kinds: Vec<(std::mem::Discriminant<Rule>, &MeasuredOn)> = found
+        .candidates
+        .iter()
+        .map(|c| (std::mem::discriminant(&c.rule.rule), &c.rule.measured_on))
+        .collect();
+    let best_kind = kinds[0];
+    assert!(
+        kinds.iter().filter(|k| **k == best_kind).count() > 2,
+        "the best kind's settings searched"
+    );
+    let every_kind = [
+        std::mem::discriminant(&Rule::TailFraction(TailFractionRule::new((0.1, 0.2)))),
+        std::mem::discriminant(&Rule::AboveTheNegative(Default::default())),
+        std::mem::discriminant(&Rule::InTheValley(Default::default())),
+        std::mem::discriminant(&Rule::ValleyOrSmear(Default::default())),
+    ];
+    for kind in every_kind {
+        assert!(kinds.iter().any(|(k, _)| *k == kind), "every kind tried");
+    }
+
+    let alone = score(&drawn, &written, store(best.rule.clone()));
+    assert_eq!(best.fit.as_ref(), alone.gates.first(), "{}", best.said);
+
+    let heard = heard.into_inner().unwrap();
+    let last = |of: fn(&Picking) -> Option<(usize, usize)>| heard.iter().filter_map(of).last();
+    let read = last(|p| match p {
+        Picking::Reading { done, total } => Some((*done, *total)),
+        _ => None,
+    });
+    let kinds_tried = last(|p| match p {
+        Picking::Kinds { done, total } => Some((*done, *total)),
+        _ => None,
+    });
+    let settings_tried = last(|p| match p {
+        Picking::Settings { done, total } => Some((*done, *total)),
+        _ => None,
+    });
+    assert_eq!(read, Some((FILES.len(), FILES.len())));
+    let (kinds_done, kinds_total) = kinds_tried.unwrap();
+    let (settings_done, settings_total) = settings_tried.unwrap();
+    assert_eq!((kinds_done, settings_done), (kinds_total, settings_total));
+    assert_eq!(kinds_total + settings_total, found.candidates.len());
+}
+
+/// A gate placed from another gate, or with no rule, is not picked for, and
+/// says why; the others are picked as if alone.
+#[test]
+fn a_gate_that_cannot_be_picked_for_says_why() {
+    use crate::gate_rules::pick::pick_rules;
+    use crate::gate_rules::rule::FromGateRule;
+    use crate::gate_rules::score::ScoreSettings;
+
+    let written = write("pick-refused", &FILES);
+    let mut rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    let lymph = RuleTarget::named("Lymph");
+    rules.insert(
+        lymph.clone(),
+        GateRule {
+            parameter: Arc::from(X),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: Rule::FromAnotherGate(FromGateRule {
+                same_shape_as: Some(RuleTarget::named("CD69+")),
+                edges: Vec::new(),
+            }),
+        },
+    );
+    let nowhere = RuleTarget::named("Nowhere");
+    let cd69 = RuleTarget::under("CD69+", "Lymph");
+    let picked = pick_rules(
+        &gates_with(-BIG, 500.0),
+        &inputs(&written, &FILES, rules),
+        &[lymph.clone(), cd69.clone(), nowhere.clone()],
+        ScoreSettings::default(),
+        FitSettings::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let targets: Vec<&RuleTarget> = picked.iter().map(|(t, _)| t).collect();
+    assert_eq!(targets, [&lymph, &cd69, &nowhere]);
+    assert!(picked[0].1.as_ref().unwrap_err().contains("from another gate"));
+    assert!(picked[1].1.is_ok());
+    assert!(picked[2].1.as_ref().unwrap_err().contains("no rule"));
 }

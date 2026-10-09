@@ -4145,3 +4145,161 @@ fn a_search_is_ranked_as_asked_and_refused_with_nothing_to_try() {
     assert!(session.fit_rule("Tmem", defaults(), off_line, Default::default()).is_err());
     assert!(session.fit_rule("no such gate", defaults(), Default::default(), Default::default()).is_err());
 }
+
+/// A search keeps its best, those tied with it and the rule as it stands for
+/// the gallery, each with where it puts the gate - where a preview of the rule
+/// moves it - and a second search of the rule replaces the first. The answer
+/// itself carries no gates.
+#[test]
+fn a_search_keeps_its_closest_candidates_for_the_gallery() {
+    use clingate_core::gate_rules::autogate::extent_on;
+    use clingate_core::gate_rules::searches::{MOST_KEPT, kept};
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-kept");
+    let mut session = Session::open(&folder).unwrap();
+    let ask = || FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask(), Default::default(), Default::default())
+        .unwrap();
+    assert!(found.candidates.iter().all(|c| c.placed.is_empty()));
+    let among_best = found.candidates.iter().filter(|c| c.among_best).count();
+
+    let searches = kept(&folder).unwrap();
+    assert_eq!(searches.len(), 1);
+    let search = &searches[0];
+    let current_kept_apart = !found.candidates[..among_best.min(MOST_KEPT)]
+        .iter()
+        .any(|c| c.current);
+    assert_eq!(
+        search.candidates.len(),
+        among_best.min(MOST_KEPT) + usize::from(current_kept_apart)
+    );
+    let current = search.candidates.iter().find(|c| c.current).unwrap();
+    let mut placed: Vec<f64> = current
+        .placed
+        .iter()
+        .map(|p| extent_on(&p.gate.geometry, &current.rule.parameter).unwrap().0 as f64)
+        .collect();
+    let mut moved: Vec<f64> = session
+        .preview_rules()
+        .unwrap()
+        .would_move
+        .iter()
+        .map(|m| m.to)
+        .collect();
+    placed.sort_by(f64::total_cmp);
+    moved.sort_by(f64::total_cmp);
+    assert!(!moved.is_empty());
+    assert_eq!(placed.len(), moved.len());
+    for (at, to) in placed.iter().zip(&moved) {
+        assert!((at - to).abs() < 1e-3 * to.abs().max(1.0), "{placed:?} {moved:?}");
+    }
+
+    session
+        .fit_rule("Tmem", ask(), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(kept(&folder).unwrap().len(), 1, "the same rule's search replaced");
+}
+
+/// A search whose closest candidates cannot be kept for the gallery still
+/// answers, and says they were not kept.
+#[test]
+fn a_search_that_cannot_be_kept_still_answers() {
+    use clingate_core::gate_rules::searches::searches_file;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-unkept");
+    std::fs::create_dir_all(searches_file(&folder)).unwrap();
+    let mut session = Session::open(&folder).unwrap();
+    let not_kept = |problems: &[String]| problems.iter().any(|p| p.contains("could not be kept"));
+
+    let ask = FitAsk {
+        defaults: true,
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+    assert!(!found.candidates.is_empty());
+    assert!(not_kept(&found.problems), "{:?}", found.problems);
+
+    let picked = session
+        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    assert!(not_kept(&picked.problems), "{:?}", picked.problems);
+}
+
+/// The best rule picked for a gate - of every kind that can place it -
+/// scores as fit_rule scores the same rule, sits beside the rule as it
+/// stands, and is kept for the gallery; asked for every gate, each gate a
+/// rule places is picked for.
+#[test]
+fn the_best_rule_is_picked_for_a_gate_and_kept_for_the_gallery() {
+    use clingate_core::gate_rules::searches::kept;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-pick");
+    let session = Session::open(&folder).unwrap();
+    let answer = session
+        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(answer.picked.len(), 1, "{answer:#?}");
+    assert!(answer.not_picked.is_empty());
+    let picked = &answer.picked[0];
+    assert!(picked.gate.starts_with("Tmem"));
+    let as_it_stands = picked.as_it_stands.as_ref().expect("Tmem has a rule");
+    assert!(as_it_stands.current);
+    assert!(picked.tried >= 6, "every kind tried: {}", picked.tried);
+    assert!(picked.also_close.iter().all(|c| c.among_best));
+    assert!(picked.best.placed.is_empty(), "the gates are kept, not shown");
+    let typical = picked.best.fit.as_ref().unwrap().typical_agreement.unwrap();
+    assert_eq!(picked.fits_well, typical >= 0.8);
+
+    let alone = session
+        .fit_rule(
+            "Tmem",
+            FitAsk {
+                candidates: vec![picked.best.rule.clone()],
+                ..FitAsk::default()
+            },
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+    let same = alone
+        .candidates
+        .iter()
+        .find(|c| c.rule == picked.best.rule)
+        .unwrap();
+    assert_eq!(same.fit, picked.best.fit);
+
+    let searches = kept(&folder).unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].candidates[0].rule, picked.best.rule);
+
+    let every = session
+        .pick_rules(None, Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(every.picked.len(), 1, "one rule, for Tmem");
+    assert_eq!(every.picked[0].best.rule, picked.best.rule);
+}
+
+/// A pick needs rules, a population a rule places, and settings in range.
+#[test]
+fn a_pick_is_refused_without_a_rule_to_start_from() {
+    use clingate_core::gate_rules::fit::FitSettings;
+    let unruled = Session::open(&workspace("session-pick-none")).unwrap();
+    assert!(unruled.pick_rules(None, Default::default(), Default::default()).is_err());
+    let session = Session::open(&with_rules("session-pick-refused")).unwrap();
+    let no_rule = session.pick_rules(Some("teff_naive"), Default::default(), Default::default());
+    assert!(no_rule.unwrap_err().to_string().contains("no rule places"));
+    assert!(session.pick_rules(Some("no such gate"), Default::default(), Default::default()).is_err());
+    let wide = FitSettings {
+        tie_within: 2.0,
+        ..FitSettings::default()
+    };
+    assert!(session.pick_rules(None, Default::default(), wide).is_err());
+}

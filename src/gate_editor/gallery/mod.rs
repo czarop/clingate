@@ -9,6 +9,7 @@
 //! - [`overlay`] - gate outlines as a drawing rather than as a control.
 //! - [`plot`] - one plot on the page, with the queue that limits how many
 //!   are drawn at once.
+//! - [`searched`] - a search's closest candidates, over the gate as drawn.
 //! - [`pdf`] / [`export`] - the same pictures as a file, for the record.
 
 pub mod cache;
@@ -17,8 +18,11 @@ pub mod overlay;
 pub mod pdf;
 pub mod plot;
 pub mod render;
+pub mod searched;
 pub mod select;
 pub mod window;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod searched_tests;

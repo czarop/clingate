@@ -9,7 +9,7 @@
 //! candidates are ranked on one half and checked on the other.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,10 @@ use crate::gate_rules::rule::{
     ShapeFit, TailFractionRule, ValleyOrSmearRule, ValleyRule,
 };
 use crate::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget, human_order};
-use crate::gate_rules::run::{RunInputs, measure_many};
+use crate::gate_rules::run::{Measured, Progress, RunInputs, measure_many};
 use crate::gate_rules::score::{
-    GateScore, ScoreRow, ScoreSettings, least_agreeing_first, solved_rows, summarise,
+    GateScore, PlacedGate, ScoreRow, ScoreSettings, Solved, least_agreeing_first, solved_rows,
+    summarise,
 };
 use crate::gate_rules::trial::only;
 use crate::gates::GateState;
@@ -208,7 +209,7 @@ impl FitSettings {
 }
 
 /// One candidate, ranked.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
     pub rule: GateRule,
     /// The rule in a line.
@@ -226,6 +227,11 @@ pub struct Candidate {
     pub place_on_check: Option<usize>,
     /// The best, or tied with it: worth looking at side by side.
     pub among_best: bool,
+    /// Where it puts the gate on each sample it moves it on - kept only for
+    /// the best, those tied with it and the rule as it stands, the ones to
+    /// look at.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placed: Vec<PlacedGate>,
 }
 
 /// Every candidate for one gate, best first.
@@ -351,45 +357,236 @@ fn place_of(order: &[usize], candidate: usize) -> usize {
         .map_or(0, |at| at + 1)
 }
 
-/// Each rule's measurement: one store for every set of rules that measure
-/// alike, and which of them each rule solves on.
-fn measured_once(
-    base: &RuleStore,
-    target: &RuleTarget,
-    rules: &[GateRule],
-) -> (Vec<RuleStore>, Vec<usize>) {
-    let mut shapes: Vec<&GateRule> = Vec::new();
-    let mut shape_of = Vec::with_capacity(rules.len());
-    for rule in rules {
-        let shape = match shapes.iter().position(|shape| measured_alike(shape, rule)) {
-            Some(shape) => shape,
-            None => {
-                shapes.push(rule);
-                shapes.len() - 1
-            }
-        };
-        shape_of.push(shape);
-    }
-    let stores = shapes.iter().map(|rule| only(base, target, rule)).collect();
-    (stores, shape_of)
+/// The files read once for many rules: one measurement for each set of a
+/// target's rules that measure alike.
+pub(crate) struct Readings {
+    shapes: Vec<(RuleTarget, GateRule)>,
+    measured: Vec<Measured>,
+    /// Files that could not be read or measured.
+    pub(crate) problems: Vec<String>,
 }
 
-/// Try the rule `target` has now, if any, and each of `candidates` as its
-/// rule, each scored against the gates as drawn by `settings`, and rank them
-/// as `fit` says. Moves nothing.
-pub fn fit_rule(
+impl Readings {
+    /// Read the files once for each of `rules`, as its target's rule;
+    /// `progress` hears how many files are done.
+    pub(crate) fn read(
+        gates: &GateState,
+        inputs: &RunInputs,
+        rules: &[Job<'_>],
+        cancel: &AtomicBool,
+        progress: impl Fn(usize, usize) + Sync,
+    ) -> Self {
+        let mut shapes: Vec<(RuleTarget, GateRule)> = Vec::new();
+        for &(target, rule) in rules {
+            if !shapes
+                .iter()
+                .any(|(read, shape)| read == target && measured_alike(shape, rule))
+            {
+                shapes.push((target.clone(), rule.clone()));
+            }
+        }
+        let stores: Vec<RuleStore> = shapes
+            .iter()
+            .map(|(target, rule)| only(&inputs.rules, target, rule))
+            .collect();
+        let (measured, problems) = if stores.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            measure_many(
+                gates,
+                &inputs.files,
+                &inputs.compensation,
+                &inputs.names,
+                &inputs.cofactors,
+                &inputs.metadata,
+                &stores,
+                None,
+                cancel,
+                progress,
+            )
+        };
+        Self {
+            shapes,
+            measured,
+            problems,
+        }
+    }
+
+    /// What `rule` solves on as `target`'s rule, if the files were read for it.
+    pub(crate) fn of(&self, target: &RuleTarget, rule: &GateRule) -> Option<&Measured> {
+        self.reading_of(target, rule)
+            .and_then(|at| self.measured.get(at))
+    }
+
+    fn reading_of(&self, target: &RuleTarget, rule: &GateRule) -> Option<usize> {
+        self.shapes
+            .iter()
+            .position(|(read, shape)| read == target && measured_alike(shape, rule))
+    }
+
+    /// The densities `rule` reads as `target`'s rule: which reading, and at
+    /// what smoothing.
+    fn densities_of(&self, target: &RuleTarget, rule: &GateRule) -> Vec<Densities> {
+        let Some(reading) = self.reading_of(target, rule) else {
+            return Vec::new();
+        };
+        rule.rule
+            .smoothings_read()
+            .into_iter()
+            .map(|smoothing| Densities {
+                reading,
+                smoothing: smoothing.to_bits(),
+            })
+            .collect()
+    }
+
+    /// Each line in `densities`'s reading, the values a density is worked
+    /// out on.
+    fn lines(&self, densities: Densities) -> impl Iterator<Item = &[f64]> {
+        self.measured
+            .get(densities.reading)
+            .into_iter()
+            .flat_map(|(measurements, _)| measurements)
+            .filter_map(|measured| measured.line.as_ref())
+            .map(|line| line.values.as_slice())
+    }
+
+    /// Work out every density in `densities` side by side, so no solve
+    /// waits while another works out the one it needs.
+    fn work_out(&self, densities: &[Densities]) {
+        let lines: Vec<(&[f64], f64)> = densities
+            .iter()
+            .flat_map(|&d| {
+                self.lines(d)
+                    .map(move |values| (values, f64::from_bits(d.smoothing)))
+            })
+            .collect();
+        lines.par_iter().for_each(|&(values, smoothing)| {
+            crate::gate_rules::density::smoothed(values, smoothing);
+        });
+    }
+}
+
+/// A rule, as its target's.
+type Job<'a> = (&'a RuleTarget, &'a GateRule);
+
+/// The densities of one reading's lines at one smoothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Densities {
+    reading: usize,
+    smoothing: u64,
+}
+
+/// Jobs solved together, and the densities they read.
+#[derive(Debug, Default, PartialEq)]
+struct Batch {
+    jobs: std::ops::Range<usize>,
+    densities: Vec<Densities>,
+}
+
+/// The most densities worked out ahead of a batch of jobs: half of those
+/// kept, so that few are forgotten before they are read.
+const DENSITIES_AHEAD: usize = crate::gate_rules::density::MOST_KEPT / 2;
+
+/// Jobs, in order, cut into runs reading no more than `most` densities -
+/// `read[job]` names a job's, and `lines` how many each names - each with
+/// what it reads; a job reading more than `most` alone.
+fn batches(read: &[Vec<Densities>], lines: impl Fn(Densities) -> usize, most: usize) -> Vec<Batch> {
+    let mut batches = Vec::new();
+    let mut batch = Batch::default();
+    let mut counted = 0;
+    for (job, densities) in read.iter().enumerate() {
+        let unread = |batch: &Batch| {
+            let mut new: Vec<Densities> = Vec::new();
+            for &d in densities {
+                if !batch.densities.contains(&d) && !new.contains(&d) {
+                    new.push(d);
+                }
+            }
+            let more: usize = new.iter().map(|&d| lines(d)).sum();
+            (new, more)
+        };
+        let (mut new, mut more) = unread(&batch);
+        if counted + more > most && !batch.jobs.is_empty() {
+            batches.push(std::mem::take(&mut batch));
+            batch.jobs = job..job;
+            counted = 0;
+            (new, more) = unread(&batch);
+        }
+        batch.jobs.end = job + 1;
+        batch.densities.extend(new);
+        counted += more;
+    }
+    batches.push(batch);
+    batches
+}
+
+/// Each of `jobs` - a rule, as its target's - solved on what `readings` read
+/// and read back against the gates as drawn, in the order given; `progress`
+/// hears how many are done.
+pub(crate) fn solve_each(
     gates: &GateState,
     inputs: &RunInputs,
-    target: &RuleTarget,
-    candidates: &[GateRule],
+    readings: &Readings,
+    jobs: &[Job<'_>],
     settings: ScoreSettings,
-    fit: FitSettings,
     cancel: &AtomicBool,
-) -> Result<Fit, String> {
-    let settings = settings.checked()?;
-    let fit = fit.checked()?;
-    let current = inputs.rules.get(target);
-    let tried = without_repeats(current.into_iter().chain(candidates).cloned().collect());
+    progress: impl Fn(usize, usize) + Sync,
+) -> Vec<Solved> {
+    let done = AtomicUsize::new(0);
+    let solve = |&(target, rule): &Job<'_>| {
+        let solved = match readings.of(target, rule) {
+            Some(measured) => {
+                let store = only(&inputs.rules, target, rule);
+                solved_rows(gates, &inputs.metadata, &store, measured, settings, cancel)
+            }
+            None => Solved {
+                rows: Vec::new(),
+                refused: vec![format!(
+                    "{}: the files were not read for this rule",
+                    target.describe()
+                )],
+                placed: Vec::new(),
+            },
+        };
+        progress(done.fetch_add(1, Ordering::Relaxed) + 1, jobs.len());
+        solved
+    };
+    let mut solved = Vec::with_capacity(jobs.len());
+    let read: Vec<Vec<Densities>> = jobs
+        .iter()
+        .map(|&(target, rule)| readings.densities_of(target, rule))
+        .collect();
+    let lines = |densities| readings.lines(densities).count();
+    for batch in batches(&read, lines, DENSITIES_AHEAD) {
+        readings.work_out(&batch.densities);
+        solved.par_extend(jobs[batch.jobs].par_iter().map(solve));
+    }
+    solved
+}
+
+/// Each search's target, and what it found or why it could not be made.
+pub type Found = Vec<(RuleTarget, Result<Fit, String>)>;
+
+/// One rule's search: its target, and the candidates tried beside the rule
+/// as it stands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ask {
+    pub target: RuleTarget,
+    pub candidates: Vec<GateRule>,
+}
+
+/// The rules tried for `ask`: the rule as it stands, if any, then its
+/// candidates, each once.
+fn tried_for(base: &RuleStore, ask: &Ask) -> Result<Vec<GateRule>, String> {
+    let current = base.get(&ask.target);
+    let tried = without_repeats(
+        current
+            .into_iter()
+            .chain(&ask.candidates)
+            .cloned()
+            .collect(),
+    );
     if tried.is_empty() {
         return Err("no candidate rule to try".into());
     }
@@ -399,55 +596,32 @@ pub fn fit_rule(
             tried.len()
         ));
     }
+    Ok(tried)
+}
 
-    let (stores, shape_of) = measured_once(&inputs.rules, target, &tried);
-    let (measured, mut problems) = measure_many(
-        gates,
-        &inputs.files,
-        &inputs.compensation,
-        &inputs.names,
-        &inputs.cofactors,
-        &inputs.metadata,
-        &stores,
-        None,
-        cancel,
-        |_, _| {},
-    );
-    if cancel.load(Ordering::Relaxed) {
-        return Err("stopped".into());
-    }
-    let scored: Vec<(Vec<ScoreRow>, Vec<String>)> = tried
-        .par_iter()
-        .zip(&shape_of)
-        .map(|(rule, &shape)| {
-            let store = only(&inputs.rules, target, rule);
-            solved_rows(
-                gates,
-                &inputs.metadata,
-                &store,
-                &measured[shape],
-                settings,
-                cancel,
-            )
-        })
-        .collect();
-    if cancel.load(Ordering::Relaxed) {
-        return Err("stopped".into());
-    }
-    for refused in scored.iter().flat_map(|(_, refused)| refused) {
+/// `scored`, one for each of `tried` in turn, ranked as `fit` says.
+pub(crate) fn ranked_fit(
+    target: &RuleTarget,
+    tried: &[GateRule],
+    current: Option<&GateRule>,
+    scored: &[Solved],
+    fit: FitSettings,
+    mut problems: Vec<String>,
+    files_read: usize,
+) -> Fit {
+    for refused in scored.iter().flat_map(|solved| &solved.refused) {
         if !problems.contains(refused) {
             problems.push(refused.clone());
         }
     }
-
-    let (fit_on, checked_on) = halves(scored.iter().flat_map(|(rows, _)| rows), fit.split);
+    let (fit_on, checked_on) = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
     let fits: Vec<Option<GateScore>> = scored
         .iter()
-        .map(|(rows, _)| summed_on(rows, &fit_on))
+        .map(|solved| summed_on(&solved.rows, &fit_on))
         .collect();
     let checks: Vec<Option<GateScore>> = scored
         .iter()
-        .map(|(rows, _)| summed_on(rows, &checked_on))
+        .map(|solved| summed_on(&solved.rows, &checked_on))
         .collect();
     let on_fit: Vec<Option<&GateScore>> = fits.iter().map(Option::as_ref).collect();
     let on_check: Vec<Option<&GateScore>> = checks.iter().map(Option::as_ref).collect();
@@ -463,27 +637,123 @@ pub fn fit_rule(
     let candidates = order
         .iter()
         .enumerate()
-        .map(|(at, &i)| Candidate {
-            rule: tried[i].clone(),
-            said: tried[i].rule.describe(),
-            current: current == Some(&tried[i]),
-            fit: fits[i].clone(),
-            check: checks[i].clone(),
-            place_by_typical: place_of(&by_typical, i),
-            place_by_off: place_of(&by_off, i),
-            place_on_check: checked.as_ref().map(|order| place_of(order, i)),
-            among_best: at < among_best,
+        .map(|(at, &i)| {
+            let is_current = current == Some(&tried[i]);
+            let among_best = at < among_best;
+            Candidate {
+                rule: tried[i].clone(),
+                said: tried[i].rule.describe(),
+                current: is_current,
+                fit: fits[i].clone(),
+                check: checks[i].clone(),
+                place_by_typical: place_of(&by_typical, i),
+                place_by_off: place_of(&by_off, i),
+                place_on_check: checked.as_ref().map(|order| place_of(order, i)),
+                among_best,
+                placed: if among_best || is_current {
+                    scored[i].placed.clone()
+                } else {
+                    Vec::new()
+                },
+            }
         })
         .collect();
-    Ok(Fit {
+    Fit {
         gate: describe(&target.gate, target.parent.as_deref()),
-        files_read: inputs.files.len(),
+        files_read,
         problems,
         fit_on,
         checked_on,
         rank_by: fit.rank_by,
         candidates,
-    })
+    }
+}
+
+/// Search each of `asks`, the files read once for all of them: every
+/// candidate scored against the gates as drawn by `settings`, ranked as `fit`
+/// says. A search that cannot be made says why in its place; `progress` hears
+/// how far the reading and the trying have got. Moves nothing.
+pub fn fit_rules(
+    gates: &GateState,
+    inputs: &RunInputs,
+    asks: &[Ask],
+    settings: ScoreSettings,
+    fit: FitSettings,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress) + Sync,
+) -> Result<Found, String> {
+    let settings = settings.checked()?;
+    let fit = fit.checked()?;
+    let tried: Vec<Result<Vec<GateRule>, String>> = asks
+        .iter()
+        .map(|ask| tried_for(&inputs.rules, ask))
+        .collect();
+    let jobs: Vec<Job<'_>> = asks
+        .iter()
+        .zip(&tried)
+        .flat_map(|(ask, rules)| rules.iter().flatten().map(move |rule| (&ask.target, rule)))
+        .collect();
+    let readings = Readings::read(gates, inputs, &jobs, cancel, |done, total| {
+        progress(Progress::Measuring { done, total })
+    });
+    if cancel.load(Ordering::Relaxed) {
+        return Err("stopped".into());
+    }
+    let solved = solve_each(
+        gates,
+        inputs,
+        &readings,
+        &jobs,
+        settings,
+        cancel,
+        |done, total| progress(Progress::Solving { done, total }),
+    );
+    if cancel.load(Ordering::Relaxed) {
+        return Err("stopped".into());
+    }
+
+    let mut solved = solved.into_iter();
+    Ok(asks
+        .iter()
+        .zip(tried)
+        .map(|(ask, rules)| {
+            let found = rules.map(|rules| {
+                let scored: Vec<Solved> = solved.by_ref().take(rules.len()).collect();
+                ranked_fit(
+                    &ask.target,
+                    &rules,
+                    inputs.rules.get(&ask.target),
+                    &scored,
+                    fit,
+                    readings.problems.clone(),
+                    inputs.files.len(),
+                )
+            });
+            (ask.target.clone(), found)
+        })
+        .collect())
+}
+
+/// Try the rule `target` has now, if any, and each of `candidates` as its
+/// rule - see [`fit_rules`].
+pub fn fit_rule(
+    gates: &GateState,
+    inputs: &RunInputs,
+    target: &RuleTarget,
+    candidates: &[GateRule],
+    settings: ScoreSettings,
+    fit: FitSettings,
+    cancel: &AtomicBool,
+) -> Result<Fit, String> {
+    let ask = Ask {
+        target: target.clone(),
+        candidates: candidates.to_vec(),
+    };
+    let (_, found) = fit_rules(gates, inputs, &[ask], settings, fit, cancel, |_| {})?
+        .into_iter()
+        .next()
+        .ok_or("no search was made")?;
+    found
 }
 
 #[cfg(test)]
@@ -493,6 +763,57 @@ mod tests {
     use super::*;
     use crate::gate_rules::rule::{FromGateRule, Meet, NextToRule, Pool, Side};
     use crate::gate_rules::rule_store::{Bound, MeasuredOn};
+
+    fn read_at(reading: usize) -> Densities {
+        Densities {
+            reading,
+            smoothing: 1.0f64.to_bits(),
+        }
+    }
+
+    fn cut(read: &[Vec<Densities>], most: usize) -> Vec<(std::ops::Range<usize>, Vec<usize>)> {
+        let lines = |d: Densities| if d.reading == 9 { 10 } else { 3 };
+        batches(read, lines, most)
+            .into_iter()
+            .map(|b| (b.jobs, b.densities.iter().map(|d| d.reading).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn jobs_are_batched_in_order_by_the_densities_they_read() {
+        let (a, b, c, big) = (read_at(0), read_at(1), read_at(2), read_at(9));
+        assert_eq!(cut(&[], 6), [(0..0, vec![])]);
+        assert_eq!(
+            cut(&[vec![], vec![], vec![]], 6),
+            [(0..3, vec![])],
+            "jobs reading no density go together"
+        );
+        assert_eq!(
+            cut(&[vec![a], vec![a], vec![b], vec![]], 6),
+            [(0..4, vec![0, 1])],
+            "a density two jobs read counts once"
+        );
+        assert_eq!(
+            cut(&[vec![a], vec![b], vec![c]], 6),
+            [(0..2, vec![0, 1]), (2..3, vec![2])],
+            "a batch ends before it would read more than the most"
+        );
+        assert_eq!(
+            cut(&[vec![a], vec![big], vec![b]], 6),
+            [(0..1, vec![0]), (1..2, vec![9]), (2..3, vec![1])],
+            "a job reading more than the most goes alone"
+        );
+        assert_eq!(
+            cut(&[vec![a], vec![b], vec![b, c]], 6),
+            [(0..2, vec![0, 1]), (2..3, vec![1, 2])],
+            "a density read before a cut is read again after it"
+        );
+        assert_eq!(
+            cut(&[vec![a, a], vec![b]], 6),
+            [(0..2, vec![0, 1])],
+            "a density a job names twice counts once"
+        );
+    }
 
     fn on_x(rule: Rule) -> GateRule {
         GateRule {
