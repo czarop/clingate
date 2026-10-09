@@ -33,9 +33,10 @@ pub const MOST_CANDIDATES: usize = 64;
 /// Fewer specimens than this are not split: half of them is too few to rank on.
 pub const FEWEST_TO_SPLIT: usize = 8;
 
-/// Smoothings tried for a valley rule.
+/// Smoothings tried for a valley-or-smear rule.
 const SMOOTHINGS: [f64; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
-/// Shallowest dips tried for a valley rule, as a share of the lower peak.
+/// Shallowest dips tried for a valley-or-smear rule, as a share of the
+/// lower peak.
 const SMALLEST_DIPS: [Option<f64>; 3] = [None, Some(0.1), Some(0.25)];
 /// What a band rule's band is multiplied by.
 const BAND_SCALES: [f64; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];

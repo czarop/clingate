@@ -2784,6 +2784,7 @@ fn kept_clear(
     Ok(outcome)
 }
 
+/// Place `measured`'s gate as `rule`'s kind places one.
 #[allow(clippy::too_many_arguments)]
 fn position_one(
     state: &GateState,
@@ -2857,7 +2858,7 @@ fn position_line(
         _ => reference.measurement,
     };
     let population = &judged_on.index;
-    // Whichever of the two it is, it reached `position_one` through a rule
+    // Whichever of the two it is, it reached `position_line` through a rule
     // that positions along an axis, so it has a line. Asking rather than
     // assuming keeps the guarantee where a reader can see it.
     let judged_line = judged_on
@@ -4048,7 +4049,7 @@ fn set_edge(
 }
 
 /// How sure a placement made some other way than the rule asked is - by a
-/// valley rule's fallback, or held back off another gate: low enough that
+/// valley-or-smear rule's fallback, or held back off another gate: low enough that
 /// the Review tab flags it, and not so low that a run pauses for it - placing
 /// it where a person would is the point.
 pub const FLAGGED_CONFIDENCE: f64 = 0.25;
@@ -4130,7 +4131,7 @@ fn position_valley_or_smear(
         Some(Err(why)) => why.to_string(),
         None => "the reference has no dip either".to_string(),
     };
-    if let Some(fallback) = valley.fallback_rule(&line.parameter, line.bound) {
+    if let Some(fallback) = either.fallback_rule(&line.parameter, line.bound) {
         return fall_back(state, &fallback, measured, specimen, metadata, &why);
     }
     let example = match (smear, &on_reference) {

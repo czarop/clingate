@@ -537,9 +537,8 @@ fn a_phenotype_rule_defaults_to_every_marker_and_the_drawn_shape() {
 }
 
 #[test]
-fn a_sidecar_written_before_this_rule_existed_still_loads() {
-    // Every field is defaulted, so a rule naming only its markers is valid -
-    // which is what a hand-written sidecar will look like.
+fn a_phenotype_rule_naming_only_its_markers_loads() {
+    // Every field is defaulted, so a hand-written rule needs only its markers.
     use crate::gate_rules::rule::{PhenotypeRule, ShapeFit};
     let rule: PhenotypeRule =
         serde_json::from_str(r#"{"markers":["CD161"]}"#).expect("the rest defaults");
@@ -718,13 +717,13 @@ fn every_rule_but_the_phenotype_is_judged_on_its_threshold() {
 }
 
 #[test]
-fn a_valley_rule_falls_back_on_the_edge_it_would_have_set() {
+fn a_valley_or_smear_rule_falls_back_on_the_edge_it_would_have_set() {
     use crate::gate_rules::rule_store::{Bound, RuleTarget};
     use std::sync::Arc;
     let anchor = RuleTarget::under("IFNy+", "CD4+");
-    let rule = ValleyRule {
+    let rule = ValleyOrSmearRule {
         fallback: Some(anchor.clone()),
-        ..ValleyRule::default()
+        ..ValleyOrSmearRule::default()
     };
     let parameter: Arc<str> = Arc::from("BV421-A");
     for (bound, side) in [(Bound::Above, Side::Lower), (Bound::Below, Side::Upper)] {
@@ -743,13 +742,10 @@ fn a_valley_rule_falls_back_on_the_edge_it_would_have_set() {
         );
     }
     assert_eq!(
-        ValleyRule::default().fallback_rule(&parameter, Bound::Above),
+        ValleyOrSmearRule::default().fallback_rule(&parameter, Bound::Above),
         None
     );
-    let either = Rule::ValleyOrSmear(ValleyOrSmearRule {
-        fallback: Some(anchor.clone()),
-        ..ValleyOrSmearRule::default()
-    });
+    let either = Rule::ValleyOrSmear(rule);
     assert_eq!(either.anchors(), [&anchor]);
     assert!(
         either
@@ -761,7 +757,7 @@ fn a_valley_rule_falls_back_on_the_edge_it_would_have_set() {
 }
 
 #[test]
-fn a_valley_rule_that_names_no_fallback_loads_with_none() {
+fn a_valley_or_smear_rule_that_names_no_fallback_loads_with_none() {
     let json = serde_json::json!({"kind": "ValleyOrSmear", "smoothing": 1.5});
     let back: Rule = serde_json::from_value(json).unwrap();
     assert_eq!(

@@ -461,8 +461,8 @@
   one it needs. Each density adds up only the events within reach of each
   point; the rest add exactly nothing, so it comes out the same to the last
   digit. A population's spread and shape are worked out once, not at every
-  placement. On 20 donors of 300,000 events, a valley rule's 30 settings are
-  searched in 34 seconds rather than 8 minutes 30.
+  placement. On 20 donors of 300,000 events, a valley-or-smear rule's 30
+  settings are searched in 34 seconds rather than 8 minutes 30.
 
 - **Fewer review flags: a gate is flagged for where it sits, not for how its
   sample differs.** A run's review now flags a placement whose gate sits 2 or
@@ -502,14 +502,15 @@
   sample with a dip is placed in it exactly as before - and places the
   samples it refused: a smear goes as on a smear gated by hand, or where its
   fallback gate is. A rules file naming the old kind no longer loads; write
-  the rule as ValleyOrSmear, with the same settings.
+  the rule as ValleyOrSmear, with the same settings, measured on a named
+  hand-gated file, and with a smear example once one is gated.
 
 - **Loading rules written by older versions.** Old names for the ways of
   finding the negative (`DensityPeak`, `RefineFromGate`) are no longer read,
   and a workspace's rules are looked for only in its rules folder, not at
   its top level.
 
-- **The valley rule's "Flag below" setting.** It was read by nothing: when a
+- **The valley rules' "Flag below" setting.** It was read by nothing: when a
   shallow valley stopped being refused and was scored on its depth instead,
   the setting stayed in the form but no longer did anything.
 
@@ -600,8 +601,8 @@
   had never been moved in Omiq came back with its label pinned to the plot's
   origin.
 
-- **The valley rule's "only one peak" message gives the real event count.** It
-  said "over 0 events" whatever the population.
+- **The valley-or-smear rule's "only one peak" message gives the real event
+  count.** It said "over 0 events" whatever the population.
 
 - **A gate rule's score no longer hides what it could not measure.** A part
   of the confidence score that could not be worked out - a ratio with nothing

@@ -148,7 +148,13 @@ mod tests {
 
     #[test]
     fn every_setting_a_rule_has_is_explained_in_its_guide() {
-        for rule in every_rule() {
+        // Settings left out of a file when unset, set so they show.
+        let with_every_setting = Rule::ValleyOrSmear(ValleyOrSmearRule {
+            lowest_before: true,
+            smallest_dip: Some(0.1),
+            ..ValleyOrSmearRule::default()
+        });
+        for rule in every_rule().into_iter().chain([with_every_setting]) {
             let json = serde_json::to_value(&rule).unwrap();
             let guide = find(json["kind"].as_str().unwrap()).unwrap();
             for field in json.as_object().unwrap().keys() {

@@ -2126,10 +2126,10 @@ fn merged_populations_are_refused_rather_than_guessed() {
         .iter()
         .find(|s| &*s.file == "fs_b")
         .expect("and it should say why");
-    assert_eq!(
-        said.reason,
-        crate::gate_rules::autogate::NO_SMEAR_EXAMPLE,
-        "and say what it saw, not just that it failed"
+    assert!(
+        said.reason.contains("no dip") && said.reason.contains("smear gated by hand"),
+        "and say what it saw, and what it needs: {}",
+        said.reason
     );
     // The gate is left exactly where it was rather than moved somewhere wrong.
     let untouched = state

@@ -418,7 +418,7 @@ fn hand_set_references_survive_the_sidecar() {
 }
 
 #[test]
-fn a_sidecar_without_overrides_still_loads() {
+fn a_rules_file_with_no_references_loads() {
     let back: RuleStore = serde_json::from_str(r#"{"rules":[]}"#).unwrap();
     assert!(back.references().is_empty());
 }

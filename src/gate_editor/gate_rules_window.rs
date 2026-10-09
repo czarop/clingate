@@ -314,6 +314,17 @@ impl RulesRun {
     }
 }
 
+
+/// Each kind of rule the form offers, as a rules file names it, and in words.
+const KINDS_OFFERED: [(&str, &str); 7] = [
+    ("TailFraction", "capture a percentage of the parent"),
+    ("PercentileOffset", "step above a percentile"),
+    ("AboveTheNegative", "above the negative, as on a reference sample"),
+    ("ValleyOrSmear", "in the valley, or on a smear as on one gated by hand"),
+    ("MatchThePhenotype", "find the cells that match the reference population"),
+    ("FromAnotherGate", "from another gate: its position, or against its edge"),
+    ("NextToGate", "next to another gate: up against it, touching but not over it"),
+];
 #[component]
 pub fn GateRulesWindow() -> Element {
     let run_with = RulesRun::from_context();
@@ -347,13 +358,13 @@ pub fn GateRulesWindow() -> Element {
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
-    // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
-    // for none.
+    // A valley-or-smear rule's fallback, as `RuleTarget::describe` writes
+    // it; empty for none.
     let mut valley_fallback = use_signal(String::new);
     // The sample a valley-or-smear rule places smears from; empty for none.
     let mut smear_example = use_signal(String::new);
     let mut lowest_before = use_signal(|| false);
-    // A valley rule's smallest dip, as a percentage; empty for none.
+    // A valley-or-smear rule's smallest dip, as a percentage; empty for none.
     let mut smallest_dip = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
@@ -1169,13 +1180,9 @@ pub fn GateRulesWindow() -> Element {
                         }
                         kind.set(chosen);
                     },
-                    option { value: "TailFraction", "capture a percentage of the parent" }
-                    option { value: "PercentileOffset", "step above a percentile" }
-                    option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
-                    option { value: "ValleyOrSmear", "in the valley, or on a smear as on one gated by hand" }
-                    option { value: "MatchThePhenotype", "find the cells that match the reference population" }
-                    option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
-                    option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
+                    for (value , said) in KINDS_OFFERED {
+                        option { value: "{value}", "{said}" }
+                    }
                 }
 
                 if kind() == "NextToGate" {
@@ -2131,6 +2138,16 @@ pub fn GateRulesWindow() -> Element {
 mod tests {
     use super::*;
 
+    /// The form offers every kind a rule can be, each once, and no other:
+    /// those the guides explain.
+    #[test]
+    fn the_form_offers_every_kind_of_rule_and_no_other() {
+        use clingate_core::gate_rules::guide::GUIDES;
+        let offered: Vec<&str> = KINDS_OFFERED.iter().map(|(kind, _)| *kind).collect();
+        let guided: Vec<&str> = GUIDES.iter().map(|guide| guide.key).collect();
+        assert_eq!(offered, guided);
+    }
+
     fn read(reshaped: Option<(f64, f64)>, clamped: bool, refused: Option<f64>) -> PhenotypeRead {
         PhenotypeRead {
             markers: Vec::new(),
@@ -2487,8 +2504,8 @@ fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .to_string()
 }
 
-/// The valley rules' smallest dip, typed as a percentage, and when to set
-/// it.
+/// The valley-or-smear rule's smallest dip, typed as a percentage, and when
+/// to set it.
 fn smallest_dip_picker(mut smallest_dip: Signal<String>) -> Element {
     rsx! {
         label { "Smallest dip (%)" }
@@ -2528,8 +2545,8 @@ fn percent_of(fraction: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
-/// The valley rules' "lowest point before the dip" setting, and when to
-/// choose it.
+/// The valley-or-smear rule's "lowest point before the dip" setting, and
+/// when to choose it.
 fn lowest_before_picker(mut lowest_before: Signal<bool>) -> Element {
     rsx! {
         label { "Thin positives" }

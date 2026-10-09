@@ -179,9 +179,7 @@ impl Session {
             }
         }
         let fallback = match &rule.rule {
-            Rule::ValleyOrSmear(either) => {
-                either.valley().fallback_rule(&rule.parameter, rule.bound)
-            }
+            Rule::ValleyOrSmear(either) => either.fallback_rule(&rule.parameter, rule.bound),
             _ => None,
         };
         if let Some(fallback) = fallback {

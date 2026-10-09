@@ -1829,11 +1829,11 @@ fn two_gates_missed_on_one_specimen_are_each_named() {
     );
 }
 
-// ─── a valley rule's fallback ─────────────────────────────────────────────────
+// ─── a valley-or-smear rule's fallback ────────────────────────────────────────
 //
-// X is one peak - a smear with no dip - so a valley rule on it finds
-// nothing, and one with a fallback puts its edge where the same gate's is
-// under another parent.
+// X is one peak - a smear with no dip - so a valley-or-smear rule on it
+// finds nothing, and one with a fallback puts its edge where the same
+// gate's is under another parent.
 
 /// fs_a and fs_b with X one normal peak, and Y the same.
 fn smears(name: &str) -> Vec<(Arc<str>, PathBuf)> {

@@ -48,7 +48,7 @@ show, not raw channel values.
    level, each measuring on the gates as the levels above left them, and the
    next level reads through those placements. A gate whose rule reads a
    position from another gate (`Rule::anchors`: a rule from another gate, or
-   a valley rule's `fallback`) also waits for every such gate that a rule
+   a valley-or-smear rule's `fallback`) also waits for every such gate that a rule
    places. The order the rules are listed in plays no part, except between
    ruled gates on one plot, which are placed in that order (see step 5). A rule whose
    anchor is not one gate, is itself, or leads round in a loop back to
@@ -289,7 +289,7 @@ Consequences worth knowing:
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 - No valley on the reference or the sample, and a `fallback` gate named
-  (`ValleyRule::fallback_rule`, `autogate::fall_back`): the gate's leading
+  (`ValleyOrSmearRule::fallback_rule`, `autogate::fall_back`): the gate's leading
   edge - the lower for `Above`, the upper for `Below` - goes where the
   fallback's same edge is on this sample, as a rule from another gate sets
   an edge. Its confidence is one component at `FLAGGED_CONFIDENCE`, 0.25.
@@ -372,8 +372,8 @@ donors vary that much in the data a rule is right on.
 | events in the gate | `1 - 1/sqrt(k)`, `k` = the smaller of admitted and excluded events |
 | stability of the gate's contents | `1 / (1 + swing)`; the gate is nudged +-0.1 x the interquartile range (IQR) of the judged population; `swing = abs(held when nudged back - held when nudged forward) / held` |
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
-| depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
-| no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
+| depth of the valley it sat in | valley-or-smear in a dip only: sample dip depth / reference dip depth |
+| no valley, so placed from another gate | valley-or-smear placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
 | held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, and - where its edges are carried - whether edges placed from either half of the events hold the same cells (`confidence::assess_match`, `phenotype_gate::agreement`) |
@@ -588,4 +588,4 @@ Rule kinds and their fields:
 `{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and
 FromAnotherGate also takes
 `"confidence": {"limits": {"events_full": 10000, "events_floor": 100,
-"swing_half": 1.0}}`. A `displacement_limit` in an older file is ignored.
+"swing_half": 1.0}}`.
