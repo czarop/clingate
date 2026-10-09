@@ -159,16 +159,23 @@ ranks them by it.
       over the gate as drawn, one at a time, and can take its rule.
 - [ ] **Mark the samples a candidate is off on** in the gallery, and say
       which ones it could not place - the search knows both.
-- [x] **Pick the best rule - kind and settings - for every gate.** The
-      Gate Rules tab's "Pick the best rule for every gate" and the
-      `pick_rule` tool: each kind tried once from the hand gating, then the
-      best kind's settings searched, on one reading of the files; Use, or
-      Use the best for every gate.
+- [x] **Pick a rule - kind and settings - for every gate, in order of
+      preference.** The FMX band at the user's range first, then above the
+      negative, the valley or a smear, a band on the sample, the phenotype
+      last; the first that passes the user's cut-off is searched and taken,
+      and a gate where none passes shows the closest, flagged.
 - [ ] **Pick for one gate, or a chosen few, from the app** - and with
       settings other than the defaults (the ranking, the tie, the split).
 - [ ] **Pick for a gate with no rule yet.** A pick starts from the rule a
       gate has, which says the marker and the edge it moves; a gate without
-      one would need them read from how it is drawn.
+      one would need them read from how it is drawn: the same on every
+      sample needs no rule, an edge always on another gate's edge is "from
+      another gate", and the one edge that moves gives the marker and side.
+- [ ] **Score calibrated rules from a template, not the hand gate.** A
+      band rule leaves a gate already in its band where it is, and a run
+      starts each sample from the template; a score starts it from the
+      sample's own hand gate, so a band whose hand gates are already in band
+      scores perfectly though a run from the template might not.
 - [ ] **Time a pick on a real workspace.** What is left to speed up is one
       density per sample at each of the 5 smoothings tried, each summing the
       events near each of 512 points.

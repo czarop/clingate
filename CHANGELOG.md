@@ -42,19 +42,27 @@
   candidates can be told apart by eye; "Use this rule" takes the one shown
   as the gate's rule, while the gate still has a rule the search tried.
 
-- **Picking the best rule for every gate** ("Pick the best rule for every
-  gate" on the Gate Rules tab, and `pick_rule` in the tools for Claude).
-  For each gate a rule places, every kind of rule that can place it is
-  tried once, started from the hand gating - a band around what the hand
-  gates hold on the FMX and on the sample, above the negative read two
-  ways, the valley with and without a smear - and then the settings of the
-  best kind are searched, and of the next kind when it came close. The
-  files are read once for every gate. Each gate's best rule is listed
-  beside the rule as it stands, those it improves most first, with a mark
-  where even the best is far from the hand gating; Use takes one, Use the
-  best takes every one that improves on its gate's rule, and the closest
-  are on the Gallery tab to compare by eye. Gates placed from another gate
-  are left as they are.
+- **Picking a rule for every gate, in the user's order of preference**
+  ("Pick the best rule for every gate" on the Gate Rules tab, and
+  `pick_rule` in the tools for Claude). For each gate a rule places, the
+  kinds are tried in order and the first that passes is taken: a band read
+  on each specimen's FMX at the range the user accepts, as it is; above
+  the negative; the valley or a smear; a band read on the sample; and
+  last, the phenotype on the plot's two axes. A rule passes when no more
+  than a tenth of its samples agree less than 0.95 with the gate drawn by
+  hand - both settable, asked at the start of a pick with the FMX range,
+  and kept with the workspace for every pick after (`pick_settings` says
+  what they are; `fmx_band: []` tries no band on the FMX). A pick says when
+  it could not try the band on the FMX for want of a partner to read it on. The negative, the valley
+  and the phenotype are calibrated on one sample gated by hand, not scored.
+  Every kind but the phenotype is first tried as the hand gating starts it,
+  and the first that passes has its settings searched; when none does, each kind's settings
+  are searched in turn. A gate where nothing passes shows the closest rule
+  of everything tried, flagged, and is listed first. Each gate's pick is
+  listed beside the rule as it stands with how each kind did; Use takes
+  one, Use the best takes every one that differs from its gate's rule, and
+  the closest are on the Gallery tab to compare by eye. Gates placed from
+  another gate are left as they are.
 
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's

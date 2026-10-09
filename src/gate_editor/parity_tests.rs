@@ -41,6 +41,7 @@ use dioxus_core::NoOpMutations;
 use crate::components::toast::ToastProvider;
 use crate::gate_editor::edits::Edits;
 use crate::gate_editor::gate_rules_window::RulesRun;
+use crate::gate_editor::pick_panel::{PickRun, Typed};
 use crate::gate_editor::route::provide_document;
 use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, MetadataStore};
 
@@ -51,6 +52,7 @@ use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, Metada
 struct Held {
     workspace: Handles,
     rules_run: RulesRun,
+    pick_run: PickRun,
     edits: Edits,
     gates: GateStore,
     axes: AxesStore,
@@ -81,6 +83,7 @@ fn Probe(holder: Holder) -> Element {
     let held = Held {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
+        pick_run: PickRun::from_context(),
         edits: use_context(),
         gates: use_context(),
         axes: use_context(),
@@ -1434,37 +1437,55 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
     assert_eq!(app.standing().undo_steps, steps);
 }
 
-/// Picking the best rule for every gate on the Rules tab keeps, for the one
-/// rule, what `pick_rule` keeps: the same inputs make the same pick.
+/// Picking a rule for every gate on the Rules tab, with the settings as
+/// typed there, keeps what `pick_rule` keeps with the same settings - the
+/// settings themselves for every pick after, and for the one rule the same
+/// pick, passed or flagged alike.
 #[test]
 fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
-    use clingate_core::gate_rules::searches::{kept, pick_every_rule};
+    use clingate_core::gate_rules::pick::{PickSettings, kept_settings};
+    use clingate_core::gate_rules::score::ScoreSettings;
+    use clingate_core::gate_rules::searches::kept;
 
+    let settings = PickSettings {
+        fmx_band: Some((0.005, 0.02)),
+        score: ScoreSettings {
+            off_below: 0.9,
+            ..ScoreSettings::default()
+        },
+        most_off: 0.25,
+    };
     let (tools, ours) = twins("pick");
     let session = Session::open(&tools).unwrap();
     session
-        .pick_rules(None, Default::default(), Default::default())
+        .pick_rules(None, settings, Default::default())
         .unwrap();
     let theirs = kept(&tools).unwrap();
 
     let mut app = App::new();
     app.open(&ours);
-    let every = app.with(|held| {
-        let (inputs, _) = held.rules_run.inputs_now();
-        pick_every_rule(
-            &held.gates.peek(),
-            &inputs,
-            Default::default(),
-            Default::default(),
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap()
+    let typed = Typed {
+        fmx_lowest: "0.5".into(),
+        fmx_highest: "2".into(),
+        agreement: "0.9".into(),
+        most_off: "25".into(),
+    };
+    app.run(move |held| async move {
+        let picked = held
+            .pick_run
+            .pick(&typed, &PickSettings::default(), Arc::new(AtomicBool::new(false)), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(picked.searched, 1);
+        assert!(picked.not_searched.is_empty());
     });
-    assert!(every.not_searched.is_empty(), "{:?}", every.not_searched);
-    assert_eq!(every.searches.len(), 1);
+    assert_eq!(kept_settings(&ours), settings);
+    let ours = kept(&ours).unwrap();
+    assert_eq!(ours.len(), 1);
     assert_eq!(theirs.len(), 1);
-    assert_eq!(every.searches[0].target, theirs[0].target);
     assert!(!theirs[0].candidates.is_empty());
-    assert_eq!(every.searches[0].candidates, theirs[0].candidates);
+    assert_eq!(ours[0].target, theirs[0].target);
+    assert_eq!(ours[0].candidates, theirs[0].candidates);
+    assert_eq!(ours[0].passed, theirs[0].passed);
+    assert_eq!(ours[0].kinds, theirs[0].kinds);
 }

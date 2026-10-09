@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 
 use crate::gate_rules::fit::{Candidate, Fit, FitSettings};
-use crate::gate_rules::pick::{Picking, pick_rules};
+use crate::gate_rules::pick::{
+    KindTried, PickSettings, Picked, Picking, pick_rules, pickable_targets,
+};
 use crate::gate_rules::rule_store::RuleTarget;
 use crate::gate_rules::run::RunInputs;
-use crate::gate_rules::score::ScoreSettings;
 use crate::gates::GateState;
 
 /// What a kept search is written as.
@@ -34,6 +35,12 @@ pub struct Search {
     /// The best and those tied with it, best first, then the rule as it
     /// stood if it is not among them - each with where it puts the gate.
     pub candidates: Vec<Candidate>,
+    /// For a pick: whether the best passed, or is only the closest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passed: Option<bool>,
+    /// For a pick: each kind of rule tried, in the order tried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<KindTried>,
 }
 
 impl Search {
@@ -56,6 +63,17 @@ impl Search {
             target: target.clone(),
             gate: fit.gate.clone(),
             candidates,
+            passed: None,
+            kinds: Vec::new(),
+        }
+    }
+
+    /// What is kept of `picked`, a pick for `target`.
+    pub fn picked(picked: &Picked, target: &RuleTarget) -> Self {
+        Self {
+            passed: Some(picked.passed),
+            kinds: picked.kinds.clone(),
+            ..Self::of(&picked.fit, target)
         }
     }
 
@@ -108,30 +126,24 @@ pub struct EveryRule {
     pub not_searched: Vec<String>,
 }
 
-/// Pick the best rule for every gate a rule places, other than from another
-/// gate - see [`pick_rules`] - and keep what each search found.
+/// Pick a rule for every gate a rule places, other than from another gate -
+/// see [`pick_rules`] - and keep what each pick found.
 pub fn pick_every_rule(
     gates: &GateState,
     inputs: &RunInputs,
-    settings: ScoreSettings,
+    settings: PickSettings,
     fit: FitSettings,
     cancel: &AtomicBool,
     progress: impl Fn(Picking) + Sync,
 ) -> Result<EveryRule, String> {
-    let targets: Vec<RuleTarget> = inputs
-        .rules
-        .entries()
-        .iter()
-        .filter(|entry| !entry.rule.rule.reads_another_gate())
-        .map(|entry| entry.target.clone())
-        .collect();
+    let targets = pickable_targets(&inputs.rules);
     let mut every = EveryRule {
         searches: Vec::new(),
         not_searched: Vec::new(),
     };
     for (target, found) in pick_rules(gates, inputs, &targets, settings, fit, cancel, progress)? {
         match found {
-            Ok(found) => every.searches.push(Search::of(&found, &target)),
+            Ok(picked) => every.searches.push(Search::picked(&picked, &target)),
             Err(why) => every
                 .not_searched
                 .push(format!("{}: {why}", target.describe())),

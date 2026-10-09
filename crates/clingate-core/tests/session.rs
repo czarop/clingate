@@ -4213,7 +4213,7 @@ fn a_search_that_cannot_be_kept_still_answers() {
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-fit-unkept");
     std::fs::create_dir_all(searches_file(&folder)).unwrap();
-    let mut session = Session::open(&folder).unwrap();
+    let session = Session::open(&folder).unwrap();
     let not_kept = |problems: &[String]| problems.iter().any(|p| p.contains("could not be kept"));
 
     let ask = FitAsk {
@@ -4233,30 +4233,58 @@ fn a_search_that_cannot_be_kept_still_answers() {
     assert!(not_kept(&picked.problems), "{:?}", picked.problems);
 }
 
-/// The best rule picked for a gate - of every kind that can place it -
-/// scores as fit_rule scores the same rule, sits beside the rule as it
-/// stands, and is kept for the gallery; asked for every gate, each gate a
-/// rule places is picked for.
+/// A rule picked for a gate - the kinds tried in order, the first that
+/// passes searched - scores as fit_rule scores the same rule, sits beside
+/// the rule as it stands, and is kept for the gallery with whether it
+/// passed; asked for every gate, each gate a rule places is picked for.
 #[test]
-fn the_best_rule_is_picked_for_a_gate_and_kept_for_the_gallery() {
+fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
     use clingate_core::gate_rules::searches::kept;
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-pick");
     let session = Session::open(&folder).unwrap();
     let answer = session
-        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .pick_rules(Some("Tmem"), PickSettings::default(), Default::default())
         .unwrap();
     assert_eq!(answer.picked.len(), 1, "{answer:#?}");
     assert!(answer.not_picked.is_empty());
+    assert_eq!(answer.settings, PickSettings::default());
     let picked = &answer.picked[0];
     assert!(picked.gate.starts_with("Tmem"));
     let as_it_stands = picked.as_it_stands.as_ref().expect("Tmem has a rule");
     assert!(as_it_stands.current);
-    assert!(picked.tried >= 6, "every kind tried: {}", picked.tried);
+    // The fixture's populations have nothing between them, so every kind
+    // holds what the hand gate holds and passes: the first, with no band
+    // given for the FMX, is above the negative, and only it is searched.
+    let tried: Vec<(Kind, bool, bool)> = picked
+        .kinds
+        .iter()
+        .map(|k| (k.kind, k.passed, k.searched))
+        .collect();
+    assert_eq!(
+        tried,
+        [
+            (Kind::AboveNegative, true, true),
+            (Kind::ValleyOrSmear, true, false),
+            (Kind::Band, true, false)
+        ]
+    );
+    assert!(picked.passed);
+    assert!(matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)));
+    assert!(picked.tried > 4, "the negative's settings searched");
     assert!(picked.also_close.iter().all(|c| c.among_best));
     assert!(picked.best.placed.is_empty(), "the gates are kept, not shown");
-    let typical = picked.best.fit.as_ref().unwrap().typical_agreement.unwrap();
-    assert_eq!(picked.fits_well, typical >= 0.8);
+
+    let searches = kept(&folder).unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].candidates[0].rule, picked.best.rule);
+    assert_eq!(searches[0].passed, Some(picked.passed));
+    let kinds = |of: &[clingate_core::gate_rules::pick::KindTried]| {
+        of.iter().map(|k| (k.kind, k.passed)).collect::<Vec<_>>()
+    };
+    assert_eq!(kinds(&searches[0].kinds), kinds(&picked.kinds));
 
     let alone = session
         .fit_rule(
@@ -4265,7 +4293,7 @@ fn the_best_rule_is_picked_for_a_gate_and_kept_for_the_gallery() {
                 candidates: vec![picked.best.rule.clone()],
                 ..FitAsk::default()
             },
-            Default::default(),
+            PickSettings::default().score,
             Default::default(),
         )
         .unwrap();
@@ -4276,15 +4304,66 @@ fn the_best_rule_is_picked_for_a_gate_and_kept_for_the_gallery() {
         .unwrap();
     assert_eq!(same.fit, picked.best.fit);
 
-    let searches = kept(&folder).unwrap();
-    assert_eq!(searches.len(), 1);
-    assert_eq!(searches[0].candidates[0].rule, picked.best.rule);
-
     let every = session
-        .pick_rules(None, Default::default(), Default::default())
+        .pick_rules(None, PickSettings::default(), Default::default())
         .unwrap();
     assert_eq!(every.picked.len(), 1, "one rule, for Tmem");
     assert_eq!(every.picked[0].best.rule, picked.best.rule);
+}
+
+/// A cut-off every rule meets: the first kind tried, in order, is picked -
+/// with no band given for the FMX, above the negative, calibrated on a
+/// sample gated by hand.
+#[test]
+fn a_cut_off_every_rule_meets_takes_the_first_kind_in_order() {
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
+    use clingate_core::gate_rules::rule_store::MeasuredOn;
+    use clingate_core::gate_rules::score::ScoreSettings;
+    let session = Session::open(&with_rules("session-pick-loose")).unwrap();
+    let loose = PickSettings {
+        fmx_band: None,
+        score: ScoreSettings {
+            off_below: 0.0,
+            noise_widths: 0.0,
+        },
+        most_off: 1.0,
+    };
+    let answer = session
+        .pick_rules(Some("Tmem"), loose, Default::default())
+        .unwrap();
+    let picked = &answer.picked[0];
+    assert!(picked.passed, "{picked:#?}");
+    assert_eq!(
+        (picked.kinds[0].kind, picked.kinds[0].passed),
+        (Kind::AboveNegative, true)
+    );
+    assert!(
+        matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)),
+        "{}",
+        picked.best.said
+    );
+    assert!(
+        matches!(picked.best.rule.measured_on, MeasuredOn::File(_)),
+        "calibrated on a sample gated by hand"
+    );
+}
+
+/// The settings the user chose in the app are what a pick uses unless told
+/// otherwise; before any, the defaults: 0.95, a tenth of the samples.
+#[test]
+fn the_pick_settings_chosen_in_the_app_are_read_from_the_workspace() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    let folder = with_rules("session-pick-settings");
+    let session = Session::open(&folder).unwrap();
+    assert_eq!(session.pick_settings(), PickSettings::default());
+    let chosen = PickSettings {
+        fmx_band: Some((0.005, 0.01)),
+        most_off: 0.2,
+        ..PickSettings::default()
+    };
+    keep_settings(&folder, &chosen).unwrap();
+    assert_eq!(Session::open(&folder).unwrap().pick_settings(), chosen);
 }
 
 /// A pick needs rules, a population a rule places, and settings in range.
@@ -4302,4 +4381,10 @@ fn a_pick_is_refused_without_a_rule_to_start_from() {
         ..FitSettings::default()
     };
     assert!(session.pick_rules(None, Default::default(), wide).is_err());
+    let too_many_off = clingate_core::gate_rules::pick::PickSettings {
+        most_off: 2.0,
+        ..Default::default()
+    };
+    let refused = session.pick_rules(None, too_many_off, Default::default());
+    assert!(refused.unwrap_err().to_string().contains("most_off"));
 }
