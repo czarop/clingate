@@ -8,8 +8,11 @@ use serde::Serialize;
 use super::score::ruled;
 use super::{Refusal, Session, failed, round};
 use crate::gate_rules::fit::{Candidate, FitSettings};
-use crate::gate_rules::pick::{KindTried, PickSettings, Picked, gain, kept_settings, pick_rules};
-use crate::gate_rules::rule_store::RuleTarget;
+use crate::gate_rules::pick::{
+    KindTried, PickSettings, Picked, gain, kept_settings, listed_order, pick_rules,
+    pickable_targets,
+};
+use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
 use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::searches::{self, Search};
 
@@ -22,7 +25,8 @@ pub struct PickedRule {
     pub best: Candidate,
     pub as_it_stands: Option<Candidate>,
     /// How much higher the best's typical agreement is than the rule as it
-    /// stands: 0 when it is the rule as it stands.
+    /// stands: 0 when it is the rule as it stands, below 0 where a kind
+    /// earlier in order passes.
     pub gain: Option<f64>,
     /// Whether the best passes the cut-off. When not, it is only the
     /// closest, and the gate may be better gated by hand.
@@ -57,8 +61,11 @@ impl Session {
 
     /// The gates a pick is made for: `population`'s, or every gate a rule
     /// places other than from another gate.
-    fn pick_targets(&self, population: Option<&str>) -> Result<Vec<RuleTarget>, Refusal> {
-        let rules = self.rules_or_refuse()?;
+    fn pick_targets(
+        &self,
+        rules: &RuleStore,
+        population: Option<&str>,
+    ) -> Result<Vec<RuleTarget>, Refusal> {
         match population {
             Some(query) => {
                 let gate = self.gate_target(query)?;
@@ -69,12 +76,7 @@ impl Session {
                 })?;
                 Ok(vec![target])
             }
-            None => Ok(rules
-                .entries()
-                .iter()
-                .filter(|entry| !entry.rule.rule.reads_another_gate())
-                .map(|entry| entry.target.clone())
-                .collect()),
+            None => Ok(pickable_targets(rules)),
         }
     }
 
@@ -115,8 +117,8 @@ impl Session {
         settings: PickSettings,
         fit: FitSettings,
     ) -> Result<PickAnswer, Refusal> {
-        let targets = self.pick_targets(population)?;
         let rules = self.rules_or_refuse()?.clone();
+        let targets = self.pick_targets(&rules, population)?;
         let inputs = RunInputs::assemble(
             Some(&self.files),
             &self.compensation,
@@ -156,10 +158,7 @@ impl Session {
         if let Err(e) = searches::keep_all(&self.folder, kept) {
             problems.push(format!("the picks could not be kept for the gallery: {e}"));
         }
-        picked.sort_by(|a, b| {
-            let gain = |p: &PickedRule| p.gain.unwrap_or(f64::NEG_INFINITY);
-            a.passed.cmp(&b.passed).then(gain(b).total_cmp(&gain(a)))
-        });
+        picked.sort_by(|a, b| listed_order((Some(a.passed), a.gain), (Some(b.passed), b.gain)));
         Ok(PickAnswer {
             files_read: inputs.files.len(),
             problems,

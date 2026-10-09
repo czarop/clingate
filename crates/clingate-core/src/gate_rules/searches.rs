@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 
 use crate::gate_rules::fit::{Candidate, Fit, FitSettings};
-use crate::gate_rules::pick::{KindTried, PickSettings, Picked, Picking, pick_rules};
+use crate::gate_rules::pick::{
+    KindTried, PickSettings, Picked, Picking, pick_rules, pickable_targets,
+};
 use crate::gate_rules::rule_store::RuleTarget;
 use crate::gate_rules::run::RunInputs;
 use crate::gates::GateState;
@@ -134,13 +136,7 @@ pub fn pick_every_rule(
     cancel: &AtomicBool,
     progress: impl Fn(Picking) + Sync,
 ) -> Result<EveryRule, String> {
-    let targets: Vec<RuleTarget> = inputs
-        .rules
-        .entries()
-        .iter()
-        .filter(|entry| !entry.rule.rule.reads_another_gate())
-        .map(|entry| entry.target.clone())
-        .collect();
+    let targets = pickable_targets(&inputs.rules);
     let mut every = EveryRule {
         searches: Vec::new(),
         not_searched: Vec::new(),

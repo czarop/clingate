@@ -4239,7 +4239,8 @@ fn a_search_that_cannot_be_kept_still_answers() {
 /// passed; asked for every gate, each gate a rule places is picked for.
 #[test]
 fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
-    use clingate_core::gate_rules::pick::PickSettings;
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
     use clingate_core::gate_rules::searches::kept;
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-pick");
@@ -4254,19 +4255,27 @@ fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
     assert!(picked.gate.starts_with("Tmem"));
     let as_it_stands = picked.as_it_stands.as_ref().expect("Tmem has a rule");
     assert!(as_it_stands.current);
-    assert!(picked.kinds.len() >= 3, "{:#?}", picked.kinds);
-    assert!(
-        picked.tried > picked.kinds.len(),
-        "the rule as it stands, and each kind"
+    // The fixture's populations have nothing between them, so every kind
+    // holds what the hand gate holds and passes: the first, with no band
+    // given for the FMX, is above the negative, and only it is searched.
+    let tried: Vec<(Kind, bool, bool)> = picked
+        .kinds
+        .iter()
+        .map(|k| (k.kind, k.passed, k.searched))
+        .collect();
+    assert_eq!(
+        tried,
+        [
+            (Kind::AboveNegative, true, true),
+            (Kind::ValleyOrSmear, true, false),
+            (Kind::Band, true, false)
+        ]
     );
+    assert!(picked.passed);
+    assert!(matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)));
+    assert!(picked.tried > 4, "the negative's settings searched");
     assert!(picked.also_close.iter().all(|c| c.among_best));
     assert!(picked.best.placed.is_empty(), "the gates are kept, not shown");
-    if picked.passed {
-        let first = picked.kinds.iter().position(|k| k.passed).unwrap();
-        assert!(picked.kinds[first].searched, "the kind picked searched");
-    } else {
-        assert!(picked.kinds.iter().all(|k| !k.passed));
-    }
 
     let searches = kept(&folder).unwrap();
     assert_eq!(searches.len(), 1);

@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 
 use clingate_core::gate_rules::fit::FitSettings;
 use clingate_core::gate_rules::pick::{
-    KindTried, PickSettings, Picking, gain, keep_settings, kept_settings,
+    KindTried, PickSettings, Picking, gain, keep_settings, kept_settings, listed_order,
 };
 use clingate_core::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget};
 use clingate_core::gate_rules::score::ScoreSettings;
@@ -175,13 +175,7 @@ pub(crate) fn lines(searches: &[Search], rules: &RuleStore) -> Vec<Line> {
             })
         })
         .collect();
-    lines.sort_by(|a, b| {
-        let flagged = |line: &Line| line.passed == Some(false);
-        let gain = |line: &Line| line.gain.unwrap_or(f64::NEG_INFINITY);
-        flagged(b)
-            .cmp(&flagged(a))
-            .then(gain(b).total_cmp(&gain(a)))
-    });
+    lines.sort_by(|a, b| listed_order((a.passed, a.gain), (b.passed, b.gain)));
     lines
 }
 
@@ -198,11 +192,113 @@ pub(crate) fn takeable(lines: &[Line]) -> Vec<(RuleTarget, GateRule)> {
         .collect()
 }
 
+/// Why a pick from the panel kept nothing.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Ended {
+    Stopped,
+    Failed(String),
+}
+
+/// What a pick from the panel kept.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Kept {
+    /// How many gates were picked for.
+    pub searched: usize,
+    /// The gates that could not be, with why.
+    pub not_searched: Vec<String>,
+}
+
+/// A pick for every gate, from the panel, on the workspace as it stands.
+#[derive(Clone, Copy)]
+pub(crate) struct PickRun {
+    run_with: RulesRun,
+    gates: GateStore,
+    loaded: Signal<Loaded>,
+}
+
+impl PickRun {
+    pub(crate) fn from_context() -> Self {
+        Self {
+            run_with: RulesRun::from_context(),
+            gates: use_context(),
+            loaded: use_context(),
+        }
+    }
+
+    /// Pick for every gate as `typed` asks - `kept` filling in what it does
+    /// not - keeping the settings for every pick after and the picks for
+    /// the gallery; `progress` hears how far it has got. Nothing is kept of
+    /// a pick the workspace changed under.
+    pub(crate) async fn pick(
+        self,
+        typed: &Typed,
+        kept: &PickSettings,
+        cancel: Arc<AtomicBool>,
+        mut progress: impl FnMut(Picking),
+    ) -> Result<Kept, Ended> {
+        let Some(folder) = self.loaded.peek().folder.clone() else {
+            return Err(Ended::Failed(
+                "Open a workspace folder first - the picks are kept in it".into(),
+            ));
+        };
+        let started = self.run_with.inputs_now();
+        if started.0.files.is_empty() {
+            return Err(Ended::Failed(
+                "No FCS files are loaded - open a workspace on the first tab".into(),
+            ));
+        }
+        let settings = typed.settings(kept).map_err(Ended::Failed)?;
+        keep_settings(&folder, &settings).map_err(|e| {
+            Ended::Failed(format!("The settings could not be kept for next time: {e}"))
+        })?;
+        let snapshot = self.gates.read().clone();
+        let started_gates = snapshot.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Picking>();
+        let stopped = cancel.clone();
+        let worker = {
+            let inputs = started.0.clone();
+            tokio::task::spawn_blocking(move || {
+                pick_every_rule(
+                    &snapshot,
+                    &inputs,
+                    settings,
+                    FitSettings::default(),
+                    &cancel,
+                    |step| {
+                        let _ = tx.send(step);
+                    },
+                )
+            })
+        };
+        while let Some(step) = rx.recv().await {
+            progress(step);
+        }
+        let every = match worker.await {
+            Ok(Ok(every)) => every,
+            Ok(Err(_)) if stopped.load(Ordering::Relaxed) => return Err(Ended::Stopped),
+            Ok(Err(why)) => return Err(Ended::Failed(format!("The pick could not be made: {why}"))),
+            Err(e) => return Err(Ended::Failed(format!("The pick did not finish: {e}"))),
+        };
+        if !self.gates.peek().unchanged_since(&started_gates) || self.run_with.inputs_now() != started
+        {
+            return Err(Ended::Failed(
+                "The workspace changed while picking - nothing was kept; pick again".into(),
+            ));
+        }
+        let searched = every.searches.len();
+        keep_all(&folder, every.searches)
+            .map_err(|e| Ended::Failed(format!("The picks could not be kept: {e}")))?;
+        Ok(Kept {
+            searched,
+            not_searched: every.not_searched,
+        })
+    }
+}
+
 /// The Gate Rules tab's pick of the best rule for every gate, and its list.
 #[component]
 pub fn PickPanel() -> Element {
-    let run_with = RulesRun::from_context();
-    let gate_store = use_context::<GateStore>();
+    let pick_run = PickRun::from_context();
     let loaded = use_context::<Signal<Loaded>>();
     let mut rules = use_context::<Signal<RuleStore>>();
     let toasts = use_toast();
@@ -259,100 +355,32 @@ pub fn PickPanel() -> Element {
             if running() {
                 return;
             }
-            let Some(folder) = loaded.peek().folder.clone() else {
-                warn(
-                    &toasts,
-                    "Open a workspace folder first - the picks are kept in it",
-                );
-                return;
-            };
-            let started = run_with.inputs_now();
-            if started.0.files.is_empty() {
-                warn(
-                    &toasts,
-                    "No FCS files are loaded - open a workspace on the first tab",
-                );
-                return;
-            }
-            let settings = match typed.peek().settings(&kept_in.peek()) {
-                Ok(settings) => settings,
-                Err(why) => {
-                    warn(&toasts, why);
-                    return;
-                }
-            };
-            if let Err(e) = keep_settings(&folder, &settings) {
-                warn(
-                    &toasts,
-                    format!("The settings could not be kept for next time: {e}"),
-                );
-            }
             running.set(true);
             progress.set(Some(Picking::Reading { done: 0, total: 0 }));
-            let snapshot = gate_store.read().clone();
-            let started_gates = snapshot.clone();
             let flag = Arc::new(AtomicBool::new(false));
             cancel.set(Some(flag.clone()));
-            let stopped = flag.clone();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Picking>();
-            let worker = {
-                let inputs = started.0.clone();
-                tokio::task::spawn_blocking(move || {
-                    pick_every_rule(
-                        &snapshot,
-                        &inputs,
-                        settings,
-                        FitSettings::default(),
-                        &flag,
-                        |step| {
-                            let _ = tx.send(step);
-                        },
-                    )
-                })
-            };
-            while let Some(step) = rx.recv().await {
-                progress.set(Some(step));
-            }
-            let outcome = worker.await;
+            let asked = typed.peek().clone();
+            let ended = pick_run
+                .pick(&asked, &kept_in.peek(), flag, move |step| progress.set(Some(step)))
+                .await;
             progress.set(None);
             cancel.set(None);
             running.set(false);
-
-            let every = match outcome {
-                Ok(Ok(every)) => every,
-                Ok(Err(_)) if stopped.load(Ordering::Relaxed) => {
-                    note(&toasts, "Stopped - nothing was kept");
-                    return;
+            match ended {
+                Ok(every) => {
+                    picked += 1;
+                    let mut said = format!(
+                        "Picked for {} gate(s) - see the list below",
+                        every.searched
+                    );
+                    if !every.not_searched.is_empty() {
+                        said.push_str(&format!("; not picked: {}", every.not_searched.join("; ")));
+                    }
+                    say(&toasts, said);
                 }
-                Ok(Err(why)) => {
-                    warn(&toasts, format!("The pick could not be made: {why}"));
-                    return;
-                }
-                Err(e) => {
-                    warn(&toasts, format!("The pick did not finish: {e}"));
-                    return;
-                }
-            };
-            if !gate_store.peek().unchanged_since(&started_gates)
-                || run_with.inputs_now() != started
-            {
-                warn(
-                    &toasts,
-                    "The workspace changed while picking - nothing was kept; pick again",
-                );
-                return;
+                Err(Ended::Stopped) => note(&toasts, "Stopped - nothing was kept"),
+                Err(Ended::Failed(why)) => warn(&toasts, why),
             }
-            let count = every.searches.len();
-            if let Err(e) = keep_all(&folder, every.searches) {
-                warn(&toasts, format!("The picks could not be kept: {e}"));
-                return;
-            }
-            picked += 1;
-            let mut said = format!("Picked for {count} gate(s) - see the list below");
-            if !every.not_searched.is_empty() {
-                said.push_str(&format!("; not picked: {}", every.not_searched.join("; ")));
-            }
-            say(&toasts, said);
         });
     };
 
@@ -382,7 +410,7 @@ pub fn PickPanel() -> Element {
             p { class: "gate_rules-hint gate_rules-span",
                 "The share of each specimen's FMX events above the line you accept. Tried first, as it is. Leave both empty to skip it."
             }
-            label { "Off below agreement" }
+            label { "Off below agreement (0-1)" }
             input {
                 r#type: "number",
                 step: "0.01",

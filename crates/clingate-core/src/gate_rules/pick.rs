@@ -1,25 +1,8 @@
-//! Picking, for each gate, a rule close enough to the gating drawn by hand -
-//! trying the kinds of rule in the order they are preferred, and taking the
-//! first that is.
-//!
-//! Close enough is the user's to say ([`PickSettings`]): no more than a share
-//! of the samples - a tenth, unless set - may agree less than an agreement -
-//! [`AGREEMENT`], unless set - with the gate drawn by hand. The kinds are
-//! tried in the order of [`Kind`]: a band read on each specimen's FMX at the
-//! range the user accepts, as it is; above the negative; the valley or a
-//! smear; a band read on the sample; and last, the phenotype on the plot's
-//! two axes. The negative, the valley and the phenotype are calibrated, as
-//! the Gate Rules tab makes them, on one sample gated by hand - the one the
-//! rule as it stands is calibrated on, or else the specimen whose hand gate
-//! holds the middle share of its parent - which is then not scored: read on
-//! each sample itself, they would only find its own hand gate. Each is first
-//! tried as the hand gating starts it, all together, and the first in order
-//! that passes has its settings searched. When none passes as started, each
-//! kind's settings are searched in turn until one passes. When none does,
-//! the closest of everything tried is shown, flagged.
-//!
-//! The files are read once - and again only for the phenotype, the last
-//! resort, for the gates that come to it.
+//! Picking, for each gate, a rule close enough to the gating drawn by hand:
+//! the kinds of rule tried in the order of [`Kind`] and the first that passes
+//! as [`PickSettings`] asks taken - see docs/rules/choosing.md. Every kind but
+//! the phenotype is first tried as the hand gating starts it; the phenotype
+//! reads the files again, so it waits until no other kind passes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,8 +14,8 @@ use crate::gate_rules::autogate::{
     Measurement, NO_SMEAR_EXAMPLE, admitted_by, gated_of_each_specimen,
 };
 use crate::gate_rules::fit::{
-    Candidate, Fit, FitSettings, Readings, default_candidates, halves_of, ranked_on, solve_each,
-    without_repeats,
+    Candidate, Fit, FitSettings, Job, Readings, default_candidates, halves_of, ranked_on,
+    solve_each, without_repeats,
 };
 use crate::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, PhenotypeRule, Pool, Rule, TailFractionRule, ValleyOrSmearRule,
@@ -142,6 +125,7 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// The kind in a few words.
     pub fn describe(self) -> &'static str {
         match self {
             Kind::FmxBand => "a band read on the FMX, at the range given",
@@ -166,7 +150,7 @@ pub enum Picking {
         done: usize,
         total: usize,
     },
-    /// Each kind of rule tried as the hand gating starts it.
+    /// Each kind of rule but the phenotype tried as the hand gating starts it.
     Kinds {
         done: usize,
         total: usize,
@@ -216,7 +200,9 @@ pub struct KindTried {
     pub closest: String,
     /// On how many of the samples it was judged on its closest was off.
     pub off: usize,
+    /// How many samples its closest was judged on.
     pub judged: usize,
+    /// Its closest's typical agreement with the hand gates.
     pub typical_agreement: Option<f64>,
     /// One of its rules passes.
     pub passed: bool,
@@ -430,13 +416,26 @@ fn solved_passes(solved: &Solved, most_off: f64) -> bool {
     judged(solved).is_some_and(|score| passes(&score, most_off))
 }
 
-/// How much higher the typical agreement of the best of `candidates`, ranked
-/// best first, is than the rule as it stands.
+/// How much higher the typical agreement of the first of `candidates` is
+/// than the rule as it stands - below 0 where a kind earlier in order passes.
 pub fn gain(candidates: &[Candidate]) -> Option<f64> {
     let typical = |c: &Candidate| c.fit.as_ref()?.typical_agreement;
     let best = typical(candidates.first()?)?;
     let current = typical(candidates.iter().find(|c| c.current)?)?;
     Some(best - current)
+}
+
+/// The order picks are listed in, by whether each passed and its gain: the
+/// flagged first, then those that gain most on the rule as it stands.
+pub fn listed_order(
+    (a_passed, a_gain): (Option<bool>, Option<f64>),
+    (b_passed, b_gain): (Option<bool>, Option<f64>),
+) -> std::cmp::Ordering {
+    let flagged = |passed: Option<bool>| passed == Some(false);
+    let gain = |gain: Option<f64>| gain.unwrap_or(f64::NEG_INFINITY);
+    flagged(b_passed)
+        .cmp(&flagged(a_passed))
+        .then(gain(b_gain).total_cmp(&gain(a_gain)))
 }
 
 /// Whether `a` and `b` are the same kind of rule, read on the same sample.
@@ -470,11 +469,30 @@ impl Climb<'_> {
     }
 
     /// The rules tried of `rung`'s kind - its own, its settings and the rule
-    /// as it stands, if alike - with what each solved to.
+    /// as it stands, if alike - with what each solved to; of a kind never
+    /// searched, only its own.
     fn of<'r>(&'r self, rung: &'r Rung) -> impl Iterator<Item = &'r (GateRule, Solved)> {
-        self.tried
-            .iter()
-            .filter(move |(rule, _)| same_kind(rule, &rung.first))
+        self.tried.iter().filter(move |(rule, _)| {
+            if rung.kind.searched() {
+                same_kind(rule, &rung.first)
+            } else {
+                rule == &rung.first
+            }
+        })
+    }
+
+    /// Why no band was tried on the FMX for this gate, as a problem to show,
+    /// when one should have been.
+    fn fmx_band_left_out(&self) -> Option<String> {
+        let phenotype = matches!(self.current.rule, Rule::MatchThePhenotype(_));
+        let tried = self.rungs.iter().any(|rung| rung.kind == Kind::FmxBand);
+        (!phenotype && !tried).then(|| {
+            format!(
+                "{}: no band was tried on the FMX - its rule reads no partner, and no sample \
+                 type is shown before another to read it on",
+                self.target.describe()
+            )
+        })
     }
 
     /// The first kind, in order, one of whose rules passes.
@@ -488,7 +506,7 @@ impl Climb<'_> {
     /// The rules first tried of every kind but the phenotype - which reads
     /// the files again - unless it is the only kind; and the rule as it
     /// stands.
-    fn first_tries(&self) -> Vec<GateRule> {
+    fn rules_to_try_first(&self) -> Vec<GateRule> {
         let only = self.rungs.len() == 1;
         without_repeats(
             std::iter::once(self.current.clone())
@@ -600,16 +618,30 @@ impl Climb<'_> {
     }
 }
 
-/// How `rung`'s kind did, from its rules `tried`; nothing when none was.
+/// How `rung`'s kind did, from its rules `tried`; nothing when none was,
+/// and judged on no sample when none could be.
 fn kind_tried<'r>(
     rung: &Rung,
     tried: impl Iterator<Item = &'r (GateRule, Solved)>,
     most_off: f64,
 ) -> Option<KindTried> {
     let typical = |s: &GateScore| s.typical_agreement.unwrap_or(f64::NEG_INFINITY);
-    let (rule, score) = tried
+    let mut tried = tried.peekable();
+    tried.peek()?;
+    let closest = tried
         .filter_map(|(rule, solved)| Some((rule, judged(solved)?)))
-        .min_by(|(_, a), (_, b)| a.off.cmp(&b.off).then(typical(b).total_cmp(&typical(a))))?;
+        .min_by(|(_, a), (_, b)| a.off.cmp(&b.off).then(typical(b).total_cmp(&typical(a))));
+    let Some((rule, score)) = closest else {
+        return Some(KindTried {
+            kind: rung.kind,
+            searched: rung.searched,
+            closest: rung.first.rule.describe(),
+            off: 0,
+            judged: 0,
+            typical_agreement: None,
+            passed: false,
+        });
+    };
     Some(KindTried {
         kind: rung.kind,
         searched: rung.searched,
@@ -619,6 +651,17 @@ fn kind_tried<'r>(
         typical_agreement: score.typical_agreement,
         passed: passes(&score, most_off),
     })
+}
+
+/// The gates a pick for every gate is made for: each a rule places, other
+/// than from another gate.
+pub fn pickable_targets(rules: &RuleStore) -> Vec<RuleTarget> {
+    rules
+        .entries()
+        .iter()
+        .filter(|entry| !entry.rule.rule.reads_another_gate())
+        .map(|entry| entry.target.clone())
+        .collect()
 }
 
 /// The rule `target` has now, if a pick can replace it.
@@ -640,7 +683,7 @@ fn started<'a>(
     gates: &GateState,
     inputs: &RunInputs,
     readings: &Readings,
-    read_for: &[(&'a RuleTarget, &'a GateRule)],
+    read_for: &[Job<'a>],
     settings: &PickSettings,
 ) -> Vec<Climb<'a>> {
     read_for
@@ -690,34 +733,125 @@ fn started<'a>(
         .collect()
 }
 
-/// Solve the rules each climb wants, all together, and give each its own.
-#[allow(clippy::too_many_arguments)]
-fn solve_wanted(
-    gates: &GateState,
-    inputs: &RunInputs,
-    readings: &Readings,
-    climbs: &mut [Climb<'_>],
-    wanted: Vec<Vec<GateRule>>,
-    settings: ScoreSettings,
-    cancel: &AtomicBool,
-    progress: impl Fn(usize, usize) + Sync,
-) {
-    let jobs: Vec<(&RuleTarget, &GateRule)> = climbs
-        .iter()
-        .zip(&wanted)
-        .flat_map(|(climb, rules)| rules.iter().map(move |rule| (climb.target, rule)))
-        .collect();
-    if jobs.is_empty() {
-        return;
-    }
-    let mut solved =
-        solve_each(gates, inputs, readings, &jobs, settings, cancel, progress).into_iter();
-    for (climb, rules) in climbs.iter_mut().zip(wanted) {
-        for rule in rules {
-            let solved = solved.next().expect("a solve for every rule wanted");
-            climb.tried.push((rule, solved));
+/// What every step of a pick reads, and who hears how far it has got.
+struct Picker<'a, P> {
+    gates: &'a GateState,
+    inputs: &'a RunInputs,
+    settings: PickSettings,
+    cancel: &'a AtomicBool,
+    progress: P,
+}
+
+impl<P: Fn(Picking) + Sync> Picker<'_, P> {
+    fn stopped(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err("stopped".into())
+        } else {
+            Ok(())
         }
     }
+
+    /// Solve the rules each climb wants, all together, and give each its
+    /// own; `step` says how far, for the progress line.
+    fn solve(
+        &self,
+        readings: &Readings,
+        climbs: &mut [Climb<'_>],
+        wanted: Vec<Vec<GateRule>>,
+        step: fn(usize, usize) -> Picking,
+    ) {
+        let jobs: Vec<Job<'_>> = climbs
+            .iter()
+            .zip(&wanted)
+            .flat_map(|(climb, rules)| rules.iter().map(move |rule| (climb.target, rule)))
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        let progress = |done, total| (self.progress)(step(done, total));
+        let solved = solve_each(
+            self.gates,
+            self.inputs,
+            readings,
+            &jobs,
+            self.settings.score,
+            self.cancel,
+            progress,
+        );
+        let mut solved = solved.into_iter();
+        for (climb, rules) in climbs.iter_mut().zip(wanted) {
+            for rule in rules {
+                let solved = solved.next().expect("a solve for every rule wanted");
+                climb.tried.push((rule, solved));
+            }
+        }
+    }
+
+    /// Every kind but the phenotype tried as the hand gating starts it, and
+    /// the valley or smear again with a smear example where it met a smear.
+    fn try_first(&self, readings: &Readings, climbs: &mut [Climb<'_>]) {
+        let kinds = |done, total| Picking::Kinds { done, total };
+        let first = climbs.iter().map(Climb::rules_to_try_first).collect();
+        self.solve(readings, climbs, first, kinds);
+        let smears = climbs
+            .iter_mut()
+            .map(|climb| climb.with_smear_example().into_iter().collect())
+            .collect();
+        self.solve(readings, climbs, smears, kinds);
+    }
+
+    /// The settings of the first kind that passed, for each gate with one.
+    fn search_passing(&self, readings: &Readings, climbs: &mut [Climb<'_>]) {
+        let wanted = climbs
+            .iter_mut()
+            .map(|climb| match climb.passing(self.settings.most_off) {
+                Some(at) if climb.rungs[at].kind.searched() => climb.search(at),
+                _ => Vec::new(),
+            })
+            .collect();
+        self.solve(readings, climbs, wanted, settings_step);
+    }
+
+    /// For each gate with no kind passing yet, each kind's settings in turn
+    /// until one passes - reading the files again for the kinds that need
+    /// it.
+    fn search_in_turn(
+        &self,
+        readings: &mut Readings,
+        climbs: &mut [Climb<'_>],
+    ) -> Result<(), String> {
+        let most_rungs = climbs.iter().map(|c| c.rungs.len()).max().unwrap_or(0);
+        for at in 0..most_rungs {
+            self.stopped()?;
+            let wanted: Vec<Vec<GateRule>> = climbs
+                .iter_mut()
+                .map(|climb| {
+                    let searchable = climb
+                        .rungs
+                        .get(at)
+                        .is_some_and(|rung| rung.kind.searched() && !rung.searched);
+                    if searchable && climb.passing(self.settings.most_off).is_none() {
+                        climb.search(at)
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect();
+            let unread: Vec<Job<'_>> = climbs
+                .iter()
+                .zip(&wanted)
+                .flat_map(|(climb, rules)| rules.iter().map(move |rule| (climb.target, rule)))
+                .collect();
+            let reading = |done, total| (self.progress)(Picking::Reading { done, total });
+            readings.read_more(self.gates, self.inputs, &unread, self.cancel, reading);
+            self.solve(readings, climbs, wanted, settings_step);
+        }
+        Ok(())
+    }
+}
+
+fn settings_step(done: usize, total: usize) -> Picking {
+    Picking::Settings { done, total }
 }
 
 /// Pick a rule for each of `targets` against the gates as drawn, trying the
@@ -734,118 +868,41 @@ pub fn pick_rules(
     cancel: &AtomicBool,
     progress: impl Fn(Picking) + Sync,
 ) -> Result<Picks, String> {
-    let settings = settings.checked()?;
+    let picker = Picker {
+        gates,
+        inputs,
+        settings: settings.checked()?,
+        cancel,
+        progress,
+    };
     let fit = fit.checked()?;
-    let stopped = || cancel.load(Ordering::Relaxed);
-    let score = settings.score;
     let currents: Vec<Result<&GateRule, String>> = targets
         .iter()
         .map(|target| pickable(&inputs.rules, target))
         .collect();
-    let read_for: Vec<(&RuleTarget, &GateRule)> = targets
+    let read_for: Vec<Job<'_>> = targets
         .iter()
         .zip(&currents)
         .filter_map(|(target, current)| Some((target, *current.as_ref().ok()?)))
         .collect();
-    let reading = |done, total| progress(Picking::Reading { done, total });
+    let reading = |done, total| (picker.progress)(Picking::Reading { done, total });
     let mut readings = Readings::read(gates, inputs, &read_for, cancel, reading);
-    if stopped() {
-        return Err("stopped".into());
+    picker.stopped()?;
+    let mut climbs = started(gates, inputs, &readings, &read_for, &picker.settings);
+    if picker.settings.fmx_band.is_some() {
+        readings
+            .problems
+            .extend(climbs.iter().filter_map(Climb::fmx_band_left_out));
     }
-    let mut climbs = started(gates, inputs, &readings, &read_for, &settings);
-
-    let first: Vec<Vec<GateRule>> = climbs.iter().map(Climb::first_tries).collect();
-    let kinds = |done, total| progress(Picking::Kinds { done, total });
-    solve_wanted(
-        gates,
-        inputs,
-        &readings,
-        &mut climbs,
-        first,
-        score,
-        cancel,
-        kinds,
-    );
-    let smears: Vec<Vec<GateRule>> = climbs
-        .iter_mut()
-        .map(|climb| climb.with_smear_example().into_iter().collect())
-        .collect();
-    solve_wanted(
-        gates,
-        inputs,
-        &readings,
-        &mut climbs,
-        smears,
-        score,
-        cancel,
-        kinds,
-    );
-    if stopped() {
-        return Err("stopped".into());
-    }
-
-    let searching = |done, total| progress(Picking::Settings { done, total });
-    let picked_kind: Vec<Vec<GateRule>> = climbs
-        .iter_mut()
-        .map(|climb| match climb.passing(settings.most_off) {
-            Some(at) if climb.rungs[at].kind.searched() => climb.search(at),
-            _ => Vec::new(),
-        })
-        .collect();
-    solve_wanted(
-        gates,
-        inputs,
-        &readings,
-        &mut climbs,
-        picked_kind,
-        score,
-        cancel,
-        searching,
-    );
-
-    let most_rungs = climbs.iter().map(|c| c.rungs.len()).max().unwrap_or(0);
-    for at in 0..most_rungs {
-        if stopped() {
-            return Err("stopped".into());
-        }
-        let wanted: Vec<Vec<GateRule>> = climbs
-            .iter_mut()
-            .map(|climb| {
-                let searchable = climb
-                    .rungs
-                    .get(at)
-                    .is_some_and(|rung| rung.kind.searched() && !rung.searched);
-                if searchable && climb.passing(settings.most_off).is_none() {
-                    climb.search(at)
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
-        let unread: Vec<(&RuleTarget, &GateRule)> = climbs
-            .iter()
-            .zip(&wanted)
-            .flat_map(|(climb, rules)| rules.iter().map(move |rule| (climb.target, rule)))
-            .collect();
-        readings.read_more(gates, inputs, &unread, cancel, reading);
-        solve_wanted(
-            gates,
-            inputs,
-            &readings,
-            &mut climbs,
-            wanted,
-            score,
-            cancel,
-            searching,
-        );
-    }
-    if stopped() {
-        return Err("stopped".into());
-    }
+    picker.try_first(&readings, &mut climbs);
+    picker.stopped()?;
+    picker.search_passing(&readings, &mut climbs);
+    picker.search_in_turn(&mut readings, &mut climbs)?;
+    picker.stopped()?;
 
     let mut picked = climbs.into_iter().map(|climb| {
         climb.picked(
-            settings.most_off,
+            picker.settings.most_off,
             fit,
             &readings.problems,
             inputs.files.len(),
@@ -1218,6 +1275,31 @@ mod tests {
     }
 
     #[test]
+    fn the_flagged_are_listed_first_then_those_that_gain_most() {
+        let mut picks = [
+            ("passed, gains a little", Some(true), Some(0.01)),
+            ("flagged, gains most", Some(false), Some(0.3)),
+            ("no pick", None, Some(0.2)),
+            ("passed, gains nothing to measure", Some(true), None),
+            ("flagged, gains least", Some(false), Some(-0.1)),
+            ("passed, gains less", Some(true), Some(-0.05)),
+        ];
+        picks.sort_by(|a, b| listed_order((a.1, a.2), (b.1, b.2)));
+        let order: Vec<&str> = picks.iter().map(|p| p.0).collect();
+        assert_eq!(
+            order,
+            [
+                "flagged, gains most",
+                "flagged, gains least",
+                "no pick",
+                "passed, gains a little",
+                "passed, gains less",
+                "passed, gains nothing to measure",
+            ]
+        );
+    }
+
+    #[test]
     fn settings_out_of_range_are_refused() {
         let with = |fmx_band, most_off| PickSettings {
             fmx_band,
@@ -1365,6 +1447,73 @@ mod tests {
             [(Kind::FmxBand, true, 1), (Kind::ValleyOrSmear, true, 0)]
         );
         assert_eq!(picked.tried, 3);
+    }
+
+    /// The rule as it stands - a band on the FMX at another range - passing
+    /// does not pass the band on the FMX at the range given: that is never
+    /// searched, so above the negative, next in order, is picked.
+    #[test]
+    fn the_band_on_the_fmx_passes_only_at_the_range_given() {
+        let target = RuleTarget::named("CD69+");
+        let as_it_stands = current(
+            fmx(),
+            Rule::TailFraction(TailFractionRule::new((0.02, 0.03))),
+        );
+        let given = current(
+            fmx(),
+            Rule::TailFraction(TailFractionRule::new((0.3, 0.4))),
+        );
+        let above = current(
+            MeasuredOn::Itself,
+            Rule::AboveTheNegative(AboveTheNegativeRule::default()),
+        );
+        let climb = Climb {
+            target: &target,
+            current: &as_it_stands,
+            rungs: vec![
+                rung(Kind::FmxBand, &given),
+                rung(Kind::AboveNegative, &above),
+            ],
+            tried: vec![
+                (as_it_stands.clone(), agreeing(0, 990, 990)),
+                (given.clone(), agreeing(5, 500, 990)),
+                (above.clone(), agreeing(1, 900, 960)),
+            ],
+        };
+        let picked = climb.picked(MOST_OFF, unsplit(), &[], 10);
+        assert!(picked.passed);
+        assert_eq!(rules_of(&picked)[0], &above);
+        let tried: Vec<(Kind, bool)> = picked.kinds.iter().map(|k| (k.kind, k.passed)).collect();
+        assert_eq!(tried, [(Kind::FmxBand, false), (Kind::AboveNegative, true)]);
+    }
+
+    #[test]
+    fn a_kind_tried_on_no_sample_it_could_be_judged_on_is_still_said() {
+        let target = RuleTarget::named("CD69+");
+        let on_fmx = current(
+            fmx(),
+            Rule::TailFraction(TailFractionRule::new((0.0, 0.01))),
+        );
+        let climb = Climb {
+            target: &target,
+            current: &on_fmx,
+            rungs: vec![rung(Kind::FmxBand, &on_fmx)],
+            tried: vec![(on_fmx.clone(), solved(Vec::new()))],
+        };
+        let picked = climb.picked(MOST_OFF, unsplit(), &[], 10);
+        assert!(!picked.passed);
+        assert_eq!(
+            picked.kinds,
+            [KindTried {
+                kind: Kind::FmxBand,
+                searched: false,
+                closest: on_fmx.rule.describe(),
+                off: 0,
+                judged: 0,
+                typical_agreement: None,
+                passed: false,
+            }]
+        );
     }
 
     #[test]

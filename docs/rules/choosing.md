@@ -159,7 +159,9 @@ by hand; a sample of few events may fall a counting-noise width below it.
 The band, the agreement and the share are asked for at the start of a pick
 on the Gate Rules tab and kept with the workspace
 (`rules/pick_settings.json`); the tools for Claude use them unless told
-otherwise.
+otherwise, and `pick_settings` shows them. A gate whose rule reads no
+partner, in a workspace whose pairing shows one sample type, has no FMX to
+read the band on: the pick says so and goes on without it.
 
 Every kind but the phenotype is first tried as the hand gating starts it,
 all together, and the first in order that passes has its settings searched; the best of its

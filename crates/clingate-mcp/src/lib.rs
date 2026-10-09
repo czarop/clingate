@@ -142,9 +142,10 @@ To pick a rule for a gate - its kind as well as its settings - or for every \
 gate, pick_rule tries the kinds in the user's order of preference and takes \
 the first that passes their cut-off: a band read on the FMX at the range \
 they accept, above the negative, the valley or a smear, a band on each \
-sample, and last the phenotype. Ask the user for the FMX range and the \
-cut-off if they have not set them in the app (0.95 agreement, no more than a \
-tenth of the samples off, unless they say otherwise). Per gate it gives the \
+sample, and last the phenotype. pick_settings says what the user last set \
+in the app; ask them for the FMX range and the cut-off if they have not set \
+them (0.95 agreement, no more than a tenth of the samples off, unless they \
+say otherwise). Per gate it gives the \
 rule beside the rule as it stands, whether it passed, and how each kind did. \
 A gate where nothing passed shows only the closest rule: say it is flagged, \
 and that the gate may be better gated by hand. For many gates it takes a \
@@ -441,8 +442,9 @@ pub struct PickRuleArgs {
     pub split: Option<bool>,
     /// The lowest and highest share of each specimen's FMX events above the line the user
     /// accepts, as two shares - [0.005, 0.01] for 0.5% to 1%: a band read on the FMX at it is
-    /// tried first, as it is. Leave out for what the user last set in the app, if anything.
-    pub fmx_band: Option<[f64; 2]>,
+    /// tried first, as it is. [] tries none; leave out for what the user last set in the app,
+    /// if anything (pick_settings says).
+    pub fmx_band: Option<Vec<f64>>,
     /// A sample agreeing less than this with its hand gate is off. Leave out for what the
     /// user last set in the app - 0.95 unless they changed it.
     pub off_below: Option<f64>,
@@ -537,6 +539,24 @@ fn rank_by(name: Option<&str>) -> Result<RankBy, Refusal> {
         Some("off") => Ok(RankBy::Off),
         Some(other) => Err(Refusal::Failed {
             reason: format!("rank_by is \"typical\" or \"off\" - not \"{other}\""),
+        }),
+    }
+}
+
+/// The band on the FMX asked for: `given`, none for an empty one, or `kept`
+/// when none is given.
+fn fmx_band(
+    given: Option<&[f64]>,
+    kept: Option<(f64, f64)>,
+) -> Result<Option<(f64, f64)>, Refusal> {
+    match given {
+        None => Ok(kept),
+        Some([]) => Ok(None),
+        Some(&[lowest, highest]) => Ok(Some((lowest, highest))),
+        Some(other) => Err(Refusal::Failed {
+            reason: format!(
+                "fmx_band is two shares, or [] for no band on the FMX - not {other:?}"
+            ),
         }),
     }
 }
@@ -1043,15 +1063,24 @@ impl Clingate {
         .await
     }
 
+    /// The settings pick_rule uses for anything left out: those the user last chose in the
+    /// app - the band on the FMX it tries first (none if not set), the agreement below which a
+    /// sample is off, and the share of samples that may be off - or the defaults. Reads no
+    /// events.
+    #[tool(annotations(read_only_hint = true))]
+    async fn pick_settings(&self) -> String {
+        self.run(|s| Ok(s.pick_settings())).await
+    }
+
     /// Pick a rule for one population's gate, or every gate a rule places other than from
     /// another gate, trying the kinds of rule in the user's order of preference and taking
     /// the first that passes: a band read on each specimen's FMX at the range the user
     /// accepts, as it is; above the negative; the valley or a smear; a band read on each
     /// sample; and last the phenotype on the plot's two axes - the negative, the valley and
     /// the phenotype calibrated on one sample gated by hand. A rule passes when no more than
-    /// most_off of its samples agree less than off_below with the hand gate. Each kind is
-    /// tried as the hand gating starts it, and the first in order that passes has its settings
-    /// searched; when none passes, each kind's settings are searched in turn; when still none
+    /// most_off of its samples agree less than off_below with the hand gate. Every kind but the
+    /// phenotype is tried as the hand gating starts it, and the first in order that passes has
+    /// its settings searched; when none passes, each kind's settings are searched in turn; when still none
     /// passes, the closest of everything tried is shown, not passed - flag it to the user. Per
     /// gate: the rule beside the rule as it stands, whether it passed, how each kind did, and
     /// the others tied with it - kept for the app's Gallery tab. The settings the user last
@@ -1063,10 +1092,7 @@ impl Clingate {
             let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
             let kept = s.pick_settings();
             let settings = PickSettings {
-                fmx_band: args
-                    .fmx_band
-                    .map(|[lowest, highest]| (lowest, highest))
-                    .or(kept.fmx_band),
+                fmx_band: fmx_band(args.fmx_band.as_deref(), kept.fmx_band)?,
                 score: ScoreSettings {
                     off_below: args.off_below.unwrap_or(kept.score.off_below),
                     noise_widths: args.noise_widths.unwrap_or(kept.score.noise_widths),

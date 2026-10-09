@@ -204,6 +204,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "score_rules",
         "fit_rule",
         "pick_rule",
+        "pick_settings",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1387,6 +1388,10 @@ fn a_rule_is_picked_in_order_over_the_protocol() {
         ..Default::default()
     };
     clingate_core::gate_rules::pick::keep_settings(&folder, &chosen).unwrap();
+    let kept_settings = server.call("pick_settings", json!({}));
+    assert_eq!(kept_settings["outcome"], "ok", "{kept_settings}");
+    assert_eq!(kept_settings["result"]["fmx_band"], json!([0.005, 0.01]));
+    assert_eq!(kept_settings["result"]["most_off"], 0.2);
     let one = server.call("pick_rule", json!({"population": "Tmem", "off_below": 0.9}));
     assert_eq!(one["outcome"], "ok", "{one}");
     let settings = &one["result"]["settings"];
@@ -1420,12 +1425,27 @@ fn a_rule_is_picked_in_order_over_the_protocol() {
     assert_eq!(every["outcome"], "ok", "{every}");
     assert_eq!(every["result"]["picked"].as_array().unwrap().len(), 1);
 
+    let given = server.call(
+        "pick_rule",
+        json!({"population": "Tmem", "fmx_band": [], "most_off": 0.3, "noise_widths": 2.0}),
+    );
+    assert_eq!(given["outcome"], "ok", "{given}");
+    let settings = &given["result"]["settings"];
+    assert_eq!(settings["fmx_band"], json!(null), "[] is no band: {settings}");
+    assert_eq!(settings["most_off"], 0.3);
+    assert_eq!(settings["score"]["noise_widths"], 2.0);
+    assert_ne!(
+        given["result"]["picked"][0]["kinds"][0]["kind"], "fmx_band",
+        "no band tried on the FMX"
+    );
+
     for refused in [
         json!({"population": "teff_naive"}),
         json!({"rank_by": "best"}),
         json!({"tie_within": 2.0}),
         json!({"most_off": 1.5}),
         json!({"fmx_band": [0.02, 0.01]}),
+        json!({"fmx_band": [0.01]}),
     ] {
         let answer = server.call("pick_rule", refused.clone());
         assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");

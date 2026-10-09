@@ -496,7 +496,7 @@ impl Readings {
 }
 
 /// A rule, as its target's.
-type Job<'a> = (&'a RuleTarget, &'a GateRule);
+pub(crate) type Job<'a> = (&'a RuleTarget, &'a GateRule);
 
 /// The densities of one reading's lines at one smoothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -637,7 +637,7 @@ pub(crate) fn ranked_fit(
     problems: Vec<String>,
     files_read: usize,
 ) -> Fit {
-    let split = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
+    let split = halves_of(scored, fit);
     let scored: Vec<&Solved> = scored.iter().collect();
     ranked_on(
         target, tried, current, &scored, fit, split, problems, files_read,

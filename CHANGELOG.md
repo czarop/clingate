@@ -51,10 +51,12 @@
   last, the phenotype on the plot's two axes. A rule passes when no more
   than a tenth of its samples agree less than 0.95 with the gate drawn by
   hand - both settable, asked at the start of a pick with the FMX range,
-  and kept with the workspace for every pick after. The negative, the valley
+  and kept with the workspace for every pick after (`pick_settings` says
+  what they are; `fmx_band: []` tries no band on the FMX). A pick says when
+  it could not try the band on the FMX for want of a partner to read it on. The negative, the valley
   and the phenotype are calibrated on one sample gated by hand, not scored.
-  Each kind is first tried as the hand gating starts it, and the first that
-  passes has its settings searched; when none does, each kind's settings
+  Every kind but the phenotype is first tried as the hand gating starts it,
+  and the first that passes has its settings searched; when none does, each kind's settings
   are searched in turn. A gate where nothing passes shows the closest rule
   of everything tried, flagged, and is listed first. Each gate's pick is
   listed beside the rule as it stands with how each kind did; Use takes
