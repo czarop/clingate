@@ -106,4 +106,26 @@ A choice is a guess until it has been tried. Try the candidates on the
 current files without applying them (`try_rules`), compare with the
 hand-gated reference and with what should be consistent (QC samples across
 plates), and - once runs have been reviewed - replay them (`replay_rules`)
-to see what each fixes and breaks.
+to see what each fixes and breaks. On a workspace gated by hand, score the
+rules against it (`score_rules`): each gate under its parent as drawn, and
+the events the rule's gate shares with the hand-drawn one - how much of
+yours it catches, how much it holds beyond it, and their agreement, with a
+sample of few cells allowed further below the line that calls it off. A
+sample the rule cannot place scores as a gate holding nothing: it would be
+gated by hand.
+
+To find the settings that come closest, search them (`fit_rule`): the rule
+as it stands, any candidates given, and by default every combination of a
+few values of each setting that matters for its kind - smoothing, smallest
+dip and lowest-point-before for a valley; the band's width and aim; the
+distance above the negative and how the negative is found; the percentile
+and offset; a phenotype's fit and share kept. What a rule reads - its
+parameter, markers, reference and fallback - is left as it is. Each
+candidate is scored as `score_rules` scores it. With eight specimens or
+more they are dealt alternately into two halves, ranked on one and checked
+on the other, so a setting tuned to a couple of samples shows as one that
+falls down the ranking on the half it was not chosen on. The ranking is by
+typical agreement, a tie (within `tie_within`, 0.02) going to the fewest
+samples off, or by the fewest samples off first; each candidate says where
+it stands both ways, and the best and those tied with it are marked, to be
+looked at side by side before choosing.

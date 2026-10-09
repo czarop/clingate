@@ -4,6 +4,35 @@
 
 ### Added
 
+- **Scoring the rules against hand gating** (`score_rules` in the tools for
+  Claude). On a workspace gated by hand, every rule - or one population's -
+  runs on the full files, each gate under its parent as drawn so one wrong
+  gate cannot make those below it look wrong, each file read once. Gates
+  are compared by the events they hold, so any shape scores alike: per
+  sample, how much of the hand gate the rule's gate catches, how much it
+  holds beyond it, and their agreement - 1 only for exactly the same events.
+  A sample is off below a line the user can set; one of a few dozen cells
+  may fall further below it than one of thousands, by a settable number of
+  counting-noise widths, and counts for less in its gate's typical
+  agreement. A sample the rule cannot place agrees 0. Beside it, how far the rule's gate sits from the hand gate in
+  the parent's interquartile ranges, and for a rule that moves one edge, how
+  far it moves it. Each gate is summed up in a line - typical and lowest
+  agreement, and which samples are off - so a few samples far off read
+  differently from every sample a little off. It answers "is this ruleset
+  closer than the last one?" after every change. Nothing is moved.
+
+- **Searching a rule's settings against hand gating** (`fit_rule` in the
+  tools for Claude). For one gate, the rule as it stands, any candidates
+  Claude gives, and by default every combination of a few values of each
+  setting that matters for its kind are scored as `score_rules` scores a
+  rule - the files read once, candidates that read the population alike
+  solved on one measurement. With eight specimens or more they are ranked
+  on half of them and checked on the other half, so a setting tuned to a
+  couple of samples shows. Ranked by typical agreement, a near-tie going to
+  the fewest samples off, or by fewest off first; each candidate says where
+  it stands both ways, and the best and those tied with it are marked for
+  comparing by eye. Nothing is moved.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several

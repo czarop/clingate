@@ -16,7 +16,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use clingate_core::session::{Refusal, Session};
+use clingate_core::gate_rules::fit::{FitSettings, RankBy};
+use clingate_core::gate_rules::rule_store::GateRule;
+use clingate_core::gate_rules::score::ScoreSettings;
+use clingate_core::session::{FitAsk, Refusal, Session};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -51,7 +54,8 @@ Distributions, gate edges and comparisons are in the units the plots are drawn \
 in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
-compare_to_peers, gate_profile, gate_picture, try_rules, preview_rules - only \
+compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
+fit_rule, preview_rules - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -105,6 +109,31 @@ and what they flag. \
 4. update_rule only on the user's word. \
 Do not picture every gate or try every setting: a few well-chosen \
 candidates per gate is the point.
+
+When the user has gated a workspace by hand and asks how close the rules come \
+to it, score_rules runs every rule - or one population's - on the files, each \
+gate under its parent as drawn, and compares the rule's gate with theirs by the \
+events both hold, whatever their shape: their agreement (1 only for exactly the \
+same events), how much of their gate the rule's catches, and how much it holds \
+beyond it. A sample is off below a line the user can set (off_below), which a \
+gate of few cells may fall further below (noise_widths); a sample the rule \
+cannot place agrees 0. Per gate, the typical \
+and lowest agreement and the samples that are off tell a few samples far off \
+from every sample a little off. Show the user the gates and samples least in \
+agreement; it moves nothing.
+
+To find the settings for one gate's rule that come closest to the user's \
+gating, fit_rule tries the rule as it stands, any candidates you give, and - \
+by default when you give none - every combination of a few values of each \
+setting that matters for its kind, each scored as score_rules scores it. With \
+eight specimens or more it ranks on half and checks on the other half: a \
+candidate first on its fit half but far down on its check half was tuned to a \
+few samples. Rank by typical agreement (rank_by 'typical') or by fewest \
+samples off ('off'); each candidate says where it stands both ways. Narrow or \
+extend the defaults from the gate's profile by giving candidates. Show the \
+user the best and those tied with it (among_best), and the samples off under \
+each - some may be easier gated by hand than fitted - and change the rule only \
+on their word.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -340,6 +369,49 @@ pub struct TryRules {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScoreRulesArgs {
+    /// The population whose rule to score, by its gate names. Leave out for every rule.
+    pub population: Option<String>,
+    /// How many samples to list, least in agreement with the hand gating first (default 40,
+    /// at most 400). The gates' lines always count every sample.
+    pub max_rows: Option<usize>,
+    /// The agreement below which a sample is off (default 0.8).
+    pub off_below: Option<f64>,
+    /// How far below off_below a sample of few events may fall and not be off, in
+    /// counting-noise widths of 1 / sqrt(events in both gates) (default 1; 0 holds every sample
+    /// to the same line).
+    pub noise_widths: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FitRuleArgs {
+    /// The population whose rule to fit, by its gate names.
+    pub population: String,
+    /// Whole rules to try beside the rule as it stands, each {"parameter", "bound",
+    /// "measured_on", "rule": {"kind", ...}} - see rule_guide. Leave out to try the default
+    /// settings for the rule's kind.
+    pub candidates: Option<serde_json::Value>,
+    /// Also try the default settings: every combination of a few values of each setting that
+    /// matters for the rule's kind, around the rule as it stands - or, with no rule, around
+    /// each candidate (default: true when no candidates are given, false when they are).
+    pub defaults: Option<bool>,
+    /// How many candidates to show, best first (default 10, at most 64).
+    pub shown: Option<usize>,
+    /// "typical" (default): the highest typical agreement first, a tie going to the fewest
+    /// samples off; or "off": the fewest samples off first, then the highest typical.
+    pub rank_by: Option<String>,
+    /// Typical agreements no further apart than this are a tie (default 0.02).
+    pub tie_within: Option<f64>,
+    /// Rank on half the specimens and check on the other half, when there are eight or more
+    /// (default true).
+    pub split: Option<bool>,
+    /// As score_rules: the agreement below which a sample is off (default 0.8).
+    pub off_below: Option<f64>,
+    /// As score_rules: how far below off_below a sample of few events may fall (default 1).
+    pub noise_widths: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GateProfileArgs {
     /// The population whose gate to profile, by its gate names. Leave out for every gate, a
     /// line each.
@@ -382,6 +454,36 @@ pub struct ReadPositioningCode {
 }
 
 /// Rule changes, as the tools take them.
+/// The score settings asked for, the defaults where none are.
+fn score_settings(off_below: Option<f64>, noise_widths: Option<f64>) -> ScoreSettings {
+    let defaults = ScoreSettings::default();
+    ScoreSettings {
+        off_below: off_below.unwrap_or(defaults.off_below),
+        noise_widths: noise_widths.unwrap_or(defaults.noise_widths),
+    }
+}
+
+/// Candidate rules as the tools give them.
+fn candidate_rules(value: serde_json::Value) -> Result<Vec<GateRule>, Refusal> {
+    serde_json::from_value(value).map_err(|e| Refusal::Failed {
+        reason: format!(
+            "the candidates could not be read ({e}): give a list of whole rules, each the rule \
+             part of {RULE_CHANGES}"
+        ),
+    })
+}
+
+/// The ordering asked for by name, typical agreement where none is.
+fn rank_by(name: Option<&str>) -> Result<RankBy, Refusal> {
+    match name.map(str::trim) {
+        None | Some("typical") => Ok(RankBy::Typical),
+        Some("off") => Ok(RankBy::Off),
+        Some(other) => Err(Refusal::Failed {
+            reason: format!("rank_by is \"typical\" or \"off\" - not \"{other}\""),
+        }),
+    }
+}
+
 const RULE_CHANGES: &str = "a list of {\"target\": {\"gate\": \"CD69+\", \"parent\": \"CD4+\" or      null}, \"rule\": {\"parameter\": \"CD69\", \"bound\": \"Above\" or \"Below\",      \"measured_on\": \"Itself\" or {\"Partner\": \"FMX\"} or {\"File\": \"<file id>\"},      \"rule\": {\"kind\": \"TailFraction\", \"band\": [0.002, 0.005]}}} - the rule kinds and their      fields are in explain_gate_positioning, section 8, and rule_guide";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -835,14 +937,55 @@ impl Clingate {
     #[tool(annotations(read_only_hint = true))]
     async fn try_rules(&self, Parameters(args): Parameters<TryRules>) -> String {
         self.run(move |s| {
-            let candidates: Vec<clingate_core::gate_rules::rule_store::GateRule> =
-                serde_json::from_value(args.candidates).map_err(|e| Refusal::Failed {
-                    reason: format!(
-                        "the candidates could not be read ({e}): give a list of whole rules, \
-                         each the rule part of {RULE_CHANGES}"
-                    ),
-                })?;
-            s.try_rules(&args.population, &candidates, args.max_rows)
+            s.try_rules(&args.population, &candidate_rules(args.candidates)?, args.max_rows)
+        })
+        .await
+    }
+
+    /// Score the rules against the gating drawn by hand: every rule, or one population's, run
+    /// on the files with each gate under its parent as drawn, and per gate and sample the
+    /// events the rule's gate and the hand gate both hold - their agreement, how much of the
+    /// hand gate the rule catches and how much it holds beyond it, and whether the sample is
+    /// off, below a line a sample of few events may fall further below -
+    /// with how far the rule's gate sits from the hand gate and, for a rule that moves one
+    /// edge, how far it moves it. Each gate in a line, the most samples off first, then the
+    /// samples least in agreement. Moves nothing. Reads the samples' events: only when the
+    /// user asks for it.
+    #[tool(annotations(read_only_hint = true))]
+    async fn score_rules(&self, Parameters(args): Parameters<ScoreRulesArgs>) -> String {
+        let settings = score_settings(args.off_below, args.noise_widths);
+        self.run(move |s| s.score_rules(args.population.as_deref(), args.max_rows, settings))
+            .await
+    }
+
+    /// Search one population's rule settings for those closest to the gating drawn by hand:
+    /// the rule as it stands, the candidates given and - by default when none are given -
+    /// every combination of a few values of each setting that matters for its kind, each
+    /// scored as score_rules scores a rule and ranked. With eight specimens or more, ranked
+    /// on half of them and checked on the other half. Each candidate's score on both halves,
+    /// its place ranked by typical agreement and by samples off, and whether it is the best
+    /// or tied with it. Moves nothing. Reads the samples' events: only when the user asks
+    /// for it.
+    #[tool(annotations(read_only_hint = true))]
+    async fn fit_rule(&self, Parameters(args): Parameters<FitRuleArgs>) -> String {
+        let settings = score_settings(args.off_below, args.noise_widths);
+        self.run(move |s| {
+            let candidates = match args.candidates {
+                Some(value) => candidate_rules(value)?,
+                None => Vec::new(),
+            };
+            let defaults = FitSettings::default();
+            let fit = FitSettings {
+                rank_by: rank_by(args.rank_by.as_deref())?,
+                tie_within: args.tie_within.unwrap_or(defaults.tie_within),
+                split: args.split.unwrap_or(defaults.split),
+            };
+            let ask = FitAsk {
+                defaults: args.defaults.unwrap_or(candidates.is_empty()),
+                candidates,
+                shown: args.shown,
+            };
+            s.fit_rule(&args.population, ask, settings, fit)
         })
         .await
     }

@@ -1127,12 +1127,14 @@ fn a_drag_with_gates_kept_apart_stops_at_the_gate_beside() {
 /// `own`, put in place of an opened workspace's gates.
 fn a_gate_with_a_position_for_s1(
     app: &mut App,
+    folder: &str,
     drawn: Arc<dyn clingate_core::gates::gate_traits::DrawableGate>,
     own: Arc<dyn clingate_core::gates::gate_traits::DrawableGate>,
 ) {
     use clingate_core::gates::GateState;
     use clingate_core::gates::gate_store::GateSource;
-    app.open(&two_samples_with_a_rule("shape-menu"));
+    // A folder of its own: tests run side by side, and each clears its folder.
+    app.open(&two_samples_with_a_rule(folder));
     app.with(|held| {
         let mut state = GateState::default();
         let id: Arc<str> = Arc::from("t");
@@ -1231,6 +1233,7 @@ fn a_side_levelled_from_the_menu_changes_the_position_shown_in_one_step() {
     let mut app = App::new();
     a_gate_with_a_position_for_s1(
         &mut app,
+        "shape-menu-level",
         shape_t(&triangle, false),
         shape_t(&triangle, false),
     );
@@ -1266,7 +1269,12 @@ fn a_point_added_then_deleted_from_the_menu_gives_back_the_outline() {
     use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeTarget};
     let square = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)];
     let mut app = App::new();
-    a_gate_with_a_position_for_s1(&mut app, shape_t(&square, false), shape_t(&square, false));
+    a_gate_with_a_position_for_s1(
+        &mut app,
+        "shape-menu-add-delete",
+        shape_t(&square, false),
+        shape_t(&square, false),
+    );
 
     from_the_menu(&mut app, "s1", ShapeTarget::Side(0), ShapeAction::AddPoint).unwrap();
     assert_eq!(
@@ -1300,6 +1308,7 @@ fn a_triangle_keeps_its_points_when_one_is_deleted_from_the_menu() {
     let mut app = App::new();
     a_gate_with_a_position_for_s1(
         &mut app,
+        "shape-menu-triangle",
         shape_t(&triangle, false),
         shape_t(&triangle, false),
     );
@@ -1325,7 +1334,12 @@ fn a_rectangle_made_a_polygon_from_the_menu_is_one_for_every_sample() {
     let drawn = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
     let own = [(50.0, 0.0), (60.0, 0.0), (60.0, 10.0), (50.0, 10.0)];
     let mut app = App::new();
-    a_gate_with_a_position_for_s1(&mut app, shape_t(&drawn, true), shape_t(&own, true));
+    a_gate_with_a_position_for_s1(
+        &mut app,
+        "shape-menu-polygon",
+        shape_t(&drawn, true),
+        shape_t(&own, true),
+    );
     let steps = app.standing().undo_steps;
 
     from_the_menu(
@@ -1364,7 +1378,12 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
         (0.0, 100.0),
     ];
     let mut app = App::new();
-    a_gate_with_a_position_for_s1(&mut app, shape_t(&notched, false), shape_t(&notched, false));
+    a_gate_with_a_position_for_s1(
+        &mut app,
+        "shape-menu-kept-apart",
+        shape_t(&notched, false),
+        shape_t(&notched, false),
+    );
     let in_the_notch = {
         let geometry = flow_gates::create_rectangle_geometry(
             vec![(48.0, 70.0), (52.0, 70.0), (52.0, 95.0), (48.0, 95.0)],

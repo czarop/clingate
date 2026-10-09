@@ -59,8 +59,11 @@ show, not raw channel values.
    one place - two rules, or one rule at two parents - is left alone and
    reported (`linked_conflicts`): it has one position, and two readings of it
    would fight over it.
-   A trial (`try_rules`) and a profile read the gates as they stand, not as
-   a run would leave the levels above; a replay re-solves each gate on the
+   A trial (`try_rules`), a profile, a score against the hand gating
+   (`score_rules`) and a search of a rule's settings by that score
+   (`fit_rule`) read the gates as they stand, not as a run would leave
+   the levels above - for a score that is the point, so a rule that gets a
+   parent wrong does not make the gates under it look wrong; a replay re-solves each gate on the
    events its run kept, so a changed parent rule does not re-filter the
    gates under it.
    **Pausing** (`run_rules_pausing`, the Gate Rules tab's run). After a

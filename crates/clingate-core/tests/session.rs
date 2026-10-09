@@ -3914,3 +3914,234 @@ fn a_phenotype_much_rarer_than_on_the_reference_leaves_the_gate_alone() {
         "{refused:?}"
     );
 }
+
+/// Scored against the gating as drawn, each sample's lines are the ones a
+/// preview of the same rules moves the gate from and to; scoring moves
+/// nothing, and one population's rule can be scored alone.
+#[test]
+fn the_rules_are_scored_against_the_gating_as_drawn() {
+    let folder = with_rules("session-score");
+    let mut session = Session::open(&folder).unwrap();
+    let scored = session.score_rules(None, None, Default::default()).unwrap();
+    let preview = session.preview_rules().unwrap();
+
+    assert_eq!(scored.gates.len(), 1);
+    assert!(!preview.would_move.is_empty());
+    assert_eq!(scored.gates[0].gate, preview.would_move[0].gate);
+    for moved in &preview.would_move {
+        let row = scored
+            .rows
+            .iter()
+            .find(|r| r.file == moved.measured_on)
+            .unwrap_or_else(|| panic!("{} not scored: {scored:#?}", moved.measured_on));
+        assert_eq!(row.what, "moved");
+        assert_eq!(row.hand_edge, Some(moved.from), "{row:?}");
+        assert_eq!(row.rule_edge, Some(moved.to), "{row:?}");
+        assert_eq!(row.edge_off_iqrs.unwrap().signum(), (moved.to - moved.from).signum());
+        let events = row.events.expect("both gates counted");
+        assert!(events.both <= events.hand.min(events.rule), "{row:?}");
+        let agreement = row.agreement.unwrap();
+        assert!((0.0..=1.0).contains(&agreement), "{row:?}");
+    }
+    let kept: Vec<_> = scored.rows.iter().filter(|r| r.what == "kept").collect();
+    assert_eq!(kept.len(), preview.already_in_place.len(), "{scored:#?}");
+    assert!(kept.iter().all(|r| r.agreement == Some(1.0) && r.edge_off_iqrs == Some(0.0)));
+    assert_eq!(scored.rows_total, scored.rows.len());
+
+    // Nothing moved: a second preview proposes the same.
+    let again = session.preview_rules().unwrap();
+    let lines = |p: &clingate_core::session::RulesPreview| {
+        p.would_move.iter().map(|m| (m.from, m.to)).collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&again), lines(&preview));
+
+    let first = session.score_rules(None, Some(1), Default::default()).unwrap();
+    assert_eq!(first.rows.len(), 1);
+    assert_eq!(first.rows_total, scored.rows_total);
+    assert_eq!(first.rows[0], scored.rows[0], "the furthest off first");
+    assert!(session.score_rules(Some("no such gate"), None, Default::default()).is_err());
+}
+
+/// With rules for two gates, asking for one scores that gate alone.
+#[test]
+fn one_population_s_rule_is_scored_alone() {
+    let folder = with_rules("session-score-one");
+    let mut session = Session::open(&folder).unwrap();
+    let parameter = session.gate("teff_naive", None).unwrap().parameters[0].clone();
+    session
+        .update_rule(change(
+            "teff_naive",
+            None,
+            &parameter,
+            clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
+            clingate_core::gate_rules::rule::Rule::TailFraction(
+                clingate_core::gate_rules::rule::TailFractionRule::new((0.05, 0.1)),
+            ),
+        ))
+        .unwrap();
+    let every = session.score_rules(None, None, Default::default()).unwrap();
+    assert_eq!(every.gates.len(), 2, "{every:#?}");
+    let tmem = session.score_rules(Some("Tmem"), None, Default::default()).unwrap();
+    assert_eq!(tmem.gates.len(), 1);
+    let gate = &tmem.gates[0];
+    assert!(gate.gate.starts_with("Tmem"), "{gate:?}");
+    assert!(tmem.rows.iter().all(|r| r.gate_id == gate.gate_id));
+    assert_eq!(
+        tmem.rows_total,
+        every.rows.iter().filter(|r| r.gate_id == gate.gate_id).count()
+    );
+}
+
+/// The off line and its allowance for few events are the caller's: each
+/// scored sample is judged against the line asked for, every sample below it
+/// is counted off, and settings out of range are refused.
+#[test]
+fn how_a_score_is_judged_can_be_set() {
+    use clingate_core::gate_rules::score::ScoreSettings;
+    let folder = with_rules("session-score-settings");
+    let session = Session::open(&folder).unwrap();
+    let exact = ScoreSettings {
+        off_below: 1.0,
+        noise_widths: 0.0,
+    };
+    let scored = session.score_rules(None, Some(400), exact).unwrap();
+    let judged: Vec<_> = scored.rows.iter().filter(|r| r.agreement.is_some()).collect();
+    assert!(!judged.is_empty(), "{scored:#?}");
+    assert!(judged.iter().all(|r| r.off_line == Some(1.0)), "{scored:#?}");
+    let short = judged.iter().filter(|r| r.agreement < r.off_line).count();
+    assert_eq!(scored.gates[0].off, short);
+    let lower = ScoreSettings {
+        off_below: 0.5,
+        noise_widths: 0.0,
+    };
+    let rows = session.score_rules(None, Some(400), lower).unwrap().rows;
+    assert!(rows.iter().filter(|r| r.agreement.is_some()).all(|r| r.off_line == Some(0.5)));
+    for refused in [(1.5, 0.0), (0.8, -1.0)] {
+        let settings = ScoreSettings {
+            off_below: refused.0,
+            noise_widths: refused.1,
+        };
+        assert!(session.score_rules(None, None, settings).is_err(), "{refused:?}");
+    }
+}
+
+#[test]
+fn scoring_needs_rules() {
+    let session = Session::open(&workspace("session-score-none")).unwrap();
+    assert!(session.score_rules(None, None, Default::default()).is_err());
+}
+
+/// The rule's own settings searched by default: every candidate scored as
+/// score_rules scores it once it is the workspace's rule, the rule as it
+/// stands among them, and nothing moved.
+#[test]
+fn a_rule_s_settings_are_searched_against_the_gating_as_drawn() {
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit");
+    let mut session = Session::open(&folder).unwrap();
+    let before = session.preview_rules().unwrap();
+    let ask = FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+
+    // Five widths of the band, each aimed two ways; the band as it stands is one.
+    assert_eq!(found.candidates_total, 10, "{found:#?}");
+    assert_eq!(found.candidates.iter().filter(|c| c.current).count(), 1);
+    assert!(found.checked_on.is_empty(), "two specimens are too few to split");
+    assert_eq!(found.fit_on, ["one", "two"]);
+    let places: Vec<usize> = found.candidates.iter().map(|c| c.place_by_typical).collect();
+    assert_eq!(places, (1..=10).collect::<Vec<_>>());
+    let lines = |p: &clingate_core::session::RulesPreview| {
+        p.would_move.iter().map(|m| (m.from, m.to)).collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&session.preview_rules().unwrap()), lines(&before));
+
+    for candidate in [&found.candidates[0], found.candidates.last().unwrap()] {
+        let rule = candidate.rule.clone();
+        session
+            .update_rule(change("Tmem", None, &rule.parameter, rule.measured_on.clone(), rule.rule))
+            .unwrap();
+        let scored = session.score_rules(Some("Tmem"), None, Default::default()).unwrap();
+        assert_eq!(candidate.fit.as_ref(), scored.gates.first(), "{}", candidate.said);
+    }
+}
+
+/// Candidates given are tried beside the rule as it stands, named as the
+/// tools name a parameter, without the default settings unless asked for
+/// too; fewer can be shown than were tried.
+#[test]
+fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
+    use clingate_core::gate_rules::rule::{Rule, ValleyRule};
+    use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-given");
+    let session = Session::open(&folder).unwrap();
+    let channel = session.gate("Tmem", None).unwrap().parameters[0].clone();
+    let valley = GateRule {
+        parameter: channel.trim_end_matches("-A").into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::InTheValley(ValleyRule::default()),
+    };
+    let ask = |defaults, shown| FitAsk {
+        candidates: vec![valley.clone()],
+        defaults,
+        shown,
+    };
+    let given = session
+        .fit_rule("Tmem", ask(false, None), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(given.candidates_total, 2, "{given:#?}");
+    let tried = given.candidates.iter().find(|c| !c.current).unwrap();
+    assert_eq!(&*tried.rule.parameter, channel.as_str(), "read by its channel");
+
+    let with_defaults = session
+        .fit_rule("Tmem", ask(true, Some(3)), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(with_defaults.candidates_total, 11, "the valley and the band's ten");
+    assert_eq!(with_defaults.candidates.len(), 3);
+}
+
+/// Ranked by samples off when asked; refused with nothing to try, or with
+/// settings out of range.
+#[test]
+fn a_search_is_ranked_as_asked_and_refused_with_nothing_to_try() {
+    use clingate_core::gate_rules::fit::{FitSettings, RankBy};
+    use clingate_core::gate_rules::score::ScoreSettings;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-ranked");
+    let session = Session::open(&folder).unwrap();
+    let defaults = || FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let by_off = FitSettings {
+        rank_by: RankBy::Off,
+        ..FitSettings::default()
+    };
+    let found = session
+        .fit_rule("Tmem", defaults(), Default::default(), by_off)
+        .unwrap();
+    let places: Vec<usize> = found.candidates.iter().map(|c| c.place_by_off).collect();
+    assert_eq!(places, (1..=found.candidates_total).collect::<Vec<_>>());
+
+    let unruled = session.fit_rule("teff_naive", defaults(), Default::default(), Default::default());
+    assert!(unruled.unwrap_err().to_string().contains("give candidate rules"));
+    let wide = FitSettings {
+        tie_within: 2.0,
+        ..FitSettings::default()
+    };
+    assert!(session.fit_rule("Tmem", defaults(), Default::default(), wide).is_err());
+    let off_line = ScoreSettings {
+        off_below: 1.5,
+        noise_widths: 0.0,
+    };
+    assert!(session.fit_rule("Tmem", defaults(), off_line, Default::default()).is_err());
+    assert!(session.fit_rule("no such gate", defaults(), Default::default(), Default::default()).is_err());
+}

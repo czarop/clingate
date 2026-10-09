@@ -137,6 +137,28 @@ commit (`b7a77c4`).
       reported problem like the others. Either remove the variant or implement
       real logicle, if Omiq's logicle scalings will be needed.
 
+## Fitting rules to hand gating
+
+The scorer (`gate_rules::score`, the `score_rules` tool) compares a ruleset
+with a workspace gated by hand, event by event; the search
+(`gate_rules::fit`, the `fit_rule` tool) tries a gate's rule settings and
+ranks them by it.
+
+- [ ] **Try the search on a hand-gated workspace** and settle what ranks
+      best: typical agreement with ties to the fewest off, or fewest off
+      first - and whether the default grids, the tie of 0.02 and the split
+      at eight specimens suit runs of 20 to 40 samples.
+
+- [ ] **Quadrant gates in the score.** A quadrant gate is four gates in one;
+      `admitted_by` returns nothing for it, so the score skips it. Score each
+      quadrant on its own - which events each holds against the hand-drawn
+      quadrants - and sum the gate up over the four.
+- [ ] **Flick between close candidates on the plots.** When the search finds
+      two or three settings for a gate that score nearly alike, show them on
+      the Review tab or the gallery so the user can switch between the gate
+      positions each would give, sample by sample, beside the hand-drawn gate,
+      and pick by eye.
+
 ## clingate
 
 - [ ] **A shared cache of transformed frames** (flow-review 6) - the largest

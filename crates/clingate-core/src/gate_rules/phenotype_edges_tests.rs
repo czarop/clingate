@@ -478,3 +478,81 @@ fn halves_apart(seed: u64) -> polars::prelude::DataFrame {
     let ys: Vec<f32> = (0..xs.len()).map(|_| cd3.sample(&mut rng) as f32).collect();
     df![X => xs, Y => ys].unwrap()
 }
+
+/// A phenotype rule draws no single line, so it is scored on the events its
+/// gate shares with the hand gate: counted here inside the drawn rectangle
+/// and the one a run moves it to, on the same samples written as files.
+#[test]
+fn a_phenotype_rule_is_scored_on_the_events_it_shares_with_the_hand_gate() {
+    use crate::file_load_tests::{scratch, write_fcs_rows};
+    let reference = sample(1, 50.0, 2_000, Positives::Smear(200.0));
+    let dimmer = sample(2, 50.0, 2_000, Positives::Smear(140.0));
+    let drawn = (600.0, 3_000.0);
+    let (report, moved_x, moved_y) = run(ShapeFit::KeepShape, drawn, &reference, &dimmer);
+    let placed = &report.positioned[0];
+
+    let dir = scratch("score-phenotype");
+    let files: Vec<(Arc<str>, std::path::PathBuf)> = [("reference", &reference), ("sample", &dimmer)]
+        .into_iter()
+        .map(|(name, frame)| {
+            let column = |c: &str| frame.column(c).unwrap().f32().unwrap().to_vec();
+            let rows: Vec<Vec<f32>> = column(X)
+                .into_iter()
+                .zip(column(Y))
+                .map(|(x, y)| vec![x.unwrap(), y.unwrap()])
+                .collect();
+            let path = dir.join(format!("{name}.fcs"));
+            write_fcs_rows(&path, &[(X, None), (Y, None)], &rows, &[]);
+            (Arc::from(format!("{name}.fcs").as_str()), path)
+        })
+        .collect();
+    let inputs = crate::gate_rules::run::RunInputs {
+        names: files
+            .iter()
+            .map(|(id, _)| (id.clone(), Arc::from(id.trim_end_matches(".fcs"))))
+            .collect(),
+        files,
+        compensation: Default::default(),
+        cofactors: Vec::new(),
+        metadata: specimens(),
+        rules: rule(ShapeFit::KeepShape),
+    };
+    let (state, _) = gated((600.0, 3_000.0));
+    let scored = crate::gate_rules::score::score_rules(
+        &state,
+        &inputs,
+        |_| true,
+        crate::gate_rules::score::ScoreSettings::default(),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+
+    let row = scored
+        .rows
+        .iter()
+        .find(|r| r.what == "moved")
+        .unwrap_or_else(|| panic!("{scored:#?}"));
+    assert_eq!(row.file, "sample");
+    assert_eq!((row.hand_edge, row.rule_edge, row.edge_off_iqrs), (None, None, None));
+
+    // Rectangle edges count as inside, as the plots count them.
+    let within = |range: (f32, f32), v: f32| range.0.min(range.1) <= v && v <= range.0.max(range.1);
+    let column = |c: &str| dimmer.column(c).unwrap().f32().unwrap().to_vec();
+    let (mut hand, mut rule, mut both) = (0, 0, 0);
+    for (x, y) in column(X).into_iter().zip(column(Y)) {
+        let (x, y) = (x.unwrap(), y.unwrap());
+        let in_hand = within(drawn, x) && within((300.0, 700.0), y);
+        let in_rule = within(moved_x, x) && within(moved_y, y);
+        hand += usize::from(in_hand);
+        rule += usize::from(in_rule);
+        both += usize::from(in_hand && in_rule);
+    }
+    let events = row.events.unwrap();
+    assert_eq!((events.hand, events.rule, events.both), (hand, rule, both), "{row:?}");
+    assert!(hand != both || rule != both, "the gate moved, or this proves little");
+    assert_eq!(row.caught, Some(both as f64 / hand as f64));
+    assert_eq!(row.extra, Some((rule - both) as f64 / rule as f64));
+    assert!((row.hand_holds.unwrap() - placed.from).abs() < 1e-9, "{row:?} {}", placed.from);
+    assert!((row.rule_holds.unwrap() - placed.to).abs() < 1e-9, "{row:?} {}", placed.to);
+    assert_eq!(scored.gates[0].median_caught, row.caught);
+}
