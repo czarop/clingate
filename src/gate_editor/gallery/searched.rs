@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dioxus::prelude::*;
 
+use clingate_core::axis_store::PlotMapper;
 use clingate_core::gate_rules::fit::Candidate;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::score::PlacedGate;
@@ -15,7 +16,7 @@ use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::{GateId, NodeId};
 use clingate_core::gates::gate_traits::DrawableGate;
 
-use super::overlay::Flat;
+use super::overlay::{Flat, flatten};
 use super::select::matched_to_axes;
 use crate::components::toast::{say, use_toast};
 
@@ -52,6 +53,18 @@ pub fn placed_on(candidate: &Candidate, file: &str) -> Option<PlacedGate> {
     candidate.placed.iter().find(|p| p.file == file).cloned()
 }
 
+/// Whether the gate's rule is still one `search` tried, so taking a
+/// candidate replaces nothing made since.
+pub fn still_as_searched(search: &Search, rules: &RuleStore) -> bool {
+    let now = rules.get(&search.target);
+    search.candidates.iter().any(|c| Some(&c.rule) == now)
+}
+
+/// Whether `candidate`'s rule can be taken for `search`'s gate.
+pub fn can_take(search: &Search, candidate: &Candidate, rules: &RuleStore) -> bool {
+    still_as_searched(search, rules) && rules.get(&search.target) != Some(&candidate.rule)
+}
+
 /// `placed` as a gate on this plot's axes.
 pub fn drawn_here(placed: &PlacedGate, x: &str, y: &str) -> Option<Arc<dyn DrawableGate>> {
     let gate = clingate_core::review::replay::drawable(
@@ -60,6 +73,14 @@ pub fn drawn_here(placed: &PlacedGate, x: &str, y: &str) -> Option<Arc<dyn Drawa
     )
     .ok()?;
     matched_to_axes(&[gate], x, y).into_iter().next()
+}
+
+/// `placed`'s outline on this plot, drawn as a candidate.
+pub fn candidate_shapes(placed: &PlacedGate, x: &str, y: &str, mapper: &PlotMapper) -> Vec<Flat> {
+    let Some(gate) = drawn_here(placed, x, y) else {
+        return Vec::new();
+    };
+    as_candidate(flatten(gate.draw_self(false, None, mapper, &None), mapper))
 }
 
 /// `shapes` drawn as a candidate: dashed, unfilled and unlabelled, in
@@ -101,25 +122,28 @@ pub fn as_candidate(shapes: Vec<Flat>) -> Vec<Flat> {
         .collect()
 }
 
+/// A candidate's score in a few words.
+pub fn standing(candidate: &Candidate) -> String {
+    match &candidate.fit {
+        Some(fit) => match fit.typical_agreement {
+            Some(typical) => format!("typical {typical:.2}, {} off", fit.off),
+            None => format!("{} off", fit.off),
+        },
+        None => "not scored".to_string(),
+    }
+}
+
 /// The candidate in a line, for the bar above the plots.
 pub fn said(candidate: &Candidate) -> String {
-    let mut line = candidate.said.clone();
-    if let Some(fit) = &candidate.fit {
-        if let Some(typical) = fit.typical_agreement {
-            line.push_str(&format!(" · typical {typical:.2}"));
-        }
-        line.push_str(&format!(" · {} off", fit.off));
-    }
+    let mut line = format!("{} · {}", candidate.said, standing(candidate));
     if candidate.current {
         line.push_str(" · the rule as it stands");
     }
     line
 }
 
-/// Above the plots, for a gate with a search kept: which candidate's gate is
-/// drawn over the gate as drawn, stepped through one at a time, and taking its
-/// rule. `here` are the searches this plot shows; `search_at` picks one and
-/// `candidate_at` its candidate, none when hidden.
+/// Above the plots: a kept search's candidates stepped through over the gate
+/// as drawn, and one's rule taken. `candidate_at` is none when hidden.
 #[component]
 pub fn SearchBar(
     here: ReadSignal<Vec<Search>>,
@@ -141,8 +165,12 @@ pub fn SearchBar(
     };
     let target = search.target.clone();
     let gate = search.gate.clone();
-    let rule = shown.filter(|c| !c.current).map(|c| c.rule.clone());
+    let changed = !still_as_searched(search, &rules.read());
+    let rule = shown
+        .filter(|c| can_take(search, c, &rules.read()))
+        .map(|c| c.rule.clone());
     let can_use = rule.is_some();
+    let searched_at = search.searched_at.clone();
     let has_before = showing.is_some_and(|at| at > 0);
     let has_after = showing.is_some_and(|at| at + 1 < count);
     rsx! {
@@ -193,7 +221,12 @@ pub fn SearchBar(
                 },
                 "Use this rule"
             }
-            span { class: "gallery-search_key", "dashed: the candidate's gate" }
+            span { class: "gallery-search_key", "dashed: the candidate's gate, where it moves it · searched {searched_at}" }
+            if changed {
+                span { class: "gallery-search_changed",
+                    "{gate}'s rule has changed since this search - search again to take a candidate"
+                }
+            }
         }
     }
 }

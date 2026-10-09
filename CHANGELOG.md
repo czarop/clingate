@@ -35,11 +35,12 @@
 
 - **A search's closest candidates on the gallery.** A search keeps its best
   candidates, those tied with them and the rule as it stands in the
-  workspace, with where each puts the gate on every sample. The Gallery
-  tab, on that gate's population, draws the candidate's gate dashed in
-  magenta over the gate as drawn and steps through them one at a time, so
-  close candidates can be told apart by eye; "Use this rule" takes the one
-  shown as the gate's rule.
+  workspace, with where each puts the gate on every sample it moves it on.
+  The Gallery tab, on that gate's population, draws the candidate's gate
+  dashed in magenta over the gate as drawn - no dashed outline where it
+  does not move the gate - and steps through them one at a time, so close
+  candidates can be told apart by eye; "Use this rule" takes the one shown
+  as the gate's rule, while the gate still has a rule the search tried.
 
 - **Picking the best rule for every gate** ("Pick the best rule for every
   gate" on the Gate Rules tab, and `pick_rule` in the tools for Claude).
@@ -438,8 +439,8 @@
 
 ### Changed
 
-- **Searching and picking rules, and rules runs, are many times faster, with
-  the same results.** The smoothed density a valley, valley-or-smear or
+- **Searching and picking rules are many times faster, and rules runs
+  faster, with the same results.** The smoothed density a valley, valley-or-smear or
   above-the-negative rule reads is worked out once for each population and
   smoothing and shared - by every candidate a search tries, and by every
   sample a run calibrates on the same reference, which each worked it out

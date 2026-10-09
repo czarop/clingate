@@ -146,6 +146,6 @@ every gate and both stages. Each gate's best rule is listed beside the
 rule as it stands, those it improves most first; one whose best is still
 typically below the off line has no rule close to the hand gating and may
 be better gated by hand. Nothing changes until a pick is taken - Use, or
-Use the best for every gate - and saved. A phenotype rule is tried only
+Use the best for every gate whose rule it does better than - and saved. A phenotype rule is tried only
 with its own settings, and a gate placed from another gate is left as it
 is.

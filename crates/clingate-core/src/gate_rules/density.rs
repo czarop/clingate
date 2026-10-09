@@ -32,10 +32,11 @@ pub fn smoothed(values: &[f64], smoothing: f64) -> Option<Arc<Density>> {
     if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
         return None;
     }
-    // Taken from the shelf, then worked out outside the lock: one search
-    // asks for the same density from many threads at once, and all but the
-    // first wait for it rather than each working it out.
-    let cell = kept().cell(key_of(values, smoothing));
+    // Hashed and worked out outside the lock: one search asks for the same
+    // density from many threads at once, and all but the first wait for it
+    // rather than each working it out.
+    let key = key_of(values, smoothing);
+    let cell = kept().cell(key);
     cell.get_or_init(|| worked_out(values, smoothing).map(Arc::new))
         .clone()
 }
@@ -161,18 +162,28 @@ mod tests {
         assert!(smoothed(&spread(50, 0.0), f64::NAN).is_none());
     }
 
+    /// A key no other test's values hash to.
+    fn key(at: usize) -> [u8; 32] {
+        let mut key = [7u8; 32];
+        key[..8].copy_from_slice(&at.to_le_bytes());
+        key
+    }
+
     #[test]
     fn the_least_recently_used_are_forgotten_beyond_the_most_kept() {
-        let values = spread(20, -1000.0);
-        let used = smoothed(&values, 1.0).unwrap();
-        let unused = smoothed(&values, 1.25).unwrap();
+        // A shelf of its own, so no other test's densities are forgotten.
+        let mut kept = Kept::default();
+        let (used_key, unused_key) = (key(usize::MAX), key(usize::MAX - 1));
+        let used = kept.cell(used_key);
+        let unused = kept.cell(unused_key);
         for at in 0..MOST_KEPT {
             if at % 64 == 0 {
-                assert!(Arc::ptr_eq(&smoothed(&values, 1.0).unwrap(), &used));
+                assert!(Arc::ptr_eq(&kept.cell(used_key), &used));
             }
-            smoothed(&spread(20, -2000.0 - at as f64), 1.0);
+            kept.cell(key(at));
         }
-        assert!(Arc::ptr_eq(&smoothed(&values, 1.0).unwrap(), &used));
-        assert!(!Arc::ptr_eq(&smoothed(&values, 1.25).unwrap(), &unused));
+        assert!(Arc::ptr_eq(&kept.cell(used_key), &used));
+        assert!(!Arc::ptr_eq(&kept.cell(unused_key), &unused));
+        assert!(kept.cells.len() <= MOST_KEPT);
     }
 }
