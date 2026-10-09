@@ -4206,13 +4206,42 @@ fn a_search_keeps_its_closest_candidates_for_the_gallery() {
     assert_eq!(kept(&folder).unwrap().len(), 1, "the same rule's search replaced");
 }
 
+/// A search whose closest candidates cannot be kept for the gallery still
+/// answers, and says they were not kept.
+#[test]
+fn a_search_that_cannot_be_kept_still_answers() {
+    use clingate_core::gate_rules::searches::searches_file;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-unkept");
+    std::fs::create_dir_all(searches_file(&folder)).unwrap();
+    let session = Session::open(&folder).unwrap();
+    let not_kept = |problems: &[String]| problems.iter().any(|p| p.contains("could not be kept"));
+
+    let ask = FitAsk {
+        defaults: true,
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+    assert!(!found.candidates.is_empty());
+    assert!(not_kept(&found.problems), "{:?}", found.problems);
+
+    let picked = session
+        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    assert!(not_kept(&picked.problems), "{:?}", picked.problems);
+}
+
 /// A rule picked for a gate - the kinds tried in order, the first that
 /// passes searched - scores as fit_rule scores the same rule, sits beside
 /// the rule as it stands, and is kept for the gallery with whether it
 /// passed; asked for every gate, each gate a rule places is picked for.
 #[test]
 fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
-    use clingate_core::gate_rules::pick::PickSettings;
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
     use clingate_core::gate_rules::searches::kept;
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-pick");
@@ -4227,19 +4256,27 @@ fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
     assert!(picked.gate.starts_with("Tmem"));
     let as_it_stands = picked.as_it_stands.as_ref().expect("Tmem has a rule");
     assert!(as_it_stands.current);
-    assert!(picked.kinds.len() >= 3, "{:#?}", picked.kinds);
-    assert!(
-        picked.tried > picked.kinds.len(),
-        "the rule as it stands, and each kind"
+    // The fixture's populations have nothing between them, so every kind
+    // holds what the hand gate holds and passes: the first, with no band
+    // given for the FMX, is above the negative, and only it is searched.
+    let tried: Vec<(Kind, bool, bool)> = picked
+        .kinds
+        .iter()
+        .map(|k| (k.kind, k.passed, k.searched))
+        .collect();
+    assert_eq!(
+        tried,
+        [
+            (Kind::AboveNegative, true, true),
+            (Kind::ValleyOrSmear, true, false),
+            (Kind::Band, true, false)
+        ]
     );
+    assert!(picked.passed);
+    assert!(matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)));
+    assert!(picked.tried > 4, "the negative's settings searched");
     assert!(picked.also_close.iter().all(|c| c.among_best));
     assert!(picked.best.placed.is_empty(), "the gates are kept, not shown");
-    if picked.passed {
-        let first = picked.kinds.iter().position(|k| k.passed).unwrap();
-        assert!(picked.kinds[first].searched, "the kind picked searched");
-    } else {
-        assert!(picked.kinds.iter().all(|k| !k.passed));
-    }
 
     let searches = kept(&folder).unwrap();
     assert_eq!(searches.len(), 1);

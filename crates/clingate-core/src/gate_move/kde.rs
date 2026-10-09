@@ -29,7 +29,9 @@ pub fn kde_1d(
 
     // Point by point, in the order given, over only the grid points each one
     // reaches: every grid point adds the same terms in the same order as it
-    // would summing every point, less those that are exactly zero.
+    // would summing every point, less those that are exactly zero - which
+    // they are while `norm` is finite, as it is for all but a subnormal
+    // bandwidth.
     let mut sums = vec![-0.0; n_points];
     for &p in points {
         for i in reached(range.0, step, n_points, p, bandwidth) {

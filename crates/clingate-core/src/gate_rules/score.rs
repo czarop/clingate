@@ -746,6 +746,22 @@ mod tests {
         assert_eq!(off_in_iqrs(&line, 10.0), Some(0.0));
     }
 
+    /// 0 to 100 out of order: quartiles 25 and 75, a median of 50.
+    #[test]
+    fn a_line_reading_s_spread_and_shape_are_of_its_values_in_any_order() {
+        let mut values: Vec<f64> = (0..=100).map(f64::from).collect();
+        values.reverse();
+        values.swap(10, 70);
+        let line = reading(0.0, values);
+        assert_eq!(line.spread(), 50.0);
+        let shape = line.shape().unwrap();
+        assert_eq!(shape.events, 101);
+        assert_eq!(
+            (shape.percentile(25.0), shape.median(), shape.percentile(75.0)),
+            (25.0, 50.0, 75.0)
+        );
+    }
+
     #[test]
     fn a_parent_with_no_spread_or_no_events_gives_no_edge_distance() {
         assert_eq!(off_in_iqrs(&reading(1.0, vec![3.0; 50]), 5.0), None);

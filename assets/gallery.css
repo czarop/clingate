@@ -236,3 +236,7 @@
     color: magenta;
     opacity: 0.8;
 }
+
+.gallery-search_changed {
+    color: hsl(30, 90%, 35%);
+}

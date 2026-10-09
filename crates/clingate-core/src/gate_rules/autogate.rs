@@ -409,7 +409,8 @@ pub struct LineReading {
     pub bound: Bound,
     /// Where the gate's leading extent on that parameter sits now.
     pub current: f64,
-    /// The parent population's values on `parameter`, for the solver.
+    /// The parent population's values on `parameter`, for the solver; not
+    /// changed once read, or `worked_out` goes stale.
     pub values: Vec<f64>,
     /// The same events, paired with how far each sits from the gate's leading
     /// boundary *at that event's own height* - negative inside the gate's
@@ -2085,7 +2086,7 @@ pub fn solve_all_reporting(
     // first had its negative read, its gate placed *and* its percentage
     // reported from the control, which is how a gate holding 6.24% came to be
     // reported as 0.016%.
-    let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    //
     // If no file resolves to a sample type, nothing here can tell a full stain
     // from its FMO, and every rule silently reads whichever file of a specimen
     // sorts first. A whole run came back unpositioned that way - every rule
@@ -2114,11 +2115,7 @@ pub fn solve_all_reporting(
             ),
         });
     }
-    chosen.extend(gated_of_each_specimen(
-        &store.pairing,
-        measurements,
-        metadata,
-    ));
+    let chosen = gated_of_each_specimen(&store.pairing, measurements, metadata);
 
     report.unplaced.extend(never_measured(
         unmeasured,

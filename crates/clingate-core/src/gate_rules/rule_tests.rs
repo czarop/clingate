@@ -795,6 +795,11 @@ fn a_rule_names_the_smoothings_it_reads_densities_at() {
         "its own for the dip, the negative's for a smear"
     );
     assert_eq!(
+        Rule::ValleyOrSmear(ValleyOrSmearRule::default()).smoothings_read(),
+        [1.0],
+        "one density when the two are the same"
+    );
+    assert_eq!(
         Rule::AboveTheNegative(AboveTheNegativeRule::default()).smoothings_read(),
         [1.0]
     );

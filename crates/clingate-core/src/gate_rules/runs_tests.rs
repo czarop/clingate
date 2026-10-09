@@ -121,19 +121,26 @@ fn metadata(files: &[(&str, &str, &str, &str)]) -> crate::omiq::metadata::MetaDa
 
 /// The files written, each with events of its own.
 fn write(name: &str, files: &[(&str, &str, &str, &str)]) -> Vec<(Arc<str>, PathBuf)> {
+    write_each(name, files, |(_, _, kind, at), seed| {
+        events(centre_of(at), seed, *kind == "FS")
+    })
+}
+
+/// The files written, each with the events `of` gives its row of `files`
+/// and its seed.
+fn write_each(
+    name: &str,
+    files: &[(&str, &str, &str, &str)],
+    of: impl Fn(&(&str, &str, &str, &str), u64) -> Vec<Vec<f32>>,
+) -> Vec<(Arc<str>, PathBuf)> {
     let dir = scratch(name);
     files
         .iter()
         .enumerate()
-        .map(|(seed, (file, _, kind, at))| {
-            let path = dir.join(format!("{file}.fcs"));
-            write_fcs_rows(
-                &path,
-                &[(X, None), (Y, None)],
-                &events(centre_of(at), seed as u64 + 1, *kind == "FS"),
-                &[],
-            );
-            (Arc::from(format!("{file}.fcs").as_str()), path)
+        .map(|(seed, row)| {
+            let path = dir.join(format!("{}.fcs", row.0));
+            write_fcs_rows(&path, &[(X, None), (Y, None)], &of(row, seed as u64 + 1), &[]);
+            (Arc::from(format!("{}.fcs", row.0).as_str()), path)
         })
         .collect()
 }
@@ -1059,13 +1066,27 @@ fn pick_cd69(
     crate::gate_rules::pick::Picked,
     Vec<crate::gate_rules::pick::Picking>,
 ) {
+    let written = write(name, &FILES);
+    let (picked, heard) = pick_cd69_on(&written, drawn, current, settings);
+    (written, picked, heard)
+}
+
+/// Pick for CD69+ on the files `written`, as [`pick_cd69`] does.
+fn pick_cd69_on(
+    written: &[(Arc<str>, PathBuf)],
+    drawn: &GateState,
+    current: GateRule,
+    settings: crate::gate_rules::pick::PickSettings,
+) -> (
+    crate::gate_rules::pick::Picked,
+    Vec<crate::gate_rules::pick::Picking>,
+) {
     use crate::gate_rules::pick::pick_rules;
 
-    let written = write(name, &FILES);
     let heard = std::sync::Mutex::new(Vec::new());
     let mut picked = pick_rules(
         drawn,
-        &inputs(&written, &FILES, store(current)),
+        &inputs(written, &FILES, store(current)),
         &[RuleTarget::under("CD69+", "Lymph")],
         settings,
         FitSettings::default(),
@@ -1074,7 +1095,22 @@ fn pick_cd69(
     )
     .unwrap();
     let (_, picked) = picked.remove(0);
-    (written, picked.unwrap(), heard.into_inner().unwrap())
+    (picked.unwrap(), heard.into_inner().unwrap())
+}
+
+/// `drawn` with gate `id` drawn by hand from `at` on each donor's files,
+/// its FMX and its full stain.
+fn drawn_on_each_donor(drawn: &mut GateState, id: &str, name: &str, at: &[(&str, f32)]) {
+    let gate: Arc<str> = Arc::from(id);
+    for (donor, x0) in at {
+        for kind in ["fmx", "fs"] {
+            drawn.place_gate(
+                std::slice::from_ref(&gate),
+                &rect(id, name, *x0),
+                &GateSource::Sample((gate.clone(), Arc::from(format!("{donor}_{kind}").as_str()))),
+            );
+        }
+    }
 }
 
 fn kinds_tried(
@@ -1206,6 +1242,12 @@ fn the_next_kind_in_order_is_searched_when_the_fmx_band_fails() {
     assert_eq!(first_total + searched_total, picked.tried);
 }
 
+/// Where CD69+ is drawn by hand on each donor's files for no one rule to
+/// put it there: in one donor's negative, through the middle of another's
+/// positives.
+const NOWHERE_ONE_RULE_PUTS_IT: [(&str, f32); 4] =
+    [("d1", 330.0), ("d2", 700.0), ("d3", 450.0), ("d4", 760.0)];
+
 /// CD69+ drawn by hand where no one rule puts it - in one donor's negative,
 /// through the middle of another's positives, on both its files - so no kind
 /// passes: every kind is tried and searched in order, the phenotype last
@@ -1216,16 +1258,7 @@ fn with_no_kind_passing_every_kind_is_searched_and_the_closest_shown_flagged() {
     use crate::gate_rules::pick::{Kind, PickSettings, Picking};
 
     let mut drawn = gates_with(-BIG, 500.0);
-    for (donor, x0) in [("d1", 330.0), ("d2", 700.0), ("d3", 450.0), ("d4", 760.0)] {
-        let cd69: Arc<str> = Arc::from("cd69");
-        for kind in ["fmx", "fs"] {
-            drawn.place_gate(
-                std::slice::from_ref(&cd69),
-                &rect("cd69", "CD69+", x0),
-                &GateSource::Sample((cd69.clone(), Arc::from(format!("{donor}_{kind}").as_str()))),
-            );
-        }
-    }
+    drawn_on_each_donor(&mut drawn, "cd69", "CD69+", &NOWHERE_ONE_RULE_PUTS_IT);
     let current = band(Pool::Specimen, MeasuredOn::Itself);
     let settings = PickSettings {
         fmx_band: Some((0.0, 0.01)),
@@ -1264,6 +1297,330 @@ fn with_no_kind_passing_every_kind_is_searched_and_the_closest_shown_flagged() {
     assert_eq!(
         read_through, 2,
         "once, and again for the phenotype: {heard:?}"
+    );
+}
+
+/// What lies beyond a donor's negative on its full stain.
+#[derive(Clone, Copy)]
+enum Beyond {
+    /// 200 positives this far above the negative.
+    Peak(f32),
+    /// This many events spread evenly from the negative to 600 above it.
+    Smear(usize),
+}
+
+/// Each donor, by its file names' start, and what lies beyond its negative.
+type Donors = [(&'static str, Beyond); 4];
+
+/// A width every population of [`donor_events`] has.
+const WIDTH: f32 = 30.0;
+
+/// One donor's file: 600 events of a negative at `row`'s centre, and on a
+/// full stain what lies `beyond` it.
+fn donor_events(row: &(&str, &str, &str, &str), seed: u64, beyond: Beyond) -> Vec<f32> {
+    let centre = centre_of(row.3);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let negative = Normal::new(centre, WIDTH).unwrap();
+    let mut xs: Vec<f32> = (0..600).map(|_| negative.sample(&mut rng)).collect();
+    if row.2 == "FS" {
+        match beyond {
+            Beyond::Peak(gap) => {
+                let positive = Normal::new(centre + gap, WIDTH).unwrap();
+                xs.extend((0..200).map(|_| positive.sample(&mut rng)));
+            }
+            Beyond::Smear(n) => {
+                xs.extend((0..n).map(|i| centre + 600.0 * (i as f32 + 0.5) / n as f32));
+            }
+        }
+    }
+    xs
+}
+
+fn beyond_of(donors: &Donors, file: &str) -> Beyond {
+    donors.iter().find(|(donor, _)| file.starts_with(donor)).unwrap().1
+}
+
+fn write_donors(name: &str, donors: &Donors) -> Vec<(Arc<str>, PathBuf)> {
+    write_each(name, &FILES, |row, seed| {
+        donor_events(row, seed, beyond_of(donors, row.0))
+            .into_iter()
+            .map(|x| vec![x, 100.0])
+            .collect()
+    })
+}
+
+/// Where 600 events of a negative at `centre` and 200 of a positive `gap`
+/// above it are least dense between the two, to a tenth.
+fn valley_between(centre: f32, gap: f32) -> f32 {
+    let bell = |x: f32, at: f32| (-0.5 * ((x - at) / WIDTH).powi(2)).exp();
+    let density = |x: f32| 600.0 * bell(x, centre) + 200.0 * bell(x, centre + gap);
+    (0..=(gap * 10.0) as usize)
+        .map(|tenths| centre + tenths as f32 / 10.0)
+        .min_by(|a, b| density(*a).total_cmp(&density(*b)))
+        .unwrap()
+}
+
+/// Midway between the events either side of the line a quarter of `xs` are
+/// above.
+fn quarter_above(mut xs: Vec<f32>) -> f32 {
+    xs.sort_by(|a, b| b.total_cmp(a));
+    let quarter = xs.len() / 4;
+    (xs[quarter - 1] + xs[quarter]) / 2.0
+}
+
+/// CD69+ drawn by hand on each donor: in its valley where it has one, with
+/// a quarter of its full stain above the line where it is a smear.
+fn drawn_by_hand(donors: &Donors) -> GateState {
+    let at: Vec<(&str, f32)> = donors
+        .iter()
+        .map(|&(donor, beyond)| {
+            let file = format!("{donor}_fs");
+            let (seed, row) = FILES.iter().enumerate().find(|(_, r)| r.0 == file).unwrap();
+            let x0 = match beyond {
+                Beyond::Peak(gap) => valley_between(centre_of(row.3), gap),
+                Beyond::Smear(_) => quarter_above(donor_events(row, seed as u64 + 1, beyond)),
+            };
+            (donor, x0)
+        })
+        .collect();
+    let mut drawn = gates_with(-BIG, 500.0);
+    drawn_on_each_donor(&mut drawn, "cd69", "CD69+", &at);
+    drawn
+}
+
+/// `rule` for CD69+, calibrated on d2's full stain.
+fn calibrated_on_d2(rule: Rule) -> GateRule {
+    GateRule {
+        parameter: Arc::from(X),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::File(Arc::from("d2_fs")),
+        rule,
+    }
+}
+
+/// A band on the FMX that puts the line in the negative, so fails.
+fn fmx_band_failing() -> crate::gate_rules::pick::PickSettings {
+    crate::gate_rules::pick::PickSettings {
+        fmx_band: Some((0.3, 0.4)),
+        ..Default::default()
+    }
+}
+
+/// Above the negative, calibrated on d2 - its positives far above its
+/// negative - cuts through the positives of d1 and d4, whose sit close; the
+/// valley, next in order, finds each donor's own dip and passes, and its
+/// settings are searched.
+#[test]
+fn the_valley_is_picked_where_above_the_negative_fails() {
+    use crate::gate_rules::pick::Kind::*;
+    use Beyond::Peak;
+
+    let donors = [
+        ("d1", Peak(150.0)),
+        ("d2", Peak(400.0)),
+        ("d3", Peak(400.0)),
+        ("d4", Peak(150.0)),
+    ];
+    let written = write_donors("pick-valley", &donors);
+    let current = calibrated_on_d2(Rule::AboveTheNegative(Default::default()));
+    let (picked, _) = pick_cd69_on(&written, &drawn_by_hand(&donors), current, fmx_band_failing());
+    assert!(picked.passed, "{picked:#?}");
+    assert_eq!(
+        kinds_tried(&picked)[..3],
+        [
+            (FmxBand, false, false),
+            (AboveNegative, false, false),
+            (ValleyOrSmear, true, true)
+        ],
+        "{picked:#?}"
+    );
+    let best = &picked.fit.candidates[0];
+    assert!(
+        matches!(&best.rule.rule, Rule::ValleyOrSmear(either) if either.smear_example.is_none()),
+        "{}",
+        best.said
+    );
+}
+
+/// Smears, each donor with more or less beyond its negative and its gate a
+/// quarter of the way down: no one distance above the negative fits them,
+/// nor the valley with a smear example, but a band read on each sample
+/// does.
+#[test]
+fn the_band_on_the_sample_is_picked_where_every_kind_before_it_fails() {
+    use crate::gate_rules::pick::Kind::*;
+    use Beyond::Smear;
+
+    let donors = [
+        ("d1", Smear(100)),
+        ("d2", Smear(300)),
+        ("d3", Smear(200)),
+        ("d4", Smear(400)),
+    ];
+    let written = write_donors("pick-band", &donors);
+    let current = band(Pool::Specimen, MeasuredOn::Itself);
+    let (picked, _) = pick_cd69_on(&written, &drawn_by_hand(&donors), current, fmx_band_failing());
+    assert!(picked.passed, "{picked:#?}");
+    assert_eq!(
+        kinds_tried(&picked),
+        [
+            (FmxBand, false, false),
+            (AboveNegative, false, false),
+            (ValleyOrSmear, false, false),
+            (Band, true, true)
+        ],
+        "the phenotype not tried: {picked:#?}"
+    );
+    let best = &picked.fit.candidates[0];
+    assert!(matches!(best.rule.rule, Rule::TailFraction(_)), "{}", best.said);
+    assert_eq!(best.rule.measured_on, MeasuredOn::Itself);
+}
+
+/// The valley meets d4, a smear, with no smear example and cannot place it,
+/// so fails as the hand gating starts it; tried again with d4 as its smear
+/// example, it passes, and is searched from there.
+#[test]
+fn the_valley_is_tried_again_with_the_first_smear_it_met_as_its_example() {
+    use crate::gate_rules::pick::Kind::*;
+    use Beyond::{Peak, Smear};
+
+    let donors = [
+        ("d1", Peak(150.0)),
+        ("d2", Peak(400.0)),
+        ("d3", Peak(400.0)),
+        ("d4", Smear(200)),
+    ];
+    let written = write_donors("pick-smear-example", &donors);
+    let current = calibrated_on_d2(Rule::AboveTheNegative(Default::default()));
+    let (picked, _) = pick_cd69_on(&written, &drawn_by_hand(&donors), current, fmx_band_failing());
+    assert!(picked.passed, "{picked:#?}");
+    assert_eq!(kinds_tried(&picked)[2], (ValleyOrSmear, true, true), "{picked:#?}");
+    let best = &picked.fit.candidates[0];
+    let Rule::ValleyOrSmear(either) = &best.rule.rule else {
+        panic!("{}", best.said);
+    };
+    assert_eq!(either.smear_example.as_deref(), Some("d4_fs"));
+    assert!(
+        picked.fit.candidates.iter().all(|c| c.current
+            || matches!(&c.rule.rule, Rule::ValleyOrSmear(e) if e.smear_example.is_some())),
+        "only the valley with its example contends"
+    );
+}
+
+/// A gate whose rule matches a phenotype is tried only by its phenotype:
+/// the one kind, its settings searched.
+#[test]
+fn a_gate_matched_by_its_phenotype_is_tried_only_so() {
+    use crate::gate_rules::pick::Kind;
+    use crate::gate_rules::rule::PhenotypeRule;
+
+    let current = calibrated_on_d2(Rule::MatchThePhenotype(PhenotypeRule {
+        markers: vec![Arc::from(X), Arc::from(Y)],
+        ..PhenotypeRule::default()
+    }));
+    let (_, picked, _) = pick_cd69(
+        "pick-phenotype",
+        &gates_with(-BIG, 500.0),
+        current,
+        fmx_band_failing(),
+    );
+    let tried: Vec<(Kind, bool)> = picked.kinds.iter().map(|k| (k.kind, k.searched)).collect();
+    assert_eq!(tried, [(Kind::Phenotype, true)], "{picked:#?}");
+    assert!(picked.tried > 1, "its settings searched");
+    assert!(
+        picked
+            .fit
+            .candidates
+            .iter()
+            .all(|c| matches!(c.rule.rule, Rule::MatchThePhenotype(_)))
+    );
+}
+
+/// Two gates picked together are each picked as if alone: CD69+ passes on
+/// the band on the FMX at once, while CD25+ - drawn where no one rule puts
+/// it - has every kind searched, the files read again for the phenotype,
+/// and is flagged.
+#[test]
+fn gates_picked_together_are_each_picked_as_if_alone() {
+    use crate::gate_rules::pick::{Kind, PickSettings, pick_rules};
+
+    let written = write("pick-two-gates", &FILES);
+    let mut drawn = gates_with(-BIG, 500.0);
+    drawn.place_gate(
+        &[Arc::from("cd25")],
+        &rect("cd25", "CD25+", 500.0),
+        &GateSource::Global,
+    );
+    drawn
+        .place_new_gate(Some(Arc::from("lymph")), Arc::from("cd25"))
+        .unwrap();
+    drawn_on_each_donor(&mut drawn, "cd25", "CD25+", &NOWHERE_ONE_RULE_PUTS_IT);
+    let cd69 = RuleTarget::under("CD69+", "Lymph");
+    let cd25 = RuleTarget::under("CD25+", "Lymph");
+    let mut rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    rules.insert(cd25.clone(), band(Pool::Specimen, MeasuredOn::Itself));
+    let inputs = inputs(&written, &FILES, rules);
+    let settings = PickSettings {
+        fmx_band: Some((0.0, 0.01)),
+        ..PickSettings::default()
+    };
+    let pick = |targets: &[RuleTarget]| {
+        pick_rules(
+            &drawn,
+            &inputs,
+            targets,
+            settings,
+            FitSettings::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap()
+    };
+
+    let together = pick(&[cd69.clone(), cd25.clone()]);
+    let first = together[0].1.as_ref().unwrap();
+    let second = together[1].1.as_ref().unwrap();
+    assert!(first.passed && !second.passed);
+    assert!(first.kinds.iter().all(|k| !k.searched));
+    assert!(second.kinds.iter().all(|k| k.searched == (k.kind != Kind::FmxBand)));
+    assert_eq!(second.kinds.last().unwrap().kind, Kind::Phenotype);
+    assert_eq!(together[0], pick(std::slice::from_ref(&cd69))[0]);
+    assert_eq!(together[1], pick(std::slice::from_ref(&cd25))[0]);
+}
+
+/// With an FMX band asked for but no partner to read it on - the rule reads
+/// none, and the pairing shows one sample type - a pick says so.
+#[test]
+fn a_band_on_the_fmx_that_cannot_be_tried_is_said() {
+    use crate::gate_rules::pick::{Kind, PickSettings, pick_rules};
+
+    let written = write("pick-no-fmx", &FILES);
+    let mut rules = store(band(Pool::Specimen, MeasuredOn::Itself));
+    rules.pairing.display_order = vec![Arc::from("FS")];
+    let settings = PickSettings {
+        fmx_band: Some((0.0, 0.01)),
+        ..PickSettings::default()
+    };
+    let picked = pick_rules(
+        &gates_with(-BIG, 500.0),
+        &inputs(&written, &FILES, rules),
+        &[RuleTarget::under("CD69+", "Lymph")],
+        settings,
+        FitSettings::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let picked = picked[0].1.as_ref().unwrap();
+    assert!(picked.kinds.iter().all(|k| k.kind != Kind::FmxBand));
+    assert!(
+        picked
+            .fit
+            .problems
+            .iter()
+            .any(|p| p.contains("no band was tried on the FMX")),
+        "{:?}",
+        picked.fit.problems
     );
 }
 
@@ -1318,17 +1675,8 @@ fn the_reference_calibrated_on_is_the_typical_hand_gated_sample() {
 
     let written = write("pick-typical", &FILES);
     let mut drawn = gates_with(-BIG, 500.0);
-    let drawn_at = [("d1", 330.0), ("d2", 700.0), ("d3", 450.0), ("d4", 760.0)];
-    for (donor, x0) in drawn_at {
-        let cd69: Arc<str> = Arc::from("cd69");
-        for kind in ["fmx", "fs"] {
-            drawn.place_gate(
-                std::slice::from_ref(&cd69),
-                &rect("cd69", "CD69+", x0),
-                &GateSource::Sample((cd69.clone(), Arc::from(format!("{donor}_{kind}").as_str()))),
-            );
-        }
-    }
+    let drawn_at = NOWHERE_ONE_RULE_PUTS_IT;
+    drawn_on_each_donor(&mut drawn, "cd69", "CD69+", &drawn_at);
     let inputs = inputs(
         &written,
         &FILES,

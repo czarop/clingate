@@ -221,6 +221,7 @@ fn kde_1d_is_exactly_every_point_summed_at_every_grid_point() {
         (two_peaks.clone(), (lo, hi), 512, bandwidth * 50.0),
         (two_peaks.clone(), (-1.0, 2.0), 64, bandwidth),
         (two_peaks.clone(), (2.0, -1.0), 64, bandwidth),
+        (two_peaks.clone(), (1.0, 1.0), 16, bandwidth),
         (vec![0.0, 1.0, 2.0], (0.0, 1000.0), 2, 0.001),
         (vec![0.0, 1.0, 2.0], (-1.0, 3.0), 16, 0.0001),
         (vec![0.25, f64::INFINITY, 0.75], (0.0, 1.0), 32, 0.1),

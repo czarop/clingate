@@ -362,7 +362,7 @@ impl Readings {
     pub(crate) fn read(
         gates: &GateState,
         inputs: &RunInputs,
-        rules: &[(&RuleTarget, &GateRule)],
+        rules: &[Job<'_>],
         cancel: &AtomicBool,
         progress: impl Fn(usize, usize) + Sync,
     ) -> Self {
@@ -486,7 +486,7 @@ impl Readings {
 }
 
 /// A rule, as its target's.
-type Job<'a> = (&'a RuleTarget, &'a GateRule);
+pub(crate) type Job<'a> = (&'a RuleTarget, &'a GateRule);
 
 /// The densities of one reading's lines at one smoothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -503,7 +503,7 @@ struct Batch {
 }
 
 /// The most densities worked out ahead of a batch of jobs: half of those
-/// kept, so none is forgotten before it is read.
+/// kept, so that few are forgotten before they are read.
 const DENSITIES_AHEAD: usize = crate::gate_rules::density::MOST_KEPT / 2;
 
 /// Jobs, in order, cut into runs reading no more than `most` densities -
@@ -514,16 +514,22 @@ fn batches(read: &[Vec<Densities>], lines: impl Fn(Densities) -> usize, most: us
     let mut batch = Batch::default();
     let mut counted = 0;
     for (job, densities) in read.iter().enumerate() {
-        let new: Vec<Densities> = densities
-            .iter()
-            .copied()
-            .filter(|d| !batch.densities.contains(d))
-            .collect();
-        let more: usize = new.iter().map(|&d| lines(d)).sum();
+        let unread = |batch: &Batch| {
+            let mut new: Vec<Densities> = Vec::new();
+            for &d in densities {
+                if !batch.densities.contains(&d) && !new.contains(&d) {
+                    new.push(d);
+                }
+            }
+            let more: usize = new.iter().map(|&d| lines(d)).sum();
+            (new, more)
+        };
+        let (mut new, mut more) = unread(&batch);
         if counted + more > most && !batch.jobs.is_empty() {
             batches.push(std::mem::take(&mut batch));
             batch.jobs = job..job;
             counted = 0;
+            (new, more) = unread(&batch);
         }
         batch.jobs.end = job + 1;
         batch.densities.extend(new);
@@ -621,7 +627,7 @@ pub(crate) fn ranked_fit(
     problems: Vec<String>,
     files_read: usize,
 ) -> Fit {
-    let split = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
+    let split = halves_of(scored, fit);
     let scored: Vec<&Solved> = scored.iter().collect();
     ranked_on(
         target, tried, current, &scored, fit, split, problems, files_read,
@@ -680,19 +686,19 @@ pub(crate) fn ranked_on(
         .iter()
         .enumerate()
         .map(|(at, &i)| {
-            let current = current == Some(&tried[i]);
+            let is_current = current == Some(&tried[i]);
             let among_best = at < among_best;
             Candidate {
                 rule: tried[i].clone(),
                 said: tried[i].rule.describe(),
-                current,
+                current: is_current,
                 fit: fits[i].clone(),
                 check: checks[i].clone(),
                 place_by_typical: place_of(&by_typical, i),
                 place_by_off: place_of(&by_off, i),
                 place_on_check: checked.as_ref().map(|order| place_of(order, i)),
                 among_best,
-                placed: if among_best || current {
+                placed: if among_best || is_current {
                     scored[i].placed.clone()
                 } else {
                     Vec::new()
@@ -730,7 +736,7 @@ pub fn fit_rules(
         .iter()
         .map(|ask| tried_for(&inputs.rules, ask))
         .collect();
-    let jobs: Vec<(&RuleTarget, &GateRule)> = asks
+    let jobs: Vec<Job<'_>> = asks
         .iter()
         .zip(&tried)
         .flat_map(|(ask, rules)| rules.iter().flatten().map(move |rule| (&ask.target, rule)))
@@ -844,6 +850,16 @@ mod tests {
             cut(&[vec![a], vec![big], vec![b]], 6),
             [(0..1, vec![0]), (1..2, vec![9]), (2..3, vec![1])],
             "a job reading more than the most goes alone"
+        );
+        assert_eq!(
+            cut(&[vec![a], vec![b], vec![b, c]], 6),
+            [(0..2, vec![0, 1]), (2..3, vec![1, 2])],
+            "a density read before a cut is read again after it"
+        );
+        assert_eq!(
+            cut(&[vec![a, a], vec![b]], 6),
+            [(0..2, vec![0, 1])],
+            "a density a job names twice counts once"
         );
     }
 
