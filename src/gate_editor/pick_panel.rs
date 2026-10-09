@@ -1,5 +1,6 @@
-//! Picking the best rule for every gate against the gating drawn by hand,
-//! from the Gate Rules tab - its kind as well as its settings, as the tools
+//! Picking a rule for every gate against the gating drawn by hand, from the
+//! Gate Rules tab - its kind as well as its settings, the kinds tried in the
+//! user's order of preference until one passes their cut-off, as the tools
 //! for Claude pick with `pick_rule` - and taking the picks. Close picks are
 //! stepped through on the Gallery tab.
 
@@ -9,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use dioxus::prelude::*;
 
 use clingate_core::gate_rules::fit::{Candidate, FitSettings};
-use clingate_core::gate_rules::pick::{Picking, fits_well, gain};
+use clingate_core::gate_rules::pick::{
+    KindTried, PickSettings, Picking, gain, keep_settings, kept_settings,
+};
 use clingate_core::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget};
 use clingate_core::gate_rules::score::ScoreSettings;
 use clingate_core::gate_rules::searches::{Search, keep_all, kept, pick_every_rule};
@@ -50,6 +53,89 @@ pub(crate) fn choice(search: &Search, rules: &RuleStore) -> Choice {
     }
 }
 
+/// The pick settings as typed: the FMX band's ends and the most samples off
+/// in percent, the agreement as a share.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Typed {
+    pub fmx_lowest: String,
+    pub fmx_highest: String,
+    pub agreement: String,
+    pub most_off: String,
+}
+
+/// A share as a percentage, to a millionth of a percent.
+fn percent(share: f64) -> String {
+    format!("{}", (share * 100.0 * 1e6).round() / 1e6)
+}
+
+impl Typed {
+    /// `settings` as the fields show them.
+    pub(crate) fn of(settings: &PickSettings) -> Self {
+        let (lowest, highest) = settings
+            .fmx_band
+            .map_or((String::new(), String::new()), |(lowest, highest)| {
+                (percent(lowest), percent(highest))
+            });
+        Self {
+            fmx_lowest: lowest,
+            fmx_highest: highest,
+            agreement: format!("{}", settings.score.off_below),
+            most_off: percent(settings.most_off),
+        }
+    }
+
+    /// The settings typed, keeping `kept`'s allowance for counting noise, or
+    /// what is wrong with them. Both ends of the band left empty try no band
+    /// on the FMX.
+    pub(crate) fn settings(&self, kept: &PickSettings) -> Result<PickSettings, String> {
+        let number = |typed: &str, what: &str| {
+            typed
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("The {what} must be a number - not \"{typed}\""))
+        };
+        let fmx_band = match (self.fmx_lowest.trim(), self.fmx_highest.trim()) {
+            ("", "") => None,
+            ("", _) | (_, "") => {
+                return Err("Give both ends of the FMX band, or neither".to_string());
+            }
+            (lowest, highest) => Some((
+                number(lowest, "FMX band's lowest")? / 100.0,
+                number(highest, "FMX band's highest")? / 100.0,
+            )),
+        };
+        PickSettings {
+            fmx_band,
+            score: ScoreSettings {
+                off_below: number(&self.agreement, "agreement")?,
+                ..kept.score
+            },
+            most_off: number(&self.most_off, "share of samples off")? / 100.0,
+        }
+        .checked()
+    }
+}
+
+/// How each kind of rule tried did, in a line.
+fn tried_said(kinds: &[KindTried]) -> String {
+    kinds
+        .iter()
+        .map(|kind| {
+            let mut said = format!(
+                "{}: {} of {} off",
+                kind.kind.describe(),
+                kind.off,
+                kind.judged
+            );
+            if kind.passed {
+                said.push_str(", passed");
+            }
+            said
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// A gate's pick in a line of the list.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Line {
@@ -60,7 +146,10 @@ pub(crate) struct Line {
     /// How much higher the best's typical agreement is than the rule it was
     /// picked against.
     pub gain: Option<f64>,
-    pub fits_well: bool,
+    /// Whether the best passed the cut-off; false is only the closest.
+    pub passed: Option<bool>,
+    /// How each kind tried did.
+    pub tried: String,
     pub choice: Choice,
 }
 
@@ -75,9 +164,9 @@ fn standing(candidate: &Candidate) -> String {
     }
 }
 
-/// The kept picks as lines against `rules`, those where the best does most
-/// better first.
-pub(crate) fn lines(searches: &[Search], rules: &RuleStore, settings: &ScoreSettings) -> Vec<Line> {
+/// The kept picks as lines against `rules`: those flagged first, then those
+/// where the best does most better.
+pub(crate) fn lines(searches: &[Search], rules: &RuleStore) -> Vec<Line> {
     let mut lines: Vec<Line> = searches
         .iter()
         .filter_map(|search| {
@@ -89,14 +178,18 @@ pub(crate) fn lines(searches: &[Search], rules: &RuleStore, settings: &ScoreSett
                 best: format!("{} - {}", best.said, standing(best)),
                 as_it_stands: current.map_or("no rule".to_string(), standing),
                 gain: gain(&search.candidates),
-                fits_well: fits_well(&search.candidates, settings),
+                passed: search.passed,
+                tried: tried_said(&search.kinds),
                 choice: choice(search, rules),
             })
         })
         .collect();
     lines.sort_by(|a, b| {
+        let flagged = |line: &Line| line.passed == Some(false);
         let gain = |line: &Line| line.gain.unwrap_or(f64::NEG_INFINITY);
-        gain(b).total_cmp(&gain(a))
+        flagged(b)
+            .cmp(&flagged(a))
+            .then(gain(b).total_cmp(&gain(a)))
     });
     lines
 }
@@ -135,8 +228,17 @@ pub fn PickPanel() -> Element {
             .map(|folder| kept(folder).unwrap_or_default())
             .unwrap_or_default()
     });
-    let listed =
-        use_memo(move || lines(&searches.read(), &rules.read(), &ScoreSettings::default()));
+    let listed = use_memo(move || lines(&searches.read(), &rules.read()));
+    let kept_in = use_memo(move || {
+        loaded
+            .read()
+            .folder
+            .as_deref()
+            .map(kept_settings)
+            .unwrap_or_default()
+    });
+    let mut typed = use_signal(|| Typed::of(&PickSettings::default()));
+    use_effect(move || typed.set(Typed::of(&kept_in())));
     let mut take = move |picks: Vec<(RuleTarget, GateRule)>| {
         let count = picks.len();
         {
@@ -174,6 +276,19 @@ pub fn PickPanel() -> Element {
                 );
                 return;
             }
+            let settings = match typed.peek().settings(&kept_in.peek()) {
+                Ok(settings) => settings,
+                Err(why) => {
+                    warn(&toasts, why);
+                    return;
+                }
+            };
+            if let Err(e) = keep_settings(&folder, &settings) {
+                warn(
+                    &toasts,
+                    format!("The settings could not be kept for next time: {e}"),
+                );
+            }
             running.set(true);
             progress.set(Some(Picking::Reading { done: 0, total: 0 }));
             let snapshot = gate_store.read().clone();
@@ -188,7 +303,7 @@ pub fn PickPanel() -> Element {
                     pick_every_rule(
                         &snapshot,
                         &inputs,
-                        ScoreSettings::default(),
+                        settings,
                         FitSettings::default(),
                         &flag,
                         |step| {
@@ -248,7 +363,43 @@ pub fn PickPanel() -> Element {
         fieldset { class: "gate_rules-form",
             legend { "Pick the best rule" }
             p { class: "gate_rules-hint gate_rules-span",
-                "For every gate a rule places, tries each kind of rule that can place it - a band read on the FMX and on the sample, above the negative read two ways, the valley with and without a smear - each started from where your hand gating says, then searches the settings of the best kind. Every rule is scored against the gates as drawn by hand, each gate under its parent as drawn; the files are read once. Nothing changes until you take a pick. A gate placed from another gate is left as it is."
+                "For every gate a rule places, tries the kinds of rule in order - a band read on the FMX at the range below; above the negative; the valley, or a smear; a band read on the sample; and last, the phenotype on the plot's two axes - and takes the first that passes, then searches its settings. The negative, the valley and the phenotype are calibrated on one sample you gated by hand. Every rule is scored against your gates, each gate under its parent as drawn. Nothing changes until you take a pick. A gate placed from another gate is left as it is."
+            }
+            label { "FMX band (%)" }
+            div { class: "gate_rules-band",
+                input {
+                    r#type: "number",
+                    step: "any",
+                    value: "{typed.read().fmx_lowest}",
+                    oninput: move |e| typed.write().fmx_lowest = e.value(),
+                }
+                "to"
+                input {
+                    r#type: "number",
+                    step: "any",
+                    value: "{typed.read().fmx_highest}",
+                    oninput: move |e| typed.write().fmx_highest = e.value(),
+                }
+            }
+            p { class: "gate_rules-hint gate_rules-span",
+                "The share of each specimen's FMX events above the line you accept. Tried first, as it is. Leave both empty to skip it."
+            }
+            label { "Off below agreement" }
+            input {
+                r#type: "number",
+                step: "0.01",
+                value: "{typed.read().agreement}",
+                oninput: move |e| typed.write().agreement = e.value(),
+            }
+            label { "Most samples off (%)" }
+            input {
+                r#type: "number",
+                step: "1",
+                value: "{typed.read().most_off}",
+                oninput: move |e| typed.write().most_off = e.value(),
+            }
+            p { class: "gate_rules-hint gate_rules-span",
+                "A rule passes when no more than this share of the samples agree less than the agreement with your gate. Kept with the workspace for every pick after, and used by Claude's picks too."
             }
             button {
                 class: "gate_rules-add",
@@ -279,7 +430,7 @@ pub fn PickPanel() -> Element {
             }
             if !listed.read().is_empty() {
                 p { class: "gate_rules-hint gate_rules-span",
-                    "Step through a gate's closest picks over your gate on the Gallery tab. A pick marked \"no close rule\" is the best tried but still far from your gating - that gate may be better gated by hand."
+                    "Step through a gate's closest picks over your gate on the Gallery tab. A flagged pick passed nothing: it is only the closest of everything tried, and that gate may be better gated by hand. Point at a gate to see how each kind did."
                 }
                 button {
                     class: "gate_rules-add",
@@ -301,12 +452,14 @@ pub fn PickPanel() -> Element {
                     }
                     tbody {
                         for (at , line) in listed.read().iter().enumerate() {
-                            tr { key: "{at}",
+                            tr { key: "{at}", title: "{line.tried}",
                                 td { "{line.gate}" }
                                 td {
                                     "{line.best}"
-                                    if !line.fits_well {
-                                        " - no close rule"
+                                    if line.passed == Some(false) {
+                                        span { class: "gate_rules-weak",
+                                            " - flagged: nothing passed, the closest of all tried"
+                                        }
                                     }
                                 }
                                 td { "{line.as_it_stands}" }
@@ -394,6 +547,15 @@ mod tests {
             target: RuleTarget::named(gate),
             gate: gate.to_string(),
             candidates,
+            passed: None,
+            kinds: Vec::new(),
+        }
+    }
+
+    fn picked(gate: &str, candidates: Vec<Candidate>, passed: bool) -> Search {
+        Search {
+            passed: Some(passed),
+            ..search(gate, candidates)
         }
     }
 
@@ -431,38 +593,141 @@ mod tests {
     }
 
     #[test]
-    fn the_gates_where_the_best_does_most_better_come_first_and_can_all_be_taken() {
+    fn the_flagged_gates_come_first_then_where_the_best_does_most_better() {
         let searches = [
-            search(
+            picked(
                 "CD25+",
                 vec![
                     candidate(valley(), 0.90, 1, false),
                     candidate(band(), 0.85, 3, true),
                 ],
+                true,
             ),
-            search("CD69+", vec![candidate(band(), 0.95, 0, true)]),
-            search(
+            picked("CD69+", vec![candidate(band(), 0.95, 0, true)], true),
+            picked(
                 "CD4+",
                 vec![
                     candidate(valley(), 0.72, 5, false),
                     candidate(band(), 0.50, 9, true),
                 ],
+                true,
+            ),
+            picked(
+                "CD8+",
+                vec![
+                    candidate(valley(), 0.70, 6, false),
+                    candidate(band(), 0.69, 6, true),
+                ],
+                false,
             ),
         ];
-        let now = rules(&[("CD25+", band()), ("CD69+", band()), ("CD4+", band())]);
-        let listed = lines(&searches, &now, &ScoreSettings::default());
+        let now = rules(&[
+            ("CD25+", band()),
+            ("CD69+", band()),
+            ("CD4+", band()),
+            ("CD8+", band()),
+        ]);
+        let listed = lines(&searches, &now);
         let gates: Vec<&str> = listed.iter().map(|l| l.gate.as_str()).collect();
-        assert_eq!(gates, ["CD4+", "CD25+", "CD69+"]);
-        assert_eq!(listed[0].as_it_stands, "typical 0.50, 9 off");
-        assert!(!listed[0].fits_well, "0.72 is below the off line of 0.8");
-        assert!(listed[1].fits_well);
-        assert_eq!(listed[2].choice, Choice::InUse);
+        assert_eq!(gates, ["CD8+", "CD4+", "CD25+", "CD69+"]);
+        assert_eq!(
+            listed[0].passed,
+            Some(false),
+            "flagged, though it gains least"
+        );
+        assert_eq!(listed[1].as_it_stands, "typical 0.50, 9 off");
+        assert_eq!(listed[3].choice, Choice::InUse);
         assert_eq!(
             takeable(&listed),
             [
+                (RuleTarget::named("CD8+"), valley()),
                 (RuleTarget::named("CD4+"), valley()),
                 (RuleTarget::named("CD25+"), valley())
-            ]
+            ],
+            "a flagged pick can still be taken"
         );
+        assert_eq!(
+            lines(
+                &[search("CD69+", vec![candidate(band(), 0.95, 0, true)])],
+                &now
+            )[0]
+            .passed,
+            None,
+            "a search of a rule's settings is no pick"
+        );
+    }
+
+    #[test]
+    fn each_kind_tried_is_said_in_the_line() {
+        use clingate_core::gate_rules::pick::Kind;
+        let tried = |kind, off, passed| KindTried {
+            kind,
+            searched: false,
+            closest: String::new(),
+            off,
+            judged: 20,
+            typical_agreement: None,
+            passed,
+        };
+        let search = Search {
+            kinds: vec![
+                tried(Kind::FmxBand, 4, false),
+                tried(Kind::ValleyOrSmear, 1, true),
+            ],
+            ..picked("CD69+", vec![candidate(band(), 0.95, 0, true)], true)
+        };
+        let line = &lines(&[search], &rules(&[("CD69+", band())]))[0];
+        assert_eq!(
+            line.tried,
+            format!(
+                "{}: 4 of 20 off; {}: 1 of 20 off, passed",
+                Kind::FmxBand.describe(),
+                Kind::ValleyOrSmear.describe()
+            )
+        );
+    }
+
+    fn typed(lowest: &str, highest: &str, agreement: &str, most_off: &str) -> Typed {
+        Typed {
+            fmx_lowest: lowest.into(),
+            fmx_highest: highest.into(),
+            agreement: agreement.into(),
+            most_off: most_off.into(),
+        }
+    }
+
+    #[test]
+    fn the_settings_are_typed_in_percent_and_read_back_as_shares() {
+        let kept = PickSettings {
+            score: ScoreSettings {
+                noise_widths: 2.0,
+                ..PickSettings::default().score
+            },
+            ..PickSettings::default()
+        };
+        let read = typed("0.5", "1", "0.9", "20").settings(&kept).unwrap();
+        assert_eq!(read.fmx_band, Some((0.005, 0.01)));
+        assert_eq!((read.score.off_below, read.most_off), (0.9, 0.2));
+        assert_eq!(read.score.noise_widths, 2.0, "the allowance kept");
+        assert_eq!(Typed::of(&read), typed("0.5", "1", "0.9", "20"));
+        assert_eq!(
+            Typed::of(&PickSettings::default()),
+            typed("", "", "0.95", "10"),
+            "no band, 0.95, a tenth"
+        );
+        let no_band = typed(" ", "", "0.95", "10").settings(&kept).unwrap();
+        assert_eq!(no_band.fmx_band, None);
+    }
+
+    #[test]
+    fn settings_typed_wrong_say_what_is_wrong() {
+        let kept = PickSettings::default();
+        let wrong = |t: Typed| t.settings(&kept).unwrap_err();
+        assert!(wrong(typed("0.5", "", "0.95", "10")).contains("both ends"));
+        assert!(wrong(typed("half", "1", "0.95", "10")).contains("lowest"));
+        assert!(wrong(typed("0.5", "1", "high", "10")).contains("agreement"));
+        assert!(wrong(typed("0.5", "1", "0.95", "")).contains("samples off"));
+        assert!(wrong(typed("2", "1", "0.95", "10")).contains("FMX band"));
+        assert!(wrong(typed("", "", "0.95", "150")).contains("most_off"));
     }
 }

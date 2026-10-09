@@ -334,6 +334,42 @@ fn unmeasured_row(
     }
 }
 
+/// A row for `file` that the rule could not place, for `reason`.
+#[cfg(test)]
+pub(crate) fn refused_row(file: &str, reason: &str) -> ScoreRow {
+    unmeasured_row(
+        &Default::default(),
+        &RuleStore::default(),
+        &crate::gate_rules::autogate::Unplaced {
+            gate_id: "g".into(),
+            gate: "G".into(),
+            parent_gate: None,
+            file: file.into(),
+            specimen: None,
+            reason: reason.to_string(),
+        },
+    )
+}
+
+/// A row for `file` whose two gates hold 1,000 events each, `both` of them
+/// the same: an agreement of `both` / 1,000.
+#[cfg(test)]
+pub(crate) fn agreeing_row(file: &str, both: usize, settings: ScoreSettings) -> ScoreRow {
+    let events = Shared {
+        hand: 1_000,
+        rule: 1_000,
+        both,
+    };
+    ScoreRow {
+        what: "moved",
+        events: Some(events),
+        agreement: Some(events.agreement()),
+        off_line: Some(settings.off_line(events)),
+        why_not: None,
+        ..refused_row(file, "")
+    }
+}
+
 /// One rule's run, read back sample by sample.
 struct RunRows<'a> {
     settings: ScoreSettings,

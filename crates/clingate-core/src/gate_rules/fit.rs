@@ -412,6 +412,34 @@ impl Readings {
         }
     }
 
+    /// Read the files again for each of `rules` not yet read for, as its
+    /// target's rule, keeping what was read before.
+    pub(crate) fn read_more(
+        &mut self,
+        gates: &GateState,
+        inputs: &RunInputs,
+        rules: &[(&RuleTarget, &GateRule)],
+        cancel: &AtomicBool,
+        progress: impl Fn(usize, usize) + Sync,
+    ) {
+        let unread: Vec<(&RuleTarget, &GateRule)> = rules
+            .iter()
+            .copied()
+            .filter(|&(target, rule)| self.reading_of(target, rule).is_none())
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        let more = Self::read(gates, inputs, &unread, cancel, progress);
+        self.shapes.extend(more.shapes);
+        self.measured.extend(more.measured);
+        for problem in more.problems {
+            if !self.problems.contains(&problem) {
+                self.problems.push(problem);
+            }
+        }
+    }
+
     /// What `rule` solves on as `target`'s rule, if the files were read for it.
     pub(crate) fn of(&self, target: &RuleTarget, rule: &GateRule) -> Option<&Measured> {
         self.reading_of(target, rule)
@@ -600,6 +628,37 @@ pub(crate) fn ranked_fit(
     current: Option<&GateRule>,
     scored: &[Solved],
     fit: FitSettings,
+    problems: Vec<String>,
+    files_read: usize,
+) -> Fit {
+    let split = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
+    let scored: Vec<&Solved> = scored.iter().collect();
+    ranked_on(
+        target, tried, current, &scored, fit, split, problems, files_read,
+    )
+}
+
+/// The specimens `scored` are ranked on and checked on.
+pub(crate) fn halves_of<'s>(
+    scored: impl IntoIterator<Item = &'s Solved>,
+    fit: FitSettings,
+) -> (Vec<String>, Vec<String>) {
+    halves(
+        scored.into_iter().flat_map(|solved| &solved.rows),
+        fit.split,
+    )
+}
+
+/// `scored`, one for each of `tried` in turn, ranked as `fit` says on the
+/// specimens `fit_on` names and checked on those `checked_on` names.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ranked_on(
+    target: &RuleTarget,
+    tried: &[GateRule],
+    current: Option<&GateRule>,
+    scored: &[&Solved],
+    fit: FitSettings,
+    (fit_on, checked_on): (Vec<String>, Vec<String>),
     mut problems: Vec<String>,
     files_read: usize,
 ) -> Fit {
@@ -608,7 +667,6 @@ pub(crate) fn ranked_fit(
             problems.push(refused.clone());
         }
     }
-    let (fit_on, checked_on) = halves(scored.iter().flat_map(|solved| &solved.rows), fit.split);
     let fits: Vec<Option<GateScore>> = scored
         .iter()
         .map(|solved| summed_on(&solved.rows, &fit_on))

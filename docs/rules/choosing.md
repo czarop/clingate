@@ -135,17 +135,40 @@ dashed over the gate as drawn, one candidate at a time, with a button to
 take its rule.
 
 To pick the kind of rule as well as its settings, pick it (`pick_rule`, or
-"Pick the best rule for every gate" on the Gate Rules tab). For each gate
-it tries every kind that can place it, once each, started from the hand
-gating: a band around what the hand-drawn gates hold, on the FMX and on
-the sample itself; above the negative, found both ways; the valley, with
-and without a smear. Then it searches the settings of the best kind - and
-of the next kind when its typical agreement came within 0.05 of the best -
-and ranks everything tried together. One reading of the files serves
-every gate and both stages. Each gate's best rule is listed beside the
-rule as it stands, those it improves most first; one whose best is still
-typically below the off line has no rule close to the hand gating and may
-be better gated by hand. Nothing changes until a pick is taken - Use, or
-Use the best for every gate - and saved. A phenotype rule is tried only
-with its own settings, and a gate placed from another gate is left as it
-is.
+"Pick the best rule for every gate" on the Gate Rules tab). The kinds are
+tried in order of preference, and the first that passes is taken:
+
+1. A band read on each specimen's FMX, at the range the user accepts -
+   tried as it is, its settings never searched.
+2. Above the negative.
+3. The valley, or a smear.
+4. A band read on each sample, around what the hand gates hold there.
+5. The phenotype on the plot's two axes - the last resort.
+
+The negative, the valley and the phenotype are calibrated, as the Gate
+Rules tab makes them, on one sample gated by hand: the one the rule as it
+stands is calibrated on, or else the specimen whose hand gate holds the
+middle share of its parent. That sample is not scored. Read on each sample
+itself they would only find each sample's own hand gate. A valley or smear
+rule that meets a smear with no example takes the first smear, in order,
+as its example, as a run would ask for one.
+
+A rule passes when no more than a share of its samples - a tenth, unless
+set - agree less than an agreement - 0.95, unless set - with the gate drawn
+by hand; a sample of few events may fall a counting-noise width below it.
+The band, the agreement and the share are asked for at the start of a pick
+on the Gate Rules tab and kept with the workspace
+(`rules/pick_settings.json`); the tools for Claude use them unless told
+otherwise.
+
+Every kind is first tried as the hand gating starts it, all together, and
+the first in order that passes has its settings searched; the best of its
+settings that also pass is the pick. When none passes as started, each
+kind's settings are searched in turn, in order, until one passes. When none
+does, the closest of everything tried is shown, flagged: that gate may be
+better gated by hand. Each gate's pick is listed beside the rule as it
+stands with how each kind did, the flagged gates first. The files are read
+once, and again only for the phenotype, for the gates that come to it.
+Nothing changes until a pick is taken - Use, or Use the best for every gate
+- and saved. A phenotype rule is tried only with its own settings, and a
+gate placed from another gate is left as it is.

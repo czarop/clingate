@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clingate_core::gate_rules::fit::{FitSettings, RankBy};
+use clingate_core::gate_rules::pick::PickSettings;
 use clingate_core::gate_rules::rule_store::GateRule;
 use clingate_core::gate_rules::score::ScoreSettings;
 use clingate_core::session::{FitAsk, Refusal, Session};
@@ -137,15 +138,19 @@ app: on the Gallery tab, the gate's population shows each one's gate over \
 the user's, one candidate at a time, so the user can compare them by eye. \
 Change the rule only on their word.
 
-To pick the best rule for a gate - its kind as well as its settings - or for \
-every gate, pick_rule tries every kind that can place it, each started from \
-the user's hand gating, then searches the best kind's settings (and the \
-next's, when it came close), on one reading of the files. Per gate it gives \
-the best rule beside the rule as it stands, how much closer it comes (gain), \
-and whether it fits the hand gating well: a gate that does not may be better \
-gated by hand. For many gates it takes a while - say so. Show the user the \
-gates where the best does most better, and update_rule only with the rules \
-they choose; the closest are on the Gallery tab to compare by eye.
+To pick a rule for a gate - its kind as well as its settings - or for every \
+gate, pick_rule tries the kinds in the user's order of preference and takes \
+the first that passes their cut-off: a band read on the FMX at the range \
+they accept, above the negative, the valley or a smear, a band on each \
+sample, and last the phenotype. Ask the user for the FMX range and the \
+cut-off if they have not set them in the app (0.95 agreement, no more than a \
+tenth of the samples off, unless they say otherwise). Per gate it gives the \
+rule beside the rule as it stands, whether it passed, and how each kind did. \
+A gate where nothing passed shows only the closest rule: say it is flagged, \
+and that the gate may be better gated by hand. For many gates it takes a \
+while - say so. Show the user the flagged gates first, then where the rule \
+picked does most better, and update_rule only with the rules they choose; \
+the closest are on the Gallery tab to compare by eye.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -434,11 +439,19 @@ pub struct PickRuleArgs {
     pub tie_within: Option<f64>,
     /// As fit_rule: rank on half the specimens and check on the other half (default true).
     pub split: Option<bool>,
-    /// As score_rules: the agreement below which a sample is off (default 0.8). A gate whose
-    /// best rule is typically below it does not fit well.
+    /// The lowest and highest share of each specimen's FMX events above the line the user
+    /// accepts, as two shares - [0.005, 0.01] for 0.5% to 1%: a band read on the FMX at it is
+    /// tried first, as it is. Leave out for what the user last set in the app, if anything.
+    pub fmx_band: Option<[f64; 2]>,
+    /// A sample agreeing less than this with its hand gate is off. Leave out for what the
+    /// user last set in the app - 0.95 unless they changed it.
     pub off_below: Option<f64>,
-    /// As score_rules: how far below off_below a sample of few events may fall (default 1).
+    /// As score_rules: how far below off_below a sample of few events may fall. Leave out for
+    /// what the user last set - 1 unless they changed it.
     pub noise_widths: Option<f64>,
+    /// A rule passes with no more than this share of its samples off. Leave out for what the
+    /// user last set - 0.1 unless they changed it.
+    pub most_off: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1030,20 +1043,36 @@ impl Clingate {
         .await
     }
 
-    /// Pick the best rule for one population's gate, or every gate a rule places other than
-    /// from another gate: every kind of rule that can place it - a band read on the FMX and on
-    /// the sample, above the negative read two ways, the valley with and without a smear -
-    /// each started from the user's hand gating, then the settings of the best kind (and of
-    /// the next, when it came close) searched, all on one reading of the files and ranked as
-    /// fit_rule ranks. Per gate: the best rule beside the rule as it stands, how much closer it
-    /// comes, whether it fits the hand gating well, and the others tied with it - kept for the
-    /// app's Gallery tab. Changes no rule and moves no gate. Reads the samples' events: only
-    /// when the user asks for it.
+    /// Pick a rule for one population's gate, or every gate a rule places other than from
+    /// another gate, trying the kinds of rule in the user's order of preference and taking
+    /// the first that passes: a band read on each specimen's FMX at the range the user
+    /// accepts, as it is; above the negative; the valley or a smear; a band read on each
+    /// sample; and last the phenotype on the plot's two axes - the negative, the valley and
+    /// the phenotype calibrated on one sample gated by hand. A rule passes when no more than
+    /// most_off of its samples agree less than off_below with the hand gate. Each kind is
+    /// tried as the hand gating starts it, and the first in order that passes has its settings
+    /// searched; when none passes, each kind's settings are searched in turn; when still none
+    /// passes, the closest of everything tried is shown, not passed - flag it to the user. Per
+    /// gate: the rule beside the rule as it stands, whether it passed, how each kind did, and
+    /// the others tied with it - kept for the app's Gallery tab. The settings the user last
+    /// chose in the app are used for anything left out. Changes no rule and moves no gate.
+    /// Reads the samples' events: only when the user asks for it.
     #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn pick_rule(&self, Parameters(args): Parameters<PickRuleArgs>) -> String {
-        let settings = score_settings(args.off_below, args.noise_widths);
         self.run(move |s| {
             let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
+            let kept = s.pick_settings();
+            let settings = PickSettings {
+                fmx_band: args
+                    .fmx_band
+                    .map(|[lowest, highest]| (lowest, highest))
+                    .or(kept.fmx_band),
+                score: ScoreSettings {
+                    off_below: args.off_below.unwrap_or(kept.score.off_below),
+                    noise_widths: args.noise_widths.unwrap_or(kept.score.noise_widths),
+                },
+                most_off: args.most_off.unwrap_or(kept.most_off),
+            };
             s.pick_rules(args.population.as_deref(), settings, fit)
         })
         .await

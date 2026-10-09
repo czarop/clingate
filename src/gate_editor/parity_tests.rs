@@ -1434,8 +1434,9 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
     assert_eq!(app.standing().undo_steps, steps);
 }
 
-/// Picking the best rule for every gate on the Rules tab keeps, for the one
-/// rule, what `pick_rule` keeps: the same inputs make the same pick.
+/// Picking a rule for every gate on the Rules tab keeps, for the one rule,
+/// what `pick_rule` keeps: the same inputs and settings make the same pick,
+/// passed or flagged alike.
 #[test]
 fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
     use clingate_core::gate_rules::searches::{kept, pick_every_rule};
@@ -1467,4 +1468,6 @@ fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
     assert_eq!(every.searches[0].target, theirs[0].target);
     assert!(!theirs[0].candidates.is_empty());
     assert_eq!(every.searches[0].candidates, theirs[0].candidates);
+    assert_eq!(every.searches[0].passed, theirs[0].passed);
+    assert_eq!(every.searches[0].kinds, theirs[0].kinds);
 }
