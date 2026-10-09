@@ -201,7 +201,7 @@ above the negative as on its smear_example, a smear gated by hand - the \
 reference itself when the reference is a smear. With no example, a smear is \
 left unplaced: ask the user to gate one smear by hand, then name its file as \
 smear_example. Which samples are smears is found when the rules run; do not \
-read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
+read the data beforehand to predict it. It can name a fallback the same way \
 - usually the same gate under another parent - for samples where the \
 positives smear with no dip: there its edge goes where the fallback's is, \
 placed first, and the placement comes up for review. \

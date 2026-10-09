@@ -1875,7 +1875,7 @@ fn valley_on_b(fallback: Option<RuleTarget>) -> (RuleTarget, GateRule) {
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("fs_a")),
-            rule: Rule::InTheValley(crate::gate_rules::rule::ValleyRule {
+            rule: Rule::ValleyOrSmear(crate::gate_rules::rule::ValleyOrSmearRule {
                 fallback,
                 ..Default::default()
             }),
@@ -1943,25 +1943,6 @@ fn a_valley_rule_with_no_dip_takes_its_fallback_s_edge_after_the_fallback_s_rule
         crate::gate_rules::run::PAUSE_BELOW <= FLAGGED_CONFIDENCE
             && FLAGGED_CONFIDENCE < crate::review::assess::REVIEW_FLOOR,
         "reviewed, but no pause"
-    );
-}
-
-#[test]
-fn a_valley_rule_with_no_dip_and_no_fallback_is_left_unplaced() {
-    let files = smears("valley-no-fallback");
-    let state = ifng_twice();
-    let outcome = run(&state, &files, store(&[valley_on_b(None), band_on_a()]));
-    assert!(
-        outcome
-            .report
-            .positioned
-            .iter()
-            .all(|p| &*p.gate_id != "ifng_b")
-    );
-    assert!(
-        reasons(&outcome).iter().any(|r| r.starts_with("IFNy+ |")),
-        "{:?}",
-        reasons(&outcome)
     );
 }
 

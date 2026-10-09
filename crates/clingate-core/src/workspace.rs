@@ -206,18 +206,8 @@ pub const FIGURES_DIR: &str = "figures";
 pub const FIGURE_FILE: &str = "gate_gallery.pdf";
 
 /// A workspace's rules file.
-///
-/// Where a workspace has none there yet but has one at its top level - where
-/// rules used to be kept - that one, so an older workspace still finds its
-/// rules. Saving then writes into [`RULES_DIR`].
 pub fn rules_file(folder: &Path) -> PathBuf {
-    let kept = folder.join(RULES_DIR).join(RULES_FILE);
-    let older = folder.join(RULES_FILE);
-    if !kept.is_file() && older.is_file() {
-        older
-    } else {
-        kept
-    }
+    folder.join(RULES_DIR).join(RULES_FILE)
 }
 
 /// A workspace's contact sheet, until another name is typed.

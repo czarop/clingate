@@ -2932,8 +2932,8 @@ fn a_band_counted_on_the_run_reads_a_kind_of_file_and_runs_with_no_setting() {
 fn valley_falling_back_to(
     fallback: clingate_core::gate_rules::rule_store::RuleTarget,
 ) -> clingate_core::gate_rules::rule::Rule {
-    clingate_core::gate_rules::rule::Rule::InTheValley(
-        clingate_core::gate_rules::rule::ValleyRule {
+    clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
             fallback: Some(fallback),
             ..Default::default()
         },
@@ -2975,7 +2975,7 @@ fn a_valley_rule_s_fallback_is_kept_and_checked_as_a_followed_gate_is() {
         ))
         .unwrap();
     assert!(
-        written.now.contains("with no dip, where Branch A is"),
+        written.now.contains("on a smear, where Branch A is"),
         "{}",
         written.now
     );
@@ -3284,11 +3284,12 @@ fn one_peak_on_fsc(dir: &std::path::Path) {
 }
 
 /// FSC-A is one peak - a smear with no dip - so Inner B's valley rule falls
-/// back to Inner A, under another parent: its lower edge goes to Inner A's,
-/// 1,000,000, flagged as placed from another gate.
+/// back to Inner A, under another parent: on the sample not calibrated on,
+/// its lower edge goes to Inner A's, 1,000,000, flagged as placed from
+/// another gate.
 #[test]
 fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
-    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    use clingate_core::gate_rules::rule_store::RuleTarget;
     let folder = workspace_of_rectangles(
         "session-valley-fallback-run",
         &[
@@ -3305,7 +3306,7 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
             "Inner B",
             None,
             "FSC-A",
-            MeasuredOn::Itself,
+            file("sample1_FMX.fcs"),
             valley_falling_back_to(RuleTarget::named("Inner A")),
         ))
         .unwrap();
@@ -3326,10 +3327,10 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
     }
     session.apply_previewed_rules().unwrap();
 
-    for sample in ["fmx", "fs"] {
-        let (lower, _) = fsc_span(&session, "Inner B", sample);
-        assert!((lower - 1_000_000.0).abs() < 1.0, "{sample}: {lower}");
-    }
+    let (moved, _) = fsc_span(&session, "Inner B", "fs");
+    assert!((moved - 1_000_000.0).abs() < 1.0, "{moved}");
+    let (reference, _) = fsc_span(&session, "Inner B", "fmx");
+    assert_eq!(reference, 200_000.0, "the sample calibrated on stays as drawn");
 }
 
 // ─── valley or smear ──────────────────────────────────────────────────────────
@@ -4076,7 +4077,7 @@ fn a_rule_s_settings_are_searched_against_the_gating_as_drawn() {
 /// too; fewer can be shown than were tried.
 #[test]
 fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
-    use clingate_core::gate_rules::rule::{Rule, ValleyRule};
+    use clingate_core::gate_rules::rule::{Rule, ValleyOrSmearRule};
     use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-fit-given");
@@ -4085,8 +4086,8 @@ fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
     let valley = GateRule {
         parameter: channel.trim_end_matches("-A").into(),
         bound: Bound::Above,
-        measured_on: MeasuredOn::Itself,
-        rule: Rule::InTheValley(ValleyRule::default()),
+        measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+        rule: Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
     };
     let ask = |defaults, shown| FitAsk {
         candidates: vec![valley.clone()],

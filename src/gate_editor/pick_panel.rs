@@ -488,7 +488,7 @@ pub fn PickPanel() -> Element {
 mod tests {
     use std::sync::Arc;
 
-    use clingate_core::gate_rules::rule::{Rule, TailFractionRule, ValleyRule};
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule, ValleyOrSmearRule};
     use clingate_core::gate_rules::rule_store::{Bound, MeasuredOn};
     use clingate_core::gate_rules::score::GateScore;
 
@@ -508,7 +508,7 @@ mod tests {
     }
 
     fn valley() -> GateRule {
-        rule(Rule::InTheValley(ValleyRule::default()))
+        rule(Rule::ValleyOrSmear(ValleyOrSmearRule::default()))
     }
 
     fn candidate(rule: GateRule, typical: f64, off: usize, current: bool) -> Candidate {

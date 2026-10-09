@@ -615,7 +615,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 8);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
@@ -855,7 +855,7 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
                 "parameter": parameter,
                 "bound": "Above",
                 "measured_on": {"File": "sample1_FMX.fcs"},
-                "rule": {"kind": "InTheValley", "smoothing": 1.0, "fallback": fallback}
+                "rule": {"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": fallback}
             }
         })
     };
@@ -888,7 +888,7 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
     assert!(
         view.rules[0]
             .rule
-            .contains(&format!("with no dip, where {} is", other.rule_target)),
+            .contains(&format!("on a smear, where {} is", other.rule_target)),
         "{:?}",
         view.rules
     );
@@ -1331,8 +1331,8 @@ fn a_rule_s_settings_are_searched_over_the_protocol() {
     let valley = json!({
         "parameter": parameter,
         "bound": "Above",
-        "measured_on": "Itself",
-        "rule": {"kind": "InTheValley"},
+        "measured_on": {"File": "sample1_FMX.fcs"},
+        "rule": {"kind": "ValleyOrSmear"},
     });
     let given = server.call(
         "fit_rule",

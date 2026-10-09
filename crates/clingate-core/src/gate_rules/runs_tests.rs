@@ -16,7 +16,7 @@ use rustc_hash::FxBuildHasher;
 use crate::file_load_tests::{scratch, write_fcs_rows};
 use crate::gate_rules::autogate::{apply_placements, extent_on};
 use crate::gate_rules::fit::{FitSettings, Fit, MOST_CANDIDATES, RankBy, fit_rule};
-use crate::gate_rules::rule::{BandAim, Pool, Rule, TailFractionRule, ValleyRule};
+use crate::gate_rules::rule::{BandAim, Pool, Rule, TailFractionRule, ValleyOrSmearRule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::gate_rules::run::{RunInputs, RunOutcome, run_rules};
 use crate::gate_rules::score::{least_agreeing_first, summarise};
@@ -770,7 +770,7 @@ fn each_candidate_is_scored_as_the_scorer_scores_it_alone() {
         ..current.clone()
     };
     let valley = GateRule {
-        rule: Rule::InTheValley(ValleyRule::default()),
+        rule: Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
         ..current.clone()
     };
     let refused = band(Pool::Specimen, MeasuredOn::Partner(Arc::from("FMO")));

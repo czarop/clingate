@@ -1657,18 +1657,6 @@ fn moving_off_the_reference_is_not_held_against_an_above_the_negative_gate() {
     );
 }
 
-#[test]
-fn an_old_sidecar_still_names_a_finder_after_the_rename() {
-    // The variants were renamed to say when to use them; rule files written
-    // before that must still load, or a person's saved rules silently revert to
-    // the default finder.
-    use crate::gate_rules::rule::NegativeFinder;
-    let old: NegativeFinder = serde_json::from_str("\"DensityPeak\"").unwrap();
-    assert_eq!(old, NegativeFinder::NegativePeak);
-    let old: NegativeFinder = serde_json::from_str("\"RefineFromGate\"").unwrap();
-    assert_eq!(old, NegativeFinder::BelowTheGate);
-}
-
 // ─── solving off the store ───────────────────────────────────────────────────
 
 #[test]
@@ -2001,7 +1989,7 @@ fn two_populations(negative: f32, merge: f32) -> polars::prelude::DataFrame {
 }
 
 fn valley_rule(file: &str) -> crate::gate_rules::rule_store::RuleStore {
-    use crate::gate_rules::rule::{Rule, ValleyRule};
+    use crate::gate_rules::rule::{Rule, ValleyOrSmearRule};
     use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleStore, RuleTarget};
 
     let mut store = RuleStore::default();
@@ -2011,7 +1999,7 @@ fn valley_rule(file: &str) -> crate::gate_rules::rule_store::RuleStore {
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(file)),
-            rule: Rule::InTheValley(ValleyRule::default()),
+            rule: Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
         },
     );
     store
@@ -2115,7 +2103,8 @@ fn a_wider_positive_population_does_not_carry_the_gate_away() {
 fn merged_populations_are_refused_rather_than_guessed() {
     // When the two have run together there is no boundary, and a rule that
     // reads boundaries should say so. Placing something plausible-looking is
-    // how a gate holding 35% came back holding 0.07%.
+    // how a gate holding 35% came back holding 0.07%. With no smear gated by
+    // hand to place it from, it is left for a person.
     let (mut state, gate_id) = one_positive_gate();
     let map = two_specimens();
     let here = two_populations(400.0, 0.0);
@@ -2137,12 +2126,10 @@ fn merged_populations_are_refused_rather_than_guessed() {
         .iter()
         .find(|s| &*s.file == "fs_b")
         .expect("and it should say why");
-    assert!(
-        said.reason.contains("not a boundary")
-            || said.reason.contains("merged")
-            || said.reason.contains("no population"),
-        "and say what it saw, not just that it failed: {}",
-        said.reason
+    assert_eq!(
+        said.reason,
+        crate::gate_rules::autogate::NO_SMEAR_EXAMPLE,
+        "and say what it saw, not just that it failed"
     );
     // The gate is left exactly where it was rather than moved somewhere wrong.
     let untouched = state
@@ -3552,7 +3539,7 @@ fn anywhere_in_the_band_is_still_the_default_and_still_inside_it() {
         TailFractionRule::new((0.002, 0.005)).aim,
         BandAim::AnywhereInBand
     );
-    // A rules file written before the setting reads as before.
+    // A rule that leaves the setting out reads as the default.
     let read: TailFractionRule = serde_json::from_str(r#"{"band":[0.002,0.005]}"#).unwrap();
     assert_eq!(read.aim, BandAim::AnywhereInBand);
     let mut landed = Vec::new();

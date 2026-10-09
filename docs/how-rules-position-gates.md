@@ -258,7 +258,7 @@ Consequences worth knowing:
   negative, which is often a stimulated sample rather than a wrong one, so
   that direction is only noted. See the table in section 4.
 
-### 3.4 InTheValley - "in the dip, where it sits on the reference"
+### 3.4 The valley - how ValleyOrSmear finds and places a dip
 
 `ValleyRule::calibrate` / `place` over `threshold::valley_for_gate`, which is
 `first_valley` with one fallback:
@@ -301,8 +301,8 @@ component compares the dip's depth with the reference's (below).
 
 `autogate::position_valley_or_smear`. The dip is looked for on the reference
 and on the sample as in 3.4 (`ValleyOrSmearRule::valley`). Both have one: the
-gate is placed as InTheValley places it, against the reference. Otherwise
-the sample is a smear, and:
+gate is placed in it as in 3.4 (`position_line`), against the reference.
+Otherwise the sample is a smear, and:
 
 - with a `fallback`, its edge goes where the fallback's is, as in 3.4;
 - otherwise it is placed as AboveTheNegative places it
@@ -540,8 +540,8 @@ These are properties of the code as it stands, not settled choices:
    set (3.3).
 5. **AboveTheNegative multiplies a width**: a sample whose negative reads
    wider (merged populations, smeared positives) carries the gate further
-   out in proportion - InTheValley exists for that case, but needs a real
-   second population.
+   out in proportion - ValleyOrSmear reads a dip for that case, where there
+   is a real second population.
 6. **Kept when in band** is judged on the gate as it stands on the
    reference file, so a gate kept as "met the rule" is never re-examined for
    position relative to its peers until the review.
@@ -570,12 +570,11 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true, "smallest_dip": 0.1}` -
-  `fallback` is optional; it is placed first, like an anchor. `lowest_before` is optional (false):
-  the lowest point between the negative and the dip found. `smallest_dip` is optional: a
-  shallower dip, as a fraction of the lower peak beside it, is read as none
 - `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true, "smallest_dip": 0.1}` -
-  `fallback`, `smear_example`, `lowest_before` and `smallest_dip` are optional; measured on a `File`
+  measured on a `File`. `fallback` is optional; it is placed first, like an anchor. `smear_example`
+  is optional. `lowest_before` is optional (false): the lowest point between the negative and the
+  dip found. `smallest_dip` is optional: a shallower dip, as a fraction of the lower peak beside it,
+  is read as none
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24, "pinned": ["CD8"]}` -
   `pinned` is optional: markers of the gate's two axes whose edge nearest the negative is pinned to it
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or

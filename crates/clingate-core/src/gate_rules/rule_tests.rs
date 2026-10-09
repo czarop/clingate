@@ -664,10 +664,10 @@ fn a_valley_rule_finds_a_small_negative_under_a_mostly_positive_sample() {
 
 #[test]
 fn a_valley_rule_says_when_it_is_smoothed() {
-    assert!(!ValleyRule::default().describe().contains("smoothed"));
-    let smoothed = ValleyRule {
+    assert!(!ValleyOrSmearRule::default().describe().contains("smoothed"));
+    let smoothed = ValleyOrSmearRule {
         smoothing: 1.5,
-        ..ValleyRule::default()
+        ..ValleyOrSmearRule::default()
     };
     assert!(
         smoothed.describe().contains("smoothed x1.50"),
@@ -685,7 +685,7 @@ fn only_a_tail_fraction_has_a_band_to_be_already_inside() {
     for rule in [
         Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.1)),
         Rule::AboveTheNegative(AboveTheNegativeRule::default()),
-        Rule::InTheValley(ValleyRule::default()),
+        Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
     ] {
         assert_eq!(rule.accepted_band(), None, "{}", rule.kind());
     }
@@ -697,7 +697,7 @@ fn a_calibrated_rule_cannot_be_solved_from_one_population() {
     // refused rather than answered.
     for rule in [
         Rule::AboveTheNegative(AboveTheNegativeRule::default()),
-        Rule::InTheValley(ValleyRule::default()),
+        Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
     ] {
         assert!(rule.solve(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
         assert!(rule.apply(&[1.0, 2.0, 3.0]).is_err(), "{}", rule.kind());
@@ -711,38 +711,10 @@ fn every_rule_but_the_phenotype_is_judged_on_its_threshold() {
         Rule::TailFraction(TailFractionRule::new((0.09, 0.11))),
         Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.1)),
         Rule::AboveTheNegative(AboveTheNegativeRule::default()),
-        Rule::InTheValley(ValleyRule::default()),
+        Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
     ] {
         assert!(rule.assess(&t).is_some(), "{}", rule.kind());
     }
-}
-
-/// `min_depth_fraction` was removed from the valley rule (B-RULE-1: it was read
-/// by nothing). A rules file saved before then still has it, and must load as
-/// the same rule, the old value ignored.
-#[test]
-fn a_valley_rule_saved_with_the_old_depth_setting_still_loads() {
-    let rule = Rule::InTheValley(ValleyRule {
-        smoothing: 1.5,
-        ..ValleyRule::default()
-    });
-    let mut json = serde_json::to_value(&rule).unwrap();
-    // Wherever the rule's own fields sit in the encoding, put the old key
-    // beside `smoothing`.
-    fn add_old_key(v: &mut serde_json::Value) -> bool {
-        match v {
-            serde_json::Value::Object(map) if map.contains_key("smoothing") => {
-                map.insert("min_depth_fraction".into(), serde_json::json!(0.25));
-                true
-            }
-            serde_json::Value::Object(map) => map.values_mut().any(add_old_key),
-            _ => false,
-        }
-    }
-    assert!(add_old_key(&mut json), "no smoothing field in {json}");
-    assert!(json.to_string().contains("min_depth_fraction"));
-    let back: Rule = serde_json::from_value(json).expect("an old rules file loads");
-    assert_eq!(back, rule);
 }
 
 #[test]
@@ -774,24 +746,29 @@ fn a_valley_rule_falls_back_on_the_edge_it_would_have_set() {
         ValleyRule::default().fallback_rule(&parameter, Bound::Above),
         None
     );
-    assert_eq!(Rule::InTheValley(rule.clone()).anchors(), [&anchor]);
+    let either = Rule::ValleyOrSmear(ValleyOrSmearRule {
+        fallback: Some(anchor.clone()),
+        ..ValleyOrSmearRule::default()
+    });
+    assert_eq!(either.anchors(), [&anchor]);
     assert!(
-        rule.describe()
-            .ends_with("; with no dip, where IFNy+ of CD4+ is"),
+        either
+            .describe()
+            .ends_with("; on a smear, where IFNy+ of CD4+ is"),
         "{}",
-        rule.describe()
+        either.describe()
     );
 }
 
 #[test]
-fn a_valley_rule_saved_before_the_fallback_loads_with_none() {
-    let json = serde_json::json!({"kind": "InTheValley", "smoothing": 1.5});
+fn a_valley_rule_that_names_no_fallback_loads_with_none() {
+    let json = serde_json::json!({"kind": "ValleyOrSmear", "smoothing": 1.5});
     let back: Rule = serde_json::from_value(json).unwrap();
     assert_eq!(
         back,
-        Rule::InTheValley(ValleyRule {
+        Rule::ValleyOrSmear(ValleyOrSmearRule {
             smoothing: 1.5,
-            ..ValleyRule::default()
+            ..ValleyOrSmearRule::default()
         })
     );
 }
@@ -808,15 +785,10 @@ fn how_a_gate_meets_another_is_written_as_the_rules_file_writes_it() {
 
 #[test]
 fn a_rule_names_the_smoothings_it_reads_densities_at() {
-    let valley = ValleyRule {
-        smoothing: 0.75,
-        ..ValleyRule::default()
-    };
     let either = ValleyOrSmearRule {
         smoothing: 1.5,
         ..ValleyOrSmearRule::default()
     };
-    assert_eq!(Rule::InTheValley(valley).smoothings_read(), [0.75]);
     assert_eq!(
         Rule::ValleyOrSmear(either).smoothings_read(),
         [1.5, 1.0],
@@ -836,4 +808,14 @@ fn a_rule_names_the_smoothings_it_reads_densities_at() {
             .smoothings_read()
             .is_empty()
     );
+}
+
+#[test]
+fn the_removed_kinds_and_names_no_longer_load() {
+    let valley = serde_json::json!({"kind": "InTheValley", "smoothing": 1.0});
+    assert!(serde_json::from_value::<Rule>(valley).is_err());
+    for old in ["DensityPeak", "RefineFromGate"] {
+        let read = serde_json::from_value::<NegativeFinder>(serde_json::json!(old));
+        assert!(read.is_err(), "{old}");
+    }
 }

@@ -336,7 +336,6 @@ pub(crate) fn first_tries(
         ..current.clone()
     };
     let (fallback, smear_example) = match &current.rule {
-        Rule::InTheValley(valley) => (valley.fallback.clone(), None),
         Rule::ValleyOrSmear(valley) => (valley.fallback.clone(), valley.smear_example.clone()),
         _ => (None, None),
     };
@@ -868,7 +867,7 @@ pub fn pick_rules(
 mod tests {
     use super::*;
     use crate::file_load_tests::scratch;
-    use crate::gate_rules::rule::{NegativeFinder, ValleyRule};
+    use crate::gate_rules::rule::NegativeFinder;
     use crate::gate_rules::rule_store::{Bound, SamplePairing};
     use crate::gate_rules::score::{GateScore, agreeing_row, refused_row};
 
@@ -905,9 +904,9 @@ mod tests {
     fn the_kinds_are_tried_in_the_order_preferred() {
         let valley = current(
             MeasuredOn::Itself,
-            Rule::InTheValley(ValleyRule {
+            Rule::ValleyOrSmear(ValleyOrSmearRule {
                 fallback: Some(RuleTarget::named("CD69+ of CD8+")),
-                ..ValleyRule::default()
+                ..ValleyOrSmearRule::default()
             }),
         );
         let tries = first_tries(
@@ -1051,7 +1050,10 @@ mod tests {
 
     #[test]
     fn a_band_on_the_sample_never_starts_beyond_the_whole_parent() {
-        let itself = current(MeasuredOn::Itself, Rule::InTheValley(ValleyRule::default()));
+        let itself = current(
+            MeasuredOn::Itself,
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
+        );
         let tries = first_tries(&itself, None, None, None, Some(0.9), None);
         let Rule::TailFraction(band) = &rule_of(&tries, Kind::Band).rule else {
             panic!("a band");
@@ -1068,9 +1070,15 @@ mod tests {
             })
         };
         let fmo = MeasuredOn::Partner(Arc::from("FMO"));
-        let reads_fmo = current(fmo.clone(), Rule::InTheValley(ValleyRule::default()));
+        let reads_fmo = current(
+            fmo.clone(),
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
+        );
         assert_eq!(fmx_of(&reads_fmo, &store(&["FMX", "FS"])), Some(fmo));
-        let itself = current(MeasuredOn::Itself, Rule::InTheValley(ValleyRule::default()));
+        let itself = current(
+            MeasuredOn::Itself,
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
+        );
         assert_eq!(fmx_of(&itself, &store(&["FMX", "FS"])), Some(fmx()));
         assert_eq!(fmx_of(&itself, &store(&["FS"])), None, "one kind of sample");
     }
@@ -1322,7 +1330,10 @@ mod tests {
     #[test]
     fn the_first_kind_in_order_that_passes_is_picked_over_a_closer_one_after_it() {
         let target = RuleTarget::named("CD69+");
-        let as_it_stands = current(MeasuredOn::Itself, Rule::InTheValley(ValleyRule::default()));
+        let as_it_stands = current(
+            MeasuredOn::Itself,
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
+        );
         let on_fmx = current(
             fmx(),
             Rule::TailFraction(TailFractionRule::new((0.0, 0.01))),
@@ -1406,7 +1417,10 @@ mod tests {
     #[test]
     fn with_no_kind_passing_the_closest_of_everything_is_picked_and_flagged() {
         let target = RuleTarget::named("CD69+");
-        let as_it_stands = current(MeasuredOn::Itself, Rule::InTheValley(ValleyRule::default()));
+        let as_it_stands = current(
+            MeasuredOn::Itself,
+            Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
+        );
         let on_fmx = current(
             fmx(),
             Rule::TailFraction(TailFractionRule::new((0.0, 0.01))),

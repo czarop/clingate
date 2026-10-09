@@ -2819,9 +2819,23 @@ fn position_one(
     }
     if let Rule::ValleyOrSmear(either) = &rule.rule {
         return position_valley_or_smear(
-            state, rule, either, measured, reference, smear, specimen, metadata, beside, described,
+            state, rule, either, measured, reference, smear, specimen, metadata, beside,
         );
     }
+    position_line(state, rule, measured, reference, specimen, metadata, beside)
+}
+
+/// Place `measured`'s gate by moving the one edge `rule` positions, read
+/// from `reference`.
+fn position_line(
+    state: &GateState,
+    rule: &GateRule,
+    measured: &Measurement,
+    reference: &Reference<'_>,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+    beside: &[crate::gate_rules::clearance::Neighbour],
+) -> Result<Outcome, String> {
     let line = measured
         .line
         .as_ref()
@@ -2926,24 +2940,18 @@ fn position_one(
             (moved, here.at, got)
         }
         // The boundary read directly rather than paced out from the negative's
-        // centre. Nothing is multiplied, so nothing is amplified.
-        crate::gate_rules::rule::Rule::InTheValley(dip) => {
-            let found = dip
+        // centre. Nothing is multiplied, so nothing is amplified. Reached only
+        // where both the reference and this sample have a dip.
+        crate::gate_rules::rule::Rule::ValleyOrSmear(either) => {
+            let dip = either.valley();
+            let (from_reference, here) = dip
                 .calibrate(&reference_line.values, reference_line.current)
                 .map_err(|why| format!("the reference {}: {why}", reference.id))
                 .and_then(|from_reference| {
                     dip.place(&line.values, from_reference.offset, line.current)
                         .map(|here| (from_reference, here))
                         .map_err(|why| why.to_string())
-                });
-            let (from_reference, here) =
-                match (found, dip.fallback_rule(&line.parameter, line.bound)) {
-                    (Ok(found), _) => found,
-                    (Err(why), None) => return Err(why),
-                    (Err(why), Some(fallback)) => {
-                        return fall_back(state, &fallback, measured, specimen, metadata, &why);
-                    }
-                };
+                })?;
             let moved = translate_edge_to(&current_gate, &line.parameter, line.bound, here.at)
                 .map_err(|e| e.to_string())?;
             let got = admitted_by(&moved, population).unwrap_or(0.0);
@@ -4102,7 +4110,6 @@ fn position_valley_or_smear(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
     beside: &[crate::gate_rules::clearance::Neighbour],
-    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
 ) -> Result<Outcome, String> {
     let line = measured
         .line
@@ -4119,22 +4126,9 @@ fn position_valley_or_smear(
         .as_ref()
         .ok()
         .map(|from| valley.place(&line.values, from.offset, line.current));
-    let placed_by = |how: Rule, from: &Reference<'_>| {
-        let as_rule = GateRule {
-            rule: how,
-            ..rule.clone()
-        };
-        position_one(
-            state, &as_rule, measured, from, None, specimen, metadata, beside, described,
-        )
-    };
     let why = match here {
         Some(Ok(_)) => {
-            let in_the_valley = crate::gate_rules::rule::ValleyRule {
-                fallback: None,
-                ..valley.clone()
-            };
-            return placed_by(Rule::InTheValley(in_the_valley), reference);
+            return position_line(state, rule, measured, reference, specimen, metadata, beside);
         }
         Some(Err(why)) => why.to_string(),
         None => "the reference has no dip either".to_string(),
@@ -4147,10 +4141,14 @@ fn position_valley_or_smear(
         (None, Err(_)) => reference,
         (None, Ok(_)) => return Err(NO_SMEAR_EXAMPLE.to_string()),
     };
-    placed_by(Rule::AboveTheNegative(either.smear()), example)
+    let above = GateRule {
+        rule: Rule::AboveTheNegative(either.smear()),
+        ..rule.clone()
+    };
+    position_line(state, &above, measured, example, specimen, metadata, beside)
 }
 
-/// A valley rule that found no valley, `why`, placed by its fallback.
+/// A valley-or-smear rule that found no valley, `why`, placed by its fallback.
 fn fall_back(
     state: &GateState,
     fallback: &crate::gate_rules::rule::FromGateRule,

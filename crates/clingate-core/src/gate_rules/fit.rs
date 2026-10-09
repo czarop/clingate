@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::gate_rules::autogate::{describe, measured_alike};
 use crate::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, NegativeFinder, PercentileOffsetRule, PhenotypeRule, Rule,
-    ShapeFit, TailFractionRule, ValleyOrSmearRule, ValleyRule,
+    ShapeFit, TailFractionRule, ValleyOrSmearRule,
 };
 use crate::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget, human_order};
 use crate::gate_rules::run::{Measured, Progress, RunInputs, measure_many};
@@ -97,16 +97,6 @@ fn settings_tried(rule: &Rule) -> Vec<Rule> {
                         find,
                         ..above.clone()
                     })
-                })
-            })
-            .collect(),
-        Rule::InTheValley(valley) => valley_settings()
-            .map(|(smoothing, lowest_before, smallest_dip)| {
-                Rule::InTheValley(ValleyRule {
-                    smoothing,
-                    lowest_before,
-                    smallest_dip,
-                    ..valley.clone()
                 })
             })
             .collect(),
@@ -867,9 +857,9 @@ mod tests {
     }
 
     fn valley() -> Rule {
-        Rule::InTheValley(ValleyRule {
+        Rule::ValleyOrSmear(ValleyOrSmearRule {
             fallback: Some(RuleTarget::under("CD69+", "CD8+")),
-            ..ValleyRule::default()
+            ..ValleyOrSmearRule::default()
         })
     }
 
@@ -898,7 +888,7 @@ mod tests {
         let settings: Vec<(f64, bool, Option<f64>)> = tried
             .iter()
             .map(|candidate| match &candidate.rule {
-                Rule::InTheValley(v) => {
+                Rule::ValleyOrSmear(v) => {
                     assert_eq!(v.fallback, Some(RuleTarget::under("CD69+", "CD8+")));
                     (v.smoothing, v.lowest_before, v.smallest_dip)
                 }

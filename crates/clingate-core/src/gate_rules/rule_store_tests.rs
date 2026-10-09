@@ -242,7 +242,7 @@ fn a_sidecar_keeps_the_pairing_it_was_written_with() {
     assert_eq!(back.pairing.sample_id_column.as_ref(), "Specimen");
 }
 
-/// A sidecar written before the pairing existed still loads, on the defaults.
+/// A sidecar that names no pairing loads on the default columns.
 #[test]
 fn a_sidecar_without_a_pairing_falls_back_to_the_default_columns() {
     let back: RuleStore = serde_json::from_str(r#"{"rules":[]}"#).unwrap();
