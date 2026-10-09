@@ -18,5 +18,5 @@ A Rust workspace: the `clingate` app (Dioxus, `src/`), `crates/clingate-core` (e
 
 ## Pull requests
 
+- Work on one branch. Open a pull request only when the user asks for one.
 - Before opening one, run the `review` skill once: the tests, and the reviewer over the branch's diff.
-- Tell the user when the branch is ready for a pull request: when a piece of work is finished and tested, and before starting the next one - small pull requests, one piece of work each.
