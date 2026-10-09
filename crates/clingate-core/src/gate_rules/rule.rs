@@ -821,7 +821,10 @@ impl Rule {
     /// rather than some stand-in score is deliberate: a number on the same
     /// scale as the others, arrived at from different evidence, would be
     /// compared with them.
-    pub fn assess(&self, threshold: &Threshold) -> Option<crate::gate_rules::confidence::Confidence> {
+    pub fn assess(
+        &self,
+        threshold: &Threshold,
+    ) -> Option<crate::gate_rules::confidence::Confidence> {
         Some(match self {
             Rule::TailFraction(r) => r.confidence_model().assess(threshold),
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold),
@@ -908,6 +911,17 @@ impl Rule {
     /// not off the events: measured on its own sample, whatever it says.
     pub fn reads_another_gate(&self) -> bool {
         matches!(self, Rule::FromAnotherGate(_) | Rule::NextToGate(_))
+    }
+
+    /// The smoothings of the densities this rule reads its line with - see
+    /// [`crate::gate_rules::density`].
+    pub fn smoothings_read(&self) -> Vec<f64> {
+        match self {
+            Rule::InTheValley(r) => vec![r.smoothing],
+            Rule::ValleyOrSmear(r) => vec![r.smoothing, 1.0],
+            Rule::AboveTheNegative(_) => vec![1.0],
+            _ => Vec::new(),
+        }
     }
 
     /// The gates this rule reads a position from, which a run places first.

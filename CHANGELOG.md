@@ -438,6 +438,19 @@
 
 ### Changed
 
+- **Searching and picking rules, and rules runs, are many times faster, with
+  the same results.** The smoothed density a valley, valley-or-smear or
+  above-the-negative rule reads is worked out once for each population and
+  smoothing and shared - by every candidate a search tries, and by every
+  sample a run calibrates on the same reference, which each worked it out
+  again. A search works out the densities a batch of candidates will read
+  side by side before solving them, so none waits while another works out the
+  one it needs. Each density adds up only the events within reach of each
+  point; the rest add exactly nothing, so it comes out the same to the last
+  digit. A population's spread and shape are worked out once, not at every
+  placement. On 20 donors of 300,000 events, a valley rule's 30 settings are
+  searched in 34 seconds rather than 8 minutes 30.
+
 - **Fewer review flags: a gate is flagged for where it sits, not for how its
   sample differs.** A run's review now flags a placement whose gate sits 2 or
   more of its parent's interquartile ranges from where its peers put theirs,

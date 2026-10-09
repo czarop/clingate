@@ -169,11 +169,11 @@ ranks them by it.
 - [ ] **Pick for a gate with no rule yet.** A pick starts from the rule a
       gate has, which says the marker and the edge it moves; a gate without
       one would need them read from how it is drawn.
-- [ ] **Time a pick on a real workspace.** Each kind is tried once and only
-      the best kind's settings searched, but a valley's 30 settings each
-      take a density per sample. If it is too slow, keep each sample's
-      density per smoothing and share it between the settings that differ
-      only in the dip they look for.
+- [ ] **Time a pick on a real workspace.** Densities are now worked out once
+      per population and smoothing and shared, and a valley's 30 settings on
+      20 donors of 300,000 events take 34 seconds. What is left is one density
+      per sample at each of the 5 smoothings tried, each summing the events
+      near each of 512 points.
 
 ## clingate
 

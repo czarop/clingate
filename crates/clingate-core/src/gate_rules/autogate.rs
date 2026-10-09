@@ -316,7 +316,9 @@ pub fn gated_of_each_specimen(
             }
             std::collections::hash_map::Entry::Occupied(mut slot) => {
                 let held = &measurements[*slot.get()];
-                if gated_rank(pairing, &m.file, metadata) > gated_rank(pairing, &held.file, metadata) {
+                if gated_rank(pairing, &m.file, metadata)
+                    > gated_rank(pairing, &held.file, metadata)
+                {
                     slot.insert(i);
                 }
             }
@@ -419,6 +421,34 @@ pub struct LineReading {
     /// above or below a gate boxed in its other axis - are not here, because
     /// the gate makes no statement about them.
     pub shadow: Vec<(f64, f64)>,
+    /// What `values` give, worked out once for every rule that reads them.
+    pub(crate) worked_out: WorkedOut,
+}
+
+/// What a [`LineReading`]'s values give, once worked out.
+#[derive(Clone, Default)]
+pub(crate) struct WorkedOut {
+    spread: std::sync::OnceLock<f64>,
+    shape: std::sync::OnceLock<Option<crate::review::shape::Shape>>,
+}
+
+impl LineReading {
+    /// The interquartile spread of `values`.
+    pub fn spread(&self) -> f64 {
+        *self.worked_out.spread.get_or_init(|| {
+            let mut sorted = self.values.clone();
+            sorted.sort_by(|a, b| b.total_cmp(a));
+            crate::gate_rules::threshold::interquartile_spread(&sorted)
+        })
+    }
+
+    /// `values` summarised - see [`crate::review::shape::summarise`].
+    pub fn shape(&self) -> Option<crate::review::shape::Shape> {
+        self.worked_out
+            .shape
+            .get_or_init(|| crate::review::shape::summarise(&self.values))
+            .clone()
+    }
 }
 
 /// The reading a phenotype rule works from.
@@ -822,6 +852,7 @@ pub fn measure_population(
             current,
             values,
             shadow,
+            worked_out: WorkedOut::default(),
         }),
         phenotype: None,
         beside: Vec::new(),
@@ -2083,7 +2114,11 @@ pub fn solve_all_reporting(
             ),
         });
     }
-    chosen.extend(gated_of_each_specimen(&store.pairing, measurements, metadata));
+    chosen.extend(gated_of_each_specimen(
+        &store.pairing,
+        measurements,
+        metadata,
+    ));
 
     report.unplaced.extend(never_measured(
         unmeasured,
@@ -2137,10 +2172,7 @@ pub fn solve_all_reporting(
                     file: measured.file.clone(),
                     measured_on: None,
                     line: measured.line.as_ref().map(|l| l.current),
-                    shape: measured
-                        .line
-                        .as_ref()
-                        .and_then(|l| crate::review::shape::summarise(&l.values)),
+                    shape: measured.line.as_ref().and_then(LineReading::shape),
                     bound: measured.line.as_ref().map(|l| l.bound),
                     gate: measured.gate.clone(),
                     parent_gate: measured.parent_gate.clone(),
@@ -2519,7 +2551,7 @@ impl PooledLine {
                 file: measured.file.clone(),
                 measured_on: Some(self.first.clone()),
                 line: Some(line.current),
-                shape: crate::review::shape::summarise(&line.values),
+                shape: line.shape(),
                 bound: Some(line.bound),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
@@ -2545,7 +2577,7 @@ impl PooledLine {
                 .weakest()
                 .map(|c| c.name),
                 components: self.components.clone(),
-                shape: crate::review::shape::summarise(&line.values),
+                shape: line.shape(),
                 bound: Some(line.bound),
                 achieved: self.achieved,
                 captured_on: self.first.clone(),
@@ -2839,7 +2871,7 @@ fn position_one(
             file: measured.file.clone(),
             measured_on: Some(reference.id.clone()),
             line: Some(line.current),
-            shape: crate::review::shape::summarise(&line.values),
+            shape: line.shape(),
             bound: Some(line.bound),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),
@@ -2973,9 +3005,7 @@ fn position_one(
     // Scored from what the gate actually did, not from the line that used to
     // stand in for it.
     let parent_events = population.event_index.len();
-    let mut sorted = judged_line.values.clone();
-    sorted.sort_by(|a, b| b.total_cmp(a));
-    let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
+    let spread = judged_line.spread();
     // Nudge the gate either side and see how much of its contents survive.
     // Relative to what it holds, not an absolute count: the model reads a swing
     // of 1 as "a nudge changes the contents by as much as the gate holds", and
@@ -3079,7 +3109,7 @@ fn position_one(
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
             components: confidence.components.clone(),
-            shape: crate::review::shape::summarise(&line.values),
+            shape: line.shape(),
             bound: Some(line.bound),
             achieved,
             captured_on: judged_on.file.clone(),

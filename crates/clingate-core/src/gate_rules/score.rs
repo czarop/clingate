@@ -100,10 +100,16 @@ impl ScoreSettings {
     /// negative.
     pub fn checked(self) -> Result<Self, String> {
         if !(0.0..=1.0).contains(&self.off_below) {
-            return Err(format!("off_below is an agreement, 0 to 1 - not {}", self.off_below));
+            return Err(format!(
+                "off_below is an agreement, 0 to 1 - not {}",
+                self.off_below
+            ));
         }
         if !(self.noise_widths >= 0.0 && self.noise_widths.is_finite()) {
-            return Err(format!("noise_widths is 0 or more - not {}", self.noise_widths));
+            return Err(format!(
+                "noise_widths is 0 or more - not {}",
+                self.noise_widths
+            ));
         }
         Ok(self)
     }
@@ -238,9 +244,7 @@ fn weighted_median(mut weighed: Vec<(f64, f64)>) -> Option<f64> {
 /// How far `rule_edge` is from the hand edge `line` was read at, in its
 /// parent's interquartile ranges.
 pub fn off_in_iqrs(line: &LineReading, rule_edge: f64) -> Option<f64> {
-    let mut sorted = line.values.clone();
-    sorted.sort_by(|a, b| b.total_cmp(a));
-    let iqr = (!sorted.is_empty()).then(|| interquartile_spread(&sorted))?;
+    let iqr = (!line.values.is_empty()).then(|| line.spread())?;
     (iqr > 0.0).then(|| (rule_edge - line.current) / iqr)
 }
 
@@ -281,7 +285,12 @@ pub fn shift_in_iqrs(
 ) -> Option<(Option<f64>, Option<f64>)> {
     let (xs, ys): (Vec<f32>, Vec<f32>) = points.iter().copied().unzip();
     let index = EventIndex::build(&xs, &ys).ok()?;
-    let held = |gate| index.filter_by_gate(gate).ok().filter(|e| e.len() >= SHIFT_EVENTS);
+    let held = |gate| {
+        index
+            .filter_by_gate(gate)
+            .ok()
+            .filter(|e| e.len() >= SHIFT_EVENTS)
+    };
     let (hand, rule) = (held(hand)?, held(rule)?);
     let axis = |values: &[f32]| {
         let middle = |events: &[usize]| {
@@ -386,9 +395,8 @@ impl RunRows<'_> {
         let bare = self.bare(measured, what);
         let hand = self.hand_gate(measured);
         let pair = hand.as_ref().and_then(single).zip(single(rule));
-        let events = pair.and_then(|(hand, rule)| {
-            shared_events(&measured.index.event_index, hand, rule)
-        });
+        let events =
+            pair.and_then(|(hand, rule)| shared_events(&measured.index.event_index, hand, rule));
         let shift = pair
             .and_then(|(hand, rule)| shift_in_iqrs(&measured.kept_events, hand, rule))
             .map(|(x, y)| {
@@ -527,7 +535,13 @@ pub(crate) fn solved_rows(
         .skipped
         .iter()
         .filter(|s| s.file.is_empty())
-        .map(|s| format!("{}: {}", describe(&s.gate, s.parent_gate.as_deref()), s.reason))
+        .map(|s| {
+            format!(
+                "{}: {}",
+                describe(&s.gate, s.parent_gate.as_deref()),
+                s.reason
+            )
+        })
         .collect();
     let placed = report
         .positioned
@@ -683,6 +697,7 @@ mod tests {
             current,
             values,
             shadow: Vec::new(),
+            worked_out: Default::default(),
         }
     }
 
@@ -738,20 +753,41 @@ mod tests {
 
     #[test]
     fn settings_out_of_range_are_refused() {
-        let with = |off_below, noise_widths| ScoreSettings { off_below, noise_widths }.checked();
+        let with = |off_below, noise_widths| {
+            ScoreSettings {
+                off_below,
+                noise_widths,
+            }
+            .checked()
+        };
         assert!(with(0.8, 1.0).is_ok());
         assert!(with(0.0, 0.0).is_ok() && with(1.0, 3.0).is_ok());
-        for (off_below, noise_widths) in [(1.2, 1.0), (-0.1, 1.0), (0.8, -1.0), (0.8, f64::NAN), (f64::NAN, 1.0)] {
-            assert!(with(off_below, noise_widths).is_err(), "{off_below} {noise_widths}");
+        for (off_below, noise_widths) in [
+            (1.2, 1.0),
+            (-0.1, 1.0),
+            (0.8, -1.0),
+            (0.8, f64::NAN),
+            (f64::NAN, 1.0),
+        ] {
+            assert!(
+                with(off_below, noise_widths).is_err(),
+                "{off_below} {noise_widths}"
+            );
         }
     }
 
     #[test]
     fn caught_and_extra_say_which_way_the_rule_is_off() {
         let too_tight = shared(1_000, 600, 600);
-        assert_eq!((too_tight.caught(), too_tight.extra()), (Some(0.6), Some(0.0)));
+        assert_eq!(
+            (too_tight.caught(), too_tight.extra()),
+            (Some(0.6), Some(0.0))
+        );
         let too_loose = shared(600, 1_000, 600);
-        assert_eq!((too_loose.caught(), too_loose.extra()), (Some(1.0), Some(0.4)));
+        assert_eq!(
+            (too_loose.caught(), too_loose.extra()),
+            (Some(1.0), Some(0.4))
+        );
         let empty = shared(0, 0, 0);
         assert_eq!((empty.caught(), empty.extra()), (None, None));
     }
@@ -795,11 +831,23 @@ mod tests {
     #[test]
     fn a_few_far_off_is_told_apart_from_all_a_little_off() {
         let settings = ScoreSettings::default();
-        let few = summarise("g".into(), &rows_sharing(&[300, 500, 970, 980, 980, 990, 990], settings));
-        assert_eq!((few.typical_agreement, few.lowest_agreement, few.off), (Some(0.98), Some(0.3), 2));
+        let few = summarise(
+            "g".into(),
+            &rows_sharing(&[300, 500, 970, 980, 980, 990, 990], settings),
+        );
+        assert_eq!(
+            (few.typical_agreement, few.lowest_agreement, few.off),
+            (Some(0.98), Some(0.3), 2)
+        );
 
-        let all = summarise("g".into(), &rows_sharing(&[840, 850, 850, 860, 860, 870, 880], settings));
-        assert_eq!((all.typical_agreement, all.lowest_agreement, all.off), (Some(0.86), Some(0.84), 0));
+        let all = summarise(
+            "g".into(),
+            &rows_sharing(&[840, 850, 850, 860, 860, 870, 880], settings),
+        );
+        assert_eq!(
+            (all.typical_agreement, all.lowest_agreement, all.off),
+            (Some(0.86), Some(0.84), 0)
+        );
 
         let at_the_line = ScoreSettings {
             noise_widths: 0.0,

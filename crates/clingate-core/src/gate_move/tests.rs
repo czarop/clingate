@@ -172,6 +172,73 @@ fn kde_1d_survives_a_degenerate_grid_size() {
     }
 }
 
+/// The density as summed before points were summed only where they reach:
+/// every point at every grid point.
+fn kde_every_point_everywhere(
+    points: &[f64],
+    range: (f64, f64),
+    n_points: usize,
+    bandwidth: f64,
+) -> Vec<f64> {
+    let step = (range.1 - range.0) / (n_points - 1) as f64;
+    let norm = 1.0 / (bandwidth * (2.0 * std::f64::consts::PI).sqrt());
+    (0..n_points)
+        .map(|i| {
+            let x = range.0 + i as f64 * step;
+            let sum: f64 = points
+                .iter()
+                .map(|&p| {
+                    let z = (x - p) / bandwidth;
+                    norm * (-0.5 * z * z).exp()
+                })
+                .sum();
+            sum / points.len() as f64
+        })
+        .collect()
+}
+
+#[test]
+fn kde_1d_is_exactly_every_point_summed_at_every_grid_point() {
+    let mut rng = StdRng::seed_from_u64(7);
+    let negative = Normal::new(0.5, 0.3).unwrap();
+    let positive = Normal::new(4.0, 0.6).unwrap();
+    let mut two_peaks: Vec<f64> = (0..3000)
+        .map(|i| {
+            if i % 5 == 0 {
+                positive.sample(&mut rng)
+            } else {
+                negative.sample(&mut rng)
+            }
+        })
+        .collect();
+    two_peaks.extend([-40.0, 90.0]);
+    let bandwidth = silverman_bandwidth(&two_peaks);
+    let lo = two_peaks.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = two_peaks.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let cases: Vec<(Vec<f64>, (f64, f64), usize, f64)> = vec![
+        (two_peaks.clone(), (lo, hi), 512, bandwidth),
+        (two_peaks.clone(), (lo, hi), 512, bandwidth * 0.01),
+        (two_peaks.clone(), (lo, hi), 512, bandwidth * 50.0),
+        (two_peaks.clone(), (-1.0, 2.0), 64, bandwidth),
+        (two_peaks.clone(), (2.0, -1.0), 64, bandwidth),
+        (vec![0.0, 1.0, 2.0], (0.0, 1000.0), 2, 0.001),
+        (vec![0.0, 1.0, 2.0], (-1.0, 3.0), 16, 0.0001),
+        (vec![0.25, f64::INFINITY, 0.75], (0.0, 1.0), 32, 0.1),
+    ];
+    for (points, range, n_points, bandwidth) in cases {
+        let (_, density) = kde_1d(&points, range, n_points, bandwidth);
+        let expected = kde_every_point_everywhere(&points, range, n_points, bandwidth);
+        let bits = |d: &[f64]| d.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(
+            bits(&density),
+            bits(&expected),
+            "{range:?} {n_points} {bandwidth}"
+        );
+    }
+    let (_, density) = kde_1d(&[0.25, f64::NAN, 0.75], (0.0, 1.0), 32, 0.1);
+    assert!(density.iter().all(|d| d.is_nan()));
+}
+
 // ─── kde_peak ─────────────────────────────────────────────────────────────────
 
 #[test]
