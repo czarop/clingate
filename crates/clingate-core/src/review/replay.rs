@@ -741,10 +741,7 @@ fn starting_position_matters(rule: &GateRule) -> bool {
     match &rule.rule {
         Rule::TailFraction(_) => true,
         Rule::AboveTheNegative(r) => r.find == NegativeFinder::BelowTheGate,
-        Rule::PercentileOffset(_)
-        | Rule::InTheValley(_)
-        | Rule::ValleyOrSmear(_)
-        | Rule::MatchThePhenotype(_) => false,
+        Rule::PercentileOffset(_) | Rule::ValleyOrSmear(_) | Rule::MatchThePhenotype(_) => false,
         // Where it goes is read from another gate, not from where it began.
         Rule::FromAnotherGate(_) => false,
         // Grown up to another gate, its far side stays where it began.
@@ -1480,7 +1477,7 @@ mod tests {
             Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.2)),
             partner.clone()
         )));
-        assert!(same(rule(Rule::InTheValley(Default::default()), partner)));
+        assert!(same(rule(Rule::ValleyOrSmear(Default::default()), partner)));
         // Read on the sample itself, the rule is calibrated on where its own
         // gate stood - so that counts for every rule.
         let itself = rule(

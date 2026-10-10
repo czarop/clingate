@@ -26,7 +26,7 @@ pub const SOURCES: &[Source] = &[
     Source {
         path: "gate_rules/rule.rs",
         holds: "the rule kinds and their parameters; above-the-negative calibrate and place; \
-                the valley rule",
+                valley or smear",
         text: include_str!("../gate_rules/rule.rs"),
     },
     Source {

@@ -48,7 +48,7 @@ show, not raw channel values.
    level, each measuring on the gates as the levels above left them, and the
    next level reads through those placements. A gate whose rule reads a
    position from another gate (`Rule::anchors`: a rule from another gate, or
-   a valley rule's `fallback`) also waits for every such gate that a rule
+   a valley-or-smear rule's `fallback`) also waits for every such gate that a rule
    places. The order the rules are listed in plays no part, except between
    ruled gates on one plot, which are placed in that order (see step 5). A rule whose
    anchor is not one gate, is itself, or leads round in a loop back to
@@ -258,7 +258,7 @@ Consequences worth knowing:
   negative, which is often a stimulated sample rather than a wrong one, so
   that direction is only noted. See the table in section 4.
 
-### 3.4 InTheValley - "in the dip, where it sits on the reference"
+### 3.4 The valley - how ValleyOrSmear finds and places a dip
 
 `ValleyRule::calibrate` / `place` over `threshold::valley_for_gate`, which is
 `first_valley` with one fallback:
@@ -289,7 +289,7 @@ Consequences worth knowing:
 - Calibrate: `offset = x_ref - bottom_ref` on the reference. Place: the line
   goes at `bottom + offset` on the sample.
 - No valley on the reference or the sample, and a `fallback` gate named
-  (`ValleyRule::fallback_rule`, `autogate::fall_back`): the gate's leading
+  (`ValleyOrSmearRule::fallback_rule`, `autogate::fall_back`): the gate's leading
   edge - the lower for `Above`, the upper for `Below` - goes where the
   fallback's same edge is on this sample, as a rule from another gate sets
   an edge. Its confidence is one component at `FLAGGED_CONFIDENCE`, 0.25.
@@ -301,8 +301,8 @@ component compares the dip's depth with the reference's (below).
 
 `autogate::position_valley_or_smear`. The dip is looked for on the reference
 and on the sample as in 3.4 (`ValleyOrSmearRule::valley`). Both have one: the
-gate is placed as InTheValley places it, against the reference. Otherwise
-the sample is a smear, and:
+gate is placed in it as in 3.4 (`position_line`), against the reference.
+Otherwise the sample is a smear, and:
 
 - with a `fallback`, its edge goes where the fallback's is, as in 3.4;
 - otherwise it is placed as AboveTheNegative places it
@@ -372,8 +372,8 @@ donors vary that much in the data a rule is right on.
 | events in the gate | `1 - 1/sqrt(k)`, `k` = the smaller of admitted and excluded events |
 | stability of the gate's contents | `1 / (1 + swing)`; the gate is nudged +-0.1 x the interquartile range (IQR) of the judged population; `swing = abs(held when nudged back - held when nudged forward) / held` |
 | rule satisfied | 1 in the band or with no band; otherwise `1 - miss / band width` |
-| depth of the valley it sat in | valley rule only: sample dip depth / reference dip depth |
-| no valley, so placed from another gate | valley rule placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
+| depth of the valley it sat in | valley-or-smear in a dip only: sample dip depth / reference dip depth |
+| no valley, so placed from another gate | valley-or-smear placed by its fallback: 0.25, the only component - flagged for review, not low enough to pause a run |
 | held back off another gate | a line rule held back so as not to overlap a gate beside it: 0.25 (`FLAGGED_CONFIDENCE`), naming that gate |
 | the negative's right side against the reference | above-the-negative only, positive gates: `q` = (right-side widths the gate sits above the peak) / (the same on the reference). `q` up to 1.25 scores 1, falling to 0 at 2. Below 1, 1 down to 0.7 and 0.5 at 0.4 and below - never lower, because a smear widens the right side. A right side that never falls to a quarter of the peak before the data ends (merged with what is above) scores 0.5 |
 | phenotype rule | events matching, purity, how much of the population is caught, one cloud, and - where its edges are carried - whether edges placed from either half of the events hold the same cells (`confidence::assess_match`, `phenotype_gate::agreement`) |
@@ -540,8 +540,8 @@ These are properties of the code as it stands, not settled choices:
    set (3.3).
 5. **AboveTheNegative multiplies a width**: a sample whose negative reads
    wider (merged populations, smeared positives) carries the gate further
-   out in proportion - InTheValley exists for that case, but needs a real
-   second population.
+   out in proportion - ValleyOrSmear reads a dip for that case, where there
+   is a real second population.
 6. **Kept when in band** is judged on the gate as it stands on the
    reference file, so a gate kept as "met the rule" is never re-examined for
    position relative to its peers until the review.
@@ -570,12 +570,11 @@ Rule kinds and their fields:
   workspace - together, and places one line on every specimen (`pooled_line`).
 - `{"kind": "PercentileOffset", "percentile": 99.0, "offset": 0.3}`
 - `{"kind": "AboveTheNegative", "scale": 1.0, "nudge": 0.0, "find": "BelowTheGate" | "NegativePeak"}`
-- `{"kind": "InTheValley", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "lowest_before": true, "smallest_dip": 0.1}` -
-  `fallback` is optional; it is placed first, like an anchor. `lowest_before` is optional (false):
-  the lowest point between the negative and the dip found. `smallest_dip` is optional: a
-  shallower dip, as a fraction of the lower peak beside it, is read as none
 - `{"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": {"gate": "IFNy+", "parent": "CD4+"}, "smear_example": "<file id>", "lowest_before": true, "smallest_dip": 0.1}` -
-  `fallback`, `smear_example`, `lowest_before` and `smallest_dip` are optional; measured on a `File`
+  measured on a `File`. `fallback` is optional; it is placed first, like an anchor. `smear_example`
+  is optional. `lowest_before` is optional (false): the lowest point between the negative and the
+  dip found. `smallest_dip` is optional: a shallower dip, as a fraction of the lower peak beside it,
+  is read as none
 - `{"kind": "MatchThePhenotype", "markers": ["CD161"], "fit": "KeepShape" | "MoveOnly" | "DrawPolygon", "keep": 0.95, "smoothing": 1.0, "vertices": 24, "pinned": ["CD8"]}` -
   `pinned` is optional: markers of the gate's two axes whose edge nearest the negative is pinned to it
 - `{"kind": "FromAnotherGate", "same_shape_as": {"gate": "CD4-CD8+", "parent": "..."}}`, or
@@ -589,4 +588,4 @@ Rule kinds and their fields:
 `{"File": "<file id>"}`. Every rule kind except MatchThePhenotype and
 FromAnotherGate also takes
 `"confidence": {"limits": {"events_full": 10000, "events_floor": 100,
-"swing_half": 1.0}}`. A `displacement_limit` in an older file is ignored.
+"swing_half": 1.0}}`.

@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn a_rule_that_reads_a_thin_tail_keeps_enough_events_for_the_tail() {
         use crate::gate_rules::rule::{
-            AboveTheNegativeRule, PercentileOffsetRule, Rule, TailFractionRule, ValleyRule,
+            AboveTheNegativeRule, PercentileOffsetRule, Rule, TailFractionRule, ValleyOrSmearRule,
         };
         // 0.2% to 0.5%: 100 events in the 0.2% takes 50,000.
         let band = |lo, hi| Rule::TailFraction(TailFractionRule::new((lo, hi)));
@@ -921,7 +921,7 @@ mod tests {
             KEPT_EVENTS
         );
         assert_eq!(
-            kept_for(&Rule::InTheValley(ValleyRule::default())),
+            kept_for(&Rule::ValleyOrSmear(ValleyOrSmearRule::default())),
             KEPT_EVENTS
         );
     }

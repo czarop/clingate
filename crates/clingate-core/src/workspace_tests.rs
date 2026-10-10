@@ -656,13 +656,12 @@ fn the_saved_and_recovery_files_live_in_the_folder() {
 fn rules_and_figures_go_into_their_own_folders_in_the_workspace() {
     let dir = scratch("rules-figures");
     assert_eq!(rules_file(&dir), dir.join("rules").join("gate_rules.json"));
-    // An older workspace's rules at the top level are still found...
     std::fs::write(dir.join("gate_rules.json"), "{}").unwrap();
-    assert_eq!(rules_file(&dir), dir.join("gate_rules.json"));
-    // ...until there are some in the rules folder.
-    std::fs::create_dir_all(dir.join("rules")).unwrap();
-    std::fs::write(dir.join("rules").join("gate_rules.json"), "{}").unwrap();
-    assert_eq!(rules_file(&dir), dir.join("rules").join("gate_rules.json"));
+    assert_eq!(
+        rules_file(&dir),
+        dir.join("rules").join("gate_rules.json"),
+        "rules at the top level are not the workspace's"
+    );
 
     assert_eq!(
         figure_file(&dir),

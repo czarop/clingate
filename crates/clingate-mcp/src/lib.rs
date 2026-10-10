@@ -202,17 +202,17 @@ above the negative as on its smear_example, a smear gated by hand - the \
 reference itself when the reference is a smear. With no example, a smear is \
 left unplaced: ask the user to gate one smear by hand, then name its file as \
 smear_example. Which samples are smears is found when the rules run; do not \
-read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
-- usually the same gate under another parent - for samples where the \
-positives smear with no dip: there its edge goes where the fallback's is, \
-placed first, and the placement comes up for review. \
-A valley rule that puts some gates too high inside a thin positive \
+read the data beforehand to predict it. A ValleyOrSmear rule can name a \
+fallback instead - usually the same gate under another parent - for samples \
+where the positives smear with no dip: there its edge goes where the \
+fallback's is, placed first, and the placement comes up for review. \
+A ValleyOrSmear rule that puts some gates too high inside a thin positive \
 population - a few percent of the cells spread wide, the gate at a ripple \
 where they pile up rather than in the dip below them - can take \
 'lowest_before': true: the lowest point between the negative and the dip it \
 found. Off by default; suggest it, and set it only on the user's word, and \
 only on the rules whose placements it fixes. \
-A valley rule that gates a shallow wobble inside positives that run straight \
+A ValleyOrSmear rule that gates a shallow wobble inside positives that run straight \
 off the negative - a dip a few percent deep where the real ones are tens of \
 percent - can take 'smallest_dip': a fraction below which a dip is read as \
 none, so the sample is a smear or goes to the fallback. Each placement's \

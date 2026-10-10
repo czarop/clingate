@@ -178,14 +178,11 @@ impl Session {
                 )));
             }
         }
-        let valley = match &rule.rule {
-            Rule::InTheValley(dip) => Some(dip.clone()),
-            Rule::ValleyOrSmear(either) => Some(either.valley()),
+        let fallback = match &rule.rule {
+            Rule::ValleyOrSmear(either) => either.fallback_rule(&rule.parameter, rule.bound),
             _ => None,
         };
-        if let Some(fallback) =
-            valley.and_then(|dip| dip.fallback_rule(&rule.parameter, rule.bound))
-        {
+        if let Some(fallback) = fallback {
             return self.check_follow(target, &fallback);
         }
         Ok(())
@@ -370,7 +367,7 @@ impl Session {
     }
 
     /// What is wrong with a rule already in the rules file, if anything - for
-    /// a rules file written before these checks, or by hand.
+    /// a rules file written by hand.
     pub(crate) fn rule_problems(&self, target: &RuleTarget, rule: &GateRule) -> Vec<String> {
         let mut problems = Vec::new();
         match self.resolve_rule(rule.clone()) {

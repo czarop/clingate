@@ -17,7 +17,7 @@ biological population, whose frequency is the thing being measured.
 ## When not to use it
 
 - No FMX, or FMXs of poor quality or low event count.
-- A clear dip between negative and positive: in the valley reads it directly.
+- A clear dip between negative and positive: valley or smear reads it directly.
 - A band so narrow for the event count that it holds a handful of cells:
   0.2% of 2,000 events is four.
 

@@ -16,7 +16,7 @@ use clingate_core::gate_rules::choices::{
 use clingate_core::gate_rules::phenotype::MarkerRead;
 use clingate_core::gate_rules::rule::{
     AboveTheNegativeRule, BandAim, Meet, NegativeFinder, NextToRule, PercentileOffsetRule,
-    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyOrSmearRule, ValleyRule,
+    PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule, ValleyOrSmearRule,
 };
 use clingate_core::gate_rules::rule_store::{
     Bound, GateRule, MeasuredOn, RuleEntry, RuleStore, RuleTarget,
@@ -314,6 +314,17 @@ impl RulesRun {
     }
 }
 
+
+/// Each kind of rule the form offers, as a rules file names it, and in words.
+const KINDS_OFFERED: [(&str, &str); 7] = [
+    ("TailFraction", "capture a percentage of the parent"),
+    ("PercentileOffset", "step above a percentile"),
+    ("AboveTheNegative", "above the negative, as on a reference sample"),
+    ("ValleyOrSmear", "in the valley, or on a smear as on one gated by hand"),
+    ("MatchThePhenotype", "find the cells that match the reference population"),
+    ("FromAnotherGate", "from another gate: its position, or against its edge"),
+    ("NextToGate", "next to another gate: up against it, touching but not over it"),
+];
 #[component]
 pub fn GateRulesWindow() -> Element {
     let run_with = RulesRun::from_context();
@@ -347,13 +358,13 @@ pub fn GateRulesWindow() -> Element {
     let mut finder = use_signal(|| NegativeFinder::default().key().to_string());
     let mut scale = use_signal(|| "1.0".to_string());
     let mut smoothing = use_signal(|| "1.0".to_string());
-    // A valley rule's fallback, as `RuleTarget::describe` writes it; empty
-    // for none.
+    // A valley-or-smear rule's fallback, as `RuleTarget::describe` writes
+    // it; empty for none.
     let mut valley_fallback = use_signal(String::new);
     // The sample a valley-or-smear rule places smears from; empty for none.
     let mut smear_example = use_signal(String::new);
     let mut lowest_before = use_signal(|| false);
-    // A valley rule's smallest dip, as a percentage; empty for none.
+    // A valley-or-smear rule's smallest dip, as a percentage; empty for none.
     let mut smallest_dip = use_signal(String::new);
     let mut nudge = use_signal(|| "0.0".to_string());
     // The phenotype rule's own fields. `outline_smoothing` is separate from
@@ -704,18 +715,6 @@ pub fn GateRulesWindow() -> Element {
                 next_meet.set(r.meet.key().to_string());
                 next_gap.set(format!("{}", r.gap));
             }
-            Rule::InTheValley(r) => {
-                kind.set("InTheValley".to_string());
-                smoothing.set(format!("{}", r.smoothing));
-                lowest_before.set(r.lowest_before);
-                smallest_dip.set(percent_of(r.smallest_dip));
-                valley_fallback.set(
-                    r.fallback
-                        .as_ref()
-                        .map(RuleTarget::describe)
-                        .unwrap_or_default(),
-                );
-            }
             Rule::ValleyOrSmear(r) => {
                 kind.set("ValleyOrSmear".to_string());
                 smoothing.set(format!("{}", r.smoothing));
@@ -831,26 +830,6 @@ pub fn GateRulesWindow() -> Element {
                     gap,
                 })
             }
-            "InTheValley" => {
-                let Ok(sm) = smoothing().parse::<f64>() else {
-                    warn(&toasts, "The smoothing must be a number");
-                    return;
-                };
-                let Ok(smallest) = fraction_from(&smallest_dip()) else {
-                    warn(&toasts, SMALLEST_DIP_PROBLEM);
-                    return;
-                };
-                let fallback = fallback_targets(&choices.read(), &name, &parent())
-                    .into_iter()
-                    .find(|t| t.describe() == valley_fallback());
-                Rule::InTheValley(ValleyRule {
-                    smoothing: sm,
-                    fallback,
-                    lowest_before: lowest_before(),
-                    smallest_dip: smallest,
-                    ..ValleyRule::default()
-                })
-            }
             "ValleyOrSmear" => {
                 let Ok(sm) = smoothing().parse::<f64>() else {
                     warn(&toasts, "The smoothing must be a number");
@@ -923,7 +902,7 @@ pub fn GateRulesWindow() -> Element {
         // specimen.
         let calibrated = matches!(
             kind().as_str(),
-            "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype"
+            "AboveTheNegative" | "ValleyOrSmear" | "MatchThePhenotype"
         );
         if calibrated && calibrate_on().is_empty() {
             warn(&toasts, "Choose the sample to calibrate against");
@@ -1179,7 +1158,7 @@ pub fn GateRulesWindow() -> Element {
 
                 // The calibrated rules name one reference file rather than a
                 // partner of each specimen, so the partner field means nothing.
-                if !matches!(kind().as_str(), "AboveTheNegative" | "InTheValley" | "ValleyOrSmear" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
+                if !matches!(kind().as_str(), "AboveTheNegative" | "ValleyOrSmear" | "MatchThePhenotype" | "FromAnotherGate" | "NextToGate") {
                     label { "Measured on" }
                     input {
                         value: "{measured_on}",
@@ -1201,20 +1180,9 @@ pub fn GateRulesWindow() -> Element {
                         }
                         kind.set(chosen);
                     },
-                    option { value: "TailFraction", "capture a percentage of the parent" }
-                    option { value: "PercentileOffset", "step above a percentile" }
-                    option { value: "ValleyOrSmear", "in the valley, or on a smear as on one gated by hand" }
-                    // Replaced by the one above; offered only to a rule that
-                    // already is one, so it can still be edited.
-                    if kind() == "AboveTheNegative" {
-                        option { value: "AboveTheNegative", "above the negative, as on a reference sample" }
+                    for (value , said) in KINDS_OFFERED {
+                        option { value: "{value}", "{said}" }
                     }
-                    if kind() == "InTheValley" {
-                        option { value: "InTheValley", "in the valley between the negative and the positive" }
-                    }
-                    option { value: "MatchThePhenotype", "find the cells that match the reference population" }
-                    option { value: "FromAnotherGate", "from another gate: its position, or against its edge" }
-                    option { value: "NextToGate", "next to another gate: up against it, touching but not over it" }
                 }
 
                 if kind() == "NextToGate" {
@@ -1555,48 +1523,6 @@ pub fn GateRulesWindow() -> Element {
                         p { class: "gate_rules-hint gate_rules-span",
                             "Smears are placed from this sample, as it is gated now. Forget it, and the next run stops at a smear for you to gate another."
                         }
-                    }
-                }
-
-                if kind() == "InTheValley" {
-                    {calibrate_picker(calibrate_on, files)}
-                    p { class: "gate_rules-hint gate_rules-span",
-                        "Finds the dip between the negative and the positive on each sample and puts the gate at its lowest point, offset by however far from the bottom the gate sits on the reference. It reads the boundary rather than pacing out from the negative's centre, so nothing is multiplied and a shallower dip still places correctly. It needs two populations: where the positives are a smear with no peak of their own on some samples, use valley or smear instead."
-                    }
-
-                    p { class: "gate_rules-hint gate_rules-span",
-                        "A shallower dip than the reference's still gets a gate - refusing hid the answer exactly where it was most wanted - but it is scored on how deep it is against the reference's, and a shallow one rises to the top for review. Only a density with no dip at all is left unplaced, because then there is nothing to place."
-                    }
-
-                    label { "Smoothing" }
-                    input {
-                        r#type: "number",
-                        step: "0.1",
-                        value: "{smoothing}",
-                        oninput: move |e| smoothing.set(e.value()),
-                    }
-                    p { class: "gate_rules-hint gate_rules-span",
-                        "Scales the density's bandwidth. Below 1 finds shallower dips and more noise; above 1 smooths shallow ones away."
-                    }
-
-                    {lowest_before_picker(lowest_before)}
-                    {smallest_dip_picker(smallest_dip)}
-
-                    label { "With no dip" }
-                    select {
-                        value: "{valley_fallback}",
-                        onchange: move |e| valley_fallback.set(e.value()),
-                        option { value: "", "leave the gate unplaced" }
-                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
-                            option {
-                                value: "{target.describe()}",
-                                selected: valley_fallback() == target.describe(),
-                                "where {target.describe()} is"
-                            }
-                        }
-                    }
-                    p { class: "gate_rules-hint gate_rules-span",
-                        "For a sample whose positives smear with no dip: its edge goes where the same gate's is under another parent, on the same sample. A run places that gate first, and every placement made this way comes up for review."
                     }
                 }
 
@@ -2212,6 +2138,16 @@ pub fn GateRulesWindow() -> Element {
 mod tests {
     use super::*;
 
+    /// The form offers every kind a rule can be, each once, and no other:
+    /// those the guides explain.
+    #[test]
+    fn the_form_offers_every_kind_of_rule_and_no_other() {
+        use clingate_core::gate_rules::guide::GUIDES;
+        let offered: Vec<&str> = KINDS_OFFERED.iter().map(|(kind, _)| *kind).collect();
+        let guided: Vec<&str> = GUIDES.iter().map(|guide| guide.key).collect();
+        assert_eq!(offered, guided);
+    }
+
     fn read(reshaped: Option<(f64, f64)>, clamped: bool, refused: Option<f64>) -> PhenotypeRead {
         PhenotypeRead {
             markers: Vec::new(),
@@ -2568,8 +2504,8 @@ fn file_name(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .to_string()
 }
 
-/// The valley rules' smallest dip, typed as a percentage, and when to set
-/// it.
+/// The valley-or-smear rule's smallest dip, typed as a percentage, and when
+/// to set it.
 fn smallest_dip_picker(mut smallest_dip: Signal<String>) -> Element {
     rsx! {
         label { "Smallest dip (%)" }
@@ -2609,8 +2545,8 @@ fn percent_of(fraction: Option<f64>) -> String {
         .unwrap_or_default()
 }
 
-/// The valley rules' "lowest point before the dip" setting, and when to
-/// choose it.
+/// The valley-or-smear rule's "lowest point before the dip" setting, and
+/// when to choose it.
 fn lowest_before_picker(mut lowest_before: Signal<bool>) -> Element {
     rsx! {
         label { "Thin positives" }

@@ -271,7 +271,6 @@ pub enum Rule {
     TailFraction(TailFractionRule),
     PercentileOffset(PercentileOffsetRule),
     AboveTheNegative(AboveTheNegativeRule),
-    InTheValley(ValleyRule),
     ValleyOrSmear(ValleyOrSmearRule),
     MatchThePhenotype(PhenotypeRule),
     FromAnotherGate(FromGateRule),
@@ -325,7 +324,6 @@ pub enum NegativeFinder {
     /// Needs a bandwidth and a prominence threshold, neither of which comes
     /// from the data. For a smear, where there is no valley to cut at and the
     /// dim cells would otherwise be counted as negative wholesale.
-    #[serde(alias = "DensityPeak")]
     NegativePeak,
     /// From the events below the line, improving on where the line already is.
     ///
@@ -334,7 +332,6 @@ pub enum NegativeFinder {
     /// separated populations, where the gate sits in the valley and everything
     /// below it really is the negative.
     #[default]
-    #[serde(alias = "RefineFromGate")]
     BelowTheGate,
 }
 
@@ -500,22 +497,16 @@ impl AboveTheNegativeRule {
     }
 }
 
-/// "In the dip between the negative and the positive, where I put it on the QC."
+/// How [`ValleyOrSmearRule`] places a sample with a dip: in the dip between
+/// the negative and the positive, as far from its bottom as on the reference.
 ///
-/// The sibling of [`AboveTheNegativeRule`], and the difference is what each one
-/// measures. That one reads the negative's centre and width and paces out a
-/// fixed number of widths; this one reads the boundary itself.
-///
-/// Nothing is extrapolated here, so nothing is amplified - which is the failure
+/// It reads the boundary itself, where [`AboveTheNegativeRule`] reads the
+/// negative's centre and width and paces out a fixed number of widths.
+/// Nothing is extrapolated, so nothing is amplified - which is the failure
 /// that motivated it. On a marker whose two populations had merged in one
 /// sample, the negative measured 2.47 times wider than the reference's, and
 /// because the gate sits a fixed number of widths out, that carried it six
 /// widths past where it belonged and off the end of the data.
-///
-/// It needs two populations. Where the positives are a smear with no peak of
-/// their own there is no dip to find and this rule has nothing to say;
-/// `AboveTheNegative` is for those. The two are not competitors, they are for
-/// different shapes of plot.
 ///
 /// A shallow dip is placed, not refused, and scored on how deep it is against
 /// the reference's dip (`confidence::VALLEY`), so it rises to the top for
@@ -523,39 +514,14 @@ impl AboveTheNegativeRule {
 /// - a run came back with seven samples unplaced at depths of 5% to 24%
 /// against a threshold of 25%, one of them short by a single point, and the
 /// only way to find out where the gate would have gone was to change the
-/// setting and run again. Only a density with no dip at all is refused,
-/// because then there is nothing to place.
-///
-/// There used to be a `min_depth_fraction` here, the depth below which a
-/// placement was refused. When refusing gave way to scoring it was left in the
-/// form and the rules file, read by nothing (B-RULE-1), and it was removed. A
-/// rules file that still has it loads as before; the value is ignored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// setting and run again. Only a density with no dip at all is a smear.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValleyRule {
-    /// Scales the density's bandwidth. Below 1 finds shallower dips and more
-    /// noise; above 1 smooths shallow ones away. Exposed because which of those
-    /// is wanted depends on the marker, and no automatic rule knows that.
-    #[serde(default = "one")]
+    /// See [`ValleyOrSmearRule::smoothing`].
     pub smoothing: f64,
-    #[serde(default)]
-    pub confidence: CountAndSeparation,
-    /// Where the gate goes on a sample with no valley to find - a smear: the
-    /// edge of this gate there, usually the same gate under another parent.
-    /// A run places it first when a rule places it.
-    #[serde(default)]
-    pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
-    /// Gate in the lowest point between the negative's peak and the dip
-    /// found, rather than that dip - for positives spread too thin to stand
-    /// out beside the negative. See [`lowest_valley_for_gate`].
-    ///
-    /// [`lowest_valley_for_gate`]: crate::gate_rules::threshold::lowest_valley_for_gate
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// See [`ValleyOrSmearRule::lowest_before`].
     pub lowest_before: bool,
-    /// The shallowest dip, as a fraction of the lower peak beside it, that
-    /// counts: a sample whose dip is shallower is read as having none - a
-    /// smear, or one for the fallback. For positives that run straight off
-    /// the negative, where a wobble in them would otherwise be gated in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// See [`ValleyOrSmearRule::smallest_dip`].
     pub smallest_dip: Option<f64>,
 }
 
@@ -563,8 +529,6 @@ impl Default for ValleyRule {
     fn default() -> Self {
         Self {
             smoothing: 1.0,
-            confidence: CountAndSeparation::default(),
-            fallback: None,
             lowest_before: false,
             smallest_dip: None,
         }
@@ -644,40 +608,6 @@ impl ValleyRule {
             _ => Ok(found),
         }
     }
-
-    /// The fallback as a rule from another gate: this gate's leading edge on
-    /// `parameter` - the one the valley would have set - where the fallback's
-    /// same edge is.
-    pub fn fallback_rule(&self, parameter: &Arc<str>, bound: Bound) -> Option<FromGateRule> {
-        let side = match bound {
-            Bound::Above => Side::Lower,
-            Bound::Below => Side::Upper,
-        };
-        Some(FromGateRule {
-            same_shape_as: None,
-            edges: vec![EdgeFrom {
-                anchor: self.fallback.clone()?,
-                parameter: parameter.clone(),
-                side,
-                anchor_side: side,
-                gap: 0.0,
-            }],
-        })
-    }
-
-    pub fn describe(&self) -> String {
-        let mut how =
-            "in the dip between the negative and the positive, as on the reference".to_string();
-        if self.smoothing != 1.0 {
-            how.push_str(&format!(", smoothed x{:.2}", self.smoothing));
-        }
-        how.push_str(lowest_said(self.lowest_before));
-        how.push_str(&smallest_said(self.smallest_dip));
-        if let Some(fallback) = &self.fallback {
-            how.push_str(&format!("; with no dip, where {} is", fallback.describe()));
-        }
-        how
-    }
 }
 
 /// "In the valley where there is one; where there is a smear, as on an
@@ -696,24 +626,34 @@ impl ValleyRule {
 /// and that sample becomes `smear_example`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValleyOrSmearRule {
-    /// Scales the bandwidth the dip is looked for with - see
-    /// [`ValleyRule::smoothing`].
+    /// Scales the density's bandwidth the dip is looked for with. Below 1
+    /// finds shallower dips and more noise; above 1 smooths shallow ones
+    /// away. Exposed because which of those is wanted depends on the marker,
+    /// and no automatic rule knows that.
     #[serde(default = "one")]
     pub smoothing: f64,
     #[serde(default)]
     pub confidence: CountAndSeparation,
     /// On a smear, where this gate is - usually the same gate under another
-    /// parent - rather than as on the smear example.
+    /// parent - rather than as on the smear example. A run places it first
+    /// when a rule places it.
     #[serde(default)]
     pub fallback: Option<crate::gate_rules::rule_store::RuleTarget>,
     /// The hand-gated sample a smear is placed from, named as a rule names a
     /// file, once one is known.
     #[serde(default)]
     pub smear_example: Option<Arc<str>>,
-    /// See [`ValleyRule::lowest_before`].
+    /// Gate in the lowest point between the negative's peak and the dip
+    /// found, rather than that dip - for positives spread too thin to stand
+    /// out beside the negative. See [`lowest_valley_for_gate`].
+    ///
+    /// [`lowest_valley_for_gate`]: crate::gate_rules::threshold::lowest_valley_for_gate
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lowest_before: bool,
-    /// See [`ValleyRule::smallest_dip`].
+    /// The shallowest dip, as a fraction of the lower peak beside it, that
+    /// counts: a sample whose dip is shallower is read as having none - a
+    /// smear, or one for the fallback. For positives that run straight off
+    /// the negative, where a wobble in them would otherwise be gated in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub smallest_dip: Option<f64>,
 }
@@ -731,14 +671,14 @@ impl Default for ValleyOrSmearRule {
     }
 }
 
-/// What a valley rule's description says of `smallest_dip`.
+/// What a valley-or-smear rule's description says of `smallest_dip`.
 fn smallest_said(smallest_dip: Option<f64>) -> String {
     smallest_dip
         .map(|smallest| format!(", a dip under {:.0}% deep read as none", smallest * 100.0))
         .unwrap_or_default()
 }
 
-/// What a valley rule's description says of `lowest_before`.
+/// What a valley-or-smear rule's description says of `lowest_before`.
 fn lowest_said(lowest_before: bool) -> &'static str {
     if lowest_before {
         ", at the lowest point between the negative and that dip"
@@ -752,11 +692,29 @@ impl ValleyOrSmearRule {
     pub fn valley(&self) -> ValleyRule {
         ValleyRule {
             smoothing: self.smoothing,
-            confidence: self.confidence.clone(),
-            fallback: self.fallback.clone(),
             lowest_before: self.lowest_before,
             smallest_dip: self.smallest_dip,
         }
+    }
+
+    /// The fallback as a rule from another gate: this gate's leading edge on
+    /// `parameter` - the one the dip would have set - where the fallback's
+    /// same edge is.
+    pub fn fallback_rule(&self, parameter: &Arc<str>, bound: Bound) -> Option<FromGateRule> {
+        let side = match bound {
+            Bound::Above => Side::Lower,
+            Bound::Below => Side::Upper,
+        };
+        Some(FromGateRule {
+            same_shape_as: None,
+            edges: vec![EdgeFrom {
+                anchor: self.fallback.clone()?,
+                parameter: parameter.clone(),
+                side,
+                anchor_side: side,
+                gap: 0.0,
+            }],
+        })
     }
 
     /// The rule a smear is placed by, against the smear example: the gate on
@@ -803,7 +761,6 @@ impl Rule {
             // one parameter, it replaces a geometry, so there is nothing here
             // for it to return.
             Rule::AboveTheNegative(_)
-            | Rule::InTheValley(_)
             | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
@@ -829,7 +786,6 @@ impl Rule {
             Rule::TailFraction(r) => r.confidence_model().assess(threshold),
             Rule::PercentileOffset(r) => r.confidence_model().assess(threshold),
             Rule::AboveTheNegative(r) => r.confidence.assess(threshold),
-            Rule::InTheValley(r) => r.confidence.assess(threshold),
             Rule::ValleyOrSmear(r) => r.confidence.assess(threshold),
             Rule::MatchThePhenotype(_) | Rule::FromAnotherGate(_) | Rule::NextToGate(_) => {
                 return None;
@@ -842,7 +798,6 @@ impl Rule {
             Rule::TailFraction(r) => r.solve(values),
             Rule::PercentileOffset(r) => r.solve(values),
             Rule::AboveTheNegative(_)
-            | Rule::InTheValley(_)
             | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
@@ -855,7 +810,6 @@ impl Rule {
             Rule::TailFraction(r) => r.describe(),
             Rule::PercentileOffset(r) => r.describe(),
             Rule::AboveTheNegative(r) => r.describe(),
-            Rule::InTheValley(r) => r.describe(),
             Rule::ValleyOrSmear(r) => r.describe(),
             Rule::MatchThePhenotype(r) => r.describe(),
             Rule::FromAnotherGate(r) => r.describe(),
@@ -882,7 +836,6 @@ impl Rule {
             // it does cannot be read off a fraction of the parent.
             Rule::PercentileOffset(_)
             | Rule::AboveTheNegative(_)
-            | Rule::InTheValley(_)
             | Rule::ValleyOrSmear(_)
             | Rule::MatchThePhenotype(_)
             | Rule::FromAnotherGate(_)
@@ -918,7 +871,6 @@ impl Rule {
     /// placement reads, or a search works out densities nothing reads.
     pub fn smoothings_read(&self) -> Vec<f64> {
         match self {
-            Rule::InTheValley(r) => vec![r.smoothing],
             Rule::ValleyOrSmear(r) if r.smoothing == 1.0 => vec![1.0],
             Rule::ValleyOrSmear(r) => vec![r.smoothing, 1.0],
             Rule::AboveTheNegative(_) => vec![1.0],
@@ -930,7 +882,6 @@ impl Rule {
     pub fn anchors(&self) -> Vec<&crate::gate_rules::rule_store::RuleTarget> {
         match self {
             Rule::FromAnotherGate(r) => r.anchors(),
-            Rule::InTheValley(r) => r.fallback.iter().collect(),
             Rule::ValleyOrSmear(r) => r.fallback.iter().collect(),
             Rule::NextToGate(r) => vec![&r.anchor],
             _ => Vec::new(),
@@ -943,7 +894,6 @@ impl Rule {
             Rule::TailFraction(_) => "Tail fraction",
             Rule::PercentileOffset(_) => "Percentile offset",
             Rule::AboveTheNegative(_) => "Above the negative",
-            Rule::InTheValley(_) => "In the valley",
             Rule::ValleyOrSmear(_) => "Valley or smear",
             Rule::MatchThePhenotype(_) => "Match the phenotype",
             Rule::FromAnotherGate(_) => "From another gate",
