@@ -10,8 +10,8 @@ use crate::gate_editor::path_picker::{Pick, PickPath};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
 use clingate_core::gate_rules::autogate::{PhenotypeRead, Report, describe};
 use clingate_core::gate_rules::choices::{
-    EdgeForm, beside, carry_over, choices, describe_phenotype, every_target, fallback_targets,
-    follow_from_form, follow_to_form, marker_label, side_from, side_to,
+    EdgeForm, GateChoices, beside, carry_over, choices, describe_phenotype, every_target,
+    follow_from_form, follow_to_form, marker_label, same_gate_elsewhere, side_from, side_to,
 };
 use clingate_core::gate_rules::phenotype::MarkerRead;
 use clingate_core::gate_rules::rule::{
@@ -138,17 +138,35 @@ fn name_of(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
-/// The loaded files, by the name a person recognises them by.
+/// What a rule from another gate can copy the shape of, as the form names
+/// them: `gate` under another parent, and `current` too if it names another.
+fn shape_sources(choices: &GateChoices, gate: &str, parent: &str, current: &str) -> Vec<String> {
+    let mut named: Vec<String> = same_gate_elsewhere(choices, gate, parent)
+        .iter()
+        .map(|target| target.describe())
+        .collect();
+    if !current.is_empty() && !named.iter().any(|name| name == current) {
+        named.push(current.to_string());
+    }
+    named
+}
+
+/// The files of `loaded` - the workspace's, not every file the metadata
+/// names - by the name a person recognises them by, with their gating ids.
 ///
 /// Rules address files by the id the gating document uses, which is opaque -
 /// nobody picks `1TBQ` off a list. The metadata carries the mapping back to
 /// the file name, so that is what the form shows.
-fn loaded_files(map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>) -> Vec<(Arc<str>, Arc<str>)> {
-    let mut out: Vec<(Arc<str>, Arc<str>)> = map
+fn loaded_files(
+    map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>,
+    loaded: &[Arc<str>],
+) -> Vec<(Arc<str>, Arc<str>)> {
+    let mut out: Vec<(Arc<str>, Arc<str>)> = loaded
         .iter()
-        .map(|(name, id)| (name.clone(), id.clone()))
+        .filter_map(|name| Some((name.clone(), map.get(name)?.clone())))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup();
     out
 }
 
@@ -335,7 +353,18 @@ pub fn GateRulesWindow() -> Element {
     let mut rules = use_context::<Signal<RuleStore>>();
 
     let choices = use_memo(move || choices(&gate_store.read()));
-    let files = use_memo(move || loaded_files(&metadata_store.file_name_to_gating_id().read()));
+    // The workspace's files: what a run measures. The same list the editor and
+    // the gallery show, so the three cannot be looking at different
+    // experiments.
+    let filehandler = use_context::<Signal<Option<clingate_core::file_load::FcsFiles>>>();
+    let files = use_memo(move || {
+        let loaded: Vec<Arc<str>> = filehandler
+            .read()
+            .as_ref()
+            .map(|files| files.file_list().iter().map(|stub| stub.name.clone()).collect())
+            .unwrap_or_default();
+        loaded_files(&metadata_store.file_name_to_gating_id().read(), &loaded)
+    });
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -392,10 +421,6 @@ pub fn GateRulesWindow() -> Element {
     let mut gated_file = use_signal(String::new);
     let mut reference_type = use_signal(|| "FMX".to_string());
     let mut reference_file = use_signal(String::new);
-    // The workspace's files: what a run measures. The same list the editor and
-    // the gallery show, so the three cannot be looking at different
-    // experiments.
-    let filehandler = use_context::<Signal<Option<clingate_core::file_load::FcsFiles>>>();
     let mut running = use_signal(|| false);
     let mut report = use_signal(|| None::<Report>);
     // A bare name is kept in the workspace folder's `rules` folder; the
@@ -839,7 +864,7 @@ pub fn GateRulesWindow() -> Element {
                     warn(&toasts, SMALLEST_DIP_PROBLEM);
                     return;
                 };
-                let fallback = fallback_targets(&choices.read(), &name, &parent())
+                let fallback = same_gate_elsewhere(&choices.read(), &name, &parent())
                     .into_iter()
                     .find(|t| t.describe() == valley_fallback());
                 // An example was gated by hand for one gate: a rule moved to
@@ -1249,12 +1274,12 @@ pub fn GateRulesWindow() -> Element {
                         select {
                             value: "{follow_anchor}",
                             onchange: move |e| follow_anchor.set(e.value()),
-                            option { value: "", "choose the gate it follows" }
-                            for target in every_target(&choices.read()) {
+                            option { value: "", "choose the same gate under another parent" }
+                            for target in shape_sources(&choices.read(), &gate(), &parent(), &follow_anchor()) {
                                 option {
-                                    value: "{target.describe()}",
-                                    selected: follow_anchor() == target.describe(),
-                                    "{target.describe()}"
+                                    value: "{target}",
+                                    selected: follow_anchor() == target,
+                                    "{target}"
                                 }
                             }
                         }
@@ -1499,7 +1524,7 @@ pub fn GateRulesWindow() -> Element {
                         value: "{valley_fallback}",
                         onchange: move |e| valley_fallback.set(e.value()),
                         option { value: "", "as on a smear gated by hand" }
-                        for target in fallback_targets(&choices.read(), &gate(), &parent()) {
+                        for target in same_gate_elsewhere(&choices.read(), &gate(), &parent()) {
                             option {
                                 value: "{target.describe()}",
                                 selected: valley_fallback() == target.describe(),
@@ -2137,6 +2162,43 @@ pub fn GateRulesWindow() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gate's shape is copied from the same gate under another parent -
+    /// and a rule that already names another keeps it on offer.
+    #[test]
+    fn a_shape_is_copied_from_the_same_gate_under_another_parent() {
+        let offered = GateChoices {
+            parents: vec![Arc::from("CD4+"), Arc::from("CD8+")],
+            children: vec![
+                (Arc::from("CD4+"), vec![Arc::from("CD69+"), Arc::from("CD25+")]),
+                (Arc::from("CD8+"), vec![Arc::from("CD69+")]),
+            ],
+            parameters: Vec::new(),
+        };
+        assert_eq!(shape_sources(&offered, "CD69+", "CD4+", ""), ["CD69+ of CD8+"]);
+        assert_eq!(
+            shape_sources(&offered, "CD69+", "CD4+", "CD25+ of CD4+"),
+            ["CD69+ of CD8+", "CD25+ of CD4+"]
+        );
+    }
+
+    /// The form offers the workspace's files, not every file the metadata
+    /// names.
+    #[test]
+    fn a_rule_is_offered_only_the_files_the_workspace_loaded() {
+        let mut names: HashMap<Arc<str>, Arc<str>, FxBuildHasher> = HashMap::default();
+        for (name, id) in [("b.fcs", "2"), ("a.fcs", "1"), ("elsewhere.fcs", "3")] {
+            names.insert(Arc::from(name), Arc::from(id));
+        }
+        let loaded: Vec<Arc<str>> = ["b.fcs", "a.fcs", "unnamed.fcs"].map(Arc::from).to_vec();
+        assert_eq!(
+            loaded_files(&names, &loaded),
+            [
+                (Arc::from("a.fcs"), Arc::from("1")),
+                (Arc::from("b.fcs"), Arc::from("2"))
+            ]
+        );
+    }
 
     /// The form offers every kind a rule can be, each once, and no other:
     /// those the guides explain.

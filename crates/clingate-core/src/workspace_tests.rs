@@ -748,3 +748,24 @@ fn a_workspace_opens_its_rules_with_the_pairing_it_was_left_with() {
         RulesRead::Failed(_)
     ));
 }
+
+// ── the gate hierarchy's open branches ───────────────────────────────────
+
+#[test]
+fn the_open_branches_are_kept_in_the_folder_and_none_before_any() {
+    let dir = scratch("open-branches");
+    assert!(open_branches(&dir).is_empty());
+    let branch = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    let open = [
+        branch(&["Lymph", "CD4+"]),
+        branch(&["Lymph"]),
+        branch(&["Lymph"]),
+    ];
+    keep_open_branches(&dir, &open).unwrap();
+    assert_eq!(
+        open_branches(&dir),
+        [branch(&["Lymph"]), branch(&["Lymph", "CD4+"])]
+    );
+    std::fs::write(dir.join(OPEN_BRANCHES), "not json").unwrap();
+    assert!(open_branches(&dir).is_empty(), "an unreadable file opens nothing");
+}

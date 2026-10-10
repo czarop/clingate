@@ -377,9 +377,9 @@ mod following {
 
     #[test]
     fn a_valley_rule_falls_back_to_the_same_gate_under_another_parent() {
-        use crate::gate_rules::choices::fallback_targets;
+        use crate::gate_rules::choices::same_gate_elsewhere;
         let named = |gate, parent| -> Vec<String> {
-            fallback_targets(&offered(), gate, parent)
+            same_gate_elsewhere(&offered(), gate, parent)
                 .iter()
                 .map(|t| t.describe())
                 .collect()

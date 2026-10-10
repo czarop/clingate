@@ -322,6 +322,27 @@ pub const SAVED_SCALING: &str = "clingate_scaling.csv";
 /// mistake it for a part of the workspace.
 pub const RECOVERY_GATING: &str = ".clingate_recovery.omiqgt";
 pub const RECOVERY_SCALING: &str = ".clingate_recovery_scaling.csv";
+/// Which branches of the gate hierarchy are open. Hidden, like the recovery
+/// files: it is how the tree was left, not part of the workspace.
+pub const OPEN_BRANCHES: &str = ".clingate_open_branches.json";
+
+/// The branches of `folder`'s gate hierarchy left open, each by its
+/// population names from the root; none where none was opened.
+pub fn open_branches(folder: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(folder.join(OPEN_BRANCHES))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Keep `open` as `folder`'s open branches, in order.
+pub fn keep_open_branches(folder: &Path, open: &[Vec<String>]) -> anyhow::Result<()> {
+    let mut open = open.to_vec();
+    open.sort();
+    open.dedup();
+    std::fs::write(folder.join(OPEN_BRANCHES), serde_json::to_string(&open)?)?;
+    Ok(())
+}
 
 /// A gating file and the scaling that goes with it.
 #[derive(Clone, Debug, PartialEq, Eq)]

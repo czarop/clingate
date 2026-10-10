@@ -1,9 +1,9 @@
 //! Writing the gallery out as a PDF.
 //!
-//! The tab renders a page at a time because that is what a person looks at.
-//! The export is the other case: every specimen, at a size worth printing, and
-//! nobody watching while it happens. So it does not go through the page's
-//! cache or its permits - those exist to keep an interactive page responsive -
+//! The tab renders what a person looks at. The export is the other case:
+//! every specimen, at a size worth printing, and nobody watching while it
+//! happens. So it does not go through the tab's cache or its permits - those
+//! exist to keep an interactive page responsive -
 //! and runs the whole run through rayon instead, with a count and a Stop.
 //!
 //! Plots are re-rendered rather than taken from the cache. The cache holds
