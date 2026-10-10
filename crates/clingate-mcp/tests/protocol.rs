@@ -203,6 +203,8 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "try_rules",
         "score_rules",
         "fit_rule",
+        "pick_rule",
+        "pick_settings",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -614,7 +616,7 @@ fn how_gates_are_positioned_is_read_and_a_reviewed_run_replayed_over_the_protoco
             .unwrap()
             .starts_with("# Choosing a rule")
     );
-    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 8);
+    assert_eq!(choosing["result"]["rules"].as_array().unwrap().len(), 7);
     let follow = server.call("rule_guide", json!({"rule": "from another gate"}));
     assert_eq!(follow["result"]["kind"], "FromAnotherGate", "{follow}");
     assert!(
@@ -854,7 +856,7 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
                 "parameter": parameter,
                 "bound": "Above",
                 "measured_on": {"File": "sample1_FMX.fcs"},
-                "rule": {"kind": "InTheValley", "smoothing": 1.0, "fallback": fallback}
+                "rule": {"kind": "ValleyOrSmear", "smoothing": 1.0, "fallback": fallback}
             }
         })
     };
@@ -887,7 +889,7 @@ fn a_valley_rule_s_fallback_is_written_and_checked_over_the_protocol() {
     assert!(
         view.rules[0]
             .rule
-            .contains(&format!("with no dip, where {} is", other.rule_target)),
+            .contains(&format!("on a smear, where {} is", other.rule_target)),
         "{:?}",
         view.rules
     );
@@ -1297,7 +1299,8 @@ fn the_rules_are_scored_over_the_protocol() {
 
 /// A rule's settings searched over the protocol: the defaults for its kind
 /// when no candidates are given, candidates beside the rule as it stands
-/// when they are, ranked as asked, and settings out of range refused.
+/// when they are, ranked as asked, the closest kept for the gallery, and
+/// settings out of range refused.
 #[test]
 fn a_rule_s_settings_are_searched_over_the_protocol() {
     let folder = workspace_with_rules("fit");
@@ -1320,13 +1323,17 @@ fn a_rule_s_settings_are_searched_over_the_protocol() {
     assert_eq!(candidates[0]["among_best"], true);
     assert!(candidates[0]["fit"]["typical_agreement"].is_number(), "{found}");
     assert!(candidates[0]["check"].is_null(), "two specimens are too few to split");
+    assert!(candidates.iter().all(|c| c.get("placed").is_none()), "{found}");
+    let kept = clingate_core::gate_rules::searches::kept(&folder).unwrap();
+    assert_eq!(kept.len(), 1, "kept for the gallery");
+    assert_eq!(kept[0].gate, result["gate"].as_str().unwrap());
 
     let parameter = candidates[0]["rule"]["parameter"].clone();
     let valley = json!({
         "parameter": parameter,
         "bound": "Above",
-        "measured_on": "Itself",
-        "rule": {"kind": "InTheValley"},
+        "measured_on": {"File": "sample1_FMX.fcs"},
+        "rule": {"kind": "ValleyOrSmear"},
     });
     let given = server.call(
         "fit_rule",
@@ -1357,6 +1364,90 @@ fn a_rule_s_settings_are_searched_over_the_protocol() {
         json!({"population": "teff_naive"}),
     ] {
         let answer = server.call("fit_rule", refused.clone());
+        assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");
+    }
+}
+
+/// A rule picked over the protocol, for one gate and for every gate, with
+/// the settings the user chose in the app unless given others, kept for the
+/// gallery; refused without a rule to start from, with a ranking it does not
+/// know, or with settings out of range.
+#[test]
+fn a_rule_is_picked_in_order_over_the_protocol() {
+    let folder = workspace_with_rules("pick");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let chosen = clingate_core::gate_rules::pick::PickSettings {
+        fmx_band: Some((0.005, 0.01)),
+        most_off: 0.2,
+        ..Default::default()
+    };
+    clingate_core::gate_rules::pick::keep_settings(&folder, &chosen).unwrap();
+    let kept_settings = server.call("pick_settings", json!({}));
+    assert_eq!(kept_settings["outcome"], "ok", "{kept_settings}");
+    assert_eq!(kept_settings["result"]["fmx_band"], json!([0.005, 0.01]));
+    assert_eq!(kept_settings["result"]["most_off"], 0.2);
+    let one = server.call("pick_rule", json!({"population": "Tmem", "off_below": 0.9}));
+    assert_eq!(one["outcome"], "ok", "{one}");
+    let settings = &one["result"]["settings"];
+    assert_eq!(
+        settings["fmx_band"],
+        json!([0.005, 0.01]),
+        "as set in the app: {settings}"
+    );
+    assert_eq!(settings["most_off"], 0.2);
+    assert_eq!(settings["score"]["off_below"], 0.9, "as given: {settings}");
+    let picked = one["result"]["picked"].as_array().unwrap();
+    assert_eq!(picked.len(), 1, "{one}");
+    let gate = &picked[0];
+    assert!(gate["best"]["rule"]["rule"]["kind"].is_string(), "{gate}");
+    assert_eq!(gate["as_it_stands"]["current"], true, "{gate}");
+    assert!(gate["passed"].is_boolean());
+    assert_eq!(
+        gate["kinds"][0]["kind"], "fmx_band",
+        "the band given tried first: {gate}"
+    );
+    assert!(gate["tried"].as_u64().unwrap() >= 4, "{gate}");
+    assert!(gate["best"].get("placed").is_none(), "{gate}");
+    let kept = clingate_core::gate_rules::searches::kept(&folder).unwrap();
+    assert_eq!(kept.len(), 1, "kept for the gallery");
+    assert_eq!(
+        kept[0].passed.map(serde_json::Value::Bool),
+        Some(gate["passed"].clone())
+    );
+
+    let every = server.call("pick_rule", json!({}));
+    assert_eq!(every["outcome"], "ok", "{every}");
+    assert_eq!(every["result"]["picked"].as_array().unwrap().len(), 1);
+
+    let given = server.call(
+        "pick_rule",
+        json!({"population": "Tmem", "fmx_band": [], "most_off": 0.3, "noise_widths": 2.0}),
+    );
+    assert_eq!(given["outcome"], "ok", "{given}");
+    let settings = &given["result"]["settings"];
+    assert_eq!(settings["fmx_band"], json!(null), "[] is no band: {settings}");
+    assert_eq!(settings["most_off"], 0.3);
+    assert_eq!(settings["score"]["noise_widths"], 2.0);
+    assert_ne!(
+        given["result"]["picked"][0]["kinds"][0]["kind"], "fmx_band",
+        "no band tried on the FMX"
+    );
+
+    for refused in [
+        json!({"population": "teff_naive"}),
+        json!({"rank_by": "best"}),
+        json!({"tie_within": 2.0}),
+        json!({"most_off": 1.5}),
+        json!({"fmx_band": [0.02, 0.01]}),
+        json!({"fmx_band": [0.01]}),
+    ] {
+        let answer = server.call("pick_rule", refused.clone());
         assert_eq!(answer["outcome"], "failed", "{refused}: {answer}");
     }
 }

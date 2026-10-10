@@ -16,4 +16,5 @@ pub mod review;
 mod review_tests;
 pub mod review_window;
 pub mod route;
+pub mod pick_panel;
 pub mod workspace_window;

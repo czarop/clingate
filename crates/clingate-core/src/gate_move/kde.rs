@@ -27,21 +27,50 @@ pub fn kde_1d(
 
     let norm = 1.0 / (bandwidth * (2.0 * std::f64::consts::PI).sqrt());
 
-    let density: Vec<f64> = xs
-        .iter()
-        .map(|&x| {
-            let sum: f64 = points
-                .iter()
-                .map(|&p| {
-                    let z = (x - p) / bandwidth;
-                    norm * (-0.5 * z * z).exp()
-                })
-                .sum();
-            sum / points.len() as f64
-        })
+    // Point by point, in the order given, over only the grid points each one
+    // reaches: every grid point adds the same terms in the same order as it
+    // would summing every point, less those that are exactly zero - which
+    // they are while `norm` is finite, as it is for all but a subnormal
+    // bandwidth.
+    let mut sums = vec![-0.0; n_points];
+    for &p in points {
+        for i in reached(range.0, step, n_points, p, bandwidth) {
+            let z = (xs[i] - p) / bandwidth;
+            sums[i] += norm * (-0.5 * z * z).exp();
+        }
+    }
+    let density = sums
+        .into_iter()
+        .map(|sum| (sum + 0.0) / points.len() as f64)
         .collect();
 
     (xs, density)
+}
+
+/// Bandwidths beyond which a point's kernel is exactly zero: `exp` gives
+/// zero below -745, and this is -800.
+const REACH: f64 = 40.0;
+
+/// The grid points within [`REACH`] of `p`, with one to spare either side;
+/// every one, where that cannot be told.
+fn reached(
+    start: f64,
+    step: f64,
+    n_points: usize,
+    p: f64,
+    bandwidth: f64,
+) -> std::ops::Range<usize> {
+    let centre = (p - start) / step;
+    let reach = REACH * bandwidth / step;
+    let (from, to) = (
+        (centre - reach).floor() - 1.0,
+        (centre + reach).ceil() + 2.0,
+    );
+    if !(step > 0.0) || !from.is_finite() || !to.is_finite() {
+        return 0..n_points;
+    }
+    let on_grid = |at: f64| at.clamp(0.0, n_points as f64) as usize;
+    on_grid(from)..on_grid(to)
 }
 
 /// Finds the x position of the highest density peak in a KDE output.

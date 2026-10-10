@@ -33,6 +33,37 @@
   it stands both ways, and the best and those tied with it are marked for
   comparing by eye. Nothing is moved.
 
+- **A search's closest candidates on the gallery.** A search keeps its best
+  candidates, those tied with them and the rule as it stands in the
+  workspace, with where each puts the gate on every sample it moves it on.
+  The Gallery tab, on that gate's population, draws the candidate's gate
+  dashed in magenta over the gate as drawn - no dashed outline where it
+  does not move the gate - and steps through them one at a time, so close
+  candidates can be told apart by eye; "Use this rule" takes the one shown
+  as the gate's rule, while the gate still has a rule the search tried.
+
+- **Picking a rule for every gate, in the user's order of preference**
+  ("Pick the best rule for every gate" on the Gate Rules tab, and
+  `pick_rule` in the tools for Claude). For each gate a rule places, the
+  kinds are tried in order and the first that passes is taken: a band read
+  on each specimen's FMX at the range the user accepts, as it is; above
+  the negative; the valley or a smear; a band read on the sample; and
+  last, the phenotype on the plot's two axes. A rule passes when no more
+  than a tenth of its samples agree less than 0.95 with the gate drawn by
+  hand - both settable, asked at the start of a pick with the FMX range,
+  and kept with the workspace for every pick after (`pick_settings` says
+  what they are; `fmx_band: []` tries no band on the FMX). A pick says when
+  it could not try the band on the FMX for want of a partner to read it on. The negative, the valley
+  and the phenotype are calibrated on one sample gated by hand, not scored.
+  Every kind but the phenotype is first tried as the hand gating starts it,
+  and the first that passes has its settings searched; when none does, each kind's settings
+  are searched in turn. A gate where nothing passes shows the closest rule
+  of everything tried, flagged, and is listed first. Each gate's pick is
+  listed beside the rule as it stands with how each kind did; Use takes
+  one, Use the best takes every one that differs from its gate's rule, and
+  the closest are on the Gallery tab to compare by eye. Gates placed from
+  another gate are left as they are.
+
 - **Gate profiles and pictures for choosing rules with Claude.**
   `gate_profile` classes each sample's population on each of a gate's
   markers - separate, shoulder, smear, merged, negative only, several
@@ -416,6 +447,23 @@
 
 ### Changed
 
+- **Above the negative is offered on the Gate Rules tab again,** beside
+  valley or smear, not only to a rule that already was one: a pick can
+  choose it, so it can be written by hand too.
+
+- **Searching and picking rules are many times faster, and rules runs
+  faster, with the same results.** The smoothed density a valley-or-smear
+  or above-the-negative rule reads is worked out once for each population and
+  smoothing and shared - by every candidate a search tries, and by every
+  sample a run calibrates on the same reference, which each worked it out
+  again. A search works out the densities a batch of candidates will read
+  side by side before solving them, so none waits while another works out the
+  one it needs. Each density adds up only the events within reach of each
+  point; the rest add exactly nothing, so it comes out the same to the last
+  digit. A population's spread and shape are worked out once, not at every
+  placement. On 20 donors of 300,000 events, a valley-or-smear rule's 30
+  settings are searched in 34 seconds rather than 8 minutes 30.
+
 - **Fewer review flags: a gate is flagged for where it sits, not for how its
   sample differs.** A run's review now flags a placement whose gate sits 2 or
   more of its parent's interquartile ranges from where its peers put theirs,
@@ -450,10 +498,21 @@
 
 ### Removed
 
-- **The valley rule's "Flag below" setting.** It was read by nothing: when a
+- **The "in the valley" rule.** Valley or smear does everything it did - a
+  sample with a dip is placed in it exactly as before - and places the
+  samples it refused: a smear goes as on a smear gated by hand, or where its
+  fallback gate is. A rules file naming the old kind no longer loads; write
+  the rule as ValleyOrSmear, with the same settings, measured on a named
+  hand-gated file, and with a smear example once one is gated.
+
+- **Loading rules written by older versions.** Old names for the ways of
+  finding the negative (`DensityPeak`, `RefineFromGate`) are no longer read,
+  and a workspace's rules are looked for only in its rules folder, not at
+  its top level.
+
+- **The valley rules' "Flag below" setting.** It was read by nothing: when a
   shallow valley stopped being refused and was scored on its depth instead,
-  the setting stayed in the form but no longer did anything. Rules files that
-  still carry it load as before.
+  the setting stayed in the form but no longer did anything.
 
 ### Fixed
 
@@ -542,8 +601,8 @@
   had never been moved in Omiq came back with its label pinned to the plot's
   origin.
 
-- **The valley rule's "only one peak" message gives the real event count.** It
-  said "over 0 events" whatever the population.
+- **The valley-or-smear rule's "only one peak" message gives the real event
+  count.** It said "over 0 events" whatever the population.
 
 - **A gate rule's score no longer hides what it could not measure.** A part
   of the confidence score that could not be worked out - a ratio with nothing

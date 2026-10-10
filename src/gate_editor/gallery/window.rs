@@ -24,7 +24,8 @@ use dioxus::stores::SyncStore;
 
 use crate::gate_editor::gate_sidebar::GateSidebar;
 use crate::gate_editor::route::Tab;
-use crate::gate_editor::workspace_window::Generation;
+use crate::gate_editor::workspace_window::{Generation, Loaded};
+use clingate_core::gate_rules::searches::{Search, kept};
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use clingate_core::file_load::FcsFiles;
 use clingate_core::gate_rules::rule_store::RuleStore;
@@ -35,6 +36,7 @@ use clingate_core::sample_pairs::{Pair, gallery_rows, pair_files};
 
 use super::cache::PlotCache;
 use super::plot::{GalleryPlot, Permits};
+use super::searched::{SearchBar, placed_on, searches_here};
 
 static GALLERY_STYLE: Asset = asset!("assets/gallery.css");
 
@@ -81,6 +83,7 @@ pub fn GalleryWindow() -> Element {
     let filehandler = use_context::<Signal<Option<FcsFiles>>>();
     let rules = use_context::<Signal<RuleStore>>();
     let active = use_context::<Signal<Tab>>();
+    let loaded = use_context::<Signal<Loaded>>();
 
     // This tab's own selection. Sharing the editor's would mean looking at a
     // gate here moved the editor's plots out from under the person, and would
@@ -103,6 +106,8 @@ pub fn GalleryWindow() -> Element {
 
     let mut page = use_signal(|| 0usize);
     let mut plot_size = use_signal(|| 260u32);
+    let mut search_at = use_signal(|| 0usize);
+    let mut candidate_at: Signal<Option<usize>> = use_signal(|| Some(0));
 
     // What names the old workspace. The selected gate is a node id from a
     // document that has gone, and a page number from a longer list may now be
@@ -226,6 +231,39 @@ pub fn GalleryWindow() -> Element {
             .unwrap_or_else(|| node.to_string())
     });
 
+    // Read again each time the tab comes to the front: the tools for Claude
+    // keep a search from another process.
+    let searches = use_memo(move || {
+        if active() != Tab::Gallery {
+            return Vec::<Search>::new();
+        }
+        let Some(folder) = loaded.read().folder.clone() else {
+            return Vec::new();
+        };
+        kept(&folder).unwrap_or_default()
+    });
+    let here = use_memo(move || {
+        let Some(node) = showing_node() else {
+            return Vec::new();
+        };
+        searches_here(
+            &searches.read(),
+            &gate_store.read(),
+            &node,
+            &x_axis_marker.read().fluoro,
+            &y_axis_marker.read().fluoro,
+        )
+    });
+    use_effect(move || {
+        showing_node();
+        search_at.set(0);
+        candidate_at.set(Some(0));
+    });
+    let candidate = use_memo(move || {
+        let here = here.read();
+        here.get(search_at())?.candidates.get(candidate_at()?).cloned()
+    });
+
     let x_axis = use_memo(move || {
         let param = x_axis_marker.read().fluoro.clone();
         axis_store
@@ -314,6 +352,8 @@ pub fn GalleryWindow() -> Element {
                     }
                 }
 
+                SearchBar { here, search_at, candidate_at }
+
                 if total == 0 {
                     div { class: "gallery-empty",
                         "No samples loaded. Open a folder of FCS files on the editor tab."
@@ -345,6 +385,13 @@ pub fn GalleryWindow() -> Element {
                                                             x: x_axis_marker(),
                                                             y: y_axis_marker(),
                                                             size: plot_size(),
+                                                            candidate: metadata_store
+                                                                .file_name_to_gating_id()
+                                                                .read()
+                                                                .get(&file.name)
+                                                                .and_then(|id| {
+                                                                    candidate.read().as_ref().and_then(|c| placed_on(c, id))
+                                                                }),
                                                         }
                                                     }
                                                 }

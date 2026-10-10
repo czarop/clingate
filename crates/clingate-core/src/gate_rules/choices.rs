@@ -270,7 +270,7 @@ pub fn beside(
         .collect()
 }
 
-/// The gates a valley rule for `gate` under `parent` can fall back to: the
+/// The gates a valley-or-smear rule for `gate` under `parent` can fall back to: the
 /// same gate under every other parent.
 pub fn fallback_targets(
     choices: &GateChoices,

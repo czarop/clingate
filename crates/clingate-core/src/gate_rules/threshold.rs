@@ -21,6 +21,10 @@
 //!   transform preserves order, but an offset in data units very much does: it
 //!   is a visual shift, and the space the analyst sees is the arcsinh one.
 
+use std::sync::Arc;
+
+use crate::gate_rules::density::Density;
+
 /// Where a threshold ended up, and what the gate would actually capture there.
 ///
 /// `events_admitted` is counted at the chosen coordinate rather than assumed
@@ -467,21 +471,8 @@ pub fn refine_from(
 /// percentile of the events below it is a one-sigma width that does not care
 /// what the positives are doing.
 pub fn negative_peak(values: &[f64]) -> Option<NegativePeak> {
-    if values.len() < 2 {
-        return None;
-    }
-    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values);
-    if !bandwidth.is_finite() || bandwidth <= 0.0 {
-        return None;
-    }
-    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-        return None;
-    }
-
-    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
-    let centre = leftmost_prominent_mode(&xs, &density)?;
+    let smoothed = crate::gate_rules::density::smoothed(values, 1.0)?;
+    let centre = leftmost_prominent_mode(&smoothed.xs, &smoothed.density)?;
     let (spread, flank_events) = left_flank_sigma(values, centre)?;
 
     Some(NegativePeak {
@@ -548,17 +539,16 @@ pub struct PeakSides {
 /// assumption has stopped holding - a negative whose right side has pulled in
 /// or spread out against the reference's.
 pub fn peak_sides(values: &[f64]) -> Option<PeakSides> {
-    if values.len() < 2 {
-        return None;
-    }
-    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values);
-    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if !bandwidth.is_finite() || bandwidth <= 0.0 || !lo.is_finite() || !hi.is_finite() || hi <= lo
-    {
-        return None;
-    }
-    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
+    let smoothed = crate::gate_rules::density::smoothed(values, 1.0)?;
+    let Density {
+        xs,
+        density,
+        lo,
+        hi,
+        bandwidth,
+        ..
+    } = &*smoothed;
+    let (lo, hi, bandwidth) = (*lo, *hi, *bandwidth);
     let n = xs.len().min(density.len());
     if n < 3 {
         return None;
@@ -669,8 +659,8 @@ const FAR_SIDE_PROMINENCE: f64 = 0.05;
 /// noise; above 1 smooths shallow ones away. It is exposed because which of
 /// those is wanted depends on the marker, and no automatic rule knows that.
 pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> {
-    let (xs, density, events) = smoothed(values, smoothing)?;
-    valley_in(&xs, &density).map_err(|why| counted(why, events))
+    let smoothed = smoothed(values, smoothing)?;
+    valley_in(&smoothed.xs, &smoothed.density).map_err(|why| counted(why, smoothed.events))
 }
 
 /// [`first_valley`], or failing that the dip below a small negative when the
@@ -681,10 +671,19 @@ pub fn first_valley(values: &[f64], smoothing: f64) -> Result<Valley, NoValley> 
 /// height, so [`first_valley`] takes the positives for the negative and finds
 /// nothing beyond them. The gate says which side the positives are on.
 pub fn valley_for_gate(values: &[f64], smoothing: f64, gate: f64) -> Result<Valley, NoValley> {
-    let (xs, density, events) = smoothed(values, smoothing)?;
-    valley_in(&xs, &density)
-        .or_else(|why| small_negative_below(&xs, &density, gate, events).ok_or(why))
-        .map_err(|why| counted(why, events))
+    valley_for_gate_in(&*smoothed(values, smoothing)?, gate)
+}
+
+fn valley_for_gate_in(smoothed: &Density, gate: f64) -> Result<Valley, NoValley> {
+    let Density {
+        xs,
+        density,
+        events,
+        ..
+    } = smoothed;
+    valley_in(xs, density)
+        .or_else(|why| small_negative_below(xs, density, gate, *events).ok_or(why))
+        .map_err(|why| counted(why, *events))
 }
 
 /// [`valley_for_gate`]'s dip moved to the lowest point between the
@@ -702,8 +701,9 @@ pub fn lowest_valley_for_gate(
     smoothing: f64,
     gate: f64,
 ) -> Result<Valley, NoValley> {
-    let found = valley_for_gate(values, smoothing, gate)?;
-    let (xs, density, _) = smoothed(values, smoothing)?;
+    let smoothed = smoothed(values, smoothing)?;
+    let found = valley_for_gate_in(&smoothed, gate)?;
+    let Density { xs, density, .. } = &*smoothed;
     let at = |x: f64| xs.iter().position(|v| *v == x);
     let (Some(peak), Some(bottom)) = (at(found.peak), at(found.bottom)) else {
         return Ok(found);
@@ -719,22 +719,8 @@ pub fn lowest_valley_for_gate(
 }
 
 /// The density [`first_valley`] reads, and how many events made it.
-fn smoothed(values: &[f64], smoothing: f64) -> Result<(Vec<f64>, Vec<f64>, usize), NoValley> {
-    if values.len() < 2 || !smoothing.is_finite() || smoothing <= 0.0 {
-        return Err(NoValley::NoPopulation);
-    }
-    let bandwidth = crate::gate_move::kde::silverman_bandwidth(values) * smoothing;
-    if !bandwidth.is_finite() || bandwidth <= 0.0 {
-        return Err(NoValley::NoPopulation);
-    }
-    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
-        return Err(NoValley::NoPopulation);
-    }
-    let (xs, density) = crate::gate_move::kde::kde_1d(values, (lo, hi), 512, bandwidth);
-    let events = values.iter().filter(|v| v.is_finite()).count();
-    Ok((xs, density, events))
+fn smoothed(values: &[f64], smoothing: f64) -> Result<Arc<Density>, NoValley> {
+    crate::gate_rules::density::smoothed(values, smoothing).ok_or(NoValley::NoPopulation)
 }
 
 /// The density alone does not know how many events made it; the caller does.

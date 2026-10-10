@@ -347,17 +347,6 @@ fn limits_survive_the_rules_file() {
     assert_eq!(back.limits, limits);
 }
 
-/// Rules files written while a gate was also scored on how far it moved from
-/// its reference carry that limit; they must still load.
-#[test]
-fn a_rules_file_with_the_old_displacement_limit_still_loads() {
-    let back: CountAndSeparation = serde_json::from_str(
-        r#"{"limits":{"events_full":5000.0,"events_floor":50.0,"swing_half":0.5,"displacement_limit":0.5}}"#,
-    )
-    .unwrap();
-    assert_eq!(back.limits.events_full, 5_000.0);
-}
-
 #[test]
 fn a_placement_is_not_scored_on_how_far_it_moved() {
     let t = tail_fraction(&clean(), (0.09, 0.11)).unwrap();

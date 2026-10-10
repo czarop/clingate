@@ -44,18 +44,11 @@ pub const GUIDES: &[Guide] = &[
         text: include_str!("../../../../docs/rules/above-the-negative.md"),
     },
     Guide {
-        key: "InTheValley",
-        name: "In the valley",
-        summary: "in the dip between negative and positive, as far from its bottom as on the \
-                  reference - separate populations",
-        text: include_str!("../../../../docs/rules/in-the-valley.md"),
-    },
-    Guide {
         key: "ValleyOrSmear",
         name: "Valley or smear",
-        summary: "in the dip where a sample has one, as in the valley; on a smear, as far above \
-                  the negative as on a smear gated by hand - markers clear on some samples and \
-                  smeared on others",
+        summary: "in the dip where a sample has one, as far from its bottom as on the \
+                  reference; on a smear, as far above the negative as on a smear gated by hand - \
+                  separate populations, or markers clear on some samples and smeared on others",
         text: include_str!("../../../../docs/rules/valley-or-smear.md"),
     },
     Guide {
@@ -103,7 +96,7 @@ mod tests {
     use crate::gate_rules::rule::{
         AboveTheNegativeRule, BandAim, EdgeFrom, FromGateRule, Meet, NegativeFinder, NextToRule,
         PercentileOffsetRule, PhenotypeRule, Rule, ShapeFit, Side, TailFractionRule,
-        ValleyOrSmearRule, ValleyRule,
+        ValleyOrSmearRule,
     };
 
     fn every_rule() -> Vec<Rule> {
@@ -111,7 +104,6 @@ mod tests {
             Rule::TailFraction(TailFractionRule::new((0.002, 0.005))),
             Rule::PercentileOffset(PercentileOffsetRule::new(99.0, 0.3)),
             Rule::AboveTheNegative(AboveTheNegativeRule::default()),
-            Rule::InTheValley(ValleyRule::default()),
             Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
             Rule::MatchThePhenotype(PhenotypeRule::default()),
             Rule::FromAnotherGate(FromGateRule {
@@ -156,7 +148,13 @@ mod tests {
 
     #[test]
     fn every_setting_a_rule_has_is_explained_in_its_guide() {
-        for rule in every_rule() {
+        // Settings left out of a file when unset, set so they show.
+        let with_every_setting = Rule::ValleyOrSmear(ValleyOrSmearRule {
+            lowest_before: true,
+            smallest_dip: Some(0.1),
+            ..ValleyOrSmearRule::default()
+        });
+        for rule in every_rule().into_iter().chain([with_every_setting]) {
             let json = serde_json::to_value(&rule).unwrap();
             let guide = find(json["kind"].as_str().unwrap()).unwrap();
             for field in json.as_object().unwrap().keys() {
@@ -281,7 +279,7 @@ mod tests {
             (1.0, 0.0, NegativeFinder::BelowTheGate)
         );
         assert!(text("AboveTheNegative").contains("`BelowTheGate` (the default)"));
-        assert_eq!(ValleyRule::default().smoothing, 1.0);
+        assert_eq!(ValleyOrSmearRule::default().smoothing, 1.0);
         assert_eq!(
             TailFractionRule::new((0.1, 0.2)).aim,
             BandAim::AnywhereInBand

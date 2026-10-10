@@ -11,21 +11,20 @@ the negative on the rest. Each sample is read for a dip between its negative
 and its positive, and the rule decides for that sample which it is:
 
 - **A dip:** the gate goes in it, as far from its bottom as on the
-  reference - exactly as the in-the-valley rule places it.
+  reference. Nothing is multiplied, so nothing is amplified: a negative that
+  broadens does not throw the gate out.
 - **No dip - a smear:** the gate goes as many negative-widths above the
   negative as it sits on a *smear example*, a smear gated by hand - as the
   above-the-negative rule places it, finding each negative by its peak.
 
 It is always calibrated on a hand-gated reference (`measured_on` a `File`).
-It replaces in the valley and above the negative in the Gate Rules tab;
-rules of those kinds still load and run.
 
 ## When not to use it
 
 - No hand-gated sample at all: use a band rule on the FMX.
 - A smear that should be cut by the FMX, not by eye: a band rule.
 - Dips that are not the negative/positive boundary (a dim population between
-  them): the first dip wins, as in the valley.
+  them): the first dip wins.
 
 ## The smear example
 
@@ -52,13 +51,32 @@ The smear example is a reference, as the reference is: never moved by a run.
 
 ## How it works
 
-1. **The dip**, on the reference and on the sample, exactly as in the valley
-   finds it (see that guide): a density smoothed by `smoothing`, the
-   leftmost peak, and the first dip deep enough to count.
+1. **The dip**, on the reference and on the sample:
+   - **The density.** The population on the marker is smoothed into a
+     density (a kernel estimate over 512 points, bandwidth by Silverman's
+     rule times `smoothing`).
+   - **The negative** is the leftmost peak at least a quarter as tall as the
+     tallest.
+   - **The dip.** Walking right from it: down into a dip, up to whatever is
+     on the far side. The first dip that is at least 2% deep (against the
+     lower of the two peaks either side) and whose far side reaches at least
+     5% of the tallest peak is the valley. A wobble in a sparse tail is not a
+     valley, however deep it looks against a tiny far side.
+   - **A small negative.** If that finds nothing and the tallest peak stands
+     above where the gate is now, the tallest peak is the positives - a
+     stimulated sample that is almost all positive. The highest bump below
+     it is then the negative, and the lowest point between them is the
+     valley, if at least 1% of the events and at least 30 of them lie below
+     it and the dip is at least 2% deep against the bump. Judged by events
+     rather than height, so a thin negative counts and a few stray events do
+     not.
+   - With `lowest_before`, the dip found moves to the lowest point of the
+     density between the negative's peak and it; with `smallest_dip`, a dip
+     shallower than it is no dip.
 2. **Both have one:** the gate goes at the sample's dip bottom plus the
    reference's offset from its own.
-3. **Otherwise**, with a `fallback`: the gate's edge goes where the fallback
-   gate's is on this sample, as in the valley's fallback.
+3. **Otherwise**, with a `fallback`: the gate's edge - the one the dip would
+   have set - goes where the fallback gate's same edge is on this sample.
 4. **Otherwise**, from the example - the smear example, or the reference
    when the reference has no dip: its negative's peak and left-side width
    are read, and how many widths above the peak its gate sits; on the sample
@@ -104,17 +122,22 @@ The smear example is a reference, as the reference is: never moved by a run.
 
 - **What counts as a dip decides which way a sample goes.** A shallow dip
   is a dip: the sample is placed in it, scored on how deep it is against the
-  reference's. Raise `smoothing` if shoulders on a smear are being read as
-  dips.
+  reference's, so a placement in a dip a twentieth as deep comes up for
+  review. Raise `smoothing` if shoulders on a smear are being read as dips.
+- **The first dip wins.** A dim population between the negative and the
+  bright positive gives an earlier dip.
 - **One example for every smear.** A smear much brighter or dimmer than the
   example is cut as far above its negative, which may not be where a person
   would cut it.
 
 ## What its confidence says
 
-- In a dip: as in the valley - counts, events in the gate, stability, and
-  the depth of the dip against the reference's.
+- In a dip: *parent event count*, *events in the gate*, *stability*, *rule
+  satisfied* (always 1) - counted on the reference population - and *depth
+  of the valley it sat in*, this sample's dip depth against the reference's.
 - On a smear: as above the negative - counts, events in the gate, stability,
   and the negative's right side against the example's.
-- Placed by the fallback: one component, at 0.25, so every one comes up for
-  review.
+- Placed by the fallback: one component, *no valley, so placed from another
+  gate*, at 0.25 - below the Review tab's 0.30, so every one comes up for
+  review, and above the 0.2 at which a run pauses, so it does not stop the
+  run.

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::gate_rules::autogate::{Measurement, admitted_by, describe};
-use crate::gate_rules::rule::{Rule, ValleyRule};
+use crate::gate_rules::rule::{AboveTheNegativeRule, Rule};
 use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn, RuleStore, RuleTarget};
 use crate::gate_rules::run::{RunInputs, measure_many};
 use crate::gate_rules::trial::Spread;
@@ -280,7 +280,7 @@ pub fn profile(
                     parameter: marker.as_str().into(),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
-                    rule: Rule::InTheValley(ValleyRule::default()),
+                    rule: Rule::AboveTheNegative(AboveTheNegativeRule::default()),
                 },
             );
         }

@@ -297,6 +297,36 @@ pub fn gated_rank(pairing: &SamplePairing, file: &FileId, metadata: &MetaDataFil
         .unwrap_or(0)
 }
 
+/// Which of `measurements` a run reads each specimen's answer from, by
+/// specimen and gate: the file of it ranked highest by [`gated_rank`].
+pub fn gated_of_each_specimen(
+    pairing: &SamplePairing,
+    measurements: &[Measurement],
+    metadata: &MetaDataFileMap,
+) -> FxHashMap<(Arc<str>, GateId), usize> {
+    let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    for (i, m) in measurements.iter().enumerate() {
+        let Some(specimen) = specimen_of(pairing, &m.file, metadata) else {
+            continue;
+        };
+        let key = (specimen.group.clone(), m.gate_id.clone());
+        match chosen.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(i);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let held = &measurements[*slot.get()];
+                if gated_rank(pairing, &m.file, metadata)
+                    > gated_rank(pairing, &held.file, metadata)
+                {
+                    slot.insert(i);
+                }
+            }
+        }
+    }
+    chosen
+}
+
 /// Give this specimen its own copy of the gate, leaving every other specimen -
 /// and the global position a person drew - untouched.
 ///
@@ -379,7 +409,8 @@ pub struct LineReading {
     pub bound: Bound,
     /// Where the gate's leading extent on that parameter sits now.
     pub current: f64,
-    /// The parent population's values on `parameter`, for the solver.
+    /// The parent population's values on `parameter`, for the solver; not
+    /// changed once read, or `worked_out` goes stale.
     pub values: Vec<f64>,
     /// The same events, paired with how far each sits from the gate's leading
     /// boundary *at that event's own height* - negative inside the gate's
@@ -391,6 +422,34 @@ pub struct LineReading {
     /// above or below a gate boxed in its other axis - are not here, because
     /// the gate makes no statement about them.
     pub shadow: Vec<(f64, f64)>,
+    /// What `values` give, worked out once for every rule that reads them.
+    pub(crate) worked_out: WorkedOut,
+}
+
+/// What a [`LineReading`]'s values give, once worked out.
+#[derive(Clone, Default)]
+pub(crate) struct WorkedOut {
+    spread: std::sync::OnceLock<f64>,
+    shape: std::sync::OnceLock<Option<crate::review::shape::Shape>>,
+}
+
+impl LineReading {
+    /// The interquartile spread of `values`.
+    pub fn spread(&self) -> f64 {
+        *self.worked_out.spread.get_or_init(|| {
+            let mut sorted = self.values.clone();
+            sorted.sort_by(|a, b| b.total_cmp(a));
+            crate::gate_rules::threshold::interquartile_spread(&sorted)
+        })
+    }
+
+    /// `values` summarised - see [`crate::review::shape::summarise`].
+    pub fn shape(&self) -> Option<crate::review::shape::Shape> {
+        self.worked_out
+            .shape
+            .get_or_init(|| crate::review::shape::summarise(&self.values))
+            .clone()
+    }
 }
 
 /// The reading a phenotype rule works from.
@@ -794,6 +853,7 @@ pub fn measure_population(
             current,
             values,
             shadow,
+            worked_out: WorkedOut::default(),
         }),
         phenotype: None,
         beside: Vec::new(),
@@ -2026,7 +2086,7 @@ pub fn solve_all_reporting(
     // first had its negative read, its gate placed *and* its percentage
     // reported from the control, which is how a gate holding 6.24% came to be
     // reported as 0.016%.
-    let mut chosen: FxHashMap<(Arc<str>, GateId), usize> = FxHashMap::default();
+    //
     // If no file resolves to a sample type, nothing here can tell a full stain
     // from its FMO, and every rule silently reads whichever file of a specimen
     // sorts first. A whole run came back unpositioned that way - every rule
@@ -2055,25 +2115,7 @@ pub fn solve_all_reporting(
             ),
         });
     }
-    for (i, m) in measurements.iter().enumerate() {
-        let Some(specimen) = specimen_of(&store.pairing, &m.file, metadata) else {
-            continue;
-        };
-        let key = (specimen.group.clone(), m.gate_id.clone());
-        match chosen.entry(key) {
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(i);
-            }
-            std::collections::hash_map::Entry::Occupied(mut slot) => {
-                let held = &measurements[*slot.get()];
-                if gated_rank(&store.pairing, &m.file, metadata)
-                    > gated_rank(&store.pairing, &held.file, metadata)
-                {
-                    slot.insert(i);
-                }
-            }
-        }
-    }
+    let chosen = gated_of_each_specimen(&store.pairing, measurements, metadata);
 
     report.unplaced.extend(never_measured(
         unmeasured,
@@ -2127,10 +2169,7 @@ pub fn solve_all_reporting(
                     file: measured.file.clone(),
                     measured_on: None,
                     line: measured.line.as_ref().map(|l| l.current),
-                    shape: measured
-                        .line
-                        .as_ref()
-                        .and_then(|l| crate::review::shape::summarise(&l.values)),
+                    shape: measured.line.as_ref().and_then(LineReading::shape),
                     bound: measured.line.as_ref().map(|l| l.bound),
                     gate: measured.gate.clone(),
                     parent_gate: measured.parent_gate.clone(),
@@ -2509,7 +2548,7 @@ impl PooledLine {
                 file: measured.file.clone(),
                 measured_on: Some(self.first.clone()),
                 line: Some(line.current),
-                shape: crate::review::shape::summarise(&line.values),
+                shape: line.shape(),
                 bound: Some(line.bound),
                 gate: measured.gate.clone(),
                 parent_gate: measured.parent_gate.clone(),
@@ -2535,7 +2574,7 @@ impl PooledLine {
                 .weakest()
                 .map(|c| c.name),
                 components: self.components.clone(),
-                shape: crate::review::shape::summarise(&line.values),
+                shape: line.shape(),
                 bound: Some(line.bound),
                 achieved: self.achieved,
                 captured_on: self.first.clone(),
@@ -2745,6 +2784,7 @@ fn kept_clear(
     Ok(outcome)
 }
 
+/// Place `measured`'s gate as `rule`'s kind places one.
 #[allow(clippy::too_many_arguments)]
 fn position_one(
     state: &GateState,
@@ -2777,9 +2817,23 @@ fn position_one(
     }
     if let Rule::ValleyOrSmear(either) = &rule.rule {
         return position_valley_or_smear(
-            state, rule, either, measured, reference, smear, specimen, metadata, beside, described,
+            state, rule, either, measured, reference, smear, specimen, metadata, beside,
         );
     }
+    position_line(state, rule, measured, reference, specimen, metadata, beside)
+}
+
+/// Place `measured`'s gate by moving the one edge `rule` positions, read
+/// from `reference`.
+fn position_line(
+    state: &GateState,
+    rule: &GateRule,
+    measured: &Measurement,
+    reference: &Reference<'_>,
+    specimen: &MetaDataKey,
+    metadata: &MetaDataFileMap,
+    beside: &[crate::gate_rules::clearance::Neighbour],
+) -> Result<Outcome, String> {
     let line = measured
         .line
         .as_ref()
@@ -2804,7 +2858,7 @@ fn position_one(
         _ => reference.measurement,
     };
     let population = &judged_on.index;
-    // Whichever of the two it is, it reached `position_one` through a rule
+    // Whichever of the two it is, it reached `position_line` through a rule
     // that positions along an axis, so it has a line. Asking rather than
     // assuming keeps the guarantee where a reader can see it.
     let judged_line = judged_on
@@ -2829,7 +2883,7 @@ fn position_one(
             file: measured.file.clone(),
             measured_on: Some(reference.id.clone()),
             line: Some(line.current),
-            shape: crate::review::shape::summarise(&line.values),
+            shape: line.shape(),
             bound: Some(line.bound),
             gate: measured.gate.clone(),
             parent_gate: measured.parent_gate.clone(),
@@ -2884,24 +2938,18 @@ fn position_one(
             (moved, here.at, got)
         }
         // The boundary read directly rather than paced out from the negative's
-        // centre. Nothing is multiplied, so nothing is amplified.
-        crate::gate_rules::rule::Rule::InTheValley(dip) => {
-            let found = dip
+        // centre. Nothing is multiplied, so nothing is amplified. Reached only
+        // where both the reference and this sample have a dip.
+        crate::gate_rules::rule::Rule::ValleyOrSmear(either) => {
+            let dip = either.valley();
+            let (from_reference, here) = dip
                 .calibrate(&reference_line.values, reference_line.current)
                 .map_err(|why| format!("the reference {}: {why}", reference.id))
                 .and_then(|from_reference| {
                     dip.place(&line.values, from_reference.offset, line.current)
                         .map(|here| (from_reference, here))
                         .map_err(|why| why.to_string())
-                });
-            let (from_reference, here) =
-                match (found, dip.fallback_rule(&line.parameter, line.bound)) {
-                    (Ok(found), _) => found,
-                    (Err(why), None) => return Err(why),
-                    (Err(why), Some(fallback)) => {
-                        return fall_back(state, &fallback, measured, specimen, metadata, &why);
-                    }
-                };
+                })?;
             let moved = translate_edge_to(&current_gate, &line.parameter, line.bound, here.at)
                 .map_err(|e| e.to_string())?;
             let got = admitted_by(&moved, population).unwrap_or(0.0);
@@ -2963,9 +3011,7 @@ fn position_one(
     // Scored from what the gate actually did, not from the line that used to
     // stand in for it.
     let parent_events = population.event_index.len();
-    let mut sorted = judged_line.values.clone();
-    sorted.sort_by(|a, b| b.total_cmp(a));
-    let spread = crate::gate_rules::threshold::interquartile_spread(&sorted);
+    let spread = judged_line.spread();
     // Nudge the gate either side and see how much of its contents survive.
     // Relative to what it holds, not an absolute count: the model reads a swing
     // of 1 as "a nudge changes the contents by as much as the gate holds", and
@@ -3069,7 +3115,7 @@ fn position_one(
             confidence: confidence.score,
             weakest: confidence.weakest().map(|c| c.name),
             components: confidence.components.clone(),
-            shape: crate::review::shape::summarise(&line.values),
+            shape: line.shape(),
             bound: Some(line.bound),
             achieved,
             captured_on: judged_on.file.clone(),
@@ -4003,7 +4049,7 @@ fn set_edge(
 }
 
 /// How sure a placement made some other way than the rule asked is - by a
-/// valley rule's fallback, or held back off another gate: low enough that
+/// valley-or-smear rule's fallback, or held back off another gate: low enough that
 /// the Review tab flags it, and not so low that a run pauses for it - placing
 /// it where a person would is the point.
 pub const FLAGGED_CONFIDENCE: f64 = 0.25;
@@ -4062,7 +4108,6 @@ fn position_valley_or_smear(
     specimen: &MetaDataKey,
     metadata: &MetaDataFileMap,
     beside: &[crate::gate_rules::clearance::Neighbour],
-    described: &FxHashMap<(GateId, FileId), Result<Described, String>>,
 ) -> Result<Outcome, String> {
     let line = measured
         .line
@@ -4079,27 +4124,14 @@ fn position_valley_or_smear(
         .as_ref()
         .ok()
         .map(|from| valley.place(&line.values, from.offset, line.current));
-    let placed_by = |how: Rule, from: &Reference<'_>| {
-        let as_rule = GateRule {
-            rule: how,
-            ..rule.clone()
-        };
-        position_one(
-            state, &as_rule, measured, from, None, specimen, metadata, beside, described,
-        )
-    };
     let why = match here {
         Some(Ok(_)) => {
-            let in_the_valley = crate::gate_rules::rule::ValleyRule {
-                fallback: None,
-                ..valley.clone()
-            };
-            return placed_by(Rule::InTheValley(in_the_valley), reference);
+            return position_line(state, rule, measured, reference, specimen, metadata, beside);
         }
         Some(Err(why)) => why.to_string(),
         None => "the reference has no dip either".to_string(),
     };
-    if let Some(fallback) = valley.fallback_rule(&line.parameter, line.bound) {
+    if let Some(fallback) = either.fallback_rule(&line.parameter, line.bound) {
         return fall_back(state, &fallback, measured, specimen, metadata, &why);
     }
     let example = match (smear, &on_reference) {
@@ -4107,10 +4139,14 @@ fn position_valley_or_smear(
         (None, Err(_)) => reference,
         (None, Ok(_)) => return Err(NO_SMEAR_EXAMPLE.to_string()),
     };
-    placed_by(Rule::AboveTheNegative(either.smear()), example)
+    let above = GateRule {
+        rule: Rule::AboveTheNegative(either.smear()),
+        ..rule.clone()
+    };
+    position_line(state, &above, measured, example, specimen, metadata, beside)
 }
 
-/// A valley rule that found no valley, `why`, placed by its fallback.
+/// A valley-or-smear rule that found no valley, `why`, placed by its fallback.
 fn fall_back(
     state: &GateState,
     fallback: &crate::gate_rules::rule::FromGateRule,

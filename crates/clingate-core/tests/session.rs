@@ -310,6 +310,21 @@ fn rules_are_listed_and_a_workspace_without_them_says_so() {
     assert_eq!(view.specimen_column, "test");
 }
 
+/// Rules are read only from the workspace's rules folder: a rules file at
+/// its top level, where older versions also looked, is not.
+#[test]
+fn rules_at_the_top_level_of_a_workspace_are_not_read() {
+    use clingate_core::workspace::{RULES_DIR, RULES_FILE, rules_file};
+    let folder = with_rules("session-rules-top-level");
+    std::fs::rename(rules_file(&folder), folder.join(RULES_FILE)).unwrap();
+    let session = Session::open(&folder).unwrap();
+    let Refusal::Failed { reason } = session.rules_view().unwrap_err() else {
+        panic!("refused as failed");
+    };
+    assert!(reason.contains("no rules"), "{reason}");
+    assert!(reason.contains(RULES_DIR), "says where they go: {reason}");
+}
+
 #[test]
 fn a_preview_moves_nothing_until_applied_and_applies_once() {
     let mut session = Session::open(&with_rules("session-rules-apply")).unwrap();
@@ -2927,13 +2942,13 @@ fn a_band_counted_on_the_run_reads_a_kind_of_file_and_runs_with_no_setting() {
     assert_eq!(preview.would_move.len() + preview.already_in_place.len(), 2);
 }
 
-// ─── a valley rule's fallback, as Claude writes one ───────────────────────────
+// ─── a valley-or-smear rule's fallback, as Claude writes one ──────────────────
 
 fn valley_falling_back_to(
     fallback: clingate_core::gate_rules::rule_store::RuleTarget,
 ) -> clingate_core::gate_rules::rule::Rule {
-    clingate_core::gate_rules::rule::Rule::InTheValley(
-        clingate_core::gate_rules::rule::ValleyRule {
+    clingate_core::gate_rules::rule::Rule::ValleyOrSmear(
+        clingate_core::gate_rules::rule::ValleyOrSmearRule {
             fallback: Some(fallback),
             ..Default::default()
         },
@@ -2975,7 +2990,7 @@ fn a_valley_rule_s_fallback_is_kept_and_checked_as_a_followed_gate_is() {
         ))
         .unwrap();
     assert!(
-        written.now.contains("with no dip, where Branch A is"),
+        written.now.contains("on a smear, where Branch A is"),
         "{}",
         written.now
     );
@@ -3283,12 +3298,13 @@ fn one_peak_on_fsc(dir: &std::path::Path) {
     }
 }
 
-/// FSC-A is one peak - a smear with no dip - so Inner B's valley rule falls
-/// back to Inner A, under another parent: its lower edge goes to Inner A's,
-/// 1,000,000, flagged as placed from another gate.
+/// FSC-A is one peak - a smear with no dip - so Inner B's valley-or-smear
+/// rule falls back to Inner A, under another parent: on the sample not
+/// calibrated on, its lower edge goes to Inner A's, 1,000,000, flagged as
+/// placed from another gate.
 #[test]
 fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
-    use clingate_core::gate_rules::rule_store::{MeasuredOn, RuleTarget};
+    use clingate_core::gate_rules::rule_store::RuleTarget;
     let folder = workspace_of_rectangles(
         "session-valley-fallback-run",
         &[
@@ -3305,7 +3321,7 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
             "Inner B",
             None,
             "FSC-A",
-            MeasuredOn::Itself,
+            file("sample1_FMX.fcs"),
             valley_falling_back_to(RuleTarget::named("Inner A")),
         ))
         .unwrap();
@@ -3326,10 +3342,10 @@ fn a_valley_rule_on_a_smear_places_its_gate_from_the_fallback_in_a_run() {
     }
     session.apply_previewed_rules().unwrap();
 
-    for sample in ["fmx", "fs"] {
-        let (lower, _) = fsc_span(&session, "Inner B", sample);
-        assert!((lower - 1_000_000.0).abs() < 1.0, "{sample}: {lower}");
-    }
+    let (moved, _) = fsc_span(&session, "Inner B", "fs");
+    assert!((moved - 1_000_000.0).abs() < 1.0, "{moved}");
+    let (reference, _) = fsc_span(&session, "Inner B", "fmx");
+    assert_eq!(reference, 200_000.0, "the sample calibrated on stays as drawn");
 }
 
 // ─── valley or smear ──────────────────────────────────────────────────────────
@@ -4076,7 +4092,7 @@ fn a_rule_s_settings_are_searched_against_the_gating_as_drawn() {
 /// too; fewer can be shown than were tried.
 #[test]
 fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
-    use clingate_core::gate_rules::rule::{Rule, ValleyRule};
+    use clingate_core::gate_rules::rule::{Rule, ValleyOrSmearRule};
     use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
     use clingate_core::session::FitAsk;
     let folder = with_rules("session-fit-given");
@@ -4085,8 +4101,8 @@ fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
     let valley = GateRule {
         parameter: channel.trim_end_matches("-A").into(),
         bound: Bound::Above,
-        measured_on: MeasuredOn::Itself,
-        rule: Rule::InTheValley(ValleyRule::default()),
+        measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+        rule: Rule::ValleyOrSmear(ValleyOrSmearRule::default()),
     };
     let ask = |defaults, shown| FitAsk {
         candidates: vec![valley.clone()],
@@ -4144,4 +4160,247 @@ fn a_search_is_ranked_as_asked_and_refused_with_nothing_to_try() {
     };
     assert!(session.fit_rule("Tmem", defaults(), off_line, Default::default()).is_err());
     assert!(session.fit_rule("no such gate", defaults(), Default::default(), Default::default()).is_err());
+}
+
+/// A search keeps its best, those tied with it and the rule as it stands for
+/// the gallery, each with where it puts the gate - where a preview of the rule
+/// moves it - and a second search of the rule replaces the first. The answer
+/// itself carries no gates.
+#[test]
+fn a_search_keeps_its_closest_candidates_for_the_gallery() {
+    use clingate_core::gate_rules::autogate::extent_on;
+    use clingate_core::gate_rules::searches::{MOST_KEPT, kept};
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-kept");
+    let mut session = Session::open(&folder).unwrap();
+    let ask = || FitAsk {
+        defaults: true,
+        shown: Some(64),
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask(), Default::default(), Default::default())
+        .unwrap();
+    assert!(found.candidates.iter().all(|c| c.placed.is_empty()));
+    let among_best = found.candidates.iter().filter(|c| c.among_best).count();
+
+    let searches = kept(&folder).unwrap();
+    assert_eq!(searches.len(), 1);
+    let search = &searches[0];
+    let current_kept_apart = !found.candidates[..among_best.min(MOST_KEPT)]
+        .iter()
+        .any(|c| c.current);
+    assert_eq!(
+        search.candidates.len(),
+        among_best.min(MOST_KEPT) + usize::from(current_kept_apart)
+    );
+    let current = search.candidates.iter().find(|c| c.current).unwrap();
+    let mut placed: Vec<f64> = current
+        .placed
+        .iter()
+        .map(|p| extent_on(&p.gate.geometry, &current.rule.parameter).unwrap().0 as f64)
+        .collect();
+    let mut moved: Vec<f64> = session
+        .preview_rules()
+        .unwrap()
+        .would_move
+        .iter()
+        .map(|m| m.to)
+        .collect();
+    placed.sort_by(f64::total_cmp);
+    moved.sort_by(f64::total_cmp);
+    assert!(!moved.is_empty());
+    assert_eq!(placed.len(), moved.len());
+    for (at, to) in placed.iter().zip(&moved) {
+        assert!((at - to).abs() < 1e-3 * to.abs().max(1.0), "{placed:?} {moved:?}");
+    }
+
+    session
+        .fit_rule("Tmem", ask(), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(kept(&folder).unwrap().len(), 1, "the same rule's search replaced");
+}
+
+/// A search whose closest candidates cannot be kept for the gallery still
+/// answers, and says they were not kept.
+#[test]
+fn a_search_that_cannot_be_kept_still_answers() {
+    use clingate_core::gate_rules::searches::searches_file;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-fit-unkept");
+    std::fs::create_dir_all(searches_file(&folder)).unwrap();
+    let session = Session::open(&folder).unwrap();
+    let not_kept = |problems: &[String]| problems.iter().any(|p| p.contains("could not be kept"));
+
+    let ask = FitAsk {
+        defaults: true,
+        ..FitAsk::default()
+    };
+    let found = session
+        .fit_rule("Tmem", ask, Default::default(), Default::default())
+        .unwrap();
+    assert!(!found.candidates.is_empty());
+    assert!(not_kept(&found.problems), "{:?}", found.problems);
+
+    let picked = session
+        .pick_rules(Some("Tmem"), Default::default(), Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    assert!(not_kept(&picked.problems), "{:?}", picked.problems);
+}
+
+/// A rule picked for a gate - the kinds tried in order, the first that
+/// passes searched - scores as fit_rule scores the same rule, sits beside
+/// the rule as it stands, and is kept for the gallery with whether it
+/// passed; asked for every gate, each gate a rule places is picked for.
+#[test]
+fn a_rule_is_picked_in_order_for_a_gate_and_kept_for_the_gallery() {
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
+    use clingate_core::gate_rules::searches::kept;
+    use clingate_core::session::FitAsk;
+    let folder = with_rules("session-pick");
+    let session = Session::open(&folder).unwrap();
+    let answer = session
+        .pick_rules(Some("Tmem"), PickSettings::default(), Default::default())
+        .unwrap();
+    assert_eq!(answer.picked.len(), 1, "{answer:#?}");
+    assert!(answer.not_picked.is_empty());
+    assert_eq!(answer.settings, PickSettings::default());
+    let picked = &answer.picked[0];
+    assert!(picked.gate.starts_with("Tmem"));
+    let as_it_stands = picked.as_it_stands.as_ref().expect("Tmem has a rule");
+    assert!(as_it_stands.current);
+    // The fixture's populations have nothing between them, so every kind
+    // holds what the hand gate holds and passes: the first, with no band
+    // given for the FMX, is above the negative, and only it is searched.
+    let tried: Vec<(Kind, bool, bool)> = picked
+        .kinds
+        .iter()
+        .map(|k| (k.kind, k.passed, k.searched))
+        .collect();
+    assert_eq!(
+        tried,
+        [
+            (Kind::AboveNegative, true, true),
+            (Kind::ValleyOrSmear, true, false),
+            (Kind::Band, true, false)
+        ]
+    );
+    assert!(picked.passed);
+    assert!(matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)));
+    assert!(picked.tried > 4, "the negative's settings searched");
+    assert!(picked.also_close.iter().all(|c| c.among_best));
+    assert!(picked.best.placed.is_empty(), "the gates are kept, not shown");
+
+    let searches = kept(&folder).unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].candidates[0].rule, picked.best.rule);
+    assert_eq!(searches[0].passed, Some(picked.passed));
+    let kinds = |of: &[clingate_core::gate_rules::pick::KindTried]| {
+        of.iter().map(|k| (k.kind, k.passed)).collect::<Vec<_>>()
+    };
+    assert_eq!(kinds(&searches[0].kinds), kinds(&picked.kinds));
+
+    let alone = session
+        .fit_rule(
+            "Tmem",
+            FitAsk {
+                candidates: vec![picked.best.rule.clone()],
+                ..FitAsk::default()
+            },
+            PickSettings::default().score,
+            Default::default(),
+        )
+        .unwrap();
+    let same = alone
+        .candidates
+        .iter()
+        .find(|c| c.rule == picked.best.rule)
+        .unwrap();
+    assert_eq!(same.fit, picked.best.fit);
+
+    let every = session
+        .pick_rules(None, PickSettings::default(), Default::default())
+        .unwrap();
+    assert_eq!(every.picked.len(), 1, "one rule, for Tmem");
+    assert_eq!(every.picked[0].best.rule, picked.best.rule);
+}
+
+/// A cut-off every rule meets: the first kind tried, in order, is picked -
+/// with no band given for the FMX, above the negative, calibrated on a
+/// sample gated by hand.
+#[test]
+fn a_cut_off_every_rule_meets_takes_the_first_kind_in_order() {
+    use clingate_core::gate_rules::pick::{Kind, PickSettings};
+    use clingate_core::gate_rules::rule::Rule;
+    use clingate_core::gate_rules::rule_store::MeasuredOn;
+    use clingate_core::gate_rules::score::ScoreSettings;
+    let session = Session::open(&with_rules("session-pick-loose")).unwrap();
+    let loose = PickSettings {
+        fmx_band: None,
+        score: ScoreSettings {
+            off_below: 0.0,
+            noise_widths: 0.0,
+        },
+        most_off: 1.0,
+    };
+    let answer = session
+        .pick_rules(Some("Tmem"), loose, Default::default())
+        .unwrap();
+    let picked = &answer.picked[0];
+    assert!(picked.passed, "{picked:#?}");
+    assert_eq!(
+        (picked.kinds[0].kind, picked.kinds[0].passed),
+        (Kind::AboveNegative, true)
+    );
+    assert!(
+        matches!(picked.best.rule.rule, Rule::AboveTheNegative(_)),
+        "{}",
+        picked.best.said
+    );
+    assert!(
+        matches!(picked.best.rule.measured_on, MeasuredOn::File(_)),
+        "calibrated on a sample gated by hand"
+    );
+}
+
+/// The settings the user chose in the app are what a pick uses unless told
+/// otherwise; before any, the defaults: 0.95, a tenth of the samples.
+#[test]
+fn the_pick_settings_chosen_in_the_app_are_read_from_the_workspace() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    let folder = with_rules("session-pick-settings");
+    let session = Session::open(&folder).unwrap();
+    assert_eq!(session.pick_settings(), PickSettings::default());
+    let chosen = PickSettings {
+        fmx_band: Some((0.005, 0.01)),
+        most_off: 0.2,
+        ..PickSettings::default()
+    };
+    keep_settings(&folder, &chosen).unwrap();
+    assert_eq!(Session::open(&folder).unwrap().pick_settings(), chosen);
+}
+
+/// A pick needs rules, a population a rule places, and settings in range.
+#[test]
+fn a_pick_is_refused_without_a_rule_to_start_from() {
+    use clingate_core::gate_rules::fit::FitSettings;
+    let unruled = Session::open(&workspace("session-pick-none")).unwrap();
+    assert!(unruled.pick_rules(None, Default::default(), Default::default()).is_err());
+    let session = Session::open(&with_rules("session-pick-refused")).unwrap();
+    let no_rule = session.pick_rules(Some("teff_naive"), Default::default(), Default::default());
+    assert!(no_rule.unwrap_err().to_string().contains("no rule places"));
+    assert!(session.pick_rules(Some("no such gate"), Default::default(), Default::default()).is_err());
+    let wide = FitSettings {
+        tie_within: 2.0,
+        ..FitSettings::default()
+    };
+    assert!(session.pick_rules(None, Default::default(), wide).is_err());
+    let too_many_off = clingate_core::gate_rules::pick::PickSettings {
+        most_off: 2.0,
+        ..Default::default()
+    };
+    let refused = session.pick_rules(None, too_many_off, Default::default());
+    assert!(refused.unwrap_err().to_string().contains("most_off"));
 }

@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use clingate_core::gate_rules::fit::{FitSettings, RankBy};
+use clingate_core::gate_rules::pick::PickSettings;
 use clingate_core::gate_rules::rule_store::GateRule;
 use clingate_core::gate_rules::score::ScoreSettings;
 use clingate_core::session::{FitAsk, Refusal, Session};
@@ -55,7 +56,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, preview_rules - only \
+fit_rule, pick_rule, preview_rules - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -132,8 +133,25 @@ few samples. Rank by typical agreement (rank_by 'typical') or by fewest \
 samples off ('off'); each candidate says where it stands both ways. Narrow or \
 extend the defaults from the gate's profile by giving candidates. Show the \
 user the best and those tied with it (among_best), and the samples off under \
-each - some may be easier gated by hand than fitted - and change the rule only \
-on their word.
+each - some may be easier gated by hand than fitted. They are kept for the \
+app: on the Gallery tab, the gate's population shows each one's gate over \
+the user's, one candidate at a time, so the user can compare them by eye. \
+Change the rule only on their word.
+
+To pick a rule for a gate - its kind as well as its settings - or for every \
+gate, pick_rule tries the kinds in the user's order of preference and takes \
+the first that passes their cut-off: a band read on the FMX at the range \
+they accept, above the negative, the valley or a smear, a band on each \
+sample, and last the phenotype. pick_settings says what the user last set \
+in the app; ask them for the FMX range and the cut-off if they have not set \
+them (0.95 agreement, no more than a tenth of the samples off, unless they \
+say otherwise). Per gate it gives the \
+rule beside the rule as it stands, whether it passed, and how each kind did. \
+A gate where nothing passed shows only the closest rule: say it is flagged, \
+and that the gate may be better gated by hand. For many gates it takes a \
+while - say so. Show the user the flagged gates first, then where the rule \
+picked does most better, and update_rule only with the rules they choose; \
+the closest are on the Gallery tab to compare by eye.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -184,17 +202,17 @@ above the negative as on its smear_example, a smear gated by hand - the \
 reference itself when the reference is a smear. With no example, a smear is \
 left unplaced: ask the user to gate one smear by hand, then name its file as \
 smear_example. Which samples are smears is found when the rules run; do not \
-read the data beforehand to predict it. It, and an InTheValley rule, can name a fallback the same way \
-- usually the same gate under another parent - for samples where the \
-positives smear with no dip: there its edge goes where the fallback's is, \
-placed first, and the placement comes up for review. \
-A valley rule that puts some gates too high inside a thin positive \
+read the data beforehand to predict it. A ValleyOrSmear rule can name a \
+fallback instead - usually the same gate under another parent - for samples \
+where the positives smear with no dip: there its edge goes where the \
+fallback's is, placed first, and the placement comes up for review. \
+A ValleyOrSmear rule that puts some gates too high inside a thin positive \
 population - a few percent of the cells spread wide, the gate at a ripple \
 where they pile up rather than in the dip below them - can take \
 'lowest_before': true: the lowest point between the negative and the dip it \
 found. Off by default; suggest it, and set it only on the user's word, and \
 only on the rules whose placements it fixes. \
-A valley rule that gates a shallow wobble inside positives that run straight \
+A ValleyOrSmear rule that gates a shallow wobble inside positives that run straight \
 off the negative - a dip a few percent deep where the real ones are tens of \
 percent - can take 'smallest_dip': a fraction below which a dip is read as \
 none, so the sample is a smear or goes to the fallback. Each placement's \
@@ -412,6 +430,33 @@ pub struct FitRuleArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PickRuleArgs {
+    /// The population whose gate to pick a rule for, by its gate names. Leave out for every
+    /// gate a rule places, other than from another gate.
+    pub population: Option<String>,
+    /// As fit_rule: "typical" (default) or "off".
+    pub rank_by: Option<String>,
+    /// As fit_rule: typical agreements no further apart than this are a tie (default 0.02).
+    pub tie_within: Option<f64>,
+    /// As fit_rule: rank on half the specimens and check on the other half (default true).
+    pub split: Option<bool>,
+    /// The lowest and highest share of each specimen's FMX events above the line the user
+    /// accepts, as two shares - [0.005, 0.01] for 0.5% to 1%: a band read on the FMX at it is
+    /// tried first, as it is. [] tries none; leave out for what the user last set in the app,
+    /// if anything (pick_settings says).
+    pub fmx_band: Option<Vec<f64>>,
+    /// A sample agreeing less than this with its hand gate is off. Leave out for what the
+    /// user last set in the app - 0.95 unless they changed it.
+    pub off_below: Option<f64>,
+    /// As score_rules: how far below off_below a sample of few events may fall. Leave out for
+    /// what the user last set - 1 unless they changed it.
+    pub noise_widths: Option<f64>,
+    /// A rule passes with no more than this share of its samples off. Leave out for what the
+    /// user last set - 0.1 unless they changed it.
+    pub most_off: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GateProfileArgs {
     /// The population whose gate to profile, by its gate names. Leave out for every gate, a
     /// line each.
@@ -473,6 +518,20 @@ fn candidate_rules(value: serde_json::Value) -> Result<Vec<GateRule>, Refusal> {
     })
 }
 
+/// The ranking asked for, the defaults where none is.
+fn fit_settings(
+    rank_by_name: Option<&str>,
+    tie_within: Option<f64>,
+    split: Option<bool>,
+) -> Result<FitSettings, Refusal> {
+    let defaults = FitSettings::default();
+    Ok(FitSettings {
+        rank_by: rank_by(rank_by_name)?,
+        tie_within: tie_within.unwrap_or(defaults.tie_within),
+        split: split.unwrap_or(defaults.split),
+    })
+}
+
 /// The ordering asked for by name, typical agreement where none is.
 fn rank_by(name: Option<&str>) -> Result<RankBy, Refusal> {
     match name.map(str::trim) {
@@ -480,6 +539,24 @@ fn rank_by(name: Option<&str>) -> Result<RankBy, Refusal> {
         Some("off") => Ok(RankBy::Off),
         Some(other) => Err(Refusal::Failed {
             reason: format!("rank_by is \"typical\" or \"off\" - not \"{other}\""),
+        }),
+    }
+}
+
+/// The band on the FMX asked for: `given`, none for an empty one, or `kept`
+/// when none is given.
+fn fmx_band(
+    given: Option<&[f64]>,
+    kept: Option<(f64, f64)>,
+) -> Result<Option<(f64, f64)>, Refusal> {
+    match given {
+        None => Ok(kept),
+        Some([]) => Ok(None),
+        Some(&[lowest, highest]) => Ok(Some((lowest, highest))),
+        Some(other) => Err(Refusal::Failed {
+            reason: format!(
+                "fmx_band is two shares, or [] for no band on the FMX - not {other:?}"
+            ),
         }),
     }
 }
@@ -964,9 +1041,10 @@ impl Clingate {
     /// scored as score_rules scores a rule and ranked. With eight specimens or more, ranked
     /// on half of them and checked on the other half. Each candidate's score on both halves,
     /// its place ranked by typical agreement and by samples off, and whether it is the best
-    /// or tied with it. Moves nothing. Reads the samples' events: only when the user asks
-    /// for it.
-    #[tool(annotations(read_only_hint = true))]
+    /// or tied with it. The best, those tied with it and the rule as it stands are kept in the
+    /// workspace, for the app's Gallery tab to show over the user's gate. Moves no gate.
+    /// Reads the samples' events: only when the user asks for it.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn fit_rule(&self, Parameters(args): Parameters<FitRuleArgs>) -> String {
         let settings = score_settings(args.off_below, args.noise_widths);
         self.run(move |s| {
@@ -974,18 +1052,54 @@ impl Clingate {
                 Some(value) => candidate_rules(value)?,
                 None => Vec::new(),
             };
-            let defaults = FitSettings::default();
-            let fit = FitSettings {
-                rank_by: rank_by(args.rank_by.as_deref())?,
-                tie_within: args.tie_within.unwrap_or(defaults.tie_within),
-                split: args.split.unwrap_or(defaults.split),
-            };
+            let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
             let ask = FitAsk {
                 defaults: args.defaults.unwrap_or(candidates.is_empty()),
                 candidates,
                 shown: args.shown,
             };
             s.fit_rule(&args.population, ask, settings, fit)
+        })
+        .await
+    }
+
+    /// The settings pick_rule uses for anything left out: those the user last chose in the
+    /// app - the band on the FMX it tries first (none if not set), the agreement below which a
+    /// sample is off, and the share of samples that may be off - or the defaults. Reads no
+    /// events.
+    #[tool(annotations(read_only_hint = true))]
+    async fn pick_settings(&self) -> String {
+        self.run(|s| Ok(s.pick_settings())).await
+    }
+
+    /// Pick a rule for one population's gate, or every gate a rule places other than from
+    /// another gate, trying the kinds of rule in the user's order of preference and taking
+    /// the first that passes: a band read on each specimen's FMX at the range the user
+    /// accepts, as it is; above the negative; the valley or a smear; a band read on each
+    /// sample; and last the phenotype on the plot's two axes - the negative, the valley and
+    /// the phenotype calibrated on one sample gated by hand. A rule passes when no more than
+    /// most_off of its samples agree less than off_below with the hand gate. Every kind but the
+    /// phenotype is tried as the hand gating starts it, and the first in order that passes has
+    /// its settings searched; when none passes, each kind's settings are searched in turn; when still none
+    /// passes, the closest of everything tried is shown, not passed - flag it to the user. Per
+    /// gate: the rule beside the rule as it stands, whether it passed, how each kind did, and
+    /// the others tied with it - kept for the app's Gallery tab. The settings the user last
+    /// chose in the app are used for anything left out. Changes no rule and moves no gate.
+    /// Reads the samples' events: only when the user asks for it.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
+    async fn pick_rule(&self, Parameters(args): Parameters<PickRuleArgs>) -> String {
+        self.run(move |s| {
+            let fit = fit_settings(args.rank_by.as_deref(), args.tie_within, args.split)?;
+            let kept = s.pick_settings();
+            let settings = PickSettings {
+                fmx_band: fmx_band(args.fmx_band.as_deref(), kept.fmx_band)?,
+                score: ScoreSettings {
+                    off_below: args.off_below.unwrap_or(kept.score.off_below),
+                    noise_widths: args.noise_widths.unwrap_or(kept.score.noise_widths),
+                },
+                most_off: args.most_off.unwrap_or(kept.most_off),
+            };
+            s.pick_rules(args.population.as_deref(), settings, fit)
         })
         .await
     }
