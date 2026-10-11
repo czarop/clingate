@@ -112,6 +112,9 @@ pub(crate) fn provide_document() {
     use_context_provider(|| loaded);
     let generation = use_signal(Generation::default);
     use_context_provider(|| generation);
+    // Which branches of the gate hierarchy are open: closed until opened.
+    let open_branches = crate::gate_editor::gate_sidebar::OpenBranches::provide(loaded);
+    use_context_provider(|| open_branches);
 
     // The working copy's history, save and recovery - see `edits`.
     let edits = use_hook(|| {
@@ -148,6 +151,17 @@ pub(crate) fn provide_document() {
     use_context_provider(|| go_on);
 }
 
+/// What the window calls the program.
+pub const APP_NAME: &str = "FCS Plot Viewer";
+
+/// The window's title: the program, after the open workspace's folder name.
+fn window_title(folder: Option<&std::path::Path>) -> String {
+    match folder.and_then(|folder| folder.file_name()) {
+        Some(name) => format!("{} - {APP_NAME}", name.to_string_lossy()),
+        None => APP_NAME.to_string(),
+    }
+}
+
 #[component]
 pub fn Shell() -> Element {
     provide_document();
@@ -158,8 +172,11 @@ pub fn Shell() -> Element {
     // Offered to the tabs themselves, so an expensive one can tell whether it
     // is worth drawing.
     use_context_provider(|| active);
+    let loaded = use_context::<Signal<Loaded>>();
+    let title = window_title(loaded.read().folder.as_deref());
 
     rsx! {
+        document::Title { "{title}" }
         // Every tab is inside the provider, so a toast raised by a run that
         // finishes while you are looking at another tab still arrives. A
         // provider per tab would have swallowed exactly the messages most worth
@@ -201,5 +218,17 @@ pub fn Shell() -> Element {
             }
         }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_window_is_titled_with_the_workspace_folder_s_name() {
+        let folder = std::path::Path::new("/data/plates/Plate_10");
+        assert_eq!(window_title(Some(folder)), "Plate_10 - FCS Plot Viewer");
+        assert_eq!(window_title(None), "FCS Plot Viewer");
     }
 }

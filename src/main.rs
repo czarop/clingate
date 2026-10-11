@@ -79,7 +79,7 @@ fn main() {
         .with_cfg(
             Config::new().with_disable_context_menu(true).with_window(
                 WindowBuilder::new()
-                    .with_title("FCS Plot Viewer")
+                    .with_title(clingate::gate_editor::route::APP_NAME)
                     .with_inner_size(LogicalSize::new(1600.0, 950.0)),
             ),
         )

@@ -1,17 +1,17 @@
-//! One plot on the gallery page: look it up, draw it if it is not there.
+//! One plot on the gallery: look it up, draw it if it is not there.
 //!
-//! Every plot on a page is its own component with its own resource, which is
-//! what gives the page its progressive fill - each picture appears as it is
-//! finished rather than the page arriving all at once. It is also what makes
-//! paging cheap: leaving a page drops its components, and dropping a component
-//! drops the future, so a render nobody is waiting for stops at its next await
-//! instead of holding a permit.
+//! Every plot is its own component with its own resource, which is what gives
+//! the gallery its progressive fill - each picture appears as it is finished
+//! rather than all arriving at once. It is also what makes moving on cheap:
+//! choosing another gate or leaving the tab drops the components, and
+//! dropping a component drops the future, so a render nobody is waiting for
+//! stops at its next await instead of holding a permit.
 //!
-//! The permits are the other half. Twenty resources firing at once would open
-//! twenty FCS files and hold twenty scaled DataFrames, which is the memory
+//! The permits are the other half. Every plot's resource firing at once would
+//! open every FCS file and hold every scaled DataFrame, which is the memory
 //! spike, not the throughput win - the work is single-threaded per plot and
-//! there are not twenty cores. Four at a time keeps every core busy with a
-//! bounded working set, and the queue drains in the order the page reads.
+//! there are not that many cores. Four at a time keeps every core busy with a
+//! bounded working set, and the queue drains in the order the gallery reads.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use clingate_core::gate_rules::score::PlacedGate;
 use super::render::{PlotImage, PlotJob, render_plot};
 use super::select;
 
-/// How many plots may be in flight at once, shared by the whole page.
+/// How many plots may be in flight at once, shared by the whole gallery.
 #[derive(Clone)]
 pub struct Permits(pub Arc<Semaphore>);
 
@@ -182,16 +182,16 @@ pub fn GalleryPlot(
             if let Some(hit) = cache.peek().get(&setup.fingerprint) {
                 return Ok(hit);
             }
-            // Dropped here if the page moves on, which releases the permit and
-            // lets the page being looked at have it.
+            // Dropped here if the gallery moves on, which releases the permit
+            // for the plots being looked at.
             let _permit = permits
                 .acquire_owned()
                 .await
                 .map_err(|_| "render queue closed".to_string())?;
             // Re-checked: while this was queued, a neighbouring plot of the
-            // same file and gate may have finished the identical picture. On a
-            // page where the FMX and the FS of a specimen share a position this
-            // is not a rare case.
+            // same file and gate may have finished the identical picture. Where
+            // the FMX and the FS of a specimen share a position this is not a
+            // rare case.
             if let Some(hit) = cache.peek().get(&setup.fingerprint) {
                 return Ok(hit);
             }

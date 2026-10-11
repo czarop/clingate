@@ -7,7 +7,7 @@
 //! - [`render`] - turning that into a bitmap, off the UI thread.
 //! - [`cache`] - knowing when a bitmap is still the right picture.
 //! - [`overlay`] - gate outlines as a drawing rather than as a control.
-//! - [`plot`] - one plot on the page, with the queue that limits how many
+//! - [`plot`] - one plot in the gallery, with the queue that limits how many
 //!   are drawn at once.
 //! - [`searched`] - a search's closest candidates, over the gate as drawn.
 //! - [`pdf`] / [`export`] - the same pictures as a file, for the record.

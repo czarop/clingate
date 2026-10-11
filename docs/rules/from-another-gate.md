@@ -21,6 +21,9 @@ Gates a gating guide places by another gate rather than by the data:
 Nothing is read from this gate's population to decide where it goes. The
 position is the anchor's, on the same sample.
 
+On the Gate Rules tab, "the same shape as" offers the same gate under
+another parent; a rule written with the tools for Claude can name any gate.
+
 ## When not to use it
 
 - When the gate's own population should decide. Copying a gate from CD4 T

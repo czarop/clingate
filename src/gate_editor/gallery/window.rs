@@ -12,9 +12,9 @@
 //!   and the FMX is always the left plot of a pair.
 //! - **Pictures, not editors.** Every plot is a rendered bitmap with a static
 //!   outline over it. Nothing here can move a gate, which is what makes it safe
-//!   to put twenty of them on a page.
-//! - **A page at a time.** Only the mounted page renders. Paging back is free,
-//!   because the images are cached against the gates that produced them.
+//!   to put the whole run on one page.
+//! - **Drawn once.** The images are cached against the gates that produced
+//!   them, so coming back to a gate is free.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,11 +40,7 @@ use super::searched::{SearchBar, placed_on, searches_here};
 
 static GALLERY_STYLE: Asset = asset!("assets/gallery.css");
 
-/// How many specimens a page holds. Twenty plots: enough that a drift shows up
-/// as a pattern rather than as a run of individually plausible pictures.
-const PER_PAGE: usize = 10;
-
-/// One specimen's place on a page.
+/// One specimen's place in the gallery.
 #[derive(Clone, PartialEq)]
 pub struct Card {
     pub title: String,
@@ -104,27 +100,19 @@ pub fn GalleryWindow() -> Element {
         }
     });
 
-    let mut page = use_signal(|| 0usize);
     let mut plot_size = use_signal(|| 260u32);
     let mut search_at = use_signal(|| 0usize);
     let mut candidate_at: Signal<Option<usize>> = use_signal(|| Some(0));
 
     // What names the old workspace. The selected gate is a node id from a
-    // document that has gone, and a page number from a longer list may now be
-    // past the end of it. The picture cache needs nothing: its key holds every
+    // document that has gone. The picture cache needs nothing: its key holds every
     // cofactor and the identity of every gate a picture depends on, and both
     // change when the workspace does.
     let generation = use_context::<Signal<Generation>>();
     let document = use_memo(move || generation.read().document);
-    let file_list = use_memo(move || generation.read().files);
     use_effect(move || {
         document();
         selected_node.set(Some(ROOTGATE.clone()));
-        page.set(0);
-    });
-    use_effect(move || {
-        file_list();
-        page.set(0);
     });
 
     // Shared by every plot on the page. The cache holds the pictures; the
@@ -190,13 +178,6 @@ pub fn GalleryWindow() -> Element {
             })
             .collect()
     });
-
-    let pages = use_memo(move || cards.read().len().div_ceil(PER_PAGE).max(1));
-
-    // A selection change can leave the page past the end - a shorter run, or a
-    // pairing column that groups differently. Clamping on read rather than
-    // writing back avoids a signal write inside a render.
-    let showing = use_memo(move || page().min(pages().saturating_sub(1)));
 
     // The selection, dropped if the document it named has been replaced.
     //
@@ -283,15 +264,6 @@ pub fn GalleryWindow() -> Element {
             .unwrap_or_default()
     });
 
-    let first = showing() * PER_PAGE;
-    let on_page: Vec<(usize, Card)> = cards
-        .read()
-        .iter()
-        .enumerate()
-        .skip(first)
-        .take(PER_PAGE)
-        .map(|(at, card)| (at, card.clone()))
-        .collect();
     // Specimens, not cards: a specimen with extra rows is still one specimen.
     let total = pairs.read().len();
 
@@ -335,21 +307,7 @@ pub fn GalleryWindow() -> Element {
                         y: y_axis_marker(),
                         gate_name: gate_name(),
                     }
-                    div { class: "gallery-pager",
-                        button {
-                            disabled: showing() == 0,
-                            onclick: move |_| page.set(showing().saturating_sub(1)),
-                            "Prev"
-                        }
-                        span { class: "gallery-page_count",
-                            "page {showing() + 1} of {pages()} · {total} specimens"
-                        }
-                        button {
-                            disabled: showing() + 1 >= pages(),
-                            onclick: move |_| page.set(showing() + 1),
-                            "Next"
-                        }
-                    }
+                    span { class: "gallery-count", "{total} specimens" }
                 }
 
                 SearchBar { here, search_at, candidate_at }
@@ -360,7 +318,7 @@ pub fn GalleryWindow() -> Element {
                     }
                 } else {
                     div { class: "gallery-grid",
-                        for (at , card) in on_page {
+                        for (at , card) in cards.read().iter().enumerate() {
                             div { class: "gallery-card", key: "{at}-{card.title}",
                                 div { class: "gallery-card_title", title: "{card.title}", "{card.title}" }
                                 div { class: "gallery-card_plots",
@@ -371,9 +329,9 @@ pub fn GalleryWindow() -> Element {
                                                     div { class: "gallery-plot_name", title: "{file.name}",
                                                         "{file.label()}"
                                                     }
-                                                    // Only the page in front renders. A hidden
+                                                    // Only the tab in front renders. A hidden
                                                     // tab is still mounted - that is how the
-                                                    // shell keeps state - and twenty plots
+                                                    // shell keeps state - and every plot
                                                     // redrawing behind the editor on every gate
                                                     // edit is exactly the cost the shell's own
                                                     // comment warns about.

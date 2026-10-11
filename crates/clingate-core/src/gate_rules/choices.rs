@@ -270,9 +270,9 @@ pub fn beside(
         .collect()
 }
 
-/// The gates a valley-or-smear rule for `gate` under `parent` can fall back to: the
-/// same gate under every other parent.
-pub fn fallback_targets(
+/// `gate` under every parent but `parent`: what a valley-or-smear rule for it
+/// falls back to, and what a rule from another gate copies the shape of.
+pub fn same_gate_elsewhere(
     choices: &GateChoices,
     gate: &str,
     parent: &str,

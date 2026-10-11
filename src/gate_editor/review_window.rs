@@ -40,9 +40,6 @@ use crate::gate_editor::workspace_window::{Loaded, MetadataStore};
 static GALLERY_STYLE: Asset = asset!("assets/gallery.css");
 static REVIEW_STYLE: Asset = asset!("assets/review.css");
 
-/// Tiles on a page.
-const PER_PAGE: usize = 12;
-
 /// Where the editor should go: the population a gate is drawn on, the
 /// gate's axes, and the sample. Set by "Open in editor"; the editor takes it
 /// and clears it.
@@ -123,7 +120,6 @@ pub fn ReviewWindow() -> Element {
 
     let mut pile = use_signal(|| Pile::NeedsALook);
     let mut gate_filter = use_signal(String::new);
-    let mut page = use_signal(|| 0usize);
     let mut plot_size = use_signal(|| 220u32);
     let mut compare = use_signal(|| Compare::Both);
 
@@ -153,19 +149,10 @@ pub fn ReviewWindow() -> Element {
     }
     gates.sort_by(|a, b| clingate_core::gate_rules::rule_store::human_order(&a.1, &b.1));
 
-    // The gate chosen in the filter, or every gate: the piles' counts and
-    // their tiles both follow it.
-    let only = gate_filter.read().clone();
-    let only = (!only.is_empty()).then_some(only);
+    // The gate chosen in the filter, or the first the run placed: the piles'
+    // counts and their tiles both follow it.
+    let only = chosen_gate(&gates, &gate_filter.read());
     let shown: Vec<Entry> = board.pile_for(pile(), only.as_deref()).cloned().collect();
-    let pages = shown.len().div_ceil(PER_PAGE).max(1);
-    let at_page = page().min(pages - 1);
-    let on_page: Vec<Entry> = shown
-        .iter()
-        .skip(at_page * PER_PAGE)
-        .take(PER_PAGE)
-        .cloned()
-        .collect();
     let applied = crate::gate_editor::review::p_time(&board.run_applied_at);
     let showing = active() == Tab::Review;
 
@@ -185,10 +172,7 @@ pub fn ReviewWindow() -> Element {
                         button {
                             key: "{p:?}",
                             class: if pile() == p { "review-tab_pile selected" } else { "review-tab_pile" },
-                            onclick: move |_| {
-                                pile.set(p);
-                                page.set(0);
-                            },
+                            onclick: move |_| pile.set(p),
                             "{p.title()} ({board.count_for(p, only.as_deref())})"
                         }
                     }
@@ -197,14 +181,15 @@ pub fn ReviewWindow() -> Element {
                 label { class: "gallery-size",
                     "Gate"
                     select {
-                        value: "{gate_filter}",
-                        onchange: move |e| {
-                            gate_filter.set(e.value());
-                            page.set(0);
-                        },
-                        option { value: "", "every gate" }
+                        value: only.clone().unwrap_or_default(),
+                        onchange: move |e| gate_filter.set(e.value()),
                         for (id , name) in gates.iter() {
-                            option { key: "{id}", value: "{id}", "{name}" }
+                            option {
+                                key: "{id}",
+                                value: "{id}",
+                                selected: only.as_deref() == Some(id.as_str()),
+                                "{name}"
+                            }
                         }
                     }
                 }
@@ -236,31 +221,17 @@ pub fn ReviewWindow() -> Element {
                         option { value: "300", "large" }
                     }
                 }
-                div { class: "gallery-pager",
-                    button {
-                        disabled: at_page == 0,
-                        onclick: move |_| page.set(at_page.saturating_sub(1)),
-                        "Prev"
-                    }
-                    span { class: "gallery-page_count",
-                        "page {at_page + 1} of {pages} · {shown.len()} shown"
-                    }
-                    button {
-                        disabled: at_page + 1 >= pages,
-                        onclick: move |_| page.set(at_page + 1),
-                        "Next"
-                    }
-                }
+                span { class: "gallery-count", "{shown.len()} shown" }
             }
             if !board.unplaced.is_empty() {
                 UnplacedList { unplaced: board.unplaced.clone() }
             }
             p { class: "review-tab_hint", {pile_hint(pile())} }
-            if on_page.is_empty() {
+            if shown.is_empty() {
                 div { class: "gallery-empty", "Nothing here." }
             } else {
                 div { class: "gallery-grid",
-                    for entry in on_page {
+                    for entry in shown {
                         ReviewTile {
                             key: "{entry.gate_id}-{entry.sample.id}",
                             entry: entry.clone(),
@@ -274,6 +245,16 @@ pub fn ReviewWindow() -> Element {
             }
         }
     }
+}
+
+/// The gate the filter names, if the run placed it, or else the first the
+/// run placed.
+fn chosen_gate(gates: &[(String, String)], filter: &str) -> Option<String> {
+    gates
+        .iter()
+        .find(|(id, _)| id == filter)
+        .or_else(|| gates.first())
+        .map(|(id, _)| id.clone())
 }
 
 /// What the run could not place - open when a gate was refused on every
@@ -719,6 +700,23 @@ fn ReviewTile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One gate the run placed at a time: the one chosen, or the first.
+    #[test]
+    fn the_gate_shown_is_the_one_chosen_or_the_first_the_run_placed() {
+        let gates = [
+            ("cd4".to_string(), "CD4+".to_string()),
+            ("cd8".to_string(), "CD8+".to_string()),
+        ];
+        assert_eq!(chosen_gate(&gates, "cd8").as_deref(), Some("cd8"));
+        assert_eq!(chosen_gate(&gates, "").as_deref(), Some("cd4"));
+        assert_eq!(
+            chosen_gate(&gates, "gone").as_deref(),
+            Some("cd4"),
+            "a gate from an earlier run"
+        );
+        assert_eq!(chosen_gate(&[], ""), None);
+    }
 
     fn refused(gate: &str, samples: usize, everywhere: bool) -> Unplaced {
         Unplaced {

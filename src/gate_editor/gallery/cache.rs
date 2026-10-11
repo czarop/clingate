@@ -1,8 +1,8 @@
 //! Knowing when a drawn plot is still the right picture.
 //!
-//! The gallery draws the same twenty files over and over - page forward, page
-//! back, pick a different gate and come back to this one - and drawing is the
-//! expensive thing in this program. Caching the images makes all of that free,
+//! The gallery draws the same files over and over - pick a different gate
+//! and come back to this one, change the plot size and back - and drawing is
+//! the expensive thing in this program. Caching the images makes all of that free,
 //! but only if the cache can tell when a picture has gone stale, and the thing
 //! that makes it stale is a gate moving. That is precisely what the autogater
 //! does, to hundreds of gates at once, while the tab is open.
@@ -150,10 +150,10 @@ impl std::fmt::Debug for Fingerprint {
 
 /// Drawn plots, by what they were drawn from.
 ///
-/// Bounded, and oldest-first when it has to give something up. A run of a
-/// hundred files at twenty plots a page is five pages, so a few hundred entries
-/// holds everything a person will page through while keeping the memory a
-/// stated number rather than an open question.
+/// Bounded, and oldest-first when it has to give something up. A run of two
+/// hundred specimens is four hundred plots, all on screen at once, so twice
+/// that holds a whole run and a second gate while keeping the memory a stated
+/// number rather than an open question.
 pub struct PlotCache {
     entries: FxHashMap<Fingerprint, (u64, Arc<PlotImage>)>,
     /// Bumped on every insert, so the least recently *inserted* entry is known
@@ -164,7 +164,7 @@ pub struct PlotCache {
 
 impl Default for PlotCache {
     fn default() -> Self {
-        Self::with_limit(400)
+        Self::with_limit(800)
     }
 }
 

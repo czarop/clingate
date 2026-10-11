@@ -392,7 +392,7 @@
   rule that works on the reference and drifts on a third of the cohort looks
   fine one sample at a time. Specimens come from the same `pair_files` grouping
   the editor uses, so the sort column chosen there orders this too and the FMX
-  is always the left plot of a pair. Ten specimens to a page.
+  is always the left plot of a pair. Every specimen on one page.
 
   Plots are pictures, not editors: the rendered bitmap with a static outline
   over it and no event handlers at all, so a stray click cannot move a gate on a
@@ -446,6 +446,16 @@
   and the rules run from FCS files on disk.
 
 ### Changed
+
+- **The Gallery and Review tabs show everything at once,** with no pages.
+  The Review tab shows one gate at a time - the gates the run placed, the
+  first until another is chosen - rather than every gate together.
+
+- **The gate hierarchy starts closed.** A gate's children show once its
+  arrow is opened, and which branches are open is kept with the workspace
+  (`.clingate_open_branches.json`), so it opens as it was left.
+
+- **The window is titled with the workspace's folder name.**
 
 - **Above the negative is offered on the Gate Rules tab again,** beside
   valley or smear, not only to a rule that already was one: a pick can
@@ -515,6 +525,12 @@
   the setting stayed in the form but no longer did anything.
 
 ### Fixed
+
+- **A rule's reference sample is chosen from the workspace's files,** not
+  every file the metadata names.
+
+- **A rule from another gate copies the shape of the same gate under
+  another parent,** as offered before, rather than any gate.
 
 - **Stop** on the Gate Rules tab now stops a run while it positions the
   gates, not only while it reads the files - which, with many rules, was

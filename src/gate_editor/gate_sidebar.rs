@@ -1,7 +1,7 @@
 use crate::components::context_menu::*;
 use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_paths::places_of;
+use clingate_core::gates::gate_paths::{path_names, places_of};
 use clingate_core::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
@@ -20,6 +20,70 @@ enum LinkStep {
     Picking(Arc<str>),
     /// A target was chosen. Nothing has been written yet.
     Confirming { source: Arc<str>, target: Arc<str> },
+}
+
+/// The branches of the gate hierarchy that are open, each by its population
+/// names from the root - shared by every tab's tree, and kept with the
+/// workspace so it opens as it was left.
+#[derive(Clone, Copy)]
+pub(crate) struct OpenBranches(Signal<FxHashSet<Vec<String>>>);
+
+impl OpenBranches {
+    /// The open branches, read again from the workspace's folder whenever
+    /// another workspace is opened. Provided with the document.
+    pub(crate) fn provide(loaded: Signal<crate::gate_editor::workspace_window::Loaded>) -> Self {
+        let mut open = use_signal(FxHashSet::default);
+        let folder = use_memo(move || loaded.read().folder.clone());
+        use_effect(move || {
+            let kept = folder()
+                .map(|folder| clingate_core::workspace::open_branches(&folder))
+                .unwrap_or_default();
+            open.set(kept.into_iter().collect());
+        });
+        Self(open)
+    }
+
+    pub(crate) fn is_open(self, branch: &[String]) -> bool {
+        self.0.read().contains(branch)
+    }
+
+    /// Open `branch` if it is closed, close it if it is open, and keep that
+    /// in `folder`.
+    pub(crate) fn toggle(mut self, branch: Vec<String>, folder: Option<&std::path::Path>) {
+        toggled(&mut self.0.write(), branch);
+        self.keep(folder);
+    }
+
+    /// Open every branch above `branch`, so its row shows, and keep that in
+    /// `folder`.
+    pub(crate) fn reveal(mut self, branch: &[String], folder: Option<&std::path::Path>) {
+        let above = branches_above(branch);
+        if above.iter().all(|b| self.0.peek().contains(b)) {
+            return;
+        }
+        self.0.write().extend(above);
+        self.keep(folder);
+    }
+
+    fn keep(self, folder: Option<&std::path::Path>) {
+        if let Some(folder) = folder {
+            let open: Vec<Vec<String>> = self.0.peek().iter().cloned().collect();
+            // How the tree was left is not worth interrupting anyone over.
+            let _ = clingate_core::workspace::keep_open_branches(folder, &open);
+        }
+    }
+}
+
+/// The branches `branch` sits inside, from the root down.
+fn branches_above(branch: &[String]) -> Vec<Vec<String>> {
+    (1..branch.len()).map(|depth| branch[..depth].to_vec()).collect()
+}
+
+/// `open` with `branch` opened if it was closed, and closed if it was open.
+fn toggled(open: &mut FxHashSet<Vec<String>>, branch: Vec<String>) {
+    if !open.remove(&branch) {
+        open.insert(branch);
+    }
 }
 
 /// Shared through context because the tree renders recursively.
@@ -48,6 +112,18 @@ pub fn GateSidebar(
     let overrides =
         use_context_provider(|| Overrides(Memo::new(move || gate_store.read().overridden_ids())));
     let _ = overrides;
+
+    // A gate selected from elsewhere - the Review tab, a new gate under a
+    // closed branch - has its branch opened so its row shows.
+    let open = use_context::<OpenBranches>();
+    let loaded = use_context::<Signal<crate::gate_editor::workspace_window::Loaded>>();
+    use_effect(move || {
+        let Some(node) = selected_id() else {
+            return;
+        };
+        let branch = path_names(&gate_store.peek(), &NodeId::from(node));
+        open.reveal(&branch, loaded.peek().folder.as_deref());
+    });
 
     let link_pick = use_context_provider(|| LinkPick(Signal::new(None)));
     let link_error = use_context_provider(|| LinkError(Signal::new(None)));
@@ -192,7 +268,10 @@ fn GateNode(
     let mut picking = use_context::<LinkPick>().0;
     let mut link_error = use_context::<LinkError>().0;
     let axis_store: SyncStore<AxisStore> = use_context::<SyncStore<AxisStore>>();
-    let mut is_expanded = use_signal(|| true);
+    let open = use_context::<OpenBranches>();
+    let loaded = use_context::<Signal<crate::gate_editor::workspace_window::Loaded>>();
+    let branch = path_names(&gate_store.read(), &NodeId::from(node_id.clone()));
+    let is_expanded = open.is_open(&branch);
     let mut showing_places = use_signal(|| false);
 
     // Which gate this position shows. Several nodes may name the same gate -
@@ -415,10 +494,10 @@ fn GateNode(
 
                         if has_children {
                             div {
-                                class: format!("toggle-icon{}", if is_expanded() { " expanded" } else { "" }),
+                                class: format!("toggle-icon{}", if is_expanded { " expanded" } else { "" }),
                                 onclick: move |e| {
                                     e.stop_propagation();
-                                    is_expanded.toggle();
+                                    open.toggle(branch.clone(), loaded.peek().folder.as_deref());
                                 },
                                 ChevronIcon {}
                             }
@@ -469,7 +548,7 @@ fn GateNode(
                     }
 
                     // 4. The Children (Recursive call)
-                    if has_children && is_expanded() {
+                    if has_children && is_expanded {
                         div { class: "gate-children",
                             for child_id in children {
                                 GateNode {
@@ -628,5 +707,30 @@ fn GateNode(
             }
 
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gate_s_row_shows_once_every_branch_above_it_is_open() {
+        let path = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            branches_above(&path(&["Lymph", "CD4+", "CD69+"])),
+            [path(&["Lymph"]), path(&["Lymph", "CD4+"])]
+        );
+        assert!(branches_above(&path(&["Lymph"])).is_empty(), "a root shows already");
+    }
+
+    #[test]
+    fn a_branch_opens_when_closed_and_closes_when_open() {
+        let lymph = vec!["Lymph".to_string()];
+        let mut open = FxHashSet::default();
+        toggled(&mut open, lymph.clone());
+        assert!(open.contains(&lymph));
+        toggled(&mut open, lymph.clone());
+        assert!(open.is_empty(), "closed again - and closed to start with");
     }
 }

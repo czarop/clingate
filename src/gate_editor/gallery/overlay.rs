@@ -3,8 +3,8 @@
 //! The editor's `GateLayer` is a drawing *and* an interface: every vertex is a
 //! drag target, every shape has a context menu, and the whole layer subscribes
 //! to the drag signals so it can follow the mouse. None of that belongs in a
-//! gallery. A page of twenty plots with twenty live gate layers would be a
-//! thousand event handlers hanging off pictures nobody is allowed to edit, and
+//! gallery. Live gate layers on every plot would be thousands of event
+//! handlers hanging off pictures nobody is allowed to edit, and
 //! one stray click would move a gate on a sample the person was only looking
 //! at.
 //!

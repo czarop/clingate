@@ -57,25 +57,7 @@
     opacity: 0.8;
 }
 
-.gallery-pager {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.gallery-pager button {
-    border: none;
-    border-radius: 4px;
-    padding: 4px 12px;
-    font-size: 0.8rem;
-}
-
-.gallery-pager button:disabled {
-    background-color: hsl(0, 0%, 80%);
-    cursor: default;
-}
-
-.gallery-page_count {
+.gallery-count {
     font-size: 0.75rem;
     opacity: 0.7;
     white-space: nowrap;
