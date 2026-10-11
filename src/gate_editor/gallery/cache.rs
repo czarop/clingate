@@ -150,10 +150,10 @@ impl std::fmt::Debug for Fingerprint {
 
 /// Drawn plots, by what they were drawn from.
 ///
-/// Bounded, and oldest-first when it has to give something up. A run of a
-/// hundred specimens is two hundred plots, so a few hundred entries holds a
-/// whole run and a second gate while keeping the memory a stated number
-/// rather than an open question.
+/// Bounded, and oldest-first when it has to give something up. A run of two
+/// hundred specimens is four hundred plots, all on screen at once, so twice
+/// that holds a whole run and a second gate while keeping the memory a stated
+/// number rather than an open question.
 pub struct PlotCache {
     entries: FxHashMap<Fingerprint, (u64, Arc<PlotImage>)>,
     /// Bumped on every insert, so the least recently *inserted* entry is known
@@ -164,7 +164,7 @@ pub struct PlotCache {
 
 impl Default for PlotCache {
     fn default() -> Self {
-        Self::with_limit(400)
+        Self::with_limit(800)
     }
 }
 

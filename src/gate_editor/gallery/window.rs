@@ -264,7 +264,6 @@ pub fn GalleryWindow() -> Element {
             .unwrap_or_default()
     });
 
-    let every_card: Vec<(usize, Card)> = cards.read().iter().cloned().enumerate().collect();
     // Specimens, not cards: a specimen with extra rows is still one specimen.
     let total = pairs.read().len();
 
@@ -319,7 +318,7 @@ pub fn GalleryWindow() -> Element {
                     }
                 } else {
                     div { class: "gallery-grid",
-                        for (at , card) in every_card {
+                        for (at , card) in cards.read().iter().enumerate() {
                             div { class: "gallery-card", key: "{at}-{card.title}",
                                 div { class: "gallery-card_title", title: "{card.title}", "{card.title}" }
                                 div { class: "gallery-card_plots",

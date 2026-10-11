@@ -151,6 +151,9 @@ pub(crate) fn provide_document() {
     use_context_provider(|| go_on);
 }
 
+/// What the window calls the program.
+pub const APP_NAME: &str = "FCS Plot Viewer";
+
 /// The window's title: the program, after the open workspace's folder name.
 fn window_title(folder: Option<&std::path::Path>) -> String {
     match folder.and_then(|folder| folder.file_name()) {
@@ -158,9 +161,6 @@ fn window_title(folder: Option<&std::path::Path>) -> String {
         None => APP_NAME.to_string(),
     }
 }
-
-/// What the window calls the program.
-pub const APP_NAME: &str = "FCS Plot Viewer";
 
 #[component]
 pub fn Shell() -> Element {

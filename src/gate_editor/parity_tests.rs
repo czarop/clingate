@@ -41,6 +41,7 @@ use dioxus_core::NoOpMutations;
 use crate::components::toast::ToastProvider;
 use crate::gate_editor::edits::Edits;
 use crate::gate_editor::gate_rules_window::RulesRun;
+use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
 use crate::gate_editor::route::provide_document;
 use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, MetadataStore};
@@ -53,6 +54,8 @@ struct Held {
     workspace: Handles,
     rules_run: RulesRun,
     pick_run: PickRun,
+    open_branches: OpenBranches,
+    loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
     gates: GateStore,
     axes: AxesStore,
@@ -84,6 +87,8 @@ fn Probe(holder: Holder) -> Element {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
         pick_run: PickRun::from_context(),
+        open_branches: use_context(),
+        loaded: use_context(),
         edits: use_context(),
         gates: use_context(),
         axes: use_context(),
@@ -1488,4 +1493,29 @@ fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
     assert_eq!(ours[0].candidates, theirs[0].candidates);
     assert_eq!(ours[0].passed, theirs[0].passed);
     assert_eq!(ours[0].kinds, theirs[0].kinds);
+}
+
+/// The gate hierarchy opens closed, and as each workspace's was left: a
+/// branch opened in one is kept in its folder, not carried to another.
+#[test]
+fn the_open_branches_are_each_workspace_s_own() {
+    let (first, second) = twins("open-branches");
+    let lymph = vec!["Lymph".to_string()];
+    let mut app = App::new();
+    app.open(&first);
+    let is_open = |app: &App, branch: &[String]| {
+        let held = app.held();
+        app.dom.in_scope(ScopeId::APP, || held.open_branches.is_open(branch))
+    };
+    assert!(!is_open(&app, &lymph), "closed to start with");
+    app.with(|held| {
+        let folder = held.loaded.peek().folder.clone();
+        held.open_branches.toggle(lymph.clone(), folder.as_deref());
+    });
+    assert!(is_open(&app, &lymph));
+
+    app.open(&second);
+    assert!(!is_open(&app, &lymph), "another workspace's tree is its own");
+    app.open(&first);
+    assert!(is_open(&app, &lymph), "as it was left");
 }

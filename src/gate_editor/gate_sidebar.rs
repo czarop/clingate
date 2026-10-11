@@ -43,20 +43,40 @@ impl OpenBranches {
         Self(open)
     }
 
-    fn is_open(self, branch: &[String]) -> bool {
+    pub(crate) fn is_open(self, branch: &[String]) -> bool {
         self.0.read().contains(branch)
     }
 
     /// Open `branch` if it is closed, close it if it is open, and keep that
     /// in `folder`.
-    fn toggle(mut self, branch: Vec<String>, folder: Option<&std::path::Path>) {
+    pub(crate) fn toggle(mut self, branch: Vec<String>, folder: Option<&std::path::Path>) {
         toggled(&mut self.0.write(), branch);
+        self.keep(folder);
+    }
+
+    /// Open every branch above `branch`, so its row shows, and keep that in
+    /// `folder`.
+    pub(crate) fn reveal(mut self, branch: &[String], folder: Option<&std::path::Path>) {
+        let above = branches_above(branch);
+        if above.iter().all(|b| self.0.peek().contains(b)) {
+            return;
+        }
+        self.0.write().extend(above);
+        self.keep(folder);
+    }
+
+    fn keep(self, folder: Option<&std::path::Path>) {
         if let Some(folder) = folder {
             let open: Vec<Vec<String>> = self.0.peek().iter().cloned().collect();
             // How the tree was left is not worth interrupting anyone over.
             let _ = clingate_core::workspace::keep_open_branches(folder, &open);
         }
     }
+}
+
+/// The branches `branch` sits inside, from the root down.
+fn branches_above(branch: &[String]) -> Vec<Vec<String>> {
+    (1..branch.len()).map(|depth| branch[..depth].to_vec()).collect()
 }
 
 /// `open` with `branch` opened if it was closed, and closed if it was open.
@@ -92,6 +112,18 @@ pub fn GateSidebar(
     let overrides =
         use_context_provider(|| Overrides(Memo::new(move || gate_store.read().overridden_ids())));
     let _ = overrides;
+
+    // A gate selected from elsewhere - the Review tab, a new gate under a
+    // closed branch - has its branch opened so its row shows.
+    let open = use_context::<OpenBranches>();
+    let loaded = use_context::<Signal<crate::gate_editor::workspace_window::Loaded>>();
+    use_effect(move || {
+        let Some(node) = selected_id() else {
+            return;
+        };
+        let branch = path_names(&gate_store.peek(), &NodeId::from(node));
+        open.reveal(&branch, loaded.peek().folder.as_deref());
+    });
 
     let link_pick = use_context_provider(|| LinkPick(Signal::new(None)));
     let link_error = use_context_provider(|| LinkError(Signal::new(None)));
@@ -681,6 +713,16 @@ fn GateNode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gate_s_row_shows_once_every_branch_above_it_is_open() {
+        let path = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            branches_above(&path(&["Lymph", "CD4+", "CD69+"])),
+            [path(&["Lymph"]), path(&["Lymph", "CD4+"])]
+        );
+        assert!(branches_above(&path(&["Lymph"])).is_empty(), "a root shows already");
+    }
 
     #[test]
     fn a_branch_opens_when_closed_and_closes_when_open() {

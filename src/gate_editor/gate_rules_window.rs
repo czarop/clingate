@@ -138,6 +138,30 @@ fn name_of(files: &[(Arc<str>, Arc<str>)], id: &str) -> String {
         .unwrap_or_else(|| id.to_string())
 }
 
+/// Every file `map` names, by name, with its gating id.
+fn every_named_file(map: &HashMap<Arc<str>, Arc<str>, FxBuildHasher>) -> Vec<(Arc<str>, Arc<str>)> {
+    let names: Vec<Arc<str>> = map.keys().cloned().collect();
+    loaded_files(map, &names)
+}
+
+/// The files a rule can be calibrated on: those `loaded`, and `current` -
+/// by its name in `named` - if the rule already names one that is not.
+fn calibrate_options(
+    loaded: &[(Arc<str>, Arc<str>)],
+    named: &[(Arc<str>, Arc<str>)],
+    current: &str,
+) -> Vec<(Arc<str>, Arc<str>)> {
+    let mut offered = loaded.to_vec();
+    if !current.is_empty() && !offered.iter().any(|(_, id)| &**id == current) {
+        let name = named
+            .iter()
+            .find(|(_, id)| &**id == current)
+            .map_or_else(|| Arc::from(current), |(name, _)| name.clone());
+        offered.push((name, Arc::from(current)));
+    }
+    offered
+}
+
 /// What a rule from another gate can copy the shape of, as the form names
 /// them: `gate` under another parent, and `current` too if it names another.
 fn shape_sources(choices: &GateChoices, gate: &str, parent: &str, current: &str) -> Vec<String> {
@@ -166,7 +190,6 @@ fn loaded_files(
         .filter_map(|name| Some((name.clone(), map.get(name)?.clone())))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
-    out.dedup();
     out
 }
 
@@ -365,6 +388,9 @@ pub fn GateRulesWindow() -> Element {
             .unwrap_or_default();
         loaded_files(&metadata_store.file_name_to_gating_id().read(), &loaded)
     });
+    // Every file the metadata names, for naming files a rule or a report
+    // already holds - they need not be loaded now.
+    let named_files = use_memo(move || every_named_file(&metadata_store.file_name_to_gating_id().read()));
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -1027,7 +1053,7 @@ pub fn GateRulesWindow() -> Element {
                                     match &entry.rule.measured_on {
                                         MeasuredOn::Itself => "the sample itself".to_string(),
                                         MeasuredOn::Partner(t) => format!("its {t}"),
-                                        MeasuredOn::File(f) => name_of(&files.read(), f),
+                                        MeasuredOn::File(f) => name_of(&named_files.read(), f),
                                     }
                                 }
                                 // A phenotype rule names its markers by the
@@ -1368,7 +1394,7 @@ pub fn GateRulesWindow() -> Element {
                         "Describes the cells inside the gate on the reference sample by where they sit across the markers below, then finds the same cells in every other sample and fits the gate to wherever they turn out to be. For populations the other rules cannot reach: a smear with no dip, several clusters near each other, anything that moves in both axes at once. Nothing is normalised between samples - each one's markers are read against its own parent - so donor differences are carried rather than flattened."
                     }
 
-                    {calibrate_picker(calibrate_on, files)}
+                    {calibrate_picker(calibrate_on, files, named_files)}
 
                     label { "Identified by" }
                     div { class: "gate_rules-markers",
@@ -1497,7 +1523,7 @@ pub fn GateRulesWindow() -> Element {
                 }
 
                 if kind() == "ValleyOrSmear" {
-                    {calibrate_picker(calibrate_on, files)}
+                    {calibrate_picker(calibrate_on, files, named_files)}
                     p { class: "gate_rules-hint gate_rules-span",
                         "Reads each sample for a dip between its negative and its positive. Where there is one, the gate goes in it, offset as on the reference. Where there is none - a smear - the gate goes as far above the negative, in widths of the negative, as on a smear gated by hand."
                     }
@@ -1539,7 +1565,7 @@ pub fn GateRulesWindow() -> Element {
                     if !smear_example().is_empty() {
                         label { "Smear example" }
                         div {
-                            span { "{file_name(&files.read(), &smear_example())} " }
+                            span { "{file_name(&named_files.read(), &smear_example())} " }
                             button {
                                 onclick: move |_| smear_example.set(String::new()),
                                 "Forget"
@@ -1552,7 +1578,7 @@ pub fn GateRulesWindow() -> Element {
                 }
 
                 if kind() == "AboveTheNegative" {
-                    {calibrate_picker(calibrate_on, files)}
+                    {calibrate_picker(calibrate_on, files, named_files)}
                     p { class: "gate_rules-hint gate_rules-span",
                         "Reads how far above that sample's negative its gate sits, in widths of that negative, and puts every other gate the same number of widths above its own. No FMO needed - the negative is read from the sample being gated."
                     }
@@ -1673,9 +1699,9 @@ pub fn GateRulesWindow() -> Element {
                             tbody {
                                 for reference in rules.read().references().to_vec() {
                                     tr { key: "{reference.gated}/{reference.sample_type}",
-                                        td { "{name_of(&files.read(), &reference.gated)}" }
+                                        td { "{name_of(&named_files.read(), &reference.gated)}" }
                                         td { "{reference.sample_type}" }
-                                        td { "{name_of(&files.read(), &reference.reference)}" }
+                                        td { "{name_of(&named_files.read(), &reference.reference)}" }
                                         td {
                                             button {
                                                 class: "gate_rules-remove",
@@ -1895,11 +1921,11 @@ pub fn GateRulesWindow() -> Element {
                                         class: if placed.needs_review(REVIEW_FLOOR) { "gate_rules-weak" } else { "" },
                                         td { "{placed.specimen}" }
                                         td { "{describe(&placed.gate, placed.parent_gate.as_deref())}" }
-                                        td { "{name_of(&files.read(), &placed.measured_on)}" }
+                                        td { "{name_of(&named_files.read(), &placed.measured_on)}" }
                                         td { "{placed.from:.3}" }
                                         td { "{placed.to:.3}" }
                                         td {
-                                            title: "of {placed.reference_events} events on {name_of(&files.read(), &placed.captured_on)}",
+                                            title: "of {placed.reference_events} events on {name_of(&named_files.read(), &placed.captured_on)}",
                                             "{placed.achieved * 100.0:.3}%"
                                             if !placed.in_band {
                                                 " (outside the band - nearest achievable)"
@@ -1952,7 +1978,7 @@ pub fn GateRulesWindow() -> Element {
                                                     "{read.matched} ({fraction(read.matched, read.parent)})"
                                                 }
                                                 td {
-                                                    title: "what the hand-drawn gate held on {name_of(&files.read(), &placed.measured_on)}",
+                                                    title: "what the hand-drawn gate held on {name_of(&named_files.read(), &placed.measured_on)}",
                                                     "{read.reference_matched} ({fraction(read.reference_matched, read.reference_parent)})"
                                                 }
                                                 td {
@@ -2147,7 +2173,7 @@ pub fn GateRulesWindow() -> Element {
                                     if missed.file.is_empty() {
                                         "{describe(&missed.gate, missed.parent_gate.as_deref())}: {missed.reason}"
                                     } else {
-                                        "{describe(&missed.gate, missed.parent_gate.as_deref())} on {name_of(&files.read(), &missed.file)}: {missed.reason}"
+                                        "{describe(&missed.gate, missed.parent_gate.as_deref())} on {name_of(&named_files.read(), &missed.file)}: {missed.reason}"
                                     }
                                 }
                             }
@@ -2179,6 +2205,26 @@ mod tests {
         assert_eq!(
             shape_sources(&offered, "CD69+", "CD4+", "CD25+ of CD4+"),
             ["CD69+ of CD8+", "CD25+ of CD4+"]
+        );
+    }
+
+    /// A rule already calibrated on a file not loaded keeps it on offer,
+    /// named as the metadata names it.
+    #[test]
+    fn a_rule_calibrated_on_a_file_not_loaded_keeps_it_on_offer() {
+        let file = |name: &str, id: &str| (Arc::<str>::from(name), Arc::<str>::from(id));
+        let loaded = [file("a.fcs", "1")];
+        let named = [file("a.fcs", "1"), file("elsewhere.fcs", "3")];
+        assert_eq!(calibrate_options(&loaded, &named, ""), loaded);
+        assert_eq!(calibrate_options(&loaded, &named, "1"), loaded);
+        assert_eq!(
+            calibrate_options(&loaded, &named, "3"),
+            [file("a.fcs", "1"), file("elsewhere.fcs", "3")]
+        );
+        assert_eq!(
+            calibrate_options(&loaded, &[], "9"),
+            [file("a.fcs", "1"), file("9", "9")],
+            "a file no metadata names, by its id"
         );
     }
 
@@ -2629,7 +2675,9 @@ fn lowest_before_picker(mut lowest_before: Signal<bool>) -> Element {
 fn calibrate_picker(
     mut calibrate_on: Signal<String>,
     files: Memo<Vec<(Arc<str>, Arc<str>)>>,
+    named_files: Memo<Vec<(Arc<str>, Arc<str>)>>,
 ) -> Element {
+    let offered = calibrate_options(&files.read(), &named_files.read(), &calibrate_on());
     rsx! {
         label { "Calibrate on" }
         select {
@@ -2637,7 +2685,7 @@ fn calibrate_picker(
             onchange: move |e| calibrate_on.set(e.value()),
             option { value: "", "choose the reference sample" }
             // Marked, not only valued: see the gate's list.
-            for (name , id) in files.read().clone() {
+            for (name , id) in offered {
                 option {
                     value: "{id}",
                     selected: calibrate_on() == *id,
