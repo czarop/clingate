@@ -8,7 +8,8 @@ what has been done since.
 ## Status
 
 Done on `czarop/flow` branches `claude/fcs-errors-not-panics` and then
-`claude/event-index-scan`, and clingate pinned to the latter:
+`claude/event-index-scan`, merged to flow's `main` (czarop/flow#1), which
+clingate follows:
 
 | Item | Commit (flow) | Notes |
 | --- | --- | --- |

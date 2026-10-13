@@ -30,7 +30,7 @@ the seams the integration tests in the second pass are written against.
   Every other bug found has been fixed - B-RULE-1 by removing the setting,
   and B-FCS-1, B-FCS-2, B-FCS-3 and B-IDX-1 in `czarop/flow` on the branch
   `claude/event-index-scan` (which carries `claude/fcs-errors-not-panics`),
-  which `Cargo.toml` pins until it is merged there. B-STAT-1 is kept by decision.
+  merged to flow's `main`, which `Cargo.toml` follows. B-STAT-1 is kept by decision.
 - **42 vacuous tests dealt with**: 41 scenario tests in `gate_move` that
   printed their results and passed whatever happened (40 now assert, one
   loop over the others deleted), and one FCS equality test that discarded
