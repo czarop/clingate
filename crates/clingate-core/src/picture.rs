@@ -54,10 +54,15 @@ pub struct Drawn {
 
 /// Read, filter, count and draw one plot. Blocking.
 pub fn render(request: &PlotRequest) -> anyhow::Result<Drawn> {
-    let scaled =
-        crate::events::read_scaled(&request.path, &request.compensation, &request.cofactors)?;
-    let frame = crate::events::under_chain(&scaled, &request.chain, &request.resolver)?;
-    drop(scaled);
+    let frame = crate::events::plotted(
+        &request.path,
+        &request.compensation,
+        &request.cofactors,
+        &request.chain,
+        &request.resolver,
+        &request.x,
+        &request.y,
+    )?;
     let parent_events = frame.height();
     let points = crate::events::points(&frame, &request.x, &request.y)?;
     let holds = match &request.gate {

@@ -447,6 +447,29 @@
 
 ### Changed
 
+- **Counting a gate's events is much faster.** The percentage on a gate, a
+  rule's capture search and every score counted events through an R-tree
+  built for each plot and each sample, which cost up to 220 ms to build at
+  1.2 million events and pruned little, since most gates hold much of their
+  parent. Events are now scanned in parallel: an open-ended gate counts in
+  0.4 ms rather than 13 ms, and dragging a quadrant updates its four
+  percentages without lag. The counts are unchanged.
+
+- **Rules runs, searches and scores read less of each file.** A file's
+  channels are scaled only as they are read, and each population is worked
+  out once per file and cut on only the channels its rule reads, rather than
+  every channel being scaled and every gate cutting a copy of the whole file
+  for itself. The Gallery, Claude's pictures and the Review tab's population
+  view scale and copy only the two channels they draw and those the gates
+  above them read. What is measured is unchanged, and less of the file is
+  held at once.
+
+- **The editor no longer re-reads a plot's file for an axis change.**
+  Moving an axis's range used to scale the whole file again, filter it and
+  rebuild its index on both plots; now only a changed cofactor rescales it.
+  Switching a plot's axis channel reads the two columns from the population
+  already filtered rather than filtering the file again.
+
 - **The Gallery and Review tabs show everything at once,** with no pages.
   The Review tab shows one gate at a time - the gates the run placed, the
   first until another is chosen - rather than every gate together.

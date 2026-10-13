@@ -11,9 +11,11 @@
 //! pipeline is one blocking function that returns the image and drops
 //! everything else, and the caller runs it on a pool.
 //!
-//! It is deliberately the *same* pipeline the editor uses, step for step and
-//! function for function - [`clingate_core::events`] to read, filter and index,
-//! `get_percent_and_counts_gate`, `DensityPlot`. A gallery whose percentages
+//! It deliberately computes what the editor computes, function for function -
+//! the same compensation, arcsinh and gate filters through
+//! [`clingate_core::events::plotted`], `get_percent_and_counts_gate`,
+//! `DensityPlot` - though it scales and copies only the two channels it draws
+//! and those its parent gates read. A gallery whose percentages
 //! disagreed with the editor's by a rounding step would be worse than no
 //! gallery, because the whole point of it is to be trusted at a glance.
 
@@ -85,10 +87,15 @@ impl PartialEq for PlotImage {
 
 /// Open, scale, gate, index, measure and draw. Blocking; call it on a pool.
 pub fn render_plot(job: &PlotJob) -> anyhow::Result<PlotImage> {
-    // Read exactly as the editor reads it: see [`clingate_core::events`].
-    let scaled = clingate_core::events::read_scaled(&job.path, &job.compensation, &job.cofactors)?;
-    let frame = clingate_core::events::under_chain(&scaled, &job.chain, &job.resolver)?;
-    drop(scaled);
+    let frame = clingate_core::events::plotted(
+        &job.path,
+        &job.compensation,
+        &job.cofactors,
+        &job.chain,
+        &job.resolver,
+        &job.x,
+        &job.y,
+    )?;
     let parent_events = frame.height();
 
     let points = clingate_core::events::points(&frame, &job.x, &job.y)?;

@@ -19,7 +19,7 @@ mod edit_fuzz_tests;
 #[cfg(test)]
 mod gate_drag_tests;
 #[cfg(test)]
-mod gate_filtering_tests;
+pub(crate) mod gate_filtering_tests;
 #[cfg(test)]
 mod gate_label_store_tests;
 #[cfg(test)]

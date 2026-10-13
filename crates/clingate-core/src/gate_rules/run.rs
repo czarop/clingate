@@ -14,6 +14,7 @@ use rustc_hash::FxBuildHasher;
 use crate::gate_rules::autogate::Report;
 use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
 use crate::gates::GateState;
+use crate::populations::Populations;
 
 /// Everything a run reads apart from the gates.
 ///
@@ -64,7 +65,9 @@ impl RunInputs {
         }
     }
 
-    /// The arcsinh cofactors out of the axis settings, as a run reads them.
+    /// The arcsinh cofactors out of the axis settings, as a run reads them,
+    /// in channel order: settings that scale alike give the same list,
+    /// whatever their axes' ranges.
     pub fn cofactors_of(axes: &crate::omiq::serialise::AxisSettings) -> Vec<(Arc<str>, f32)> {
         let mut out = Vec::new();
         for (param, info) in axes.iter() {
@@ -74,6 +77,7 @@ impl RunInputs {
                 out.push((param.clone(), cofactor));
             }
         }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 }
@@ -152,8 +156,8 @@ pub fn files_to_read(
 
 /// Read and measure every file, several at a time.
 ///
-/// Each file is independent: reading is I/O and parsing, measuring builds an
-/// R-tree over that file's events alone, and the gate state is only read. The
+/// Each file is independent: reading is I/O and parsing, measuring indexes
+/// that file's events alone, and the gate state is only read. The
 /// frame is dropped as soon as its measurements are taken, so what is alive at
 /// once is one frame per worker rather than the whole experiment.
 ///
@@ -239,27 +243,36 @@ pub fn measure_many(
             }
             // Compensated as its group says and scaled as it is drawn, as the
             // editor and the gallery read it, so a gate is placed on the
-            // events a person sees. Only the cofactors this file carries: one
-            // channel absent from one file used to fail every rule on every
-            // file, the run reporting "Parameter AF P1-A not found" six times
-            // and placing nothing.
-            let frame = crate::events::read_scaled(path, &compensation.matrix_for(path), arcsinh);
+            // events a person sees - each channel as it is first read, see
+            // `Populations`. A channel the file lacks is never scaled, so it
+            // fails only a rule that reads it.
+            let frame = crate::events::read_unscaled(path, &compensation.matrix_for(path));
             match frame {
-                Ok(df) => {
-                    for (store, slot) in stores.iter().zip(out.iter_mut()) {
-                        match crate::gate_rules::autogate::measure_file_at(
-                            snapshot, id, &df, metadata, store, only,
-                        ) {
-                            Ok((m, u)) => *slot = (m, u),
-                            Err(e) => {
-                                let said = format!("{id}: {e}");
-                                if !trouble.contains(&said) {
-                                    trouble.push(said);
+                Ok(df) => match Populations::of(snapshot, id, df, arcsinh, metadata) {
+                    // One set of populations for every set of rules: the
+                    // same parent is cut once however many rules read it.
+                    Ok(mut populations) => {
+                        for (store, slot) in stores.iter().zip(out.iter_mut()) {
+                            match crate::gate_rules::autogate::measure_file_at(
+                                snapshot,
+                                id,
+                                &mut populations,
+                                metadata,
+                                store,
+                                only,
+                            ) {
+                                Ok((m, u)) => *slot = (m, u),
+                                Err(e) => {
+                                    let said = format!("{id}: {e}");
+                                    if !trouble.contains(&said) {
+                                        trouble.push(said);
+                                    }
                                 }
                             }
                         }
                     }
-                }
+                    Err(e) => trouble.push(format!("{id}: {e}")),
+                },
                 Err(e) => trouble.push(format!("{}: {e}", path.display())),
             }
             progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);

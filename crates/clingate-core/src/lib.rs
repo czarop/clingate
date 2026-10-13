@@ -25,6 +25,9 @@ pub mod history;
 pub mod macros;
 pub mod omiq;
 pub mod picture;
+pub mod populations;
+#[cfg(test)]
+mod populations_tests;
 pub mod review;
 pub mod sample_pairs;
 #[cfg(test)]
