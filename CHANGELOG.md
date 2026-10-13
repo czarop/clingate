@@ -447,6 +447,14 @@
 
 ### Changed
 
+- **Counting a gate's events is much faster.** The percentage on a gate, a
+  rule's capture search and every score counted events through an R-tree
+  built for each plot and each sample, which cost up to 220 ms to build at
+  1.2 million events and pruned little, since most gates hold much of their
+  parent. Events are now scanned in parallel: an open-ended gate counts in
+  0.4 ms rather than 13 ms, and dragging a quadrant updates its four
+  percentages without lag. The counts are unchanged.
+
 - **The Gallery and Review tabs show everything at once,** with no pages.
   The Review tab shows one gate at a time - the gates the run placed, the
   first until another is chosen - rather than every gate together.

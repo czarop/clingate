@@ -7,8 +7,8 @@ clingate, and what to change. Nothing here has been changed yet.
 
 ## Status
 
-Done on `czarop/flow` branch `claude/fcs-errors-not-panics`, and clingate
-pinned to it:
+Done on `czarop/flow` branches `claude/fcs-errors-not-panics` and then
+`claude/event-index-scan`, and clingate pinned to the latter:
 
 | Item | Commit (flow) | Notes |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ pinned to it:
 | 13 `TransformType` hash | b7a77c4 | |
 | 14 `count_in_gate` | b7a77c4 | |
 | 15 Duplicate parameter map | - | clingate calls flow's. |
+| 17 `EventIndex` as a scan | 61a9e24, e76f552 | Same API; no R-tree. |
 
 Not done, as it needs a decision: 11 (biexponential / logicle).
 
@@ -235,6 +236,27 @@ second. They agree only while nobody changes the options.
 
 **Change:** have the render return the plotting area it actually used
 (plotters' `get_pixel_range`) and build the mapper from that.
+
+### 17. `EventIndex` builds an R-tree that prunes little (flow_gates)
+
+clingate builds an index for every gate on every sample in a rules run, for
+every gallery plot, replay sample and picture, and for the editor's plot,
+then asks it a few questions. Gates mostly hold a large share of their
+parent, and quadrants and thresholds reach to the axis ends, so the tree
+skips few events and costs more per event than reading two columns in
+order. Measured in release on 4 cores, events spread over the plot, the
+tree against the scan `EventIndex` now is:
+
+| | 300k | 1.2M |
+| --- | --- | --- |
+| Build: tree / scan | 40-50 ms / 0.5 ms | 220-330 ms / 3 ms |
+| Count an open-ended gate | 2-5 ms / 0.15 ms | 13-24 ms / 0.35 ms |
+| Count a polygon over half the plot | 3-7 ms / 1.9 ms | 19-39 ms / 6 ms |
+| Count a small rectangle | 0.1 ms / 0.1 ms | 0.2 ms / 0.35 ms |
+
+`EventIndex` holds the two columns and scans them in parallel, checking a
+polygon's bounding box before its exact test. The rectangle test has no
+branch, so the scan vectorises.
 
 ## Smaller things
 

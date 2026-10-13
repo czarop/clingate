@@ -318,7 +318,7 @@ pub fn PlotWindow(
             let join_result =
                 tokio::task::spawn_blocking(move || -> anyhow::Result<EventIndexMapped> {
                     clingate_core::events::index_mapped(&df, &x_name, &y_name)
-                        .map_err(|e| anyhow::anyhow!("R-Tree build failed: {e}"))
+                        .map_err(|e| anyhow::anyhow!("The events could not be indexed: {e}"))
                 })
                 .await;
 

@@ -26,8 +26,8 @@ use crate::gates::gate_store::{GateId, GateOverrideResolver};
 /// every filter so a gated event can be traced back to it.
 pub const ROW_INDEX: &str = "original_index";
 
-/// A spatial index over two columns of a population, and each indexed event's
-/// row in the whole file.
+/// An index over two columns of a population, and each indexed event's row in
+/// the whole file.
 #[derive(Clone)]
 pub struct EventIndexMapped {
     pub event_index: Arc<EventIndex>,
@@ -118,8 +118,7 @@ pub fn points(frame: &DataFrame, x: &str, y: &str) -> anyhow::Result<Vec<(f32, f
         .collect())
 }
 
-/// A spatial index over two columns, which the statistics on a plot are
-/// counted from.
+/// An index over two columns, which the statistics on a plot are counted from.
 pub fn index_over(frame: &DataFrame, x: &str, y: &str) -> anyhow::Result<Arc<EventIndex>> {
     let xr = frame.column(x)?.f32()?.rechunk();
     let yr = frame.column(y)?.f32()?.rechunk();

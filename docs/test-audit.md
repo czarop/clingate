@@ -274,7 +274,7 @@ rebuild data. It is written by the import (`omiq::deserialise`), the editor
 autogater (`place_gate`, per-file overrides), the rescale (`rescale_channel`,
 `relimit_channel`, from `axis_store` and the Workspace tab) and link/unlink.
 It is read by filtering (`gate_filtering`, a polars mask), the on-screen
-statistics (`gate_stats`, an R-tree `EventIndex`), drawing (`draw_gates`),
+statistics (`gate_stats`, an `EventIndex`), drawing (`draw_gates`),
 the gallery, and the export (`omiq::serialise`).
 
 **Weak tests strengthened (2).** `an_ellipse_can_be_rotated` only checked a
@@ -297,7 +297,7 @@ two edges wins.
 **Observations.**
 - The same question - which events a gate holds - is answered two ways: a
   polars mask in `gate_filtering` (used for the plotted population) and an
-  R-tree in `gate_stats` (used for the percentage shown). Nothing checked
+  `EventIndex` in `gate_stats` (used for the percentage shown). Nothing checked
   they agree; the integration pass does.
 - `filter_events_by_hierarchy_to_mask` and `rescale_helper` print to stdout
   on every call.

@@ -2029,7 +2029,7 @@ pub fn solve_all(
 
 /// [`solve_all`], calling `progress(done, total)` as it goes.
 ///
-/// Solving one specimen bisects against an R-tree, several times over, so a run
+/// Solving one specimen counts a gate's events several times over, so a run
 /// spends long enough here to leave a progress bar sitting on one message with
 /// nothing to say how far through it is.
 pub fn solve_all_reporting(

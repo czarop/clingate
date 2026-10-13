@@ -2,8 +2,8 @@
 //!
 //! The plot a gate's children are drawn on is filtered through a polars mask
 //! (`gate_filtering::filter_events_to_mask`); the percentage printed on the
-//! gate is counted through an R-tree (`gate_stats`, over `flow_gates`'s
-//! `EventIndex`). They are separate implementations of one question, written
+//! gate is counted through `flow_gates`'s `EventIndex` (`gate_stats`). They
+//! are separate implementations of one question, written
 //! at different times, and the autogater's thresholds are documented as
 //! counting "the way the filter counts it". If the two disagree, the number
 //! on the gate describes a different population from the one below it.

@@ -152,8 +152,8 @@ pub fn files_to_read(
 
 /// Read and measure every file, several at a time.
 ///
-/// Each file is independent: reading is I/O and parsing, measuring builds an
-/// R-tree over that file's events alone, and the gate state is only read. The
+/// Each file is independent: reading is I/O and parsing, measuring indexes
+/// that file's events alone, and the gate state is only read. The
 /// frame is dropped as soon as its measurements are taken, so what is alive at
 /// once is one frame per worker rather than the whole experiment.
 ///
