@@ -17,7 +17,7 @@ Done on `czarop/flow` branches `claude/fcs-errors-not-panics` and then
 | 3 `get_guid` | 6a0d18d | |
 | 4 Pixel mapping panics | 41315d0 | `pixel_to_raw(_y)` return `Option`; clingate's `PlotMapper` returns `Result`. |
 | 5 Logging | 2e7be2b | All through `tracing`. |
-| 6 Frame cache (clingate) | - | Not started: a clingate change, not a flow one. |
+| 6 Frame cache (clingate) | - | Not done, to keep memory low. Instead a run, the gallery, pictures and the Review tab scale and copy only the channels they read (`populations`), and the editor scales a file again only when a cofactor changes. A run still reads each file once per level. |
 | 7 Single-copy parse | d963b3d | Also about 3x faster to open (800k x 30: 180 ms to 60 ms, release). |
 | 8 `GateNode` | 241c7c1 | Ordered list instead of a SipHash map; shared channel `Arc`s. The API is unchanged apart from the private field. |
 | 9 PNG, progress | 109436c | Plotters' frame is *not* cached: measured at about 1 ms of a render in release, not worth the state. |

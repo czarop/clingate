@@ -351,9 +351,9 @@ pub fn place_for_specimen(
 use crate::events::EventIndexMapped;
 use crate::gate_rules::rule_store::{GateRule, RuleStore};
 use crate::gates::gate_stats::get_percent_and_counts_gate;
-use crate::gates::gate_store::GroupId;
 use crate::gates::gate_types::GateStatValue;
 use crate::omiq::metadata::MetaDataParameter;
+use crate::populations::Populations;
 use polars::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -472,7 +472,8 @@ impl PhenotypeReading {
     }
 }
 
-/// Every gate on one file that a rule names, with the population it cuts.
+/// Every gate on one file that a rule names, with the population it cuts,
+/// from `df` already scaled as it is drawn.
 pub fn measure_file(
     state: &GateState,
     file: &FileId,
@@ -480,25 +481,21 @@ pub fn measure_file(
     metadata: &MetaDataFileMap,
     rules: &RuleStore,
 ) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
-    measure_file_at(state, file, df, metadata, rules, None)
+    let mut populations = Populations::of(state, file, df.clone(), &[], metadata)?;
+    measure_file_at(state, file, &mut populations, metadata, rules, None)
 }
 
-/// [`measure_file`], at the gates `only` names, when it names any - one level
-/// of a run, see [`rule_levels`].
+/// [`measure_file`] on `populations`, at the gates `only` names, when it names
+/// any - one level of a run, see [`rule_levels`].
 pub fn measure_file_at(
     state: &GateState,
     file: &FileId,
-    df: &DataFrame,
+    populations: &mut Populations,
     metadata: &MetaDataFileMap,
     rules: &RuleStore,
     only: Option<&rustc_hash::FxHashSet<NodeId>>,
 ) -> anyhow::Result<(Vec<Measurement>, Vec<Unmeasured>)> {
     let mut unmeasured: Vec<Unmeasured> = Vec::new();
-    let groups: FxHashMap<MetaDataParameter, GroupId> = metadata
-        .get(file)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no metadata for {file}"))?;
-    let resolver = state.get_current_sample(file.clone(), &groups);
     // A parent's bare name is not unique - CD4+CD8- can be drawn under two
     // different populations - so a rule naming one by name would name both.
     let names = crate::gates::gate_paths::unique_names(state);
@@ -543,8 +540,9 @@ pub fn measure_file_at(
             continue;
         }
         let chain = state.gate_chain_for_node(&parent);
-        let frame = match parent_frame(df, &chain, &resolver) {
-            Ok(frame) => frame,
+        let columns = columns_read(&gate.get_params(), rule);
+        let frame = match populations.under(&chain, columns.as_deref()) {
+            Ok(frame) => Arc::new(frame),
             Err(e) => {
                 unmeasured.push(Unmeasured {
                     file: file.clone(),
@@ -860,19 +858,21 @@ pub fn measure_population(
     })
 }
 
-/// The parent population, filtered and indexed exactly as the plot does it.
-///
-/// The same call `data_helpers` makes for the frame behind every plot, and the
-/// same index the on-screen statistics are counted from. Sharing the code path
-/// is the point: a second implementation could disagree with what a person
-/// reads off the screen, and then the two numbers are both defensible and the
-/// gate is still wrong.
-fn parent_frame(
-    df: &DataFrame,
-    chain: &[GateId],
-    resolver: &crate::gates::gate_store::GateOverrideResolver,
-) -> anyhow::Result<Arc<DataFrame>> {
-    Ok(Arc::new(crate::events::under_chain(df, chain, resolver)?))
+/// The columns measuring a gate drawn on `params` for `rule` reads, or `None`
+/// for every column: a phenotype rule naming no markers reads them all.
+pub(crate) fn columns_read(
+    params: &(Arc<str>, Arc<str>),
+    rule: &GateRule,
+) -> Option<Vec<Arc<str>>> {
+    let mut columns = vec![params.0.clone(), params.1.clone()];
+    match &rule.rule {
+        Rule::MatchThePhenotype(wanted) if wanted.markers.is_empty() => return None,
+        Rule::MatchThePhenotype(wanted) => columns.extend(wanted.markers.iter().cloned()),
+        _ => columns.push(rule.parameter.clone()),
+    }
+    let mut seen = rustc_hash::FxHashSet::default();
+    columns.retain(|column| seen.insert(column.clone()));
+    Some(columns)
 }
 
 /// The plot's two axes, and the index the on-screen statistics come from.

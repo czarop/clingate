@@ -392,16 +392,19 @@ fn population_data(
         .map(|(_, p)| p.clone())
         .ok_or_else(|| format!("{name}: the file is not in the workspace"))?;
 
-    let frame = crate::events::read_scaled(
-        &path,
-        &inputs.compensation.matrix_for(&path),
-        &inputs.cofactors,
-    )
-    .map_err(|e| format!("{}: {e}", path.display()))?;
     let empty = Default::default();
     let groups = inputs.metadata.get(sample).unwrap_or(&empty);
     let resolver = state.get_current_sample(sample.clone(), groups);
-    let parent = crate::events::under_chain(&frame, above, &resolver).map_err(|e| e.to_string())?;
+    let parent = crate::events::plotted(
+        &path,
+        &inputs.compensation.matrix_for(&path),
+        &inputs.cofactors,
+        above,
+        &resolver,
+        &x,
+        &y,
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))?;
     let points = crate::events::points(&parent, &x, &y).map_err(|e| e.to_string())?;
 
     let xs: Vec<f32> = points.iter().map(|p| p.0).collect();

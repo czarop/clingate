@@ -133,14 +133,14 @@ pub fn PlotWindow(
     //     }
     // });
 
-    // this is currently scaling the data but filtering is done elsewhere!
+    // Only the cofactors decide how the file is scaled, so a change to an
+    // axis's range or a gate leaves the scaled file as it is.
+    let cofactors = use_memo(move || {
+        clingate_core::gate_rules::run::RunInputs::cofactors_of(&axis_store.settings().read())
+    });
+
     let scaled_data = use_resource(move || async move {
-        let mut params: Vec<(Arc<str>, f32)> = Vec::new();
-        for (k, v) in axis_store.settings().read().iter() {
-            if v.is_arcsinh() {
-                params.push((k.clone(), v.get_cofactor().unwrap()))
-            }
-        }
+        let params = cofactors();
 
         if fcs_file.read().is_none() {
             return Err(anyhow::anyhow!("No data to scale"));
@@ -239,8 +239,6 @@ pub fn PlotWindow(
 
     let filtered_dataframe: Resource<std::result::Result<Arc<DataFrame>, anyhow::Error>> =
         use_resource(move || {
-            let x_fluoro = x_axis_marker.read().fluoro.clone();
-            let y_fluoro = y_axis_marker.read().fluoro.clone();
             let parental = parental_gate();
             plot_store.current_file_id()();
             // Depend on the chain, not on the whole resolver. Moving a gate in
@@ -279,34 +277,42 @@ pub fn PlotWindow(
                 };
 
                 let Some(d) = current_data else {
-                    plot_data_signal.set(vec![]);
                     return Err(anyhow::anyhow!("No data yet"));
                 };
-                let filtered_data = match get_filtered_dataframe(d.clone(), chain, resolver).await {
-                    Ok(d) => d.clone(),
-                    Err(e) => {
-                        plot_data_signal.set(vec![]);
-                        return Err(anyhow::anyhow!("No data to display {}", e));
-                    }
-                };
-
-                match zip_cols_from_filtered_df(filtered_data.clone(), x_fluoro, y_fluoro).await {
-                    Ok(d) => plot_data_signal.set(d),
-                    Err(_) => plot_data_signal.set(vec![]),
-                };
-
-                Ok(filtered_data)
+                get_filtered_dataframe(d, chain, resolver)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("No data to display {}", e))
             }
         });
+
+    // The population does not depend on the axes, so a change of axis channel
+    // reads the two new columns from it rather than filtering the file again.
+    let _ = use_resource(move || {
+        let frame = filtered_dataframe
+            .read()
+            .as_ref()
+            .and_then(|res| res.as_ref().ok())
+            .cloned();
+        let x_fluoro = x_axis_marker.read().fluoro.clone();
+        let y_fluoro = y_axis_marker.read().fluoro.clone();
+        async move {
+            let points = match frame {
+                Some(frame) => zip_cols_from_filtered_df(frame, x_fluoro, y_fluoro)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            plot_data_signal.set(points);
+        }
+    });
 
     let event_index = use_resource(move || {
         let df_arc = match &*filtered_dataframe.read() {
             Some(Ok(df)) => Some(df.clone()),
             _ => None,
         };
-        // Tracked, not peeked. This happens to re-run anyway - the filtered
-        // frame above depends on both markers - but relying on that is one
-        // refactor away from a stale index built against the wrong columns.
+        // Tracked, not peeked: the index is built on the plot's two axes, and
+        // the population above does not depend on them.
         let x_name = x_axis_marker.read().fluoro.clone();
         let y_name = y_axis_marker.read().fluoro.clone();
         async move {

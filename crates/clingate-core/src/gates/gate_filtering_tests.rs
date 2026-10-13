@@ -33,7 +33,7 @@ const Y: &str = "SSC-A";
 ///   index:  0        1        2        3        4
 ///   x:      1.0      5.0      5.0      9.0      5.0
 ///   y:      1.0      5.0      1.0      9.0      9.0
-fn events() -> DataFrame {
+pub(crate) fn events() -> DataFrame {
     df![
         X => [1.0f32, 5.0, 5.0, 9.0, 5.0],
         Y => [1.0f32, 5.0, 1.0, 9.0, 9.0],
@@ -62,7 +62,7 @@ fn centre_rectangle(id: &str) -> Arc<dyn DrawableGate> {
 
 /// A tall rectangle spanning the full y range at x in 4.0..=6.0 - selects the
 /// three events on the centre column.
-fn centre_column(id: &str) -> Arc<dyn DrawableGate> {
+pub(crate) fn centre_column(id: &str) -> Arc<dyn DrawableGate> {
     let geometry =
         create_rectangle_geometry(vec![(4.0, 0.0), (6.0, 0.0), (6.0, 10.0), (4.0, 10.0)], X, Y)
             .unwrap();
@@ -71,14 +71,14 @@ fn centre_column(id: &str) -> Arc<dyn DrawableGate> {
 
 /// A wide rectangle spanning the full x range at y in 4.0..=6.0 - selects only
 /// the centre event of the three on the centre row.
-fn centre_row(id: &str) -> Arc<dyn DrawableGate> {
+pub(crate) fn centre_row(id: &str) -> Arc<dyn DrawableGate> {
     let geometry =
         create_rectangle_geometry(vec![(0.0, 4.0), (10.0, 4.0), (10.0, 6.0), (0.0, 6.0)], X, Y)
             .unwrap();
     Arc::new(RectangleGate::try_new(gate(id, geometry), true).unwrap())
 }
 
-fn resolver(gates: Vec<Arc<dyn DrawableGate>>) -> GateOverrideResolver {
+pub(crate) fn resolver(gates: Vec<Arc<dyn DrawableGate>>) -> GateOverrideResolver {
     let mut active_gates = im::HashMap::with_hasher(FxBuildHasher);
     let mut gate_origins = im::HashMap::with_hasher(FxBuildHasher);
 
@@ -95,7 +95,7 @@ fn resolver(gates: Vec<Arc<dyn DrawableGate>>) -> GateOverrideResolver {
 }
 
 /// The indices the mask selects, for readable assertions.
-fn selected(mask: &BooleanChunked) -> Vec<usize> {
+pub(crate) fn selected(mask: &BooleanChunked) -> Vec<usize> {
     mask.into_iter()
         .enumerate()
         .filter_map(|(i, v)| if v == Some(true) { Some(i) } else { None })

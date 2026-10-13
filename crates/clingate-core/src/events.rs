@@ -90,6 +90,40 @@ pub fn read_scaled(
     scaled(&fcs, cofactors)
 }
 
+/// Open a file and compensate it as `compensation` says, its channels as the
+/// file holds them and each event's row in the file as [`ROW_INDEX`]: for a
+/// reader that scales only the channels it reads, see
+/// [`crate::populations::Populations`].
+pub fn read_unscaled(
+    path: &Path,
+    compensation: &crate::compensation::Choice,
+) -> anyhow::Result<DataFrame> {
+    let fcs = crate::compensation::open_compensated(path, compensation)?;
+    Ok((*fcs.data_frame)
+        .clone()
+        .with_row_index(ROW_INDEX.into(), None)?)
+}
+
+/// The events under `chain` in the file at `path`, on `x`, `y` and
+/// [`ROW_INDEX`] only, scaled as they are drawn: what a plot of the population
+/// reads, and no more of the file scaled or copied than that.
+pub fn plotted(
+    path: &Path,
+    compensation: &crate::compensation::Choice,
+    cofactors: &[(Arc<str>, f32)],
+    chain: &[GateId],
+    resolver: &GateOverrideResolver,
+    x: &Arc<str>,
+    y: &Arc<str>,
+) -> anyhow::Result<DataFrame> {
+    let mut populations = crate::populations::Populations::new(
+        read_unscaled(path, compensation)?,
+        cofactors,
+        resolver.clone(),
+    );
+    populations.under(chain, Some(&[x.clone(), y.clone(), Arc::from(ROW_INDEX)]))
+}
+
 /// The events under a gate chain, outermost gate first. An empty chain is
 /// every event, which is what the root shows.
 pub fn under_chain(

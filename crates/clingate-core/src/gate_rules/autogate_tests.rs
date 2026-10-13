@@ -3601,3 +3601,57 @@ fn aimed_at_the_middle_a_gate_near_the_band_s_edge_is_placed_again() {
     }
     assert_eq!(BandAim::from_key("nowhere"), None);
 }
+
+mod columns_read {
+    use super::*;
+    use crate::gate_rules::autogate::columns_read;
+    use crate::gate_rules::rule::{PhenotypeRule, Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::{GateRule, MeasuredOn};
+
+    fn axes() -> (Arc<str>, Arc<str>) {
+        (Arc::from("CD3"), Arc::from("CD4"))
+    }
+
+    fn names(columns: &[Arc<str>]) -> Vec<&str> {
+        columns.iter().map(|c| c.as_ref()).collect()
+    }
+
+    fn ruled(parameter: &str, rule: Rule) -> GateRule {
+        GateRule {
+            parameter: Arc::from(parameter),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule,
+        }
+    }
+
+    #[test]
+    fn a_rule_moving_one_edge_reads_the_axes_once_each() {
+        let rule = ruled("CD4", Rule::TailFraction(TailFractionRule::new((0.1, 0.2))));
+        assert_eq!(
+            names(&columns_read(&axes(), &rule).unwrap()),
+            vec!["CD3", "CD4"]
+        );
+    }
+
+    #[test]
+    fn a_phenotype_rule_reads_the_axes_and_its_markers() {
+        let rule = ruled(
+            "CD4",
+            Rule::MatchThePhenotype(PhenotypeRule {
+                markers: vec![Arc::from("CD161"), Arc::from("CD3")],
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            names(&columns_read(&axes(), &rule).unwrap()),
+            vec!["CD3", "CD4", "CD161"]
+        );
+    }
+
+    #[test]
+    fn a_phenotype_rule_naming_no_markers_reads_every_column() {
+        let rule = ruled("CD4", Rule::MatchThePhenotype(PhenotypeRule::default()));
+        assert!(columns_read(&axes(), &rule).is_none());
+    }
+}

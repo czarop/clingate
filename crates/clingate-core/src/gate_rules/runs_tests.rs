@@ -1054,6 +1054,66 @@ fn what_the_hand_gates_hold_is_read_where_the_rule_reads() {
     assert!(on_itself > 0.2, "the positives are a quarter of a full stain");
 }
 
+/// A run scales each channel only as it reads it, and cuts each population
+/// once per file: what it measures is what the whole file, scaled first and
+/// cut for each gate, gives.
+#[test]
+fn a_run_measures_each_file_as_it_is_drawn() {
+    use crate::gate_rules::autogate::measure_file;
+    use crate::gate_rules::run::measure_many;
+
+    let written = write("scaled-as-read", &FILES);
+    let drawn = gates_with(-BIG, 2.0);
+    let mut inputs = inputs(
+        &written,
+        &FILES,
+        store(band(Pool::Specimen, MeasuredOn::Itself)),
+    );
+    inputs.cofactors = vec![(Arc::from(X), 150.0), (Arc::from(Y), 150.0)];
+    let (measured, problems) = measure_many(
+        &drawn,
+        &inputs.files,
+        &inputs.compensation,
+        &inputs.names,
+        &inputs.cofactors,
+        &inputs.metadata,
+        std::slice::from_ref(&inputs.rules),
+        None,
+        &AtomicBool::new(false),
+        |_, _| {},
+    );
+    assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(measured[0].0.len(), FILES.len());
+
+    for lazily in &measured[0].0 {
+        let (name, path) = inputs
+            .files
+            .iter()
+            .find(|(name, _)| inputs.names[name] == lazily.file)
+            .unwrap();
+        let whole = crate::events::read_scaled(
+            path,
+            &inputs.compensation.matrix_for(path),
+            &inputs.cofactors,
+        )
+        .unwrap();
+        let (eagerly, _) = measure_file(
+            &drawn,
+            &lazily.file,
+            &whole,
+            &inputs.metadata,
+            &inputs.rules,
+        )
+        .unwrap();
+        let eagerly = &eagerly[0];
+        assert_eq!(lazily.events, eagerly.events, "{name}");
+        assert_eq!(lazily.kept_events, eagerly.kept_events, "{name}");
+        let values =
+            |m: &crate::gate_rules::autogate::Measurement| m.line.as_ref().unwrap().values.clone();
+        assert_eq!(values(lazily), values(eagerly), "{name}");
+    }
+}
+
 /// Pick for CD69+, its rule `current` and its gates as `drawn`, as
 /// `settings` asks; and every step of the pick heard.
 fn pick_cd69(
@@ -1704,4 +1764,44 @@ fn the_reference_calibrated_on_is_the_typical_hand_gated_sample() {
     held.sort_by(|a, b| a.0.total_cmp(&b.0));
     let typical = typical_gated(&measured[0].0, &drawn, &inputs.rules, &inputs.metadata);
     assert_eq!(typical.as_deref(), Some(held[1].1.as_str()), "{held:?}");
+}
+
+fn axis(channel: &str, transform: flow_fcs::TransformType) -> crate::AxisInfo {
+    crate::AxisInfo {
+        param: crate::axis_store::Param {
+            marker: Arc::from(channel),
+            fluoro: Arc::from(channel),
+        },
+        axis_lower: 0.0,
+        axis_upper: 10.0,
+        transform,
+    }
+}
+
+#[test]
+fn the_cofactors_come_in_channel_order_and_leave_out_linear_axes() {
+    use flow_fcs::TransformType;
+    let mut settings = crate::omiq::serialise::AxisSettings::default();
+    for (channel, cofactor) in [
+        ("CD8", 80.0),
+        ("CD3", 150.0),
+        ("CD45RA", 300.0),
+        ("CCR7", 120.0),
+        ("CD4", 200.0),
+    ] {
+        settings.insert(
+            Arc::from(channel),
+            axis(channel, TransformType::Arcsinh { cofactor }),
+        );
+    }
+    settings.insert(Arc::from("FSC-A"), axis("FSC-A", TransformType::Linear));
+
+    let cofactors = RunInputs::cofactors_of(&settings);
+
+    let channels: Vec<&str> = cofactors
+        .iter()
+        .map(|(channel, _)| channel.as_ref())
+        .collect();
+    assert_eq!(channels, vec!["CCR7", "CD3", "CD4", "CD45RA", "CD8"]);
+    assert_eq!(cofactors[1].1, 150.0);
 }
