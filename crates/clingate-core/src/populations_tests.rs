@@ -201,3 +201,181 @@ fn a_boolean_gate_reads_its_operands_channels_scaled() {
         vec![0, 2]
     );
 }
+
+fn not_cd3_band() -> Arc<dyn DrawableGate> {
+    Arc::new(
+        BooleanGate::new(
+            Arc::from("not"),
+            "not".to_string(),
+            vec![Arc::from("band")],
+            BooleanOperation::Not,
+            Arc::from("FSC-A"),
+            Arc::from("SSC-A"),
+        )
+        .unwrap(),
+    )
+}
+
+fn values(frame: &DataFrame, column: &str) -> Vec<f32> {
+    frame
+        .column(column)
+        .unwrap()
+        .f32()
+        .unwrap()
+        .into_no_null_iter()
+        .collect()
+}
+
+#[test]
+fn a_channel_that_cannot_be_scaled_fails_every_reader_not_only_the_first() {
+    let frame = df!["CD3" => [100i32, 500, 1000]].unwrap();
+    let mut populations = Populations::new(frame, &cofactors(), resolver(vec![]));
+    let cd3: Vec<Arc<str>> = vec![Arc::from("CD3")];
+
+    assert!(populations.under(&[], Some(&cd3)).is_err());
+    assert!(populations.under(&[], Some(&cd3)).is_err());
+    assert!(populations.is_unscaled("CD3"));
+}
+
+#[test]
+fn a_column_asked_for_twice_is_cut_once() {
+    let mut populations = Populations::new(raw(), &cofactors(), resolver(vec![]));
+    let twice: Vec<Arc<str>> = vec![Arc::from("CD3"), Arc::from("CD3")];
+
+    let cut = populations.under(&[], Some(&twice)).unwrap();
+
+    assert_eq!(cut.get_column_names(), vec!["CD3"]);
+    assert_eq!(values(&cut, "CD3")[1], 5.0f32.asinh());
+}
+
+#[test]
+fn a_gate_channel_is_scaled_for_the_cut_but_only_the_columns_asked_for_come_back() {
+    let mut populations = Populations::new(
+        raw(),
+        &cofactors(),
+        resolver(vec![on_cd3("band", 2.0, 2.5)]),
+    );
+
+    let cut = populations
+        .under(&ids(&["band"]), Some(&[Arc::from("FSC-A")]))
+        .unwrap();
+
+    assert_eq!(cut.get_column_names(), vec!["FSC-A"]);
+    assert_eq!(
+        values(&cut, "FSC-A"),
+        vec![0.02f32.asinh()],
+        "event 1 alone"
+    );
+}
+
+#[test]
+fn a_boolean_gate_in_the_chain_cuts_on_its_operands_scaled_channels() {
+    let gates = resolver(vec![on_cd3("band", 2.0, 2.5), not_cd3_band()]);
+    let mut populations = Populations::new(raw(), &cofactors(), gates);
+
+    let cut = populations
+        .under(&ids(&["not"]), Some(&[Arc::from("FSC-A")]))
+        .unwrap();
+
+    assert_eq!(
+        values(&cut, "FSC-A"),
+        vec![0.01f32.asinh(), 0.03f32.asinh()]
+    );
+}
+
+mod plotted {
+    use super::*;
+    use crate::events::{ROW_INDEX, plotted, points, read_scaled, under_chain};
+    use crate::file_load_tests::{scratch, write_fcs_rows};
+    use std::path::PathBuf;
+
+    /// 600 events on FSC-A, SSC-A and CD3, CD3 from 0 to 1,500.
+    fn written(name: &str) -> PathBuf {
+        let path = scratch(name).join("plotted.fcs");
+        let rows: Vec<Vec<f32>> = (0..600)
+            .map(|i| vec![(i % 37) as f32 * 10.0, (i % 11) as f32, i as f32 * 2.5])
+            .collect();
+        write_fcs_rows(
+            &path,
+            &[("FSC-A", None), ("SSC-A", None), ("CD3", None)],
+            &rows,
+            &[],
+        );
+        path
+    }
+
+    fn choice(path: &std::path::Path) -> crate::compensation::Choice {
+        crate::compensation::groups::Compensation::default().matrix_for(path)
+    }
+
+    #[test]
+    fn a_plotted_population_is_the_whole_file_scaled_then_cut() {
+        let path = written("plotted-same");
+        let gates = resolver(vec![on_cd3("band", 2.0, 2.5), not_cd3_band()]);
+        let (x, y): (Arc<str>, Arc<str>) = (Arc::from("FSC-A"), Arc::from("SSC-A"));
+
+        for chain in [ids(&["band"]), ids(&["not"])] {
+            let plotted =
+                plotted(&path, &choice(&path), &cofactors(), &chain, &gates, &x, &y).unwrap();
+            let whole = read_scaled(&path, &choice(&path), &cofactors()).unwrap();
+            let cut = under_chain(&whole, &chain, &gates).unwrap();
+
+            assert_eq!(
+                plotted.get_column_names(),
+                vec!["FSC-A", "SSC-A", ROW_INDEX]
+            );
+            assert!(plotted.height() > 0 && plotted.height() < 600, "{chain:?}");
+            for column in ["FSC-A", "SSC-A", ROW_INDEX] {
+                assert!(
+                    plotted
+                        .column(column)
+                        .unwrap()
+                        .equals_missing(cut.column(column).unwrap()),
+                    "{column} under {chain:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_plot_with_one_channel_on_both_axes_reads_it_once() {
+        let path = written("plotted-twice");
+        let x: Arc<str> = Arc::from("CD3");
+
+        let plotted = plotted(
+            &path,
+            &choice(&path),
+            &cofactors(),
+            &[],
+            &resolver(vec![]),
+            &x,
+            &x,
+        )
+        .unwrap();
+
+        assert_eq!(plotted.get_column_names(), vec!["CD3", ROW_INDEX]);
+        assert_eq!(
+            points(&plotted, &x, &x).unwrap()[1],
+            (0.025f32.asinh(), 0.025f32.asinh())
+        );
+    }
+
+    #[test]
+    fn a_plot_on_a_channel_the_file_lacks_says_which() {
+        let path = written("plotted-missing");
+        let (x, y): (Arc<str>, Arc<str>) = (Arc::from("CD99"), Arc::from("SSC-A"));
+
+        let plotted = plotted(
+            &path,
+            &choice(&path),
+            &cofactors(),
+            &[],
+            &resolver(vec![]),
+            &x,
+            &y,
+        )
+        .unwrap();
+
+        assert!(points(&plotted, &x, &y).is_err_and(|e| e.to_string().contains("CD99")));
+    }
+}

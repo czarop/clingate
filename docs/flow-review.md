@@ -1,9 +1,9 @@
 # flow crates: review for clingate
 
-A review of `flow_fcs`, `flow_gates` and `flow_plots` (`czarop/flow`, branch
-`claude/fcs-errors-not-panics`) limited to the parts clingate uses, with
-clingate's needs in mind. Each finding says where it is, what it costs
-clingate, and what to change. Nothing here has been changed yet.
+A review of `flow_fcs`, `flow_gates` and `flow_plots` (`czarop/flow`) limited
+to the parts clingate uses, with clingate's needs in mind. Each finding says
+where it is, what it costs clingate, and what to change; the status below says
+what has been done since.
 
 ## Status
 

@@ -166,7 +166,8 @@ fn a_peeked_dependency_never_reaches_the_consumer() {
 
 /// `plot_window` scales its file from `cofactors_of` the axis settings, through
 /// a memo: moving an axis's range must not scale the file again, and changing
-/// a cofactor must.
+/// a cofactor must. The memo chain here mirrors `plot_window`'s, which needs a
+/// file loaded to run at all.
 #[test]
 fn only_a_changed_cofactor_scales_the_plotted_file_again() {
     use clingate_core::AxisInfo;

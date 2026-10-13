@@ -15,9 +15,9 @@ anyhow = "1"
 # Diagnostics. Never printed to stdout: a tool server speaks its protocol
 # there, and a stray line would corrupt it.
 tracing = "0.1"
-# Pinned to czarop/flow's `claude/fcs-errors-not-panics` branch, which holds
-# the fixes and changes listed in docs/flow-review.md. Back to the default
-# branch once it is merged there.
+# Pinned to czarop/flow's `claude/event-index-scan` branch, which holds the
+# fixes and changes listed in docs/flow-review.md. Back to the default branch
+# once it is merged there.
 flow-fcs = { git = "https://github.com/czarop/flow", rev = "e76f5520bae3e64ff0f3f00238439d328a4ddd1d" }
 flow-plots = { git = "https://github.com/czarop/flow", rev = "e76f5520bae3e64ff0f3f00238439d328a4ddd1d", default-features = false }
 flow-gates = { git = "https://github.com/czarop/flow", rev = "e76f5520bae3e64ff0f3f00238439d328a4ddd1d" }

@@ -106,14 +106,15 @@ show is that it holds up on real work, and that is the user's to do.
 
 ## flow crates
 
-All the review's fixes are on `czarop/flow` branch
-`claude/fcs-errors-not-panics`, and clingate's `Cargo.toml` pins that branch's
-commit (`b7a77c4`).
+All the review's fixes are on `czarop/flow` branch `claude/event-index-scan`,
+which carries `claude/fcs-errors-not-panics`, and clingate's `Cargo.toml` pins
+its commit (`e76f552`).
 
 - [ ] **Merge the flow branch and repoint clingate.** Merge
-      `claude/fcs-errors-not-panics` into flow's default branch, then point the
-      three `flow-*` dependencies in `Cargo.toml` back at it (the comment above
-      them says so). Until then clingate depends on an unmerged branch.
+      `claude/event-index-scan` - it carries `claude/fcs-errors-not-panics` -
+      into flow's default branch, then point the three `flow-*` dependencies
+      in both `Cargo.toml`s back at it (the comment above them says so). Until
+      then clingate depends on an unmerged branch.
 - [ ] **flow's own compensation is wrong for any asymmetric matrix.**
       `Fcs::apply_compensation` computes channel `i` as `Σⱼ S⁻¹[i][j]·oⱼ`; the
       `$SPILLOVER` orientation (row = fluorochrome, column = detector) needs

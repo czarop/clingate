@@ -3626,11 +3626,11 @@ mod columns_read {
     }
 
     #[test]
-    fn a_rule_moving_one_edge_reads_the_axes_once_each() {
-        let rule = ruled("CD4", Rule::TailFraction(TailFractionRule::new((0.1, 0.2))));
+    fn a_rule_moving_one_edge_reads_the_axes_and_its_parameter() {
+        let rule = ruled("CD8", Rule::TailFraction(TailFractionRule::new((0.1, 0.2))));
         assert_eq!(
             names(&columns_read(&axes(), &rule).unwrap()),
-            vec!["CD3", "CD4"]
+            vec!["CD3", "CD4", "CD8"]
         );
     }
 
@@ -3645,7 +3645,7 @@ mod columns_read {
         );
         assert_eq!(
             names(&columns_read(&axes(), &rule).unwrap()),
-            vec!["CD3", "CD4", "CD161"]
+            vec!["CD3", "CD4", "CD161", "CD3"]
         );
     }
 

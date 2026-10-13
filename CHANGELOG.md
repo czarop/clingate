@@ -460,8 +460,9 @@
   out once per file and cut on only the channels its rule reads, rather than
   every channel being scaled and every gate cutting a copy of the whole file
   for itself. The Gallery, Claude's pictures and the Review tab's population
-  view do the same for the two channels they draw. What is measured is
-  unchanged, and less of the file is held at once.
+  view scale and copy only the two channels they draw and those the gates
+  above them read. What is measured is unchanged, and less of the file is
+  held at once.
 
 - **The editor no longer re-reads a plot's file for an axis change.**
   Moving an axis's range used to scale the whole file again, filter it and

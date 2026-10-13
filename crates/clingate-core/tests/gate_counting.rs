@@ -491,13 +491,10 @@ fn the_filter_and_the_index_agree_on_whole_number_data_whatever_the_gates() {
 }
 
 /// Was B-IDX-1, fixed in flow_gates: `EventIndex::build` panicked on an
-/// event with a NaN value - `rstar`'s bulk load unwraps a comparison NaN
-/// cannot answer - and a plot holding one showed no percentages. The event is
-/// now left out of the index, as the filter leaves it out of every gate.
+/// event with a NaN value, and a plot holding one showed no percentages. No
+/// gate holds such an event, as the filter holds it in none.
 #[test]
 fn an_index_can_be_built_over_an_event_with_no_value() {
-    // Enough events for the bulk load to sort them: a handful goes into one
-    // leaf without a comparison, and builds whatever it holds.
     let xs: Vec<f32> = (0..1000)
         .map(|i| if i == 500 { f32::NAN } else { i as f32 })
         .collect();

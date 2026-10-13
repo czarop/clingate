@@ -287,7 +287,7 @@ pub fn PlotWindow(
 
     // The population does not depend on the axes, so a change of axis channel
     // reads the two new columns from it rather than filtering the file again.
-    let _ = use_resource(move || {
+    let _points = use_resource(move || {
         let frame = filtered_dataframe
             .read()
             .as_ref()

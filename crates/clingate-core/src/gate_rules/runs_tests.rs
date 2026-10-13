@@ -1805,3 +1805,244 @@ fn the_cofactors_come_in_channel_order_and_leave_out_linear_axes() {
     assert_eq!(channels, vec!["CCR7", "CD3", "CD4", "CD45RA", "CD8"]);
     assert_eq!(cofactors[1].1, 150.0);
 }
+
+/// A run reads each file unscaled and scales a channel as it is first read:
+/// across every kind of rule, a boolean gate above, a channel one file lacks
+/// and two sets of rules sharing one file's populations, it measures exactly
+/// what the whole file, scaled first, gives.
+mod read_as_drawn {
+    use super::*;
+    use crate::gate_rules::autogate::{Measurement, Unmeasured, measure_file};
+    use crate::gate_rules::rule::{FromGateRule, PhenotypeRule};
+    use crate::gate_rules::run::measure_many;
+    use crate::gates::gate_single::boolean_gates::BooleanGate;
+
+    const M1: &str = "M1";
+    const M2: &str = "M2";
+    const DRAWN: [&str; 4] = ["f0", "f1", "f2", "f3"];
+
+    fn rect_on(id: &str, name: &str, x: &str, x0: f32) -> Arc<dyn DrawableGate> {
+        let geometry = flow_gates::create_rectangle_geometry(
+            vec![(x0, -BIG), (BIG, -BIG), (BIG, BIG), (x0, BIG)],
+            x,
+            Y,
+        )
+        .unwrap();
+        Arc::new(
+            crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                flow_gates::Gate {
+                    id: Arc::from(id),
+                    name: name.into(),
+                    geometry,
+                    mode: flow_gates::GateMode::Global,
+                    parameters: (Arc::from(x), Arc::from(Y)),
+                    label_position: None,
+                },
+                true,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Lymph holds every event; under it Dim on M1, NotDim (a boolean NOT
+    /// of Dim) with CD69+ on M1 below it, and Pheno, PhenoAll and Follow on
+    /// the X axis.
+    fn drawn() -> GateState {
+        let not_dim: Arc<dyn DrawableGate> = Arc::new(
+            BooleanGate::new(
+                Arc::from("notdim"),
+                "NotDim".to_string(),
+                vec![Arc::from("dim")],
+                flow_gates::BooleanOperation::Not,
+                Arc::from(X),
+                Arc::from(Y),
+            )
+            .unwrap(),
+        );
+        let mut state = GateState::default();
+        for (gate, parent) in [
+            (rect_on("lymph", "Lymph", X, -BIG), None),
+            (rect_on("dim", "Dim", M1, 1.8), Some("lymph")),
+            (not_dim, Some("lymph")),
+            (rect_on("cd69", "CD69+", M1, 2.0), Some("notdim")),
+            (rect_on("pheno", "Pheno", X, 1.9), Some("lymph")),
+            (rect_on("phenoall", "PhenoAll", X, 1.9), Some("lymph")),
+            (rect_on("follow", "Follow", X, 1.5), Some("lymph")),
+        ] {
+            let id = gate.get_id();
+            state.place_gate(&[id.clone()], &gate, &GateSource::Global);
+            state.place_new_gate(parent.map(Arc::from), id).unwrap();
+        }
+        state
+    }
+
+    fn ruled(parameter: &str, rule: Rule) -> GateRule {
+        GateRule {
+            parameter: Arc::from(parameter),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File(Arc::from("f0")),
+            rule,
+        }
+    }
+
+    fn phenotype(markers: &[&str]) -> Rule {
+        Rule::MatchThePhenotype(PhenotypeRule {
+            markers: markers.iter().map(|m| Arc::from(*m)).collect(),
+            ..Default::default()
+        })
+    }
+
+    /// One set of rules for PhenoAll (every channel) and Follow; another for
+    /// CD69+ (on M1, under the boolean gate) and Pheno (on M2, not an axis).
+    /// PhenoAll's first, so nothing has scaled M1 or M2 when it reads them.
+    fn stores() -> [RuleStore; 2] {
+        let mut first = RuleStore::default();
+        first.insert(
+            RuleTarget::under("CD69+", "NotDim"),
+            GateRule {
+                measured_on: MeasuredOn::Itself,
+                ..ruled(M1, Rule::TailFraction(TailFractionRule::new((0.1, 0.2))))
+            },
+        );
+        first.insert(
+            RuleTarget::under("Pheno", "Lymph"),
+            ruled(X, phenotype(&[M2])),
+        );
+        let mut second = RuleStore::default();
+        second.insert(
+            RuleTarget::under("PhenoAll", "Lymph"),
+            ruled(X, phenotype(&[])),
+        );
+        second.insert(
+            RuleTarget::under("Follow", "Lymph"),
+            ruled(
+                X,
+                Rule::FromAnotherGate(FromGateRule {
+                    same_shape_as: Some(RuleTarget::named("Pheno")),
+                    edges: Vec::new(),
+                }),
+            ),
+        );
+        [second, first]
+    }
+
+    /// Four files of 400 events each; the last has no M2.
+    fn written() -> Vec<(Arc<str>, PathBuf)> {
+        let dir = scratch("read-as-drawn");
+        DRAWN
+            .iter()
+            .enumerate()
+            .map(|(seed, file)| {
+                let channels: &[&str] = if *file == "f3" {
+                    &[X, Y, M1]
+                } else {
+                    &[X, Y, M1, M2]
+                };
+                let mut rng = rand::rngs::StdRng::seed_from_u64(seed as u64 + 40);
+                let normal = Normal::new(500.0f32, 200.0).unwrap();
+                let rows: Vec<Vec<f32>> = (0..400)
+                    .map(|_| channels.iter().map(|_| normal.sample(&mut rng)).collect())
+                    .collect();
+                let columns: Vec<(&str, Option<&str>)> =
+                    channels.iter().map(|c| (*c, None)).collect();
+                let path = dir.join(format!("{file}.fcs"));
+                write_fcs_rows(&path, &columns, &rows, &[]);
+                (Arc::from(format!("{file}.fcs").as_str()), path)
+            })
+            .collect()
+    }
+
+    fn reading(
+        m: &Measurement,
+    ) -> (
+        usize,
+        Vec<(f32, f32)>,
+        Option<Vec<f64>>,
+        Option<(Vec<Arc<str>>, Vec<f32>)>,
+    ) {
+        (
+            m.events,
+            m.kept_events.to_vec(),
+            m.line.as_ref().map(|line| line.values.clone()),
+            m.phenotype
+                .as_ref()
+                .map(|p| (p.markers.clone(), p.rows.clone())),
+        )
+    }
+
+    fn refusals(unmeasured: &[Unmeasured]) -> Vec<String> {
+        let mut said: Vec<String> = unmeasured
+            .iter()
+            .map(|u| format!("{} {}: {}", u.file, u.gate_id, u.reason))
+            .collect();
+        said.sort();
+        said
+    }
+
+    #[test]
+    fn every_kind_of_rule_is_measured_as_on_the_whole_file_scaled() {
+        let state = drawn();
+        let written = written();
+        let files: Vec<(&str, &str, &str, &str)> =
+            DRAWN.iter().map(|f| (*f, *f, "FS", "500")).collect();
+        let mut inputs = inputs(&written, &files, RuleStore::default());
+        inputs.cofactors = [X, Y, M1, M2]
+            .iter()
+            .map(|c| (Arc::from(*c), 150.0))
+            .collect();
+        let stores = stores();
+
+        let (lazily, problems) = measure_many(
+            &state,
+            &inputs.files,
+            &inputs.compensation,
+            &inputs.names,
+            &inputs.cofactors,
+            &inputs.metadata,
+            &stores,
+            None,
+            &AtomicBool::new(false),
+            |_, _| {},
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+
+        for (store, (measured, unmeasured)) in stores.iter().zip(&lazily) {
+            let mut eager_unmeasured = Vec::new();
+            let mut eager = Vec::new();
+            for (name, path) in &inputs.files {
+                let whole = crate::events::read_scaled(
+                    path,
+                    &inputs.compensation.matrix_for(path),
+                    &inputs.cofactors,
+                )
+                .unwrap();
+                let (m, u) =
+                    measure_file(&state, &inputs.names[name], &whole, &inputs.metadata, store)
+                        .unwrap();
+                eager.extend(m);
+                eager_unmeasured.extend(u);
+            }
+            assert_eq!(measured.len(), eager.len());
+            for m in measured {
+                let same = eager
+                    .iter()
+                    .find(|e| e.file == m.file && e.gate_id == m.gate_id)
+                    .unwrap();
+                assert!(reading(m) == reading(same), "{} {}", m.file, m.gate_id);
+            }
+            assert_eq!(refusals(unmeasured), refusals(&eager_unmeasured));
+        }
+
+        let measured = |store: usize, gate: &str| {
+            lazily[store]
+                .0
+                .iter()
+                .filter(|m| &*m.gate_id == gate)
+                .count()
+        };
+        assert_eq!(measured(0, "phenoall"), 4);
+        assert_eq!(measured(0, "follow"), 4);
+        assert_eq!(measured(1, "cd69"), 4);
+        assert_eq!(measured(1, "pheno"), 3, "f3 has no M2");
+    }
+}

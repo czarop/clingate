@@ -473,8 +473,10 @@ impl PhenotypeReading {
 }
 
 /// Every gate on one file that a rule names, with the population it cuts,
-/// from `df` already scaled as it is drawn.
-pub fn measure_file(
+/// from `df` already scaled as it is drawn: what a run measures through
+/// [`measure_file_at`], for a test to compare against.
+#[cfg(test)]
+pub(crate) fn measure_file(
     state: &GateState,
     file: &FileId,
     df: &DataFrame,
@@ -585,7 +587,7 @@ pub(crate) fn measured_alike(a: &GateRule, b: &GateRule) -> bool {
 /// gate's axes, and what the rule reads - the line and each event's distance
 /// from it, or the marker panel for a phenotype rule.
 ///
-/// The half of [`measure_file`] after the population has been cut out of the
+/// The half of [`measure_file_at`] after the population has been cut out of the
 /// file. A replay of a kept run calls it on the events the run kept, so a rule
 /// is tried on exactly what it was measured from - see
 /// [`crate::review::replay`].
@@ -870,8 +872,6 @@ pub(crate) fn columns_read(
         Rule::MatchThePhenotype(wanted) => columns.extend(wanted.markers.iter().cloned()),
         _ => columns.push(rule.parameter.clone()),
     }
-    let mut seen = rustc_hash::FxHashSet::default();
-    columns.retain(|column| seen.insert(column.clone()));
     Some(columns)
 }
 
@@ -1843,7 +1843,7 @@ pub fn anchor_problems(state: &GateState, rules: &RuleStore) -> Vec<AnchorProble
     problems
 }
 
-/// The rule entry that applies at `node`, as [`measure_file`] finds it.
+/// The rule entry that applies at `node`, as [`measure_file_at`] finds it.
 pub(crate) fn entry_at<'r>(
     state: &GateState,
     rules: &'r RuleStore,

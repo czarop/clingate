@@ -244,10 +244,8 @@ pub fn measure_many(
             // Compensated as its group says and scaled as it is drawn, as the
             // editor and the gallery read it, so a gate is placed on the
             // events a person sees - each channel as it is first read, see
-            // `Populations`. A channel absent from one file is simply never
-            // scaled: one used to fail every rule on every file, the run
-            // reporting "Parameter AF P1-A not found" six times and placing
-            // nothing.
+            // `Populations`. A channel the file lacks is never scaled, so it
+            // fails only a rule that reads it.
             let frame = crate::events::read_unscaled(path, &compensation.matrix_for(path));
             match frame {
                 Ok(df) => match Populations::of(snapshot, id, df, arcsinh, metadata) {

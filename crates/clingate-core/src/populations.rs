@@ -20,7 +20,7 @@ use std::sync::Arc;
 use flow_fcs::{TransformType, Transformable};
 use polars::prelude::*;
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gates::GateState;
 use crate::gates::gate_filtering::filter_events_to_mask;
@@ -91,8 +91,8 @@ impl Populations {
         Ok(mask)
     }
 
-    /// The events under `chain` on those of `columns` the file has, or on
-    /// every column for `None`.
+    /// The events under `chain` on those of `columns` the file has, each
+    /// once, or on every column for `None`.
     pub fn under(
         &mut self,
         chain: &[GateId],
@@ -100,11 +100,16 @@ impl Populations {
     ) -> anyhow::Result<DataFrame> {
         let frame = match columns {
             Some(columns) => {
-                self.scale(columns)?;
+                let mut seen = FxHashSet::default();
+                let columns: Vec<Arc<str>> = columns
+                    .iter()
+                    .filter(|column| seen.insert(*column) && self.frame.column(column).is_ok())
+                    .cloned()
+                    .collect();
+                self.scale(&columns)?;
                 self.frame.select(
                     columns
                         .iter()
-                        .filter(|column| self.frame.column(column).is_ok())
                         .map(|column| PlSmallStr::from(column.as_ref())),
                 )?
             }
@@ -143,21 +148,24 @@ impl Populations {
     /// Scale those of `channels` that are not yet, as the file is drawn.
     fn scale(&mut self, channels: &[Arc<str>]) -> anyhow::Result<()> {
         for channel in channels {
-            let Some(cofactor) = self.unscaled.remove(channel) else {
+            let Some(&cofactor) = self.unscaled.get(channel) else {
                 continue;
             };
-            let Ok(column) = self.frame.column(channel) else {
-                continue;
-            };
-            let transform = TransformType::Arcsinh { cofactor };
-            let scaled: Vec<f32> = column
-                .f32()?
-                .cont_slice()?
-                .par_iter()
-                .map(|value| transform.transform(value))
-                .collect();
-            self.frame
-                .replace(channel, Series::new(channel.as_ref().into(), scaled).into())?;
+            if let Ok(column) = self.frame.column(channel) {
+                let transform = TransformType::Arcsinh { cofactor };
+                let scaled: Vec<f32> = column
+                    .f32()?
+                    .rechunk()
+                    .cont_slice()?
+                    .par_iter()
+                    .map(|value| transform.transform(value))
+                    .collect();
+                self.frame
+                    .replace(channel, Series::new(channel.as_ref().into(), scaled).into())?;
+            }
+            // Only once it is scaled: a channel that could not be stays unscaled,
+            // and fails every reader rather than only the first.
+            self.unscaled.remove(channel);
         }
         Ok(())
     }
