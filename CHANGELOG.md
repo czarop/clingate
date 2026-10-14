@@ -4,6 +4,17 @@
 
 ### Added
 
+- **A test report** (Gate Rules tab, "Make a test report"; `test_report` in
+  the tools for Claude). On the workspace as it stands, it picks a rule for
+  every gate a rule places with the pick settings last used, scores the
+  picks and the rules as they stand against the hand gating sample by
+  sample, and writes everything - what was picked and how each kind did,
+  every sample's agreement beside the rule as it stands, every problem met,
+  how long each step took - to one Markdown file in the workspace's
+  `test_reports` folder, to send on. "Copy the report" puts it on the
+  clipboard. A step that fails or panics is said in the report rather than
+  losing it. Nothing in the workspace changes. See `docs/test-report.md`.
+
 - **Scoring the rules against hand gating** (`score_rules` in the tools for
   Claude). On a workspace gated by hand, every rule - or one population's -
   runs on the full files, each gate under its parent as drawn so one wrong

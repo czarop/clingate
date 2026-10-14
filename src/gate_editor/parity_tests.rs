@@ -44,6 +44,7 @@ use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
 use crate::gate_editor::route::provide_document;
+use crate::gate_editor::test_report_panel::TestReportRun;
 use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, MetadataStore};
 
 // ── the app, headless ────────────────────────────────────────────────────
@@ -54,6 +55,7 @@ struct Held {
     workspace: Handles,
     rules_run: RulesRun,
     pick_run: PickRun,
+    test_report_run: TestReportRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -87,6 +89,7 @@ fn Probe(holder: Holder) -> Element {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
         pick_run: PickRun::from_context(),
+        test_report_run: TestReportRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -1493,6 +1496,50 @@ fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
     assert_eq!(ours[0].candidates, theirs[0].candidates);
     assert_eq!(ours[0].passed, theirs[0].passed);
     assert_eq!(ours[0].kinds, theirs[0].kinds);
+}
+
+/// The test report the Rules tab makes is the one `test_report` makes on the
+/// same workspace with the same pick settings, line for line below its header.
+#[test]
+fn the_rules_tab_s_test_report_is_the_tools_report() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    use clingate_core::test_report::test_report;
+
+    let body = |report: &str| {
+        let from = report.find("## Workspace").unwrap();
+        let to = report.find("## Timings").unwrap();
+        report[from..to].to_string()
+    };
+    let settings = PickSettings {
+        most_off: 0.3,
+        ..PickSettings::default()
+    };
+    let (tools, ours) = twins("test-report");
+    keep_settings(&tools, &settings).unwrap();
+    keep_settings(&ours, &settings).unwrap();
+    let session = Session::open(&tools).unwrap();
+    let theirs = test_report(
+        &session.test_job("then".into()).unwrap(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let (folder, job) = app
+        .with(|held| held.test_report_run.job("then".into()))
+        .unwrap();
+    let mine = test_report(&job, &AtomicBool::new(false), |_| {}).unwrap();
+
+    assert_eq!(folder, ours);
+    assert!(mine.contains("| Made | then |"), "{mine}");
+    assert!(
+        mine.contains("no more than 30.00% of its samples off"),
+        "{mine}"
+    );
+    assert!(mine.contains("### Tmem"), "a pick to compare: {mine}");
+    assert_eq!(body(&mine), body(&theirs));
 }
 
 /// The gate hierarchy opens closed, and as each workspace's was left: a

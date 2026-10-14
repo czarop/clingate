@@ -205,6 +205,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "fit_rule",
         "pick_rule",
         "pick_settings",
+        "test_report",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1460,4 +1461,27 @@ fn the_instructions_quote_the_review_s_own_limit() {
             .contains(&format!("gate sits {limit} or more of its parent's IQRs")),
         "the instructions no longer say how far from its peers a gate is flagged"
     );
+}
+
+/// The test report over the protocol: kept in the workspace's test_reports
+/// folder, and the same report in the answer.
+#[test]
+fn a_test_report_is_made_over_the_protocol() {
+    let folder = workspace_with_rules("test-report");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let made = server.call("test_report", json!({}));
+
+    assert_eq!(made["outcome"], "ok", "{made}");
+    let kept_at = Path::new(made["result"]["kept_at"].as_str().unwrap());
+    assert!(kept_at.starts_with(folder.join("test_reports")), "{made}");
+    let report = made["result"]["report"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(kept_at).unwrap(), report);
+    assert!(report.starts_with("# clingate test report"), "{report}");
+    assert!(report.contains("## Sample by sample"), "{report}");
 }

@@ -2046,3 +2046,163 @@ mod read_as_drawn {
         assert_eq!(measured(1, "pheno"), 3, "f3 has no M2");
     }
 }
+
+/// The test report on a workspace whose pick and scores are known from the
+/// pick and the scorer themselves.
+mod test_report_of_a_pick {
+    use super::*;
+    use crate::gate_rules::pick::{PickSettings, Picks, pick_rules, pickable_targets};
+    use crate::gate_rules::score::{Score, score_rules};
+    use crate::test_report::{TestJob, test_report};
+
+    fn job(name: &str, settings: PickSettings) -> TestJob {
+        let written = write(name, &FILES);
+        TestJob {
+            workspace: "w".into(),
+            made: "now".into(),
+            gates: gates_with(-BIG, 500.0),
+            inputs: inputs(
+                &written,
+                &FILES,
+                store(band(Pool::Specimen, MeasuredOn::Itself)),
+            ),
+            settings,
+        }
+    }
+
+    fn report(job: &TestJob) -> String {
+        test_report(job, &AtomicBool::new(false), |_| {}).unwrap()
+    }
+
+    fn picks(job: &TestJob) -> Picks {
+        pick_rules(
+            &job.gates,
+            &job.inputs,
+            &pickable_targets(&job.inputs.rules),
+            job.settings,
+            FitSettings::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap()
+    }
+
+    fn scored(job: &TestJob, rules: RuleStore) -> Score {
+        let inputs = RunInputs {
+            rules,
+            ..job.inputs.clone()
+        };
+        score_rules(
+            &job.gates,
+            &inputs,
+            |_| true,
+            job.settings.score,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    fn line_of<'r>(report: &'r str, first_cell: &str) -> &'r str {
+        report
+            .lines()
+            .find(|l| l.starts_with(&format!("| {first_cell} |")))
+            .unwrap_or_else(|| panic!("no line for {first_cell} in\n{report}"))
+    }
+
+    #[test]
+    fn a_report_says_what_each_gate_picked_and_how_each_kind_did() {
+        let job = job("report-picks", PickSettings::default());
+        let report = report(&job);
+
+        assert!(
+            report.contains("- 8 FCS files, 8 with a metadata row; by sample type: FMX 4, FS 4"),
+            "{report}"
+        );
+        assert!(report.contains("- 4 specimens"), "{report}");
+        let picks = picks(&job);
+        assert_eq!(picks.len(), 1);
+        for (target, pick) in &picks {
+            let pick = pick.as_ref().unwrap();
+            let best = pick.fit.candidates.iter().find(|c| c.among_best).unwrap();
+            let line = line_of(&report, &target.describe());
+            let result = if pick.passed {
+                "| passed |"
+            } else {
+                "| FLAGGED |"
+            };
+            assert!(line.contains(result), "{line}");
+            assert!(line.contains(&best.said), "{line}");
+            let on = match &best.rule.measured_on {
+                MeasuredOn::Itself => "measured on each sample itself".to_string(),
+                MeasuredOn::Partner(kind) => format!("measured on each specimen's {kind}"),
+                MeasuredOn::File(file) => format!("measured on {file}"),
+            };
+            assert!(line.contains(&on), "{line}");
+            for kind in &pick.kinds {
+                let tried = line_of(&report, kind.kind.describe());
+                assert!(
+                    tried.contains(&format!("| {} of {} |", kind.off, kind.judged)),
+                    "{tried}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_report_scores_the_pick_on_every_sample_beside_the_rule_as_it_stands() {
+        let job = job("report-samples", PickSettings::default());
+        let report = report(&job);
+        let mut picked = job.inputs.rules.clone();
+        for (target, pick) in picks(&job) {
+            let pick = pick.unwrap();
+            let best = pick.fit.candidates.iter().find(|c| c.among_best).unwrap();
+            picked.insert(target, best.rule.clone());
+        }
+        let with_pick = scored(&job, picked);
+        let standing = scored(&job, job.inputs.rules.clone());
+        let shown = |value: Option<f64>| value.map_or("-".into(), |v| format!("{v:.3}"));
+
+        let sample_lines = report
+            .lines()
+            .filter(|l| {
+                FILES
+                    .iter()
+                    .any(|(file, ..)| l.starts_with(&format!("| {file} |")))
+            })
+            .count();
+        assert!(!with_pick.rows.is_empty());
+        assert_eq!(sample_lines, with_pick.rows.len(), "{report}");
+        for row in &with_pick.rows {
+            let line = line_of(&report, &row.file);
+            assert!(
+                line.contains(&format!("| {} | {} |", row.what, shown(row.agreement))),
+                "{line}"
+            );
+            let before = standing
+                .rows
+                .iter()
+                .find(|r| r.file == row.file && r.gate_id == row.gate_id)
+                .unwrap();
+            assert!(
+                line.contains(&format!("| {} {} |", before.what, shown(before.agreement))),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pick_that_cannot_run_is_said_and_the_report_still_made() {
+        let refused = PickSettings {
+            most_off: 2.0,
+            ..PickSettings::default()
+        };
+        let report = report(&job("report-refused", refused));
+
+        assert!(report.contains("- The pick failed: most_off"), "{report}");
+        assert!(
+            report.contains("Nothing was picked, so nothing is scored."),
+            "{report}"
+        );
+        assert!(report.contains("- 4 specimens"), "{report}");
+    }
+}

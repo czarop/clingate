@@ -151,7 +151,9 @@ A gate where nothing passed shows only the closest rule: say it is flagged, \
 and that the gate may be better gated by hand. For many gates it takes a \
 while - say so. Show the user the flagged gates first, then where the rule \
 picked does most better, and update_rule only with the rules they choose; \
-the closest are on the Gallery tab to compare by eye.
+the closest are on the Gallery tab to compare by eye. test_report runs the \
+same pick on every gate and scores the picks sample by sample into one report \
+the user can send on, kept in the workspace.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -1102,6 +1104,16 @@ impl Clingate {
             s.pick_rules(args.population.as_deref(), settings, fit)
         })
         .await
+    }
+
+    /// Make the user's test report: pick a rule for every gate a rule places, as pick_rule
+    /// does with the settings they last chose in the app, score the picks and the rules as they
+    /// stand against the hand gating sample by sample, and keep the report in the workspace's
+    /// test_reports folder for them to send on. Takes as long as a pick of every gate - say
+    /// so. Changes nothing else.
+    #[tool]
+    async fn test_report(&self) -> String {
+        self.run(|s| s.test_report()).await
     }
 
     /// What a gate's populations look like across the dataset, on each of its two markers, by

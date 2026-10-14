@@ -4404,3 +4404,50 @@ fn a_pick_is_refused_without_a_rule_to_start_from() {
     let refused = session.pick_rules(None, too_many_off, Default::default());
     assert!(refused.unwrap_err().to_string().contains("most_off"));
 }
+
+/// The test report picks for every gate with the settings kept for the
+/// workspace, as pick_rules does, and is kept in the workspace's test_reports
+/// folder; the rules are as they were.
+#[test]
+fn a_test_report_says_each_pick_and_is_kept_in_the_workspace() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    let folder = with_rules("session-test-report");
+    let chosen = PickSettings {
+        most_off: 0.5,
+        ..PickSettings::default()
+    };
+    keep_settings(&folder, &chosen).unwrap();
+    let rules_before =
+        std::fs::read_to_string(clingate_core::workspace::rules_file(&folder)).unwrap();
+    let session = Session::open(&folder).unwrap();
+
+    let answer = session.test_report().unwrap();
+
+    assert!(
+        answer.kept_at.starts_with(folder.join("test_reports")),
+        "{:?}",
+        answer.kept_at
+    );
+    assert_eq!(
+        std::fs::read_to_string(&answer.kept_at).unwrap(),
+        answer.report
+    );
+    assert!(
+        answer
+            .report
+            .contains("no more than 50.00% of its samples off"),
+        "{}",
+        answer.report
+    );
+    let picked = session
+        .pick_rules(None, chosen, Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    for pick in &picked.picked {
+        assert!(answer.report.contains(&pick.best.said), "{}", answer.report);
+    }
+    assert_eq!(
+        std::fs::read_to_string(clingate_core::workspace::rules_file(&folder)).unwrap(),
+        rules_before
+    );
+}

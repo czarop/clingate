@@ -33,6 +33,9 @@ pub mod sample_pairs;
 #[cfg(test)]
 mod sample_pairs_tests;
 pub mod session;
+pub mod test_report;
+#[cfg(test)]
+mod test_report_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_workspace;
 pub mod working_copy;

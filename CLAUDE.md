@@ -8,6 +8,7 @@ A Rust workspace: the `clingate` app (Dioxus, `src/`), `crates/clingate-core` (e
 - Small functions that do one thing, with names that say what they do. Well-named variables; no abbreviations.
 - No duplication: look for an existing helper before writing one. Build nothing before it is needed.
 - When a change alters behaviour, update every comment, doc (`docs/`, `CLAUDE.md`, `.claude/`), MCP instruction or tool description, and UI hint that describes the old behaviour.
+- A feature worth checking on the user's own data gets a section in the test report (`crates/clingate-core/src/test_report.rs`, see `docs/test-report.md`), raising `SUITE_VERSION`.
 
 ## Tests
 
