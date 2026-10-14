@@ -264,6 +264,62 @@ fn outline(image: &mut RgbaImage, shape: &GateRenderShape, mapper: &PlotMapper) 
     }
 }
 
+/// Each digit's rows, three pixels wide, top first.
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b001, 0b001, 0b001],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+/// How many pixels each of a digit's pixels is drawn as.
+const DIGIT_SCALE: u32 = 3;
+
+/// `number` written in the top-left corner on a white patch, so a tile can
+/// be named in a list beside the picture.
+pub fn number_tile(image: &mut RgbaImage, number: usize) {
+    let digits: Vec<usize> = number
+        .to_string()
+        .bytes()
+        .map(|b| usize::from(b - b'0'))
+        .collect();
+    let step = 4 * DIGIT_SCALE;
+    let (width, height) = (digits.len() as u32 * step + DIGIT_SCALE, 7 * DIGIT_SCALE);
+    let mut put = |x: u32, y: u32, ink: Rgba<u8>| {
+        if x < image.width() && y < image.height() {
+            image.put_pixel(x, y, ink);
+        }
+    };
+    for x in 0..width {
+        for y in 0..height {
+            put(x, y, Rgba([255; 4]));
+        }
+    }
+    for (at, digit) in digits.iter().enumerate() {
+        for (row, bits) in DIGITS[*digit].iter().enumerate() {
+            for column in 0..3u32 {
+                if bits & (0b100 >> column) == 0 {
+                    continue;
+                }
+                let (left, top) = (
+                    DIGIT_SCALE + at as u32 * step + column * DIGIT_SCALE,
+                    DIGIT_SCALE + row as u32 * DIGIT_SCALE,
+                );
+                for dx in 0..DIGIT_SCALE {
+                    for dy in 0..DIGIT_SCALE {
+                        put(left + dx, top + dy, INK);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Tiles in rows of `columns`, as one PNG.
 pub fn grid(tiles: &[RgbaImage], columns: usize) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(!tiles.is_empty(), "nothing to draw");
@@ -305,6 +361,29 @@ mod tests {
         let one = image::load_from_memory(&grid(&tiles, 5).unwrap()).unwrap();
         assert_eq!((one.width(), one.height()), (30, 10));
         assert!(grid(&[], 3).is_err());
+    }
+
+    #[test]
+    fn a_tile_is_numbered_in_its_corner_in_digits_read_off_the_font() {
+        let mut image = blank(60, 60, 128);
+        number_tile(&mut image, 17);
+        let inked = |x: u32, y: u32| *image.get_pixel(x, y) == INK;
+        // "1": its top row is the middle pixel only; drawn from (3, 3), three
+        // pixels to each of the font's.
+        assert!(!inked(3, 3) && inked(6, 3) && !inked(9, 3));
+        // Its second row: the left two.
+        assert!(inked(3, 6) && inked(6, 6) && !inked(9, 6));
+        // "7" starts one digit (12 pixels) on: its top row is full, its
+        // second only on the right.
+        assert!(inked(15, 3) && inked(18, 3) && inked(21, 3));
+        assert!(!inked(15, 6) && !inked(18, 6) && inked(21, 6));
+        // Behind the digits a white patch, two digits wide and seven rows
+        // high; the tile is left as it was beyond it.
+        assert_eq!(*image.get_pixel(25, 1), Rgba([255; 4]));
+        assert_eq!(*image.get_pixel(27, 1), Rgba([128, 128, 128, 255]));
+        assert_eq!(*image.get_pixel(1, 21), Rgba([128, 128, 128, 255]));
+        // Too small a tile is written on as far as it goes.
+        number_tile(&mut blank(5, 5, 0), 123);
     }
 
     #[test]

@@ -4451,3 +4451,63 @@ fn a_test_report_says_each_pick_and_is_kept_in_the_workspace() {
         rules_before
     );
 }
+
+/// A report on one rule's run says which samples the review flagged, as
+/// assess_run does, and is kept with its pictures in a folder of its own in
+/// the workspace's test_reports folder; the run is as it was.
+#[test]
+fn a_rule_report_says_each_sample_the_run_placed_and_keeps_its_pictures() {
+    use clingate_core::review::RunRecord;
+    let (folder, session) = applied_with_confidence("session-rule-report", |name| {
+        if name.contains("FMX") { 0.05 } else { 0.9 }
+    });
+    let run_before = RunRecord::load(&folder).unwrap();
+    let flagged: Vec<String> = session
+        .assess_run()
+        .unwrap()
+        .flags
+        .iter()
+        .map(|f| f.sample.name.clone().unwrap())
+        .collect();
+    assert!(!flagged.is_empty());
+
+    let answer = session.rule_report("Tmem").unwrap();
+
+    let kept = answer.kept_at.parent().unwrap();
+    assert_eq!(kept.parent().unwrap(), folder.join("test_reports"));
+    assert_eq!(
+        std::fs::read_to_string(&answer.kept_at).unwrap(),
+        answer.report
+    );
+    for name in ["sample1_FMX.fcs", "sample2_FS.fcs"] {
+        let row = answer
+            .report
+            .lines()
+            .find(|l| l.contains(&format!("| {name} |")))
+            .unwrap_or_else(|| panic!("{name} in {}", answer.report));
+        assert_eq!(
+            row.contains("| yes |"),
+            flagged.contains(&name.to_string()),
+            "{row}"
+        );
+    }
+    assert!(!answer.pictures.is_empty());
+    for picture in &answer.pictures {
+        assert!(answer.report.contains(&format!("- {}: ", picture.name)));
+        assert_eq!(
+            std::fs::read(kept.join(&picture.name)).unwrap(),
+            picture.png
+        );
+    }
+    assert_eq!(RunRecord::load(&folder).unwrap(), run_before);
+}
+
+#[test]
+fn a_rule_report_needs_a_run_and_a_gate() {
+    let folder = with_rules("session-rule-report-refused");
+    let session = Session::open(&folder).unwrap();
+    let e = format!("{:?}", session.rule_report("Tmem").unwrap_err());
+    assert!(e.contains("No rules run has been applied"), "{e}");
+    assert!(session.rule_report("CD999+").is_err());
+    assert!(!folder.join("test_reports").exists());
+}

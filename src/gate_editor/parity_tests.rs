@@ -44,6 +44,7 @@ use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
 use crate::gate_editor::route::provide_document;
+use crate::gate_editor::rule_report_button::RuleReportRun;
 use crate::gate_editor::test_report_panel::TestReportRun;
 use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, MetadataStore};
 
@@ -56,6 +57,7 @@ struct Held {
     rules_run: RulesRun,
     pick_run: PickRun,
     test_report_run: TestReportRun,
+    rule_report_run: RuleReportRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -90,6 +92,7 @@ fn Probe(holder: Holder) -> Element {
         rules_run: RulesRun::from_context(),
         pick_run: PickRun::from_context(),
         test_report_run: TestReportRun::from_context(),
+        rule_report_run: RuleReportRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -1499,11 +1502,14 @@ fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
 }
 
 /// The test report the Rules tab makes is the one `test_report` makes on the
-/// same workspace with the same pick settings, line for line below its header.
+/// same workspace with the same pick settings, line for line below its header
+/// - the tab's being those typed in the pick box, not those kept.
 #[test]
 fn the_rules_tab_s_test_report_is_the_tools_report() {
     use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
     use clingate_core::test_report::test_report;
+
+    use crate::gate_editor::pick_panel::Typed;
 
     let body = |report: &str| {
         let from = report.find("## Workspace").unwrap();
@@ -1516,7 +1522,6 @@ fn the_rules_tab_s_test_report_is_the_tools_report() {
     };
     let (tools, ours) = twins("test-report");
     keep_settings(&tools, &settings).unwrap();
-    keep_settings(&ours, &settings).unwrap();
     let session = Session::open(&tools).unwrap();
     let theirs = test_report(
         &session.test_job("then".into()).unwrap(),
@@ -1528,7 +1533,10 @@ fn the_rules_tab_s_test_report_is_the_tools_report() {
     let mut app = App::new();
     app.open(&ours);
     let (folder, job) = app
-        .with(|held| held.test_report_run.job("then".into()))
+        .with(|held| {
+            held.test_report_run
+                .job("then".into(), &Typed::of(&settings))
+        })
         .unwrap();
     let mine = test_report(&job, &AtomicBool::new(false), |_| {}).unwrap();
 
@@ -1540,6 +1548,52 @@ fn the_rules_tab_s_test_report_is_the_tools_report() {
     );
     assert!(mine.contains("### Tmem"), "a pick to compare: {mine}");
     assert_eq!(body(&mine), body(&theirs));
+}
+
+/// The report the Review tab makes on a rule is the one `rule_report` makes
+/// on the same run and gating, below its header, pictures and all.
+#[test]
+fn the_review_tab_s_rule_report_is_the_tools_report() {
+    use clingate_core::rule_report::rule_report;
+
+    let body = |report: &str| {
+        let from = report.find("## The rule").unwrap();
+        let to = report.find("## Timings").unwrap();
+        report[from..to].to_string()
+    };
+    let (tools, ours) = twins("rule-report");
+    for folder in [&tools, &ours] {
+        let mut session = Session::open(folder).unwrap();
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        session.save().unwrap();
+    }
+    let tools_job = Session::open(&tools)
+        .unwrap()
+        .rule_job("Tmem", "then".into())
+        .unwrap();
+    let theirs = rule_report(&tools_job, &AtomicBool::new(false), |_, _| {}).unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let job = app
+        .with(|held| held.rule_report_run.job("then".into(), &tools_job.gate_id))
+        .unwrap();
+    let mine = rule_report(&job, &AtomicBool::new(false), |_, _| {}).unwrap();
+
+    assert_eq!(job.folder, ours);
+    assert!(
+        mine.markdown.contains("| Made | then |"),
+        "{}",
+        mine.markdown
+    );
+    assert!(
+        mine.markdown.contains("| 2 | sample2_FS.fcs |"),
+        "{}",
+        mine.markdown
+    );
+    assert_eq!(body(&mine.markdown), body(&theirs.markdown));
+    assert_eq!(mine.pictures, theirs.pictures);
 }
 
 /// The gate hierarchy opens closed, and as each workspace's was left: a

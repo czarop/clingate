@@ -56,7 +56,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, pick_rule, preview_rules - only \
+fit_rule, pick_rule, preview_rules, rule_report - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -84,7 +84,9 @@ To review a rules run, start with assess_run: it lists the placements whose \
 gate sits 2 or more of its parent's IQRs from where its peers put theirs, or \
 that the rule was unsure of, with reasons, and costs little, and the gates the \
 run could not place. compare_to_peers then shows one \
-sample beside its peers in numbers. Present what you find to the user; the \
+sample beside its peers in numbers. rule_report puts one gate's run in a \
+report the user can send on - every sample's numbers and plot, flagged and \
+not - kept in the workspace. Present what you find to the user; the \
 flags are for a person to judge. A gate the run could not place on any sample \
 needs its rule changed: tell the user what is wrong with it, and change it only \
 when they agree.
@@ -477,6 +479,12 @@ pub struct GatePictureArgs {
     pub samples: Option<String>,
     /// How many plots at most (default 6, at most 9).
     pub tiles: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RuleReportArgs {
+    /// The population whose gate's run to report, by its gate names.
+    pub population: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1107,13 +1115,45 @@ impl Clingate {
     }
 
     /// Make the user's test report: pick a rule for every gate a rule places, as pick_rule
-    /// does with the settings they last chose in the app, score the picks and the rules as they
+    /// does with the pick settings last kept, score the picks and the rules as they
     /// stand against the hand gating sample by sample, and keep the report in the workspace's
     /// test_reports folder for them to send on. Takes as long as a pick of every gate - say
     /// so. Changes nothing else.
     #[tool]
     async fn test_report(&self) -> String {
         self.run(|s| s.test_report()).await
+    }
+
+    /// Report how the rule of one gate did in the last applied run: the rule, and on every
+    /// sample where the line went, how sure the rule was, whether the review flagged it and
+    /// why, and what the gate holds now - with each sample's plot as the app draws it, the
+    /// flagged and the rest in separate pictures numbered as the table numbers them. Kept with
+    /// its pictures in the workspace's test_reports folder for the user to send on. Reads every
+    /// sample's events: only when the user asks for it. Changes nothing else.
+    #[tool(annotations(read_only_hint = true))]
+    async fn rule_report(
+        &self,
+        Parameters(args): Parameters<RuleReportArgs>,
+    ) -> rmcp::model::CallToolResult {
+        use base64::Engine as _;
+        use rmcp::model::{CallToolResult, ContentBlock};
+        let made = self
+            .with_session(move |s| s.rule_report(&args.population))
+            .await;
+        match made {
+            Ok(Ok(answer)) => {
+                let mut blocks = vec![ContentBlock::text(ok(&answer))];
+                blocks.extend(answer.pictures.iter().map(|picture| {
+                    ContentBlock::image(
+                        base64::engine::general_purpose::STANDARD.encode(&picture.png),
+                        "image/png",
+                    )
+                }));
+                CallToolResult::success(blocks)
+            }
+            Ok(Err(refusal)) => CallToolResult::success(vec![ContentBlock::text(refused(refusal))]),
+            Err(reason) => CallToolResult::success(vec![ContentBlock::text(failed(reason))]),
+        }
     }
 
     /// What a gate's populations look like across the dataset, on each of its two markers, by

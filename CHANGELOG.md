@@ -4,9 +4,19 @@
 
 ### Added
 
+- **A rule report** (Review tab, "Report on this rule"; `rule_report` in the
+  tools for Claude). How the rule of the gate shown did in the last applied
+  run, on every sample: the rule then and now, where each line went, how sure
+  the rule was, whether the review flagged it and why, and what the gate
+  holds now - with every sample's plot, the flagged and the rest in separate
+  pictures, numbered as the table numbers them. Kept with its pictures in a
+  folder of its own in `test_reports`, to send on. Nothing in the workspace
+  changes. See `docs/test-report.md`.
+
 - **A test report** (Gate Rules tab, "Make a test report"; `test_report` in
   the tools for Claude). On the workspace as it stands, it picks a rule for
-  every gate a rule places with the pick settings last used, scores the
+  every gate a rule places with the pick settings typed in the pick box (the
+  tools: those last kept), scores the
   picks and the rules as they stand against the hand gating sample by
   sample, and writes everything - what was picked and how each kind did,
   every sample's agreement beside the rule as it stands, every problem met,

@@ -155,7 +155,7 @@ pub fn stamped_now() -> (String, String) {
     )
 }
 
-fn stopped(cancel: &AtomicBool) -> Result<(), String> {
+pub(crate) fn stopped(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
         Err("stopped".into())
     } else {
@@ -173,11 +173,11 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    fn push(&mut self, section: String) {
+    pub(crate) fn push(&mut self, section: String) {
         self.sections.push(section);
     }
 
-    fn problem(&mut self, problem: String) {
+    pub(crate) fn problem(&mut self, problem: String) {
         if !self.problems.contains(&problem) {
             self.problems.push(problem);
         }
@@ -421,7 +421,7 @@ fn pick_detail(target: &RuleTarget, pick: &Picked) -> String {
     out
 }
 
-fn measured_on(on: &MeasuredOn) -> String {
+pub(crate) fn measured_on(on: &MeasuredOn) -> String {
     match on {
         MeasuredOn::Itself => "measured on each sample itself".into(),
         MeasuredOn::Partner(kind) => format!("measured on each specimen's {kind}"),
@@ -585,7 +585,7 @@ fn timings(timings: &[(&'static str, Duration)]) -> String {
 }
 
 /// `text` safe in a table cell.
-fn cell(text: &str) -> String {
+pub(crate) fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace('\n', " ")
 }
 
@@ -597,6 +597,6 @@ fn share(value: f64) -> String {
     format!("{:.2}%", value * 100.0)
 }
 
-fn share_or_dash(value: Option<f64>) -> String {
+pub(crate) fn share_or_dash(value: Option<f64>) -> String {
     value.map_or("-".into(), share)
 }

@@ -507,6 +507,7 @@ pub fn PickPanel() -> Element {
                 }
             }
         }
+        crate::gate_editor::test_report_panel::TestReportPanel { typed }
     }
 }
 

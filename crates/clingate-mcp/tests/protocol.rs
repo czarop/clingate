@@ -206,6 +206,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "pick_rule",
         "pick_settings",
         "test_report",
+        "rule_report",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1484,4 +1485,76 @@ fn a_test_report_is_made_over_the_protocol() {
     assert_eq!(std::fs::read_to_string(kept_at).unwrap(), report);
     assert!(report.starts_with("# clingate test report"), "{report}");
     assert!(report.contains("## Sample by sample"), "{report}");
+}
+
+/// A rule's report over the protocol: the report kept with its pictures in
+/// the workspace's test_reports folder, the same report in the answer, and
+/// the pictures after it in the order it lists them.
+#[test]
+fn a_rule_report_is_made_over_the_protocol() {
+    let folder = workspace_with_rules("rule-report");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+    // The FMX's placement unsure and the full stain's sure, both in band:
+    // one flagged and one not, so two pictures.
+    let mut run = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .unwrap();
+    for p in &mut run.placed {
+        let fmx = p.sample.name.as_deref().unwrap().contains("FMX");
+        (p.confidence, p.in_band) = (if fmx { 0.05 } else { 0.9 }, true);
+    }
+    run.save(&folder).unwrap();
+
+    let made = server.request(
+        "tools/call",
+        json!({"name": "rule_report", "arguments": {"population": "Tmem"}}),
+    );
+
+    let content = made["result"]["content"].as_array().unwrap();
+    let said: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(said["outcome"], "ok", "{said}");
+    let kept_at = Path::new(said["result"]["kept_at"].as_str().unwrap());
+    assert!(kept_at.starts_with(folder.join("test_reports")), "{said}");
+    let report = said["result"]["report"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(kept_at).unwrap(), report);
+    assert!(
+        report.starts_with("# clingate rule report: Tmem of "),
+        "{report}"
+    );
+    let listed: Vec<&str> = report
+        .lines()
+        .filter_map(|l| l.strip_prefix("- ")?.split_once(".png: "))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(listed, ["flagged-1", "not-flagged-1"], "{report}");
+    let images = &content[1..];
+    assert_eq!(images.len(), listed.len(), "{report}");
+    for (image, name) in images.iter().zip(listed) {
+        assert_eq!(image["type"], "image");
+        let png = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            image["data"].as_str().unwrap(),
+        )
+        .unwrap();
+        let kept = kept_at.parent().unwrap().join(format!("{name}.png"));
+        assert_eq!(std::fs::read(kept).unwrap(), png);
+    }
+
+    let refused = server.request(
+        "tools/call",
+        json!({"name": "rule_report", "arguments": {"population": "CD999+"}}),
+    );
+    let said: Value =
+        serde_json::from_str(refused["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_ne!(said["outcome"], "ok", "{said}");
 }

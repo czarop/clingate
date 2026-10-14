@@ -14,6 +14,7 @@ use clingate_core::test_report::{TestJob, TestStep, keep, stamped_now, test_repo
 
 use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::gate_rules_window::{RulesRun, use_stop_run_on_change};
+use crate::gate_editor::pick_panel::Typed;
 use crate::gate_editor::workspace_window::{GateStore, Loaded};
 
 /// What a test report reads, from the app's own state.
@@ -34,9 +35,9 @@ impl TestReportRun {
     }
 
     /// The workspace as it stands now - the gating as drawn, saved or not,
-    /// and the pick settings last chosen - made `made`, with the folder the
-    /// report is kept in.
-    pub(crate) fn job(&self, made: String) -> Result<(PathBuf, TestJob), String> {
+    /// and the pick settings as `typed`, the kept ones filling in the rest -
+    /// made `made`, with the folder the report is kept in.
+    pub(crate) fn job(&self, made: String, typed: &Typed) -> Result<(PathBuf, TestJob), String> {
         let folder = self
             .loaded
             .peek()
@@ -47,6 +48,7 @@ impl TestReportRun {
         if inputs.files.is_empty() {
             return Err("No FCS files are loaded - open a workspace on the first tab".into());
         }
+        let settings = typed.settings(&kept_settings(&folder))?;
         let job = TestJob {
             workspace: folder.file_name().map_or_else(
                 || folder.display().to_string(),
@@ -54,16 +56,17 @@ impl TestReportRun {
             ),
             made,
             gates: self.gates.peek().clone(),
-            settings: kept_settings(&folder),
+            settings,
             inputs,
         };
         Ok((folder, job))
     }
 }
 
-/// The button that makes a test report, and the report last made.
+/// The button that makes a test report with the pick settings `typed`, and
+/// the report last made.
 #[component]
-pub fn TestReportPanel() -> Element {
+pub(crate) fn TestReportPanel(typed: Signal<Typed>) -> Element {
     let run = TestReportRun::from_context();
     let toasts = use_toast();
     let mut progress = use_signal(|| None::<TestStep>);
@@ -77,7 +80,7 @@ pub fn TestReportPanel() -> Element {
                 return;
             }
             let (when, stamp) = stamped_now();
-            let (folder, job) = match run.job(when) {
+            let (folder, job) = match run.job(when, &typed.peek()) {
                 Ok(ready) => ready,
                 Err(why) => return warn(&toasts, why),
             };
@@ -117,7 +120,7 @@ pub fn TestReportPanel() -> Element {
         fieldset { class: "gate_rules-form",
             legend { "Test report" }
             p { class: "gate_rules-hint gate_rules-span",
-                "Picks a rule for every gate a rule places, with the pick settings above as last used, and scores the picks and your rules as they stand against your gates, sample by sample. Writes it all to one report in the workspace's test_reports folder, to send on. Changes nothing else, and takes as long as a pick."
+                "Picks a rule for every gate a rule places, with the pick settings above as typed, and scores the picks and your rules as they stand against your gates, sample by sample. Writes it all to one report in the workspace's test_reports folder, to send on. Changes nothing else, and takes as long as a pick."
             }
             button {
                 class: "gate_rules-add",
