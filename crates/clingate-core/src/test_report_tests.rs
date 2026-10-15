@@ -1,0 +1,58 @@
+use std::sync::atomic::AtomicBool;
+
+use crate::gate_rules::pick::PickSettings;
+use crate::gate_rules::run::RunInputs;
+use crate::gates::GateState;
+use crate::test_report::{FOLDER, Report, TestJob, keep, test_report};
+
+fn empty(workspace: &str) -> TestJob {
+    TestJob {
+        workspace: workspace.into(),
+        made: "today".into(),
+        gates: GateState::default(),
+        inputs: RunInputs::default(),
+        settings: PickSettings::default(),
+    }
+}
+
+#[test]
+fn a_step_that_panics_is_a_problem_in_the_report_not_a_crash() {
+    let mut report = Report::default();
+
+    let answer: Result<(), String> = report.timed("Exploding", || panic!("boom"));
+
+    assert_eq!(answer.unwrap_err(), "it panicked: boom");
+    assert!(report.finish().contains("| Exploding |"));
+}
+
+#[test]
+fn a_report_with_nothing_to_pick_says_so_and_names_its_workspace_safely() {
+    let report = test_report(&empty("plate|one"), &AtomicBool::new(false), |_| {}).unwrap();
+
+    assert!(report.contains("| Workspace | plate\\|one |"), "{report}");
+    assert!(
+        report.contains("Nothing was picked, so nothing is scored."),
+        "{report}"
+    );
+    assert!(report.contains("## Problems"), "{report}");
+}
+
+#[test]
+fn a_report_asked_to_stop_is_not_made() {
+    let stopped = test_report(&empty("w"), &AtomicBool::new(true), |_| {});
+
+    assert_eq!(stopped.unwrap_err(), "stopped");
+}
+
+#[test]
+fn a_report_is_kept_in_the_workspace_named_by_when_it_was_made() {
+    let folder = crate::file_load_tests::scratch("test-report-keep");
+
+    let path = keep(&folder, "# report", "2026-10-14_103000").unwrap();
+
+    assert_eq!(
+        path,
+        folder.join(FOLDER).join("test-report-2026-10-14_103000.md")
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "# report");
+}

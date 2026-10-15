@@ -27,6 +27,7 @@ mod rules;
 mod fit;
 mod pick;
 mod score;
+mod test_report;
 
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
@@ -44,6 +45,7 @@ pub use rules::{
 pub use fit::{FIT_SHOWN, FitAnswer, FitAsk};
 pub use pick::{PickAnswer, PickedRule};
 pub use score::{SCORE_ROWS, SCORE_ROWS_MAX, ScoreAnswer};
+pub use test_report::{RuleReportAnswer, TestReportAnswer};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

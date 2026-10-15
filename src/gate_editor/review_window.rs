@@ -7,7 +7,9 @@
 //! changed since. A flagged placement is drawn beside the peer that placed
 //! the same gate most typically, so what the flag is about can be seen
 //! rather than read. From each tile it can be opened in the editor to fix,
-//! reported, or judged to look right.
+//! reported, or judged to look right. "Report on this rule" puts the gate
+//! shown in a report to send on - every sample with its plot - see
+//! [`crate::gate_editor::rule_report_button`].
 //!
 //! The plots are the gallery's: the population above the gate, on the gate's
 //! own axes, with the gate as it now stands on that sample. Fixing a gate in
@@ -222,6 +224,9 @@ pub fn ReviewWindow() -> Element {
                     }
                 }
                 span { class: "gallery-count", "{shown.len()} shown" }
+            }
+            if let Some(gate_id) = only.clone() {
+                crate::gate_editor::rule_report_button::RuleReportButton { key: "{gate_id}", gate_id }
             }
             if !board.unplaced.is_empty() {
                 UnplacedList { unplaced: board.unplaced.clone() }

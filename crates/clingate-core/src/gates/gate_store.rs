@@ -1680,9 +1680,16 @@ impl GateState {
             .unwrap_or_else(|| id.clone())
     }
 
-    /// See [`GateSubStore::convert_to_polygon`].
+    /// See [`GateSubStore::convert_to_polygon`]. The gate is written to the
+    /// gating file as a polygon from now on.
     pub fn convert_to_polygon(&mut self, gate_id: &GateId) -> anyhow::Result<()> {
-        self.gate_store.convert_to_polygon(gate_id)
+        self.gate_store.convert_to_polygon(gate_id)?;
+        // A gate is written as the type it was imported as, so a rectangle
+        // made a polygon here was written back as the rectangle around it.
+        if let Some(imported) = self.omiq_rebuild.gates.get_mut(gate_id) {
+            imported.source_type = Some(crate::omiq::rebuild::OmiqGateType::Polygon);
+        }
+        Ok(())
     }
 
     /// `reshape`, an edit of the gate `gate_id`'s outline, made to the

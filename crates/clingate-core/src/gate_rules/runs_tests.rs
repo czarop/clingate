@@ -2046,3 +2046,352 @@ mod read_as_drawn {
         assert_eq!(measured(1, "pheno"), 3, "f3 has no M2");
     }
 }
+
+/// The test report on a workspace whose pick and scores are known from the
+/// pick and the scorer themselves.
+mod test_report_of_a_pick {
+    use super::*;
+    use crate::gate_rules::pick::{PickSettings, Picks, pick_rules, pickable_targets};
+    use crate::gate_rules::score::{Score, score_rules};
+    use crate::test_report::{TestJob, test_report};
+
+    fn job(name: &str, settings: PickSettings) -> TestJob {
+        let written = write(name, &FILES);
+        TestJob {
+            workspace: "w".into(),
+            made: "now".into(),
+            gates: gates_with(-BIG, 500.0),
+            inputs: inputs(
+                &written,
+                &FILES,
+                store(band(Pool::Specimen, MeasuredOn::Itself)),
+            ),
+            settings,
+        }
+    }
+
+    fn report(job: &TestJob) -> String {
+        test_report(job, &AtomicBool::new(false), |_| {}).unwrap()
+    }
+
+    fn picks(job: &TestJob) -> Picks {
+        pick_rules(
+            &job.gates,
+            &job.inputs,
+            &pickable_targets(&job.inputs.rules),
+            job.settings,
+            FitSettings::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap()
+    }
+
+    fn scored(job: &TestJob, rules: RuleStore) -> Score {
+        let inputs = RunInputs {
+            rules,
+            ..job.inputs.clone()
+        };
+        score_rules(
+            &job.gates,
+            &inputs,
+            |_| true,
+            job.settings.score,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    fn line_of<'r>(report: &'r str, first_cell: &str) -> &'r str {
+        report
+            .lines()
+            .find(|l| l.starts_with(&format!("| {first_cell} |")))
+            .unwrap_or_else(|| panic!("no line for {first_cell} in\n{report}"))
+    }
+
+    #[test]
+    fn a_report_says_what_each_gate_picked_and_how_each_kind_did() {
+        let job = job("report-picks", PickSettings::default());
+        let report = report(&job);
+
+        assert!(
+            report.contains("- 8 FCS files, 8 with a metadata row; by sample type: FMX 4, FS 4"),
+            "{report}"
+        );
+        assert!(report.contains("- 4 specimens"), "{report}");
+        let picks = picks(&job);
+        assert_eq!(picks.len(), 1);
+        for (target, pick) in &picks {
+            let pick = pick.as_ref().unwrap();
+            let best = pick.fit.candidates.iter().find(|c| c.among_best).unwrap();
+            let line = line_of(&report, &target.describe());
+            let result = if pick.passed {
+                "| passed |"
+            } else {
+                "| FLAGGED |"
+            };
+            assert!(line.contains(result), "{line}");
+            assert!(line.contains(&best.said), "{line}");
+            let on = match &best.rule.measured_on {
+                MeasuredOn::Itself => "measured on each sample itself".to_string(),
+                MeasuredOn::Partner(kind) => format!("measured on each specimen's {kind}"),
+                MeasuredOn::File(file) => format!("measured on {file}"),
+            };
+            assert!(line.contains(&on), "{line}");
+            for kind in &pick.kinds {
+                let tried = line_of(&report, kind.kind.describe());
+                assert!(
+                    tried.contains(&format!("| {} of {} |", kind.off, kind.judged)),
+                    "{tried}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_report_scores_the_pick_on_every_sample_beside_the_rule_as_it_stands() {
+        let job = job("report-samples", PickSettings::default());
+        let report = report(&job);
+        let mut picked = job.inputs.rules.clone();
+        for (target, pick) in picks(&job) {
+            let pick = pick.unwrap();
+            let best = pick.fit.candidates.iter().find(|c| c.among_best).unwrap();
+            picked.insert(target, best.rule.clone());
+        }
+        let with_pick = scored(&job, picked);
+        let standing = scored(&job, job.inputs.rules.clone());
+        let shown = |value: Option<f64>| value.map_or("-".into(), |v| format!("{v:.3}"));
+
+        let sample_lines = report
+            .lines()
+            .filter(|l| {
+                FILES
+                    .iter()
+                    .any(|(file, ..)| l.starts_with(&format!("| {file} |")))
+            })
+            .count();
+        assert!(!with_pick.rows.is_empty());
+        assert_eq!(sample_lines, with_pick.rows.len(), "{report}");
+        for row in &with_pick.rows {
+            let line = line_of(&report, &row.file);
+            assert!(
+                line.contains(&format!("| {} | {} |", row.what, shown(row.agreement))),
+                "{line}"
+            );
+            let before = standing
+                .rows
+                .iter()
+                .find(|r| r.file == row.file && r.gate_id == row.gate_id)
+                .unwrap();
+            assert!(
+                line.contains(&format!("| {} {} |", before.what, shown(before.agreement))),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pick_that_cannot_run_is_said_and_the_report_still_made() {
+        let refused = PickSettings {
+            most_off: 2.0,
+            ..PickSettings::default()
+        };
+        let report = report(&job("report-refused", refused));
+
+        assert!(report.contains("- The pick failed: most_off"), "{report}");
+        assert!(
+            report.contains("Nothing was picked, so nothing is scored."),
+            "{report}"
+        );
+        assert!(report.contains("- 4 specimens"), "{report}");
+    }
+}
+
+/// A run reads every name a rule holds as the run needs it - a marker as its
+/// channel, a file name as its row in the metadata - whatever the rules file
+/// says, in every place a rule names one.
+mod a_run_reads_names {
+    use super::*;
+    use crate::AxisInfo;
+    use crate::axis_store::Param;
+    use crate::gate_rules::rule::{EdgeFrom, FromGateRule, NextToRule, PhenotypeRule, Side};
+    use crate::omiq::metadata::MetaDataStore;
+
+    /// Two files the metadata calls sample1 and sample2; CD69 on BUV805-A,
+    /// CD4 on BV785-A, and CD3 on two channels at once.
+    fn inputs(rules: &RuleStore) -> RunInputs {
+        let dir = scratch("run-reads-names");
+        let csv = dir.join("metadata.csv");
+        std::fs::write(
+            &csv,
+            "OmiqID,Filename,test\nsample1,sample1_FMX.fcs,one\nsample2,sample2_FS.fcs,two\n",
+        )
+        .unwrap();
+        let (metadata, _) = MetaDataStore::read_omiq(csv).unwrap();
+        let mut axes = im::HashMap::with_hasher(FxBuildHasher);
+        for (channel, marker) in [
+            ("BUV805-A", "CD69"),
+            ("BV785-A", "CD4"),
+            ("BUV563-A", "CD3"),
+            ("BUV661-A", "CD3"),
+        ] {
+            axes.insert(
+                Arc::from(channel),
+                AxisInfo {
+                    param: Param {
+                        marker: Arc::from(marker),
+                        fluoro: Arc::from(channel),
+                    },
+                    ..AxisInfo::default()
+                },
+            );
+        }
+        RunInputs::assemble(None, &Default::default(), &metadata, &axes, rules)
+    }
+
+    fn rule(parameter: &str, measured_on: MeasuredOn, rule: Rule) -> GateRule {
+        GateRule {
+            parameter: parameter.into(),
+            bound: Bound::Above,
+            measured_on,
+            rule,
+        }
+    }
+
+    fn read(rules: &RuleStore, gate: &str) -> GateRule {
+        inputs(rules)
+            .rules
+            .get(&RuleTarget::named(gate))
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_band_s_parameter_and_reference_are_its_channel_and_metadata_row() {
+        let mut rules = RuleStore::default();
+        rules.insert(
+            RuleTarget::named("a"),
+            rule(
+                "cd69",
+                MeasuredOn::File("sample1_FMX.fcs".into()),
+                Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            ),
+        );
+
+        let read = read(&rules, "a");
+
+        assert_eq!(&*read.parameter, "BUV805-A");
+        assert_eq!(read.measured_on, MeasuredOn::File("sample1".into()));
+    }
+
+    #[test]
+    fn a_name_already_as_the_run_reads_it_or_naming_nothing_alone_is_kept() {
+        let mut rules = RuleStore::default();
+        let kept = [
+            ("channel", "BV785-A", "sample2"),
+            ("two channels", "CD3", "nothing.fcs"),
+            ("no channel", "CD999", "sample1"),
+        ];
+        for (gate, parameter, file) in kept {
+            rules.insert(
+                RuleTarget::named(gate),
+                rule(
+                    parameter,
+                    MeasuredOn::File(file.into()),
+                    Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+                ),
+            );
+        }
+
+        let read = inputs(&rules).rules;
+
+        for (gate, parameter, file) in kept {
+            let rule = read.get(&RuleTarget::named(gate)).unwrap();
+            assert_eq!(&*rule.parameter, parameter, "{gate}");
+            assert_eq!(rule.measured_on, MeasuredOn::File(file.into()), "{gate}");
+        }
+    }
+
+    #[test]
+    fn every_place_a_rule_names_a_marker_or_a_file_is_read_as_the_run_reads_it() {
+        let mut rules = RuleStore::default();
+        rules.insert(
+            RuleTarget::named("next"),
+            rule(
+                "",
+                MeasuredOn::Itself,
+                Rule::NextToGate(NextToRule {
+                    anchor: RuleTarget::named("a"),
+                    parameter: "CD69".into(),
+                    side: Side::Lower,
+                    meet: Default::default(),
+                    gap: 0.0,
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("edges"),
+            rule(
+                "",
+                MeasuredOn::Itself,
+                Rule::FromAnotherGate(FromGateRule {
+                    edges: vec![EdgeFrom {
+                        anchor: RuleTarget::named("a"),
+                        parameter: "CD4".into(),
+                        side: Side::Lower,
+                        anchor_side: Side::Upper,
+                        gap: 0.0,
+                    }],
+                    ..FromGateRule::default()
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("phenotype"),
+            rule(
+                "",
+                MeasuredOn::File("sample2_FS.fcs".into()),
+                Rule::MatchThePhenotype(PhenotypeRule {
+                    markers: vec!["CD69".into(), "cd4".into()],
+                    pinned: vec!["CD4".into()],
+                    ..PhenotypeRule::default()
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("valley"),
+            rule(
+                "CD69",
+                MeasuredOn::File("sample1".into()),
+                Rule::ValleyOrSmear(ValleyOrSmearRule {
+                    smear_example: Some("sample2_FS.fcs".into()),
+                    ..ValleyOrSmearRule::default()
+                }),
+            ),
+        );
+
+        let Rule::NextToGate(next) = read(&rules, "next").rule else {
+            unreachable!()
+        };
+        let Rule::FromAnotherGate(edges) = read(&rules, "edges").rule else {
+            unreachable!()
+        };
+        let phenotype = read(&rules, "phenotype");
+        let Rule::MatchThePhenotype(wanted) = &phenotype.rule else {
+            unreachable!()
+        };
+        let valley = read(&rules, "valley");
+        let Rule::ValleyOrSmear(either) = &valley.rule else {
+            unreachable!()
+        };
+
+        assert_eq!(&*next.parameter, "BUV805-A");
+        assert_eq!(&*edges.edges[0].parameter, "BV785-A");
+        let channels = |names: &[Arc<str>]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(channels(&wanted.markers), ["BUV805-A", "BV785-A"]);
+        assert_eq!(channels(&wanted.pinned), ["BV785-A"]);
+        assert_eq!(phenotype.measured_on, MeasuredOn::File("sample2".into()));
+        assert_eq!(&*valley.parameter, "BUV805-A");
+        assert_eq!(either.smear_example.as_deref(), Some("sample2"));
+    }
+}

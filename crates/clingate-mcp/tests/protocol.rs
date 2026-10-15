@@ -205,6 +205,8 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "fit_rule",
         "pick_rule",
         "pick_settings",
+        "test_report",
+        "rule_report",
         "gate_profile",
         "gate_picture",
         "read_positioning_code",
@@ -1459,5 +1461,205 @@ fn the_instructions_quote_the_review_s_own_limit() {
         clingate_mcp::INSTRUCTIONS
             .contains(&format!("gate sits {limit} or more of its parent's IQRs")),
         "the instructions no longer say how far from its peers a gate is flagged"
+    );
+}
+
+/// The test report over the protocol: kept in the workspace's test_reports
+/// folder, and the same report in the answer.
+#[test]
+fn a_test_report_is_made_over_the_protocol() {
+    let folder = workspace_with_rules("test-report");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let made = server.call("test_report", json!({}));
+
+    assert_eq!(made["outcome"], "ok", "{made}");
+    let kept_at = Path::new(made["result"]["kept_at"].as_str().unwrap());
+    assert!(kept_at.starts_with(folder.join("test_reports")), "{made}");
+    let report = made["result"]["report"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(kept_at).unwrap(), report);
+    assert!(report.starts_with("# clingate test report"), "{report}");
+    assert!(report.contains("## Sample by sample"), "{report}");
+}
+
+/// A rule's report over the protocol: the report kept with its pictures in
+/// the workspace's test_reports folder, the same report in the answer, and
+/// the pictures after it in the order it lists them.
+#[test]
+fn a_rule_report_is_made_over_the_protocol() {
+    let folder = workspace_with_rules("rule-report");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+    assert_eq!(server.call("preview_rules", json!({}))["outcome"], "ok");
+    assert_eq!(
+        server.call("apply_rule_placements", json!({}))["outcome"],
+        "ok"
+    );
+    // The FMX's placement unsure and the full stain's sure, both in band:
+    // one flagged and one not, so two pictures.
+    let mut run = clingate_core::review::RunRecord::load(&folder)
+        .unwrap()
+        .unwrap();
+    for p in &mut run.placed {
+        let fmx = p.sample.name.as_deref().unwrap().contains("FMX");
+        (p.confidence, p.in_band) = (if fmx { 0.05 } else { 0.9 }, true);
+    }
+    run.save(&folder).unwrap();
+
+    let made = server.request(
+        "tools/call",
+        json!({"name": "rule_report", "arguments": {"population": "Tmem"}}),
+    );
+
+    let content = made["result"]["content"].as_array().unwrap();
+    let said: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(said["outcome"], "ok", "{said}");
+    let kept_at = Path::new(said["result"]["kept_at"].as_str().unwrap());
+    assert!(kept_at.starts_with(folder.join("test_reports")), "{said}");
+    let report = said["result"]["report"].as_str().unwrap();
+    assert_eq!(std::fs::read_to_string(kept_at).unwrap(), report);
+    assert!(
+        report.starts_with("# clingate rule report: Tmem of "),
+        "{report}"
+    );
+    let listed: Vec<&str> = report
+        .lines()
+        .filter_map(|l| l.strip_prefix("- ")?.split_once(".png: "))
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(listed, ["flagged-1", "not-flagged-1"], "{report}");
+    let images = &content[1..];
+    assert_eq!(images.len(), listed.len(), "{report}");
+    for (image, name) in images.iter().zip(listed) {
+        assert_eq!(image["type"], "image");
+        let png = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            image["data"].as_str().unwrap(),
+        )
+        .unwrap();
+        let kept = kept_at.parent().unwrap().join(format!("{name}.png"));
+        assert_eq!(std::fs::read(kept).unwrap(), png);
+    }
+
+    let refused = server.request(
+        "tools/call",
+        json!({"name": "rule_report", "arguments": {"population": "CD999+"}}),
+    );
+    let said: Value =
+        serde_json::from_str(refused["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_ne!(said["outcome"], "ok", "{said}");
+}
+
+/// A rules file naming a parameter by its marker and a reference by its file
+/// name - written by hand, or by an older clingate - previews over the
+/// protocol as it was meant, and list_rules says how to put it right.
+#[test]
+fn a_rule_named_loosely_in_the_file_previews_as_meant_over_the_protocol() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let folder = workspace("rule-named-loosely");
+    let scaling = folder.join("scaling.csv");
+    let marked = std::fs::read_to_string(&scaling)
+        .unwrap()
+        .replace("BUV805-A,BUV805-A,", "BUV805-A,CD69,");
+    std::fs::write(&scaling, marked).unwrap();
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "CD69".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+            rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+        },
+    );
+    store
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let listed = server.call("list_rules", json!({}));
+    let previewed = server.call("preview_rules", json!({}));
+
+    assert!(
+        listed
+            .to_string()
+            .contains("parameter CD69 is the channel BUV805-A"),
+        "{listed}"
+    );
+    assert_eq!(previewed["outcome"], "ok", "{previewed}");
+    assert_eq!(
+        previewed["result"]["not_positioned"],
+        json!([]),
+        "{previewed}"
+    );
+    assert_eq!(
+        previewed["result"]["references"].as_array().unwrap().len(),
+        1,
+        "sample1 is the reference: {previewed}"
+    );
+}
+
+/// The reports write into the workspace and destroy nothing, and their hints
+/// say so - a client trusting a read-only hint would let them write unasked.
+#[test]
+fn the_reports_say_they_write_but_destroy_nothing() {
+    let mut server = Server::start();
+
+    let tools = server.request("tools/list", json!({}));
+
+    for name in ["test_report", "rule_report"] {
+        let tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
+        assert_eq!(tool["annotations"]["destructiveHint"], false, "{tool}");
+    }
+    for name in ["test_report", "rule_report"] {
+        assert!(
+            clingate_mcp::INSTRUCTIONS.contains(&format!("{name}, "))
+                || clingate_mcp::INSTRUCTIONS.contains(&format!("{name} - only")),
+            "{name} is among the tools that read the events only when asked"
+        );
+    }
+}
+
+/// Rules written straight into the file named markers and file names a run
+/// could not find: the instructions say a rule is written only through
+/// update_rule, with the workspace open.
+#[test]
+fn the_instructions_say_rules_are_written_only_through_update_rule() {
+    let instructions = clingate_mcp::INSTRUCTIONS.replace('\n', " ");
+
+    assert!(
+        instructions
+            .contains("Write rules only with update_rule, and only with the workspace open"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("never by writing or editing a rules file yourself"),
+        "{instructions}"
     );
 }

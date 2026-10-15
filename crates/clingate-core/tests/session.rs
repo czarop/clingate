@@ -2053,12 +2053,15 @@ fn a_rule_naming_a_marker_and_a_file_is_stored_as_the_channel_and_metadata_row_a
     );
 }
 
+/// What Claude wrote before the names were checked, straight into the file:
+/// listed as wrong so it can be put right, but run as it was meant - a marker
+/// as its channel, a file name as its row in the metadata. A name that is
+/// neither is the run's to refuse, saying why.
 #[test]
-fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_and_the_run() {
+fn a_rule_already_written_with_the_wrong_names_is_listed_as_wrong_and_run_as_meant() {
     use clingate_core::gate_rules::rule_store::{
         Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
     };
-    // What Claude wrote before these checks existed, straight into the file.
     let folder = marked_workspace("session-rule-names-already-wrong");
     let mut store = RuleStore::with_pairing(SamplePairing {
         sample_id_column: "test".into(),
@@ -2070,7 +2073,7 @@ fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_an
             parameter: "CD69".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
-            rule: clingate_core::gate_rules::rule::Rule::AboveTheNegative(Default::default()),
+            rule: band((0.01, 0.02)),
         },
     );
     store.insert(
@@ -2107,27 +2110,44 @@ fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_an
         "{naive:?}"
     );
 
-    // The run says the same, in terms a person can act on - not "no
-    // reference sample to measure".
     let preview = session.preview_rules().unwrap();
-    let said: Vec<String> = preview
+    let refused: Vec<(&str, &str)> = preview
         .not_positioned
         .iter()
-        .map(|n| n.reason.clone())
+        .map(|n| (n.gate.as_str(), n.reason.as_str()))
         .collect();
     assert!(
-        said.iter().all(|r| r != "no reference sample to measure"),
-        "{said:?}"
+        refused.iter().all(|(gate, _)| !gate.starts_with("Tmem")),
+        "{refused:?}"
     );
+    assert_eq!(preview.references.len(), 1, "sample1 is Tmem's reference");
     assert!(
-        said.iter().any(|r| r
-            .contains("the rule positions CD69 but this gate is drawn on BUV805-A and BUV563-A")),
-        "{said:?}"
+        refused
+            .iter()
+            .any(|(_, r)| r.contains("has the sample type FMO, so there is no FMO to measure")),
+        "{refused:?}"
     );
+
+    let mut nothing = store.clone();
+    nothing.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "CD999".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: band((0.01, 0.02)),
+        },
+    );
+    nothing
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let preview = Session::open(&folder).unwrap().preview_rules().unwrap();
     assert!(
-        said.iter()
-            .any(|r| r.contains("has the sample type FMO, so there is no FMO to measure")),
-        "{said:?}"
+        preview.not_positioned.iter().any(|n| n
+            .reason
+            .contains("the rule positions CD999 but this gate is drawn on BUV805-A and BUV563-A")),
+        "{:?}",
+        preview.not_positioned
     );
 }
 
@@ -4403,4 +4423,111 @@ fn a_pick_is_refused_without_a_rule_to_start_from() {
     };
     let refused = session.pick_rules(None, too_many_off, Default::default());
     assert!(refused.unwrap_err().to_string().contains("most_off"));
+}
+
+/// The test report picks for every gate with the settings kept for the
+/// workspace, as pick_rules does, and is kept in the workspace's test_reports
+/// folder; the rules are as they were.
+#[test]
+fn a_test_report_says_each_pick_and_is_kept_in_the_workspace() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    let folder = with_rules("session-test-report");
+    let chosen = PickSettings {
+        most_off: 0.5,
+        ..PickSettings::default()
+    };
+    keep_settings(&folder, &chosen).unwrap();
+    let rules_before =
+        std::fs::read_to_string(clingate_core::workspace::rules_file(&folder)).unwrap();
+    let session = Session::open(&folder).unwrap();
+
+    let answer = session.test_report().unwrap();
+
+    assert!(
+        answer.kept_at.starts_with(folder.join("test_reports")),
+        "{:?}",
+        answer.kept_at
+    );
+    assert_eq!(
+        std::fs::read_to_string(&answer.kept_at).unwrap(),
+        answer.report
+    );
+    assert!(
+        answer
+            .report
+            .contains("no more than 50.00% of its samples off"),
+        "{}",
+        answer.report
+    );
+    let picked = session
+        .pick_rules(None, chosen, Default::default())
+        .unwrap();
+    assert_eq!(picked.picked.len(), 1);
+    for pick in &picked.picked {
+        assert!(answer.report.contains(&pick.best.said), "{}", answer.report);
+    }
+    assert_eq!(
+        std::fs::read_to_string(clingate_core::workspace::rules_file(&folder)).unwrap(),
+        rules_before
+    );
+}
+
+/// A report on one rule's run says which samples the review flagged, as
+/// assess_run does, and is kept with its pictures in a folder of its own in
+/// the workspace's test_reports folder; the run is as it was.
+#[test]
+fn a_rule_report_says_each_sample_the_run_placed_and_keeps_its_pictures() {
+    use clingate_core::review::RunRecord;
+    let (folder, session) = applied_with_confidence("session-rule-report", |name| {
+        if name.contains("FMX") { 0.05 } else { 0.9 }
+    });
+    let run_before = RunRecord::load(&folder).unwrap();
+    let flagged: Vec<String> = session
+        .assess_run()
+        .unwrap()
+        .flags
+        .iter()
+        .map(|f| f.sample.name.clone().unwrap())
+        .collect();
+    assert!(!flagged.is_empty());
+
+    let answer = session.rule_report("Tmem").unwrap();
+
+    let kept = answer.kept_at.parent().unwrap();
+    assert_eq!(kept.parent().unwrap(), folder.join("test_reports"));
+    assert_eq!(
+        std::fs::read_to_string(&answer.kept_at).unwrap(),
+        answer.report
+    );
+    for name in ["sample1_FMX.fcs", "sample2_FS.fcs"] {
+        let row = answer
+            .report
+            .lines()
+            .find(|l| l.contains(&format!("| {name} |")))
+            .unwrap_or_else(|| panic!("{name} in {}", answer.report));
+        assert_eq!(
+            row.contains("| yes |"),
+            flagged.contains(&name.to_string()),
+            "{row}"
+        );
+    }
+    assert!(!answer.pictures.is_empty());
+    for picture in &answer.pictures {
+        assert!(answer.report.contains(&format!("- {}: ", picture.name)));
+        assert_eq!(
+            std::fs::read(kept.join(&picture.name)).unwrap(),
+            picture.png
+        );
+    }
+    assert_eq!(RunRecord::load(&folder).unwrap(), run_before);
+}
+
+#[test]
+fn a_rule_report_needs_a_run_and_a_gate() {
+    let folder = with_rules("session-rule-report-refused");
+    let session = Session::open(&folder).unwrap();
+    let e = format!("{:?}", session.rule_report("Tmem").unwrap_err());
+    assert!(e.contains("No rules run has been applied"), "{e}");
+    assert!(session.rule_report("CD999+").is_err());
+    assert!(!folder.join("test_reports").exists());
 }

@@ -81,3 +81,4 @@
 .review-tile_note { font-size: 0.75rem; font-style: italic; opacity: 0.8; }
 .review-tile_plots { display: flex; gap: 8px; }
 .review-tile_actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.review-tab_report { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 0.8rem; margin: 0.5rem 0; }

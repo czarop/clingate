@@ -4,6 +4,27 @@
 
 ### Added
 
+- **A rule report** (Review tab, "Report on this rule"; `rule_report` in the
+  tools for Claude). How the rule of the gate shown did in the last applied
+  run, on every sample: the rule then and now, where each line went, how sure
+  the rule was, whether the review flagged it and why, and what the gate
+  holds now - with every sample's plot, the flagged and the rest in separate
+  pictures, numbered as the table numbers them. Kept with its pictures in a
+  folder of its own in `test_reports`, to send on. Nothing in the workspace
+  changes. See `docs/test-report.md`.
+
+- **A test report** (Gate Rules tab, "Make a test report"; `test_report` in
+  the tools for Claude). On the workspace as it stands, it picks a rule for
+  every gate a rule places with the pick settings typed in the pick box (the
+  tools: those last kept), scores the
+  picks and the rules as they stand against the hand gating sample by
+  sample, and writes everything - what was picked and how each kind did,
+  every sample's agreement beside the rule as it stands, every problem met,
+  how long each step took - to one Markdown file in the workspace's
+  `test_reports` folder, to send on. "Copy the report" puts it on the
+  clipboard. A step that fails or panics is said in the report rather than
+  losing it. Nothing in the workspace changes. See `docs/test-report.md`.
+
 - **Scoring the rules against hand gating** (`score_rules` in the tools for
   Claude). On a workspace gated by hand, every rule - or one population's -
   runs on the full files, each gate under its parent as drawn so one wrong
@@ -548,6 +569,25 @@
   the setting stayed in the form but no longer did anything.
 
 ### Fixed
+
+- **A rule naming a marker or a file name runs as meant.** A rules file
+  written by hand, or by an older clingate, could name a rule's parameter by
+  its marker (`CD3`) or its reference by its file name; the run looked for
+  them as written and refused the gate on every sample - pausing for each to
+  be placed by hand, or listing it as placed on no sample. A run now reads a
+  marker as its channel and a file name as its row in the metadata, as
+  `update_rule` writes them, in the app and the tools alike. `list_rules`
+  still says the names are not as the file should hold them; a name that is
+  neither is refused, saying why.
+  Claude is told to write rules only through `update_rule`, with the
+  workspace open - never by writing the rules file itself, which nothing
+  checks.
+
+- **A rectangle made a polygon stays a polygon.** Converted in the editor,
+  it was saved - and sent to Omiq - as the rectangle it was imported as, so
+  it was a rectangle again the next time the workspace was opened. It is now
+  saved as a polygon through the rectangle's corners, at its own position and
+  each file's; undone, it is saved as the rectangle again.
 
 - **A rule's reference sample is chosen from the workspace's files,** not
   every file the metadata names.

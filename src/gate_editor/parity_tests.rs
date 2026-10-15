@@ -44,6 +44,8 @@ use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
 use crate::gate_editor::route::provide_document;
+use crate::gate_editor::rule_report_button::RuleReportRun;
+use crate::gate_editor::test_report_panel::TestReportRun;
 use crate::gate_editor::workspace_window::{AxesStore, GateStore, Handles, MetadataStore};
 
 // ── the app, headless ────────────────────────────────────────────────────
@@ -54,6 +56,8 @@ struct Held {
     workspace: Handles,
     rules_run: RulesRun,
     pick_run: PickRun,
+    test_report_run: TestReportRun,
+    rule_report_run: RuleReportRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -87,6 +91,8 @@ fn Probe(holder: Holder) -> Element {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
         pick_run: PickRun::from_context(),
+        test_report_run: TestReportRun::from_context(),
+        rule_report_run: RuleReportRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -358,6 +364,71 @@ fn a_run_on_a_file_with_no_sample_positions_is_exported_with_them_the_same() {
     assert!(
         !positioned.is_empty(),
         "the run's positions are not in the export"
+    );
+}
+
+/// A rules file naming a parameter by its marker and a reference by its file
+/// name - as one written by hand, or by an older clingate - is run by the
+/// Rules tab as the tools run it: as the channel and the metadata row meant.
+#[test]
+fn a_rule_naming_a_marker_and_a_file_name_runs_the_same_in_the_app_and_the_tools() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let (tools, ours) = twins("parity-rule-names");
+    for folder in [&tools, &ours] {
+        let scaling = folder.join("scaling.csv");
+        let marked = std::fs::read_to_string(&scaling)
+            .unwrap()
+            .replace("BUV805-A,BUV805-A,", "BUV805-A,CD69,");
+        std::fs::write(&scaling, marked).unwrap();
+        let mut store = RuleStore::with_pairing(SamplePairing {
+            sample_id_column: "test".into(),
+            ..SamplePairing::default()
+        });
+        store.insert(
+            RuleTarget::named("Tmem"),
+            GateRule {
+                parameter: "CD69".into(),
+                bound: Bound::Above,
+                measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+                rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            },
+        );
+        store
+            .save(&clingate_core::workspace::rules_file(folder))
+            .unwrap();
+    }
+    let mut session = Session::open(&tools).unwrap();
+    let mut app = App::new();
+    app.open(&ours);
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    app.run_rules();
+
+    let kept = |folder: &Path| {
+        let mut record = clingate_core::review::RunRecord::load(folder)
+            .unwrap()
+            .expect("the run is kept");
+        record.applied_at.clear();
+        record
+    };
+    let ran = kept(&ours);
+    assert!(ran.skipped.is_empty(), "{:?}", ran.skipped);
+    assert_eq!(
+        ran.placed.len() + ran.kept.iter().filter(|k| k.met_rule).count(),
+        1,
+        "sample2 is placed from sample1"
+    );
+    assert_eq!(ran, kept(&tools), "the kept runs differ");
+    same(
+        "a run of a rule named loosely",
+        &session,
+        &app,
+        &tools,
+        &ours,
     );
 }
 
@@ -1371,6 +1442,72 @@ fn a_rectangle_made_a_polygon_from_the_menu_is_one_for_every_sample() {
     assert!(!shown_t(&mut app, "s1").1, "a rectangle again");
 }
 
+/// A rectangle from the gating file, made a polygon from the menu and saved,
+/// is a polygon in the file - and so when the workspace is opened again, and
+/// in Omiq. Undone and saved, it is the rectangle again.
+#[test]
+fn an_imported_rectangle_made_a_polygon_is_saved_as_one() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, ShapeTarget, act};
+    let (_, ours) = twins("shape-menu-polygon-saved");
+    let mut app = App::new();
+    app.open(&ours);
+    let saved_type = |file: &Path| {
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        document["tree"]["filterContainers"]["0lmI"]["defaultFilter"]["type"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        saved_type(&ours.join("gating.omiqgt")),
+        "RectangleGate",
+        "IFNy+Il-2+ comes in a rectangle"
+    );
+
+    app.with(|held| {
+        let resolver = held
+            .gates
+            .peek()
+            .get_current_sample(Arc::from("sample1"), &Default::default());
+        let menu = ShapeMenu {
+            gate_id: Arc::from("0lmI"),
+            target: ShapeTarget::Rectangle,
+            at_pixel: (0.0, 0.0),
+            at: (0.0, 0.0),
+        };
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[],
+            ("Alexa Fluor 700-A", "BUV737-A"),
+            &menu,
+            ShapeAction::ConvertToPolygon,
+        )
+    })
+    .unwrap();
+    let saved = app.with(|held| held.edits.save()).unwrap();
+
+    assert_eq!(saved_type(&saved), "PolygonGate");
+    let reopened = Session::open(&ours).unwrap();
+    let id: Arc<str> = Arc::from("0lmI");
+    assert!(matches!(
+        reopened
+            .gates()
+            .registered_gate(&id)
+            .unwrap()
+            .get_gate_ref(Some(&id))
+            .unwrap()
+            .geometry,
+        flow_gates::GateGeometry::Polygon { .. }
+    ));
+
+    assert!(app.with(|held| held.edits.undo()));
+    let saved = app.with(|held| held.edits.save()).unwrap();
+    assert_eq!(saved_type(&saved), "RectangleGate", "undone");
+}
+
 /// A point deleted from a notch would fill it over the gate sitting in it:
 /// with gates kept apart, the menu refuses it and says why.
 #[test]
@@ -1493,6 +1630,101 @@ fn a_pick_on_the_rules_tab_keeps_what_the_tools_keep() {
     assert_eq!(ours[0].candidates, theirs[0].candidates);
     assert_eq!(ours[0].passed, theirs[0].passed);
     assert_eq!(ours[0].kinds, theirs[0].kinds);
+}
+
+/// The test report the Rules tab makes is the one `test_report` makes on the
+/// same workspace with the same pick settings, line for line below its header
+/// - the tab's being those typed in the pick box, not those kept.
+#[test]
+fn the_rules_tab_s_test_report_is_the_tools_report() {
+    use clingate_core::gate_rules::pick::{PickSettings, keep_settings};
+    use clingate_core::test_report::test_report;
+
+    use crate::gate_editor::pick_panel::Typed;
+
+    let body = |report: &str| {
+        let from = report.find("## Workspace").unwrap();
+        let to = report.find("## Timings").unwrap();
+        report[from..to].to_string()
+    };
+    let settings = PickSettings {
+        most_off: 0.3,
+        ..PickSettings::default()
+    };
+    let (tools, ours) = twins("test-report");
+    keep_settings(&tools, &settings).unwrap();
+    let session = Session::open(&tools).unwrap();
+    let theirs = test_report(
+        &session.test_job("then".into()).unwrap(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let (folder, job) = app
+        .with(|held| {
+            held.test_report_run
+                .job("then".into(), &Typed::of(&settings))
+        })
+        .unwrap();
+    let mine = test_report(&job, &AtomicBool::new(false), |_| {}).unwrap();
+
+    assert_eq!(folder, ours);
+    assert!(mine.contains("| Made | then |"), "{mine}");
+    assert!(
+        mine.contains("no more than 30.00% of its samples off"),
+        "{mine}"
+    );
+    assert!(mine.contains("### Tmem"), "a pick to compare: {mine}");
+    assert_eq!(body(&mine), body(&theirs));
+}
+
+/// The report the Review tab makes on a rule is the one `rule_report` makes
+/// on the same run and gating, below its header, pictures and all.
+#[test]
+fn the_review_tab_s_rule_report_is_the_tools_report() {
+    use clingate_core::rule_report::rule_report;
+
+    let body = |report: &str| {
+        let from = report.find("## The rule").unwrap();
+        let to = report.find("## Timings").unwrap();
+        report[from..to].to_string()
+    };
+    let (tools, ours) = twins("rule-report");
+    for folder in [&tools, &ours] {
+        let mut session = Session::open(folder).unwrap();
+        session.preview_rules().unwrap();
+        session.apply_previewed_rules().unwrap();
+        session.save().unwrap();
+    }
+    let tools_job = Session::open(&tools)
+        .unwrap()
+        .rule_job("Tmem", "then".into())
+        .unwrap();
+    let theirs = rule_report(&tools_job, &AtomicBool::new(false), |_, _| {}).unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let job = app
+        .with(|held| held.rule_report_run.job("then".into(), &tools_job.gate_id))
+        .unwrap();
+    let mine = rule_report(&job, &AtomicBool::new(false), |_, _| {}).unwrap();
+
+    assert_eq!(job.folder, ours);
+    assert!(
+        mine.markdown.contains("| Made | then |"),
+        "{}",
+        mine.markdown
+    );
+    assert!(
+        mine.markdown.contains("| 2 | sample2_FS.fcs |"),
+        "{}",
+        mine.markdown
+    );
+    assert_eq!(body(&mine.markdown), body(&theirs.markdown));
+    assert_eq!(mine.pictures, theirs.pictures);
 }
 
 /// The gate hierarchy opens closed, and as each workspace's was left: a

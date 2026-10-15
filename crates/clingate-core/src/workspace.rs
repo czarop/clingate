@@ -205,6 +205,14 @@ pub const FIGURES_DIR: &str = "figures";
 /// The contact sheet's file name, in [`FIGURES_DIR`], until another is typed.
 pub const FIGURE_FILE: &str = "gate_gallery.pdf";
 
+/// The workspace's name: its folder's.
+pub fn name_of(folder: &Path) -> String {
+    folder.file_name().map_or_else(
+        || folder.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
 /// A workspace's rules file.
 pub fn rules_file(folder: &Path) -> PathBuf {
     folder.join(RULES_DIR).join(RULES_FILE)
