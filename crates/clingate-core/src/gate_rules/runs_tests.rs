@@ -2206,3 +2206,192 @@ mod test_report_of_a_pick {
         assert!(report.contains("- 4 specimens"), "{report}");
     }
 }
+
+/// A run reads every name a rule holds as the run needs it - a marker as its
+/// channel, a file name as its row in the metadata - whatever the rules file
+/// says, in every place a rule names one.
+mod a_run_reads_names {
+    use super::*;
+    use crate::AxisInfo;
+    use crate::axis_store::Param;
+    use crate::gate_rules::rule::{EdgeFrom, FromGateRule, NextToRule, PhenotypeRule, Side};
+    use crate::omiq::metadata::MetaDataStore;
+
+    /// Two files the metadata calls sample1 and sample2; CD69 on BUV805-A,
+    /// CD4 on BV785-A, and CD3 on two channels at once.
+    fn inputs(rules: &RuleStore) -> RunInputs {
+        let dir = scratch("run-reads-names");
+        let csv = dir.join("metadata.csv");
+        std::fs::write(
+            &csv,
+            "OmiqID,Filename,test\nsample1,sample1_FMX.fcs,one\nsample2,sample2_FS.fcs,two\n",
+        )
+        .unwrap();
+        let (metadata, _) = MetaDataStore::read_omiq(csv).unwrap();
+        let mut axes = im::HashMap::with_hasher(FxBuildHasher);
+        for (channel, marker) in [
+            ("BUV805-A", "CD69"),
+            ("BV785-A", "CD4"),
+            ("BUV563-A", "CD3"),
+            ("BUV661-A", "CD3"),
+        ] {
+            axes.insert(
+                Arc::from(channel),
+                AxisInfo {
+                    param: Param {
+                        marker: Arc::from(marker),
+                        fluoro: Arc::from(channel),
+                    },
+                    ..AxisInfo::default()
+                },
+            );
+        }
+        RunInputs::assemble(None, &Default::default(), &metadata, &axes, rules)
+    }
+
+    fn rule(parameter: &str, measured_on: MeasuredOn, rule: Rule) -> GateRule {
+        GateRule {
+            parameter: parameter.into(),
+            bound: Bound::Above,
+            measured_on,
+            rule,
+        }
+    }
+
+    fn read(rules: &RuleStore, gate: &str) -> GateRule {
+        inputs(rules)
+            .rules
+            .get(&RuleTarget::named(gate))
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_band_s_parameter_and_reference_are_its_channel_and_metadata_row() {
+        let mut rules = RuleStore::default();
+        rules.insert(
+            RuleTarget::named("a"),
+            rule(
+                "cd69",
+                MeasuredOn::File("sample1_FMX.fcs".into()),
+                Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            ),
+        );
+
+        let read = read(&rules, "a");
+
+        assert_eq!(&*read.parameter, "BUV805-A");
+        assert_eq!(read.measured_on, MeasuredOn::File("sample1".into()));
+    }
+
+    #[test]
+    fn a_name_already_as_the_run_reads_it_or_naming_nothing_alone_is_kept() {
+        let mut rules = RuleStore::default();
+        let kept = [
+            ("channel", "BV785-A", "sample2"),
+            ("two channels", "CD3", "nothing.fcs"),
+            ("no channel", "CD999", "sample1"),
+        ];
+        for (gate, parameter, file) in kept {
+            rules.insert(
+                RuleTarget::named(gate),
+                rule(
+                    parameter,
+                    MeasuredOn::File(file.into()),
+                    Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+                ),
+            );
+        }
+
+        let read = inputs(&rules).rules;
+
+        for (gate, parameter, file) in kept {
+            let rule = read.get(&RuleTarget::named(gate)).unwrap();
+            assert_eq!(&*rule.parameter, parameter, "{gate}");
+            assert_eq!(rule.measured_on, MeasuredOn::File(file.into()), "{gate}");
+        }
+    }
+
+    #[test]
+    fn every_place_a_rule_names_a_marker_or_a_file_is_read_as_the_run_reads_it() {
+        let mut rules = RuleStore::default();
+        rules.insert(
+            RuleTarget::named("next"),
+            rule(
+                "",
+                MeasuredOn::Itself,
+                Rule::NextToGate(NextToRule {
+                    anchor: RuleTarget::named("a"),
+                    parameter: "CD69".into(),
+                    side: Side::Lower,
+                    meet: Default::default(),
+                    gap: 0.0,
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("edges"),
+            rule(
+                "",
+                MeasuredOn::Itself,
+                Rule::FromAnotherGate(FromGateRule {
+                    edges: vec![EdgeFrom {
+                        anchor: RuleTarget::named("a"),
+                        parameter: "CD4".into(),
+                        side: Side::Lower,
+                        anchor_side: Side::Upper,
+                        gap: 0.0,
+                    }],
+                    ..FromGateRule::default()
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("phenotype"),
+            rule(
+                "",
+                MeasuredOn::File("sample2_FS.fcs".into()),
+                Rule::MatchThePhenotype(PhenotypeRule {
+                    markers: vec!["CD69".into(), "cd4".into()],
+                    pinned: vec!["CD4".into()],
+                    ..PhenotypeRule::default()
+                }),
+            ),
+        );
+        rules.insert(
+            RuleTarget::named("valley"),
+            rule(
+                "CD69",
+                MeasuredOn::File("sample1".into()),
+                Rule::ValleyOrSmear(ValleyOrSmearRule {
+                    smear_example: Some("sample2_FS.fcs".into()),
+                    ..ValleyOrSmearRule::default()
+                }),
+            ),
+        );
+
+        let Rule::NextToGate(next) = read(&rules, "next").rule else {
+            unreachable!()
+        };
+        let Rule::FromAnotherGate(edges) = read(&rules, "edges").rule else {
+            unreachable!()
+        };
+        let phenotype = read(&rules, "phenotype");
+        let Rule::MatchThePhenotype(wanted) = &phenotype.rule else {
+            unreachable!()
+        };
+        let valley = read(&rules, "valley");
+        let Rule::ValleyOrSmear(either) = &valley.rule else {
+            unreachable!()
+        };
+
+        assert_eq!(&*next.parameter, "BUV805-A");
+        assert_eq!(&*edges.edges[0].parameter, "BV785-A");
+        let channels = |names: &[Arc<str>]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(channels(&wanted.markers), ["BUV805-A", "BV785-A"]);
+        assert_eq!(channels(&wanted.pinned), ["BV785-A"]);
+        assert_eq!(phenotype.measured_on, MeasuredOn::File("sample2".into()));
+        assert_eq!(&*valley.parameter, "BUV805-A");
+        assert_eq!(either.smear_example.as_deref(), Some("sample2"));
+    }
+}

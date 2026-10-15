@@ -56,7 +56,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, pick_rule, preview_rules, rule_report - only \
+fit_rule, pick_rule, preview_rules, test_report, rule_report - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -1118,8 +1118,8 @@ impl Clingate {
     /// does with the pick settings last kept, score the picks and the rules as they
     /// stand against the hand gating sample by sample, and keep the report in the workspace's
     /// test_reports folder for them to send on. Takes as long as a pick of every gate - say
-    /// so. Changes nothing else.
-    #[tool]
+    /// so. Reads every sample's events: only when the user asks for it. Changes nothing else.
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn test_report(&self) -> String {
         self.run(|s| s.test_report()).await
     }
@@ -1130,7 +1130,7 @@ impl Clingate {
     /// flagged and the rest in separate pictures numbered as the table numbers them. Kept with
     /// its pictures in the workspace's test_reports folder for the user to send on. Reads every
     /// sample's events: only when the user asks for it. Changes nothing else.
-    #[tool(annotations(read_only_hint = true))]
+    #[tool(annotations(read_only_hint = false, destructive_hint = false))]
     async fn rule_report(
         &self,
         Parameters(args): Parameters<RuleReportArgs>,

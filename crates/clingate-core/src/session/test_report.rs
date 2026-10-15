@@ -72,6 +72,7 @@ impl Session {
     /// stands, made `made`.
     pub fn rule_job(&self, population: &str, made: String) -> Result<RuleReportJob, Refusal> {
         let (node, _) = self.one_population(population)?;
+        let no_rules = crate::gate_rules::rule_store::RuleStore::default();
         let gate_id = self
             .gates
             .gate_for_node(&node)
@@ -87,7 +88,7 @@ impl Session {
                 &self.compensation,
                 &self.metadata,
                 &self.axes.settings,
-                &self.rules.clone().unwrap_or_default(),
+                self.rules.as_ref().unwrap_or(&no_rules),
             ),
             axes: self.axes.settings.clone(),
             gate_id: gate_id.to_string(),
@@ -115,9 +116,6 @@ impl Session {
     }
 
     fn workspace_name(&self) -> String {
-        self.folder.file_name().map_or_else(
-            || self.folder.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        )
+        crate::workspace::name_of(&self.folder)
     }
 }

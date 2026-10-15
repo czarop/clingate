@@ -50,10 +50,7 @@ impl TestReportRun {
         }
         let settings = typed.settings(&kept_settings(&folder))?;
         let job = TestJob {
-            workspace: folder.file_name().map_or_else(
-                || folder.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            ),
+            workspace: clingate_core::workspace::name_of(&folder),
             made,
             gates: self.gates.peek().clone(),
             settings,

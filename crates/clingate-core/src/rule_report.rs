@@ -17,7 +17,7 @@ use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 
 use crate::gate_rules::autogate::describe;
-use crate::gate_rules::rule_store::{GateRule, human_order};
+use crate::gate_rules::rule_store::{Bound, GateRule, human_order};
 use crate::gate_rules::run::RunInputs;
 use crate::gates::GateState;
 use crate::omiq::serialise::AxisSettings;
@@ -239,13 +239,16 @@ fn header(job: &RuleReportJob, run: &RunRecord, gate: &str) -> String {
     )
 }
 
-fn rule_said(rule: &GateRule) -> String {
+pub(crate) fn rule_said(rule: &GateRule) -> String {
+    let on = match (&*rule.parameter, rule.bound) {
+        ("", _) => String::new(),
+        (parameter, Bound::Above) => format!(" on {parameter}, keeping above the line"),
+        (parameter, Bound::Below) => format!(" on {parameter}, keeping below the line"),
+    };
     format!(
-        "{} - {} on {}, keeping {} the line, {}",
+        "{} - {}{on}, {}",
         rule.rule.kind(),
         rule.rule.describe(),
-        rule.parameter,
-        format!("{:?}", rule.bound).to_lowercase(),
         measured_on(&rule.measured_on)
     )
 }

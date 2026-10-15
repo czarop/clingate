@@ -1618,3 +1618,30 @@ fn a_rule_named_loosely_in_the_file_previews_as_meant_over_the_protocol() {
         "sample1 is the reference: {previewed}"
     );
 }
+
+/// The reports write into the workspace and destroy nothing, and their hints
+/// say so - a client trusting a read-only hint would let them write unasked.
+#[test]
+fn the_reports_say_they_write_but_destroy_nothing() {
+    let mut server = Server::start();
+
+    let tools = server.request("tools/list", json!({}));
+
+    for name in ["test_report", "rule_report"] {
+        let tool = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        assert_eq!(tool["annotations"]["readOnlyHint"], false, "{tool}");
+        assert_eq!(tool["annotations"]["destructiveHint"], false, "{tool}");
+    }
+    for name in ["test_report", "rule_report"] {
+        assert!(
+            clingate_mcp::INSTRUCTIONS.contains(&format!("{name}, "))
+                || clingate_mcp::INSTRUCTIONS.contains(&format!("{name} - only")),
+            "{name} is among the tools that read the events only when asked"
+        );
+    }
+}

@@ -44,10 +44,7 @@ impl RuleReportRun {
             .ok_or("Open a workspace folder first - the report is kept in it")?;
         let (inputs, axes) = self.run_with.inputs_now();
         Ok(RuleReportJob {
-            workspace: folder.file_name().map_or_else(
-                || folder.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            ),
+            workspace: clingate_core::workspace::name_of(&folder),
             made,
             folder,
             gates: self.gates.peek().clone(),

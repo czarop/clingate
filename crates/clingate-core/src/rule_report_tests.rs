@@ -73,7 +73,7 @@ fn the_flagged_come_first_numbered_as_their_plots_and_pictured_apart() {
         let tile = tile_of(picture);
         assert_eq!((tile.width(), tile.height()), (300, 300), "one plot each");
         // "1" is the font's middle pixel on its top row; "2" its whole row.
-        assert_eq!(*tile.get_pixel(6, 3) == ink, true);
+        assert!(*tile.get_pixel(6, 3) == ink);
         assert_eq!(*tile.get_pixel(3, 3) == ink, !top_middle);
     }
 }
@@ -254,4 +254,32 @@ fn a_report_is_kept_in_a_folder_of_its_own_named_by_gate_and_when() {
     assert_eq!(path, at.join("report.md"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "# report");
     assert_eq!(std::fs::read(at.join("flagged-1.png")).unwrap(), [1, 2, 3]);
+}
+
+#[test]
+fn a_rule_is_said_with_the_side_it_keeps_and_without_a_parameter_it_has_not() {
+    use crate::gate_rules::rule::PhenotypeRule;
+    use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
+    let band = GateRule {
+        parameter: "BUV805-A".into(),
+        bound: Bound::Below,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+    };
+    let phenotype = GateRule {
+        parameter: "".into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::File("sample1".into()),
+        rule: Rule::MatchThePhenotype(PhenotypeRule::default()),
+    };
+
+    let band = crate::rule_report::rule_said(&band);
+    let phenotype = crate::rule_report::rule_said(&phenotype);
+
+    assert!(
+        band.contains(" on BUV805-A, keeping below the line, measured on each sample itself"),
+        "{band}"
+    );
+    assert!(!phenotype.contains(" on ,"), "{phenotype}");
+    assert!(phenotype.ends_with(", measured on sample1"), "{phenotype}");
 }

@@ -105,7 +105,6 @@ fn as_a_run_reads(
             Named::Channel(_) => one_parameter(name, &panel)
                 .ok()
                 .map(|at| Arc::from(panel[at].channel.as_str())),
-            Named::File(_) if metadata.metadata().contains_key(name) => None,
             Named::File(_) => metadata.file_name_to_gating_id().get(name).cloned(),
         };
         Ok::<_, std::convert::Infallible>(found.unwrap_or_else(|| name.clone()))

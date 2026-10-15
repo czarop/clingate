@@ -4,9 +4,9 @@
 //! It picks a rule for every gate a rule places, as the Gate Rules tab's pick
 //! does, scores the picks and the rules as they stand against the gating drawn
 //! by hand, sample by sample, and says what went wrong where. Nothing in the
-//! workspace changes. Each part of the report is one `section` below: a new
-//! thing to test is a new section, called from [`test_report`], and a change
-//! to what the report says raises [`SUITE_VERSION`].
+//! workspace changes. Each part of the report is one function below, pushed
+//! from [`test_report`]: a new thing to test is a new function there, and a
+//! change to what the report says raises [`SUITE_VERSION`].
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -97,7 +97,7 @@ pub fn test_report(
             Vec::new()
         }
     };
-    let section = picked(&picks, &mut report.problems);
+    let section = picked(&picks, &mut report);
     report.push(section);
 
     let chosen = chosen_rules(&picks);
@@ -322,7 +322,7 @@ fn settings(settings: &PickSettings) -> String {
 }
 
 /// Each gate's pick: a line each, then how each kind tried did.
-fn picked(picks: &Picks, problems: &mut Vec<String>) -> String {
+fn picked(picks: &Picks, report: &mut Report) -> String {
     let mut out = String::from(
         "\n## Picks\n\n\
          | Gate | Result | Picked | Typical | Lowest | Off | Gain on the rule as it stands | Rules tried |\n\
@@ -333,10 +333,7 @@ fn picked(picks: &Picks, problems: &mut Vec<String>) -> String {
         match pick {
             Ok(pick) => {
                 for problem in &pick.fit.problems {
-                    let said = format!("{}: {problem}", target.describe());
-                    if !problems.contains(&said) {
-                        problems.push(said);
-                    }
+                    report.problem(format!("{}: {problem}", target.describe()));
                 }
                 out.push_str(&pick_line(target, pick));
                 each.push_str(&pick_detail(target, pick));

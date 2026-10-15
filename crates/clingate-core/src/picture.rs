@@ -382,8 +382,11 @@ mod tests {
         assert_eq!(*image.get_pixel(25, 1), Rgba([255; 4]));
         assert_eq!(*image.get_pixel(27, 1), Rgba([128, 128, 128, 255]));
         assert_eq!(*image.get_pixel(1, 21), Rgba([128, 128, 128, 255]));
-        // Too small a tile is written on as far as it goes.
-        number_tile(&mut blank(5, 5, 0), 123);
+        // Too small a tile is written on as far as it goes: the patch behind
+        // the digits, and the first of the "1", which starts at (6, 3), off it.
+        let mut small = blank(5, 5, 0);
+        number_tile(&mut small, 123);
+        assert!(small.pixels().all(|p| *p == Rgba([255; 4])));
     }
 
     #[test]
