@@ -5350,3 +5350,64 @@ fn a_gate_with_positions_for_some_samples_loads_with_one_for_every_sample() {
         "sample2 still shows the gate as drawn"
     );
 }
+
+/// A rectangle made a polygon in the editor is written as a polygon - its
+/// own position and each file's - through the rectangle's four corners, and
+/// is a polygon when the file is read back. It used to be written as the
+/// type it was imported as, the rectangle around it, and so came back a
+/// rectangle.
+#[test]
+fn a_rectangle_made_a_polygon_is_saved_and_read_back_as_a_polygon() {
+    let mut state = import_with_metadata(BEFORE);
+    let id: Arc<str> = Arc::from("0lmI");
+
+    state.convert_to_polygon(&id).unwrap();
+    let written = to_omiq_document(
+        &state,
+        &fixture_metadata(),
+        &Default::default(),
+        &fixture_axes(),
+    )
+    .unwrap();
+
+    let container = &objects(&written, &["tree", "filterContainers"])["0lmI"];
+    // The corners of the fixture's IFNy+Il-2+ rectangle, min (0.5645255,
+    // 0.6055692) and max (4.656016, 5.7699304), in the order the conversion
+    // walks them.
+    let corners = [
+        (0.5645255, 0.6055692),
+        (4.656016, 0.6055692),
+        (4.656016, 5.7699304),
+        (0.5645255, 5.7699304),
+    ];
+    let is_the_polygon = |filter: &serde_json::Value| {
+        assert_eq!(filter["type"], "PolygonGate", "{filter}");
+        let vertices = filter["vertices"].as_array().unwrap();
+        assert_eq!(vertices.len(), 4, "{filter}");
+        for (vertex, (x, y)) in vertices.iter().zip(corners) {
+            assert!(close(vertex["f1Val"].as_f64().unwrap(), x), "{filter}");
+            assert!(close(vertex["f2Val"].as_f64().unwrap(), y), "{filter}");
+        }
+    };
+    is_the_polygon(&container["defaultFilter"]);
+    let per_file = container["perFileFilters"].as_object().unwrap();
+    assert_eq!(per_file.len(), 2);
+    for filter in per_file.values() {
+        assert_eq!(filter["type"], "PolygonGate", "{filter}");
+    }
+    // Every other rectangle is written as it was.
+    assert_eq!(
+        objects(&written, &["tree", "filterContainers"])["2PJQ"]["defaultFilter"]["type"],
+        "RectangleGate"
+    );
+
+    let read_back = import_json(&written.to_string());
+    let gate = read_back.registered_gate(&id).unwrap();
+    assert!(
+        matches!(
+            gate.get_gate_ref(Some(&id)).unwrap().geometry,
+            flow_gates::GateGeometry::Polygon { .. }
+        ),
+        "read back as a polygon"
+    );
+}

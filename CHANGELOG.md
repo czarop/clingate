@@ -570,6 +570,12 @@
 
 ### Fixed
 
+- **A rectangle made a polygon stays a polygon.** Converted in the editor,
+  it was saved - and sent to Omiq - as the rectangle it was imported as, so
+  it was a rectangle again the next time the workspace was opened. It is now
+  saved as a polygon through the rectangle's corners, at its own position and
+  each file's; undone, it is saved as the rectangle again.
+
 - **A rule's reference sample is chosen from the workspace's files,** not
   every file the metadata names.
 

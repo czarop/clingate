@@ -1377,6 +1377,72 @@ fn a_rectangle_made_a_polygon_from_the_menu_is_one_for_every_sample() {
     assert!(!shown_t(&mut app, "s1").1, "a rectangle again");
 }
 
+/// A rectangle from the gating file, made a polygon from the menu and saved,
+/// is a polygon in the file - and so when the workspace is opened again, and
+/// in Omiq. Undone and saved, it is the rectangle again.
+#[test]
+fn an_imported_rectangle_made_a_polygon_is_saved_as_one() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, ShapeTarget, act};
+    let (_, ours) = twins("shape-menu-polygon-saved");
+    let mut app = App::new();
+    app.open(&ours);
+    let saved_type = |file: &Path| {
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        document["tree"]["filterContainers"]["0lmI"]["defaultFilter"]["type"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        saved_type(&ours.join("gating.omiqgt")),
+        "RectangleGate",
+        "IFNy+Il-2+ comes in a rectangle"
+    );
+
+    app.with(|held| {
+        let resolver = held
+            .gates
+            .peek()
+            .get_current_sample(Arc::from("sample1"), &Default::default());
+        let menu = ShapeMenu {
+            gate_id: Arc::from("0lmI"),
+            target: ShapeTarget::Rectangle,
+            at_pixel: (0.0, 0.0),
+            at: (0.0, 0.0),
+        };
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[],
+            ("Alexa Fluor 700-A", "BUV737-A"),
+            &menu,
+            ShapeAction::ConvertToPolygon,
+        )
+    })
+    .unwrap();
+    let saved = app.with(|held| held.edits.save()).unwrap();
+
+    assert_eq!(saved_type(&saved), "PolygonGate");
+    let reopened = Session::open(&ours).unwrap();
+    let id: Arc<str> = Arc::from("0lmI");
+    assert!(matches!(
+        reopened
+            .gates()
+            .registered_gate(&id)
+            .unwrap()
+            .get_gate_ref(Some(&id))
+            .unwrap()
+            .geometry,
+        flow_gates::GateGeometry::Polygon { .. }
+    ));
+
+    assert!(app.with(|held| held.edits.undo()));
+    let saved = app.with(|held| held.edits.save()).unwrap();
+    assert_eq!(saved_type(&saved), "RectangleGate", "undone");
+}
+
 /// A point deleted from a notch would fill it over the gate sitting in it:
 /// with gates kept apart, the menu refuses it and says why.
 #[test]
