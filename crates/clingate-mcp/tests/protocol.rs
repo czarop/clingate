@@ -213,6 +213,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "replay_rules",
         "replay_case",
         "update_rule",
+        "copy_rules",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -1662,4 +1663,44 @@ fn the_instructions_say_rules_are_written_only_through_update_rule() {
         instructions.contains("never by writing or editing a rules file yourself"),
         "{instructions}"
     );
+}
+
+/// A population's rules copied to its sibling over the protocol: shown first,
+/// written only when asked, into the workspace's rules file.
+#[test]
+fn a_population_s_rules_are_copied_to_its_sibling_over_the_protocol() {
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("mcp-copy-rules");
+    let file = clingate_core::workspace::rules_file(&folder);
+    let before = std::fs::read_to_string(&file).unwrap();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let shown = server.call("copy_rules", json!({"from": "1", "to": ["2"]}));
+
+    assert_eq!(shown["outcome"], "ok", "{shown}");
+    assert_eq!(
+        shown["result"]["copied"][0]["population"], "Tmem of 2",
+        "{shown}"
+    );
+    assert_eq!(
+        shown["result"]["left_out"][0]["population"],
+        "teff_naive of 2"
+    );
+    assert!(shown["result"]["written"].is_null());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+
+    let written = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2"], "write": true}),
+    );
+
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let listed = server.call("list_rules", json!({}));
+    assert!(listed.to_string().contains("Tmem of 2"), "{listed}");
+    let refused = server.call("copy_rules", json!({"from": "1", "to": []}));
+    assert_ne!(refused["outcome"], "ok", "{refused}");
 }

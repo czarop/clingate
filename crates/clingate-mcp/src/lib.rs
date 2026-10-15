@@ -164,6 +164,12 @@ a run reads it; a file written any other way is checked by nothing, and a \
 marker or file name in it is not one a run can find. With no workspace open, \
 ask the user which folder to open before writing any rule.
 
+To give sibling populations the rules one of them has - CD8 T cells those of \
+CD4 T cells, say - copy_rules copies every rule under one population to the \
+same gates under the others in one step, rather than a rule at a time. Show \
+the user what it would copy and what it leaves out, and why, then write it \
+on their word; replace a rule a gate already has only when they say so.
+
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
 channel and the metadata row a run reads, and update_rule says what it \
@@ -604,6 +610,19 @@ pub struct ReplayCase {
     pub rule_changes: Option<serde_json::Value>,
     /// The same scope given to replay_rules, if any.
     pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CopyRules {
+    /// The population whose rules to copy - the parent of the gates they place, by its gate
+    /// names, e.g. 'CD4+CD8-'.
+    pub from: String,
+    /// The populations to copy them to, each named the same way, e.g. ['CD4-CD8+', 'TCRgd+'].
+    pub to: Vec<String>,
+    /// Replace a rule a gate there already has (default false: it is kept).
+    pub replace: Option<bool>,
+    /// Write the copies into the rules file (default false: say what would be written).
+    pub write: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1257,6 +1276,26 @@ impl Clingate {
             let changes = rule_changes(args.rule_changes)?;
             let scope = scope(args.scope)?;
             s.replay_case(&changes, scope, &args.case)
+        })
+        .await
+    }
+
+    /// Copy every rule written for a gate directly under one population to the gate of the
+    /// same name under each of several others - a panel's rules from CD4 T cells to CD8, MAIT
+    /// and gamma-delta T cells. A gate a rule reads under the old population (one it takes the
+    /// shape of, sits next to or falls back to) is read under the new one. Says which rules are
+    /// copied, which replace a rule there, and which are left out and why: no gate of that
+    /// name, a gate not drawn on the rule's parameter, a gate it reads missing, or a rule there
+    /// already (kept unless replace). Writes only with write, on the user's word.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn copy_rules(&self, Parameters(args): Parameters<CopyRules>) -> String {
+        self.run(move |s| {
+            s.copy_rules(
+                &args.from,
+                &args.to,
+                args.replace.unwrap_or(false),
+                args.write.unwrap_or(false),
+            )
         })
         .await
     }

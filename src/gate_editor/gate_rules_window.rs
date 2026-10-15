@@ -1822,6 +1822,8 @@ pub fn GateRulesWindow() -> Element {
 
             crate::gate_editor::pick_panel::PickPanel {}
 
+            crate::gate_editor::copy_rules_panel::CopyRulesPanel {}
+
             // ── the sidecar ───────────────────────────────────────────────
             fieldset { class: "gate_rules-form",
                 legend { "Rules file" }

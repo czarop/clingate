@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Copying rules to sibling populations** (Gate Rules tab, "Copy rules to
+  sibling populations"; `copy_rules` in the tools for Claude). Every rule
+  written for a gate directly under one population is copied to the gate of
+  the same name under the populations chosen - CD4 T cells' rules to CD8,
+  MAIT and gamma-delta T cells in one step. A gate a rule reads under the
+  first population - one it takes the shape of, sits next to or falls back
+  to - is read under the new one. A rule is left out, saying why, where there
+  is no gate of its name, the gate is not drawn on the rule's parameter, a gate
+  it reads is missing, or the gate has a rule of its own (kept unless replace
+  is chosen). The test report says what each copy would do.
+
 - **A rule report** (Review tab, "Report on this rule"; `rule_report` in the
   tools for Claude). How the rule of the gate shown did in the last applied
   run, on every sample: the rule then and now, where each line went, how sure

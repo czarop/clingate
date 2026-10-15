@@ -4531,3 +4531,64 @@ fn a_rule_report_needs_a_run_and_a_gate() {
     assert!(session.rule_report("CD999+").is_err());
     assert!(!folder.join("test_reports").exists());
 }
+
+/// 1's rules copied to 2: Tmem, drawn alike, gets 1's rule; teff_naive,
+/// drawn on BV785-A, is left out for it - shown first, written only when
+/// asked, and the run then places 2's Tmem.
+#[test]
+fn a_population_s_rules_are_copied_to_its_sibling_when_asked() {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("session-copy-rules");
+    let mut session = Session::open(&folder).unwrap();
+    let file = clingate_core::workspace::rules_file(&folder);
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let shown = session
+        .copy_rules("1", &["2".to_string()], false, false)
+        .unwrap();
+
+    assert_eq!(shown.written, None);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        before,
+        "nothing written"
+    );
+    let copied: Vec<&str> = shown.copied.iter().map(|c| c.population.as_str()).collect();
+    assert_eq!(copied, ["Tmem of 2"]);
+    assert!(shown.copied[0].problems.is_empty(), "{:?}", shown.copied);
+    assert_eq!(shown.left_out.len(), 1, "{:?}", shown.left_out);
+    assert_eq!(shown.left_out[0].population, "teff_naive of 2");
+    assert!(
+        shown.left_out[0].reason.contains("BV785-A"),
+        "{:?}",
+        shown.left_out
+    );
+
+    let written = session
+        .copy_rules("1", &["2".to_string()], false, true)
+        .unwrap();
+
+    assert_eq!(written.written.as_deref(), Some(file.as_path()));
+    let reopened = Session::open(&folder).unwrap();
+    let rules = reopened.rules().unwrap();
+    assert_eq!(
+        rules.get(&RuleTarget::under("Tmem", "2")),
+        rules.get(&RuleTarget::under("Tmem", "1"))
+    );
+    assert!(rules.get(&RuleTarget::under("teff_naive", "2")).is_none());
+    let preview = session.preview_rules().unwrap();
+    let placed: Vec<String> = preview
+        .would_move
+        .iter()
+        .map(|p| p.gate.clone())
+        .chain(preview.already_in_place.iter().map(|k| k.gate.clone()))
+        .collect();
+    assert!(placed.iter().any(|g| g == "Tmem of 2"), "{placed:?}");
+
+    assert!(
+        session
+            .copy_rules("1", &["1".to_string()], false, false)
+            .is_err()
+    );
+    assert!(session.copy_rules("1", &[], false, false).is_err());
+}

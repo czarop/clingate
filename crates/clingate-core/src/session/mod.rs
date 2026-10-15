@@ -16,6 +16,7 @@
 //! editor does per plot; nothing is kept between questions but the workspace
 //! itself.
 
+mod copy;
 mod edits;
 mod gates;
 pub mod lookup;
@@ -29,6 +30,7 @@ mod pick;
 mod score;
 mod test_report;
 
+pub use copy::{CopiedRule, CopyAnswer, LeftOut};
 pub use edits::{EditState, Exported, Saved};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
 pub use profile::{

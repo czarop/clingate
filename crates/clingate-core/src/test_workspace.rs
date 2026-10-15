@@ -116,3 +116,67 @@ pub fn two_samples_with_a_rule(name: &str) -> PathBuf {
     store.save(&crate::workspace::rules_file(&dir)).unwrap();
     dir
 }
+
+/// [`two_samples`] with a second gate at the top, "2", drawn as "1" is and
+/// holding a Tmem drawn as 1's is and a teff_naive drawn on BV785-A rather than
+/// BUV805-A - two sibling populations with the same gates under them. Rules
+/// for 1's Tmem and teff_naive on BUV805-A, measured on each sample itself.
+pub fn two_samples_with_siblings(name: &str) -> PathBuf {
+    use crate::gate_rules::rule::{Rule, TailFractionRule};
+    use crate::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let dir = two_samples(name);
+    let gating = dir.join("gating.omiqgt");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&gating).unwrap()).unwrap();
+    let tree = &mut document["tree"];
+    for (from, to, name) in [
+        ("uN8Y", "uN82", "2"),
+        ("4ECA", "4EC2", "Tmem"),
+        ("hu4H", "hu42", "teff_naive"),
+    ] {
+        let mut container = tree["filterContainers"][from].clone();
+        container["id"] = to.into();
+        container["name"] = name.into();
+        tree["filterContainers"][to] = container;
+    }
+    tree["filterContainers"]["hu42"]["defaultFilter"]["f1"] = "BV785-A".into();
+    if let Some(files) = tree["filterContainers"]["hu42"]
+        .get_mut("perFileFilters")
+        .and_then(|files| files.as_object_mut())
+    {
+        for filter in files.values_mut() {
+            filter["f1"] = "BV785-A".into();
+        }
+    }
+    for (id, parent, container) in [
+        ("fn12", "", "uN82"),
+        ("URs2", "fn12", "4EC2"),
+        ("7yV2", "fn12", "hu42"),
+    ] {
+        tree["nodes"][id] = serde_json::json!({
+            "id": id, "parentId": parent, "filterContainerId": container,
+            "ord": 1, "collapsed": false
+        });
+    }
+    std::fs::write(&gating, document.to_string()).unwrap();
+
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    for gate in ["Tmem", "teff_naive"] {
+        store.insert(
+            RuleTarget::under(gate, "1"),
+            GateRule {
+                parameter: "BUV805-A".into(),
+                bound: Bound::Above,
+                measured_on: MeasuredOn::Itself,
+                rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            },
+        );
+    }
+    store.save(&crate::workspace::rules_file(&dir)).unwrap();
+    dir
+}

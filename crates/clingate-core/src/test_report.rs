@@ -26,7 +26,7 @@ use crate::gates::GateState;
 
 /// What the report tests, and the version of what it says.
 pub const SUITE: &str = "rule picker";
-pub const SUITE_VERSION: u32 = 1;
+pub const SUITE_VERSION: u32 = 2;
 /// The folder in a workspace reports are kept in.
 pub const FOLDER: &str = "test_reports";
 
@@ -75,6 +75,7 @@ pub fn test_report(
     let mut report = Report::default();
     report.push(header(job));
     report.push(workspace(job));
+    report.push(copies(job));
     report.push(settings(&job.settings));
 
     let targets = pickable_targets(&job.inputs.rules);
@@ -283,6 +284,40 @@ fn workspace(job: &TestJob) -> String {
         pickable_targets(rules).len(),
         inputs.cofactors.len(),
     )
+}
+
+/// What copying each population's rules to its siblings would copy and leave
+/// out, and why - nothing is copied.
+pub(crate) fn copies(job: &TestJob) -> String {
+    use crate::gate_rules::siblings::{copy_rules, populations_with_rules, siblings_of};
+    let rules = &job.inputs.rules;
+    let mut out = String::from(
+        "\n## Copying rules to siblings\n\n\
+         | From | To | Would copy | Left out, and why |\n|---|---|---|---|\n",
+    );
+    let mut any = false;
+    for (from, from_name) in populations_with_rules(&job.gates, rules) {
+        for (to, to_name) in siblings_of(&job.gates, &from) {
+            any = true;
+            let copy = copy_rules(&job.gates, rules, &from, &to, false);
+            let reasons: Vec<String> = copy
+                .not_copied
+                .iter()
+                .map(|n| format!("{}: {}", n.target.gate, n.reason))
+                .collect();
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                cell(&from_name),
+                cell(&to_name),
+                copy.copied.len(),
+                cell(&reasons.join("; "))
+            ));
+        }
+    }
+    if !any {
+        out.push_str("| (no population with rules has a sibling) | | | |\n");
+    }
+    out
 }
 
 fn counted(items: impl Iterator<Item = String>) -> BTreeMap<String, usize> {

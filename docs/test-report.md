@@ -22,12 +22,13 @@ them. The tools for Claude use the settings last kept (`rules/pick_settings.json
 ### What it checks
 
 The report's first line names its tests and their version (`rule picker,
-version 1`), so a report can be read against what it ran.
+version 2`), so a report can be read against what it ran.
 
 | Section | What it says |
 | --- | --- |
 | Header | The tests and their version, clingate's version, when it was made, the workspace, the number of threads. |
 | Workspace | The FCS files and how many have a metadata row, by sample type; the specimens; the gates drawn, the rules by kind and how many are picked for; the arcsinh channels. |
+| Copying rules to siblings | For each population with rules of its own, against each population with gates of the same names: how many rules a copy would write, and each it would leave out with why. Nothing is copied. |
 | Pick settings | The FMX band tried first, the agreement below which a sample is off, and the share of samples that may be off. |
 | Picks | For every gate a rule places (not one placed from another gate): passed or FLAGGED, the rule picked and what it is measured on, its typical and lowest agreement with the hand gates, how many samples are off, how much it gains on the rule as it stands, and how many rules were tried. Then, per gate, each kind tried in order - searched or not, its closest rule, its typical agreement, its samples off, whether it passes - the rule as it stands, and the rules tied with the pick. |
 | Sample by sample | Per gate, every sample, least agreeing first: what the picked rule did (moved, kept, reference, not placed), its agreement with the hand gate and the line below which it is off, how much of the hand gate it catches and holds beyond it, the hand gate's and the rule's share of the parent and their difference, how far it moved the edge in the parent's interquartile ranges, and the rule as it stands on the same sample. |

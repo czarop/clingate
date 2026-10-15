@@ -39,6 +39,7 @@ use dioxus::prelude::*;
 use dioxus_core::NoOpMutations;
 
 use crate::components::toast::ToastProvider;
+use crate::gate_editor::copy_rules_panel::CopyRun;
 use crate::gate_editor::edits::Edits;
 use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
@@ -58,6 +59,7 @@ struct Held {
     pick_run: PickRun,
     test_report_run: TestReportRun,
     rule_report_run: RuleReportRun,
+    copy_run: CopyRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -93,6 +95,7 @@ fn Probe(holder: Holder) -> Element {
         pick_run: PickRun::from_context(),
         test_report_run: TestReportRun::from_context(),
         rule_report_run: RuleReportRun::from_context(),
+        copy_run: CopyRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -1750,4 +1753,63 @@ fn the_open_branches_are_each_workspace_s_own() {
     assert!(!is_open(&app, &lymph), "another workspace's tree is its own");
     app.open(&first);
     assert!(is_open(&app, &lymph), "as it was left");
+}
+
+/// The Gate Rules tab copies a population's rules to its sibling as the tools
+/// do: the same rules copied, the same left out, the same rules after.
+#[test]
+fn the_rules_tab_copies_rules_to_a_sibling_as_the_tools_do() {
+    use clingate_core::gate_rules::siblings::{populations_with_rules, siblings_of};
+    let tools = clingate_core::test_workspace::two_samples_with_siblings("copy-rules-tools");
+    let ours = clingate_core::test_workspace::two_samples_with_siblings("copy-rules-app");
+    let mut session = Session::open(&tools).unwrap();
+    let answer = session
+        .copy_rules("1", &["2".to_string()], false, true)
+        .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let copy = app.with(|held| {
+        let gates = held.gates.peek().clone();
+        let rules = held.rules.peek().clone();
+        let (from, _) = populations_with_rules(&gates, &rules)
+            .into_iter()
+            .find(|(_, name)| &**name == "1")
+            .expect("1 has rules to copy");
+        let to: Vec<_> = siblings_of(&gates, &from)
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect();
+        let copy = held.copy_run.copy(&from, &to, false);
+        let mut run = held.copy_run;
+        run.take(&copy);
+        copy
+    });
+
+    let copied: Vec<String> = copy.copied.iter().map(|c| c.target.describe()).collect();
+    let left: Vec<String> = copy
+        .not_copied
+        .iter()
+        .map(|n| n.target.describe())
+        .collect();
+    assert_eq!(
+        copied,
+        answer
+            .copied
+            .iter()
+            .map(|c| c.population.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        left,
+        answer
+            .left_out
+            .iter()
+            .map(|l| l.population.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        app.rules(),
+        serde_json::to_value(session.rules().unwrap()).unwrap()
+    );
 }

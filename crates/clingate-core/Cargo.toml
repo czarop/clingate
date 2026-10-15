@@ -42,6 +42,8 @@ blake3 = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
+# The integration tests share the app's and the tools' test workspaces.
+clingate-core = { path = ".", features = ["test-support"] }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 
 [features]
