@@ -1645,3 +1645,21 @@ fn the_reports_say_they_write_but_destroy_nothing() {
         );
     }
 }
+
+/// Rules written straight into the file named markers and file names a run
+/// could not find: the instructions say a rule is written only through
+/// update_rule, with the workspace open.
+#[test]
+fn the_instructions_say_rules_are_written_only_through_update_rule() {
+    let instructions = clingate_mcp::INSTRUCTIONS.replace('\n', " ");
+
+    assert!(
+        instructions
+            .contains("Write rules only with update_rule, and only with the workspace open"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("never by writing or editing a rules file yourself"),
+        "{instructions}"
+    );
+}

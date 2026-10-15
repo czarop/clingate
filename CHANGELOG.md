@@ -579,6 +579,9 @@
   `update_rule` writes them, in the app and the tools alike. `list_rules`
   still says the names are not as the file should hold them; a name that is
   neither is refused, saying why.
+  Claude is told to write rules only through `update_rule`, with the
+  workspace open - never by writing the rules file itself, which nothing
+  checks.
 
 - **A rectangle made a polygon stays a polygon.** Converted in the editor,
   it was saved - and sent to Omiq - as the rectangle it was imported as, so

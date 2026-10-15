@@ -157,6 +157,13 @@ the closest are on the Gallery tab to compare by eye. test_report runs the \
 same pick on every gate and scores the picks sample by sample into one report \
 the user can send on, kept in the workspace.
 
+Write rules only with update_rule, and only with the workspace open - never \
+by writing or editing a rules file yourself. update_rule checks every name \
+against the workspace's own metadata, scaling and gating, and stores it the way \
+a run reads it; a file written any other way is checked by nothing, and a \
+marker or file name in it is not one a run can find. With no workspace open, \
+ask the user which folder to open before writing any rule.
+
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
 channel and the metadata row a run reads, and update_rule says what it \
