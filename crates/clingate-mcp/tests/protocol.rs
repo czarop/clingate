@@ -1558,3 +1558,63 @@ fn a_rule_report_is_made_over_the_protocol() {
         serde_json::from_str(refused["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_ne!(said["outcome"], "ok", "{said}");
 }
+
+/// A rules file naming a parameter by its marker and a reference by its file
+/// name - written by hand, or by an older clingate - previews over the
+/// protocol as it was meant, and list_rules says how to put it right.
+#[test]
+fn a_rule_named_loosely_in_the_file_previews_as_meant_over_the_protocol() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let folder = workspace("rule-named-loosely");
+    let scaling = folder.join("scaling.csv");
+    let marked = std::fs::read_to_string(&scaling)
+        .unwrap()
+        .replace("BUV805-A,BUV805-A,", "BUV805-A,CD69,");
+    std::fs::write(&scaling, marked).unwrap();
+    let mut store = RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    });
+    store.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "CD69".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+            rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+        },
+    );
+    store
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let listed = server.call("list_rules", json!({}));
+    let previewed = server.call("preview_rules", json!({}));
+
+    assert!(
+        listed
+            .to_string()
+            .contains("parameter CD69 is the channel BUV805-A"),
+        "{listed}"
+    );
+    assert_eq!(previewed["outcome"], "ok", "{previewed}");
+    assert_eq!(
+        previewed["result"]["not_positioned"],
+        json!([]),
+        "{previewed}"
+    );
+    assert_eq!(
+        previewed["result"]["references"].as_array().unwrap().len(),
+        1,
+        "sample1 is the reference: {previewed}"
+    );
+}

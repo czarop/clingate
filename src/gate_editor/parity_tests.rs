@@ -367,6 +367,71 @@ fn a_run_on_a_file_with_no_sample_positions_is_exported_with_them_the_same() {
     );
 }
 
+/// A rules file naming a parameter by its marker and a reference by its file
+/// name - as one written by hand, or by an older clingate - is run by the
+/// Rules tab as the tools run it: as the channel and the metadata row meant.
+#[test]
+fn a_rule_naming_a_marker_and_a_file_name_runs_the_same_in_the_app_and_the_tools() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::{
+        Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
+    };
+    let (tools, ours) = twins("parity-rule-names");
+    for folder in [&tools, &ours] {
+        let scaling = folder.join("scaling.csv");
+        let marked = std::fs::read_to_string(&scaling)
+            .unwrap()
+            .replace("BUV805-A,BUV805-A,", "BUV805-A,CD69,");
+        std::fs::write(&scaling, marked).unwrap();
+        let mut store = RuleStore::with_pairing(SamplePairing {
+            sample_id_column: "test".into(),
+            ..SamplePairing::default()
+        });
+        store.insert(
+            RuleTarget::named("Tmem"),
+            GateRule {
+                parameter: "CD69".into(),
+                bound: Bound::Above,
+                measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
+                rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
+            },
+        );
+        store
+            .save(&clingate_core::workspace::rules_file(folder))
+            .unwrap();
+    }
+    let mut session = Session::open(&tools).unwrap();
+    let mut app = App::new();
+    app.open(&ours);
+
+    session.preview_rules().unwrap();
+    session.apply_previewed_rules().unwrap();
+    app.run_rules();
+
+    let kept = |folder: &Path| {
+        let mut record = clingate_core::review::RunRecord::load(folder)
+            .unwrap()
+            .expect("the run is kept");
+        record.applied_at.clear();
+        record
+    };
+    let ran = kept(&ours);
+    assert!(ran.skipped.is_empty(), "{:?}", ran.skipped);
+    assert_eq!(
+        ran.placed.len() + ran.kept.iter().filter(|k| k.met_rule).count(),
+        1,
+        "sample2 is placed from sample1"
+    );
+    assert_eq!(ran, kept(&tools), "the kept runs differ");
+    same(
+        "a run of a rule named loosely",
+        &session,
+        &app,
+        &tools,
+        &ours,
+    );
+}
+
 #[test]
 fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
     let (tools, ours) = twins("parity-edits");

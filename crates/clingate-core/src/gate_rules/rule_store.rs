@@ -269,6 +269,14 @@ pub struct RuleEntry {
     pub rule: GateRule,
 }
 
+/// A name a rule holds, with what it is to the rule: a parameter's channel,
+/// or a file's row in the metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    Channel(&'static str),
+    File(&'static str),
+}
+
 /// One gate's rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GateRule {
@@ -280,6 +288,43 @@ pub struct GateRule {
 }
 
 impl GateRule {
+    /// Every parameter and file the rule names, put through `rename` with
+    /// what it is to the rule.
+    pub fn rename<E>(
+        &mut self,
+        mut rename: impl FnMut(Named, &Arc<str>) -> Result<Arc<str>, E>,
+    ) -> Result<(), E> {
+        use crate::gate_rules::rule::Rule;
+        if let Rule::NextToGate(next) = &mut self.rule {
+            next.parameter = rename(Named::Channel("parameter"), &next.parameter)?;
+        }
+        if let Rule::FromAnotherGate(from) = &mut self.rule {
+            for edge in &mut from.edges {
+                edge.parameter = rename(Named::Channel("parameter"), &edge.parameter)?;
+            }
+        }
+        if !self.parameter.trim().is_empty() {
+            self.parameter = rename(Named::Channel("parameter"), &self.parameter)?;
+        }
+        if let Rule::MatchThePhenotype(wanted) = &mut self.rule {
+            for marker in &mut wanted.markers {
+                *marker = rename(Named::Channel("marker"), marker)?;
+            }
+            for marker in &mut wanted.pinned {
+                *marker = rename(Named::Channel("pinned marker"), marker)?;
+            }
+        }
+        if let Rule::ValleyOrSmear(either) = &mut self.rule
+            && let Some(named) = &mut either.smear_example
+        {
+            *named = rename(Named::File("the smear example"), named)?;
+        }
+        if let MeasuredOn::File(named) = &mut self.measured_on {
+            *named = rename(Named::File("the reference"), named)?;
+        }
+        Ok(())
+    }
+
     /// Solve for this gate's threshold over a parent population.
     ///
     /// A rule that keeps the bottom of a distribution is the same rule on the
@@ -411,6 +456,10 @@ impl RuleStore {
     pub fn remove(&mut self, target: &RuleTarget) -> Option<GateRule> {
         let at = self.rules.iter().position(|e| &e.target == target)?;
         Some(self.rules.remove(at).rule)
+    }
+
+    pub fn rules_mut(&mut self) -> impl Iterator<Item = &mut GateRule> {
+        self.rules.iter_mut().map(|entry| &mut entry.rule)
     }
 
     pub fn entries(&self) -> &[RuleEntry] {

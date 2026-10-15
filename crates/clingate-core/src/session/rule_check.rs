@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use super::{Refusal, Session, failed};
 use crate::gate_rules::rule::Rule;
-use crate::gate_rules::rule_store::{GateRule, MeasuredOn, RuleTarget, SamplePairing};
+use crate::gate_rules::rule_store::{GateRule, MeasuredOn, Named, RuleTarget, SamplePairing};
 
 impl Session {
     /// `rule` with every name put the way the rules file holds it, and a line
@@ -30,54 +30,17 @@ impl Session {
             rule.parameter = Arc::from("");
             rule.measured_on = MeasuredOn::Itself;
         }
-        if let Rule::NextToGate(next) = &mut rule.rule {
-            next.parameter = self.channel_noted(&next.parameter, &mut notes)?;
-        }
-        if let Rule::FromAnotherGate(from) = &mut rule.rule {
-            for edge in &mut from.edges {
-                edge.parameter = self.channel_noted(&edge.parameter, &mut notes)?;
+        rule.rename(|named, name| {
+            let (resolved, kind, what) = match named {
+                Named::Channel(what) => (self.channel_named(name)?, "channel", what),
+                Named::File(what) => (self.metadata_row_named(name)?, "file", what),
+            };
+            if *resolved != **name {
+                notes.push(format!("{what} {name} is the {kind} {resolved}"));
             }
-        }
-        if !rule.parameter.trim().is_empty() {
-            rule.parameter = self.channel_noted(&rule.parameter, &mut notes)?;
-        }
-        if let Rule::MatchThePhenotype(wanted) = &mut rule.rule {
-            let mut markers = Vec::with_capacity(wanted.markers.len());
-            for marker in &wanted.markers {
-                let channel = self.channel_named(marker)?;
-                if *channel != **marker {
-                    notes.push(format!("marker {marker} is the channel {channel}"));
-                }
-                markers.push(channel);
-            }
-            wanted.markers = markers;
-            let mut pinned = Vec::with_capacity(wanted.pinned.len());
-            for marker in &wanted.pinned {
-                let channel = self.channel_named(marker)?;
-                if *channel != **marker {
-                    notes.push(format!("pinned marker {marker} is the channel {channel}"));
-                }
-                pinned.push(channel);
-            }
-            wanted.pinned = pinned;
-        }
-        if let Rule::ValleyOrSmear(either) = &mut rule.rule
-            && let Some(named) = &either.smear_example
-        {
-            let id = self.metadata_row_named(named)?;
-            if *id != **named {
-                notes.push(format!("the smear example {named} is the file {id}"));
-            }
-            either.smear_example = Some(id);
-        }
+            Ok::<_, Refusal>(resolved)
+        })?;
         match &rule.measured_on {
-            MeasuredOn::File(named) => {
-                let id = self.metadata_row_named(named)?;
-                if *id != **named {
-                    notes.push(format!("the reference {named} is the file {id}"));
-                }
-                rule.measured_on = MeasuredOn::File(id);
-            }
             MeasuredOn::Partner(kind) => {
                 let types = self.sample_types();
                 if !types.iter().any(|t| **t == **kind) {
@@ -89,7 +52,7 @@ impl Session {
                     )));
                 }
             }
-            MeasuredOn::Itself => {}
+            MeasuredOn::Itself | MeasuredOn::File(_) => {}
         }
         if let Rule::TailFraction(band) = &rule.rule
             && band.pool == crate::gate_rules::rule::Pool::Run
@@ -412,16 +375,6 @@ impl Session {
             }
         }
         problems
-    }
-
-    /// The channel `parameter` names, noting it in `notes` when the name
-    /// was not the channel's own.
-    fn channel_noted(&self, parameter: &str, notes: &mut Vec<String>) -> Result<Arc<str>, Refusal> {
-        let channel = self.channel_named(parameter)?;
-        if *channel != *parameter {
-            notes.push(format!("parameter {parameter} is the channel {channel}"));
-        }
-        Ok(channel)
     }
 
     fn channel_named(&self, name: &str) -> Result<Arc<str>, Refusal> {

@@ -2053,12 +2053,15 @@ fn a_rule_naming_a_marker_and_a_file_is_stored_as_the_channel_and_metadata_row_a
     );
 }
 
+/// What Claude wrote before the names were checked, straight into the file:
+/// listed as wrong so it can be put right, but run as it was meant - a marker
+/// as its channel, a file name as its row in the metadata. A name that is
+/// neither is the run's to refuse, saying why.
 #[test]
-fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_and_the_run() {
+fn a_rule_already_written_with_the_wrong_names_is_listed_as_wrong_and_run_as_meant() {
     use clingate_core::gate_rules::rule_store::{
         Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
     };
-    // What Claude wrote before these checks existed, straight into the file.
     let folder = marked_workspace("session-rule-names-already-wrong");
     let mut store = RuleStore::with_pairing(SamplePairing {
         sample_id_column: "test".into(),
@@ -2070,7 +2073,7 @@ fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_an
             parameter: "CD69".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
-            rule: clingate_core::gate_rules::rule::Rule::AboveTheNegative(Default::default()),
+            rule: band((0.01, 0.02)),
         },
     );
     store.insert(
@@ -2107,27 +2110,44 @@ fn a_rule_already_written_with_the_wrong_names_says_what_is_wrong_in_the_list_an
         "{naive:?}"
     );
 
-    // The run says the same, in terms a person can act on - not "no
-    // reference sample to measure".
     let preview = session.preview_rules().unwrap();
-    let said: Vec<String> = preview
+    let refused: Vec<(&str, &str)> = preview
         .not_positioned
         .iter()
-        .map(|n| n.reason.clone())
+        .map(|n| (n.gate.as_str(), n.reason.as_str()))
         .collect();
     assert!(
-        said.iter().all(|r| r != "no reference sample to measure"),
-        "{said:?}"
+        refused.iter().all(|(gate, _)| !gate.starts_with("Tmem")),
+        "{refused:?}"
     );
+    assert_eq!(preview.references.len(), 1, "sample1 is Tmem's reference");
     assert!(
-        said.iter().any(|r| r
-            .contains("the rule positions CD69 but this gate is drawn on BUV805-A and BUV563-A")),
-        "{said:?}"
+        refused
+            .iter()
+            .any(|(_, r)| r.contains("has the sample type FMO, so there is no FMO to measure")),
+        "{refused:?}"
     );
+
+    let mut nothing = store.clone();
+    nothing.insert(
+        RuleTarget::named("Tmem"),
+        GateRule {
+            parameter: "CD999".into(),
+            bound: Bound::Above,
+            measured_on: MeasuredOn::Itself,
+            rule: band((0.01, 0.02)),
+        },
+    );
+    nothing
+        .save(&clingate_core::workspace::rules_file(&folder))
+        .unwrap();
+    let preview = Session::open(&folder).unwrap().preview_rules().unwrap();
     assert!(
-        said.iter()
-            .any(|r| r.contains("has the sample type FMO, so there is no FMO to measure")),
-        "{said:?}"
+        preview.not_positioned.iter().any(|n| n
+            .reason
+            .contains("the rule positions CD999 but this gate is drawn on BUV805-A and BUV563-A")),
+        "{:?}",
+        preview.not_positioned
     );
 }
 

@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use rustc_hash::FxBuildHasher;
 
 use crate::gate_rules::autogate::Report;
-use crate::gate_rules::rule_store::{RuleStore, RuleTarget};
+use crate::gate_rules::rule_store::{Named, RuleStore, RuleTarget};
 use crate::gates::GateState;
 use crate::populations::Populations;
 
@@ -61,7 +61,7 @@ impl RunInputs {
             names: metadata.file_name_to_gating_id().clone(),
             cofactors: Self::cofactors_of(axes),
             metadata: metadata.metadata().clone(),
-            rules: rules.clone(),
+            rules: as_a_run_reads(rules, axes, metadata),
         }
     }
 
@@ -80,6 +80,41 @@ impl RunInputs {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+}
+
+/// `rules` with every name as a run reads it: a parameter or marker given by
+/// its marker as its channel, a file given by its file name as its row in the
+/// metadata. Rules written through the tools or the app already are; a rules
+/// file written another way may not be, and every sample would refuse it. A
+/// name that is neither is left for the run to say why.
+fn as_a_run_reads(
+    rules: &RuleStore,
+    axes: &crate::omiq::serialise::AxisSettings,
+    metadata: &crate::omiq::metadata::MetaDataStore,
+) -> RuleStore {
+    use crate::session::lookup::{ParameterFacts, one_parameter};
+    let panel: Vec<ParameterFacts> = axes
+        .values()
+        .map(|axis| ParameterFacts {
+            marker: axis.param.marker.to_string(),
+            channel: axis.param.fluoro.to_string(),
+        })
+        .collect();
+    let resolved = |named: Named, name: &Arc<str>| {
+        let found = match named {
+            Named::Channel(_) => one_parameter(name, &panel)
+                .ok()
+                .map(|at| Arc::from(panel[at].channel.as_str())),
+            Named::File(_) if metadata.metadata().contains_key(name) => None,
+            Named::File(_) => metadata.file_name_to_gating_id().get(name).cloned(),
+        };
+        Ok::<_, std::convert::Infallible>(found.unwrap_or_else(|| name.clone()))
+    };
+    let mut read = rules.clone();
+    for rule in read.rules_mut() {
+        let Ok(()) = rule.rename(resolved);
+    }
+    read
 }
 
 /// What a run is doing, for the progress line.

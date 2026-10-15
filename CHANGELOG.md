@@ -570,6 +570,16 @@
 
 ### Fixed
 
+- **A rule naming a marker or a file name runs as meant.** A rules file
+  written by hand, or by an older clingate, could name a rule's parameter by
+  its marker (`CD3`) or its reference by its file name; the run looked for
+  them as written and refused the gate on every sample - pausing for each to
+  be placed by hand, or listing it as placed on no sample. A run now reads a
+  marker as its channel and a file name as its row in the metadata, as
+  `update_rule` writes them, in the app and the tools alike. `list_rules`
+  still says the names are not as the file should hold them; a name that is
+  neither is refused, saying why.
+
 - **A rectangle made a polygon stays a polygon.** Converted in the editor,
   it was saved - and sent to Omiq - as the rectangle it was imported as, so
   it was a rectangle again the next time the workspace was opened. It is now
