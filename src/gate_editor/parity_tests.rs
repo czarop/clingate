@@ -41,6 +41,7 @@ use dioxus_core::NoOpMutations;
 use crate::components::toast::ToastProvider;
 use crate::gate_editor::copy_rules_panel::CopyRun;
 use crate::gate_editor::edits::Edits;
+use crate::gate_editor::features_window::FeatureRun;
 use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
@@ -60,6 +61,7 @@ struct Held {
     test_report_run: TestReportRun,
     rule_report_run: RuleReportRun,
     copy_run: CopyRun,
+    feature_run: FeatureRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -96,6 +98,7 @@ fn Probe(holder: Holder) -> Element {
         test_report_run: TestReportRun::from_context(),
         rule_report_run: RuleReportRun::from_context(),
         copy_run: CopyRun::from_context(),
+        feature_run: FeatureRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -1812,4 +1815,36 @@ fn the_rules_tab_copies_rules_to_a_sibling_as_the_tools_do() {
         app.rules(),
         serde_json::to_value(session.rules().unwrap()).unwrap()
     );
+}
+
+/// The Test features tab's checks find what the tools' check_features finds,
+/// and feedback kept from the tab is what the tools read.
+#[test]
+fn the_test_features_tab_checks_as_the_tools_do_and_keeps_feedback_for_them() {
+    use clingate_core::feature_checks::{Feedbacks, Tried};
+    let tools = clingate_core::test_workspace::two_samples_with_siblings("features-tools");
+    let ours = clingate_core::test_workspace::two_samples_with_siblings("features-app");
+    let theirs: Vec<_> = Session::open(&tools)
+        .unwrap()
+        .check_features()
+        .features
+        .into_iter()
+        .filter_map(|state| state.checked.map(|checked| (state.feature.id, checked)))
+        .collect();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let mine = app.with(|held| held.feature_run.snapshot().check_every());
+    let mut feedback = Feedbacks::new();
+    feedback.entry("polygon_saved".into()).or_default().tried = Tried::Problem;
+    app.with(|held| held.feature_run.keep(&feedback)).unwrap();
+
+    assert_eq!(mine, theirs);
+    let read = Session::open(&ours).unwrap().check_features();
+    let polygon = read
+        .features
+        .iter()
+        .find(|s| s.feature.id == "polygon_saved")
+        .unwrap();
+    assert_eq!(polygon.feedback.tried, Tried::Problem);
 }

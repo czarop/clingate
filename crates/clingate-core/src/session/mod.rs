@@ -18,6 +18,7 @@
 
 mod copy;
 mod edits;
+mod features;
 mod gates;
 pub mod lookup;
 mod profile;
@@ -32,6 +33,7 @@ mod test_report;
 
 pub use copy::{CopiedRule, CopyAnswer, LeftOut};
 pub use edits::{EditState, Exported, Saved};
+pub use features::{FeatureChecks, FeatureState};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
 pub use profile::{
     PICTURE_TILES, PROFILE_SPECIMENS, PROFILE_SPECIMENS_MAX, Picture, ProfileAnswer,

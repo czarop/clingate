@@ -188,6 +188,7 @@ Privacy & Security, Files and Folders (or Full Disk Access).
 | `replay_case` | One replayed placement in full: histograms of the sample and the file the rule read, where the gate started, and where the run, the replay and the reviewer put it. |
 | `update_rule` | Writes one rule into the workspace's rules file. Only on the user's word, after the replay. |
 | `copy_rules` | Copy every rule under one population to the gates of the same names under others - CD4 T cells' rules to CD8 and MAIT cells - with the gates they read moved across too. Says what it would copy and what it leaves out and why; writes only with `write`, and replaces a gate's own rule only with `replace`. |
+| `check_features` | The features waiting for the user to try, each with its steps and what to send back, what the user has said of it in the app's Test features tab, and - where a check can try it without them - the check run on the open workspace. Changes nothing. |
 
 ## The working copy
 

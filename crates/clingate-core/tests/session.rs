@@ -4592,3 +4592,51 @@ fn a_population_s_rules_are_copied_to_its_sibling_when_asked() {
     );
     assert!(session.copy_rules("1", &[], false, false).is_err());
 }
+
+/// Every feature waiting to be tried, each check run on the workspace, and
+/// what the user has said of each read from the workspace.
+#[test]
+fn the_features_to_try_are_listed_with_their_checks_and_the_user_s_feedback() {
+    use clingate_core::feature_checks::{FEATURES, Feedback, Feedbacks, Tried, save_feedback};
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("session-features");
+    let mut said = Feedbacks::new();
+    said.insert(
+        "copy_rules".into(),
+        Feedback {
+            tried: Tried::Works,
+            note: "fine".into(),
+            checked: None,
+        },
+    );
+    save_feedback(&folder, &said).unwrap();
+    let session = Session::open(&folder).unwrap();
+
+    let checks = session.check_features();
+
+    assert_eq!(checks.features.len(), FEATURES.len());
+    for state in &checks.features {
+        assert_eq!(
+            state.checked.is_some(),
+            state.feature.check.is_some(),
+            "{state:?}"
+        );
+    }
+    let copy = checks
+        .features
+        .iter()
+        .find(|s| s.feature.id == "copy_rules")
+        .unwrap();
+    assert_eq!(copy.feedback.tried, Tried::Works);
+    assert_eq!(copy.feedback.note, "fine");
+    assert_eq!(
+        copy.checked.as_ref().unwrap().said[0],
+        "1 to 2: 1 would be copied, 1 left out"
+    );
+    let failed: Vec<&str> = checks
+        .features
+        .iter()
+        .filter(|s| s.checked.as_ref().is_some_and(|c| !c.passed))
+        .map(|s| s.feature.id)
+        .collect();
+    assert!(failed.is_empty(), "{failed:?}: {checks:?}");
+}

@@ -4,6 +4,16 @@
 
 ### Added
 
+- **A Test features tab** (and `check_features` in the tools for Claude).
+  Every feature waiting to be tried, with where it is, the steps, and what to
+  send back. Where a feature can be tried without you, a check tries it on
+  the open workspace and changes nothing: copying rules to siblings as a dry
+  run, a rectangle made a polygon then saved and read back, the rules' names
+  as a run reads them, and the gating saved, read back and saved again. Say
+  how each went - not tried, works, problem, and a note - and it is kept in
+  the workspace's `test_reports` folder; "Copy feedback for Claude" puts it
+  all, checks included, on the clipboard as one note.
+
 - **Copying rules to sibling populations** (Gate Rules tab, "Copy rules to
   sibling populations"; `copy_rules` in the tools for Claude). Every rule
   written for a gate directly under one population is copied to the gate of

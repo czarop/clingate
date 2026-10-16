@@ -15,6 +15,9 @@ pub mod axis_store;
 mod axis_store_tests;
 pub mod compensation;
 pub mod events;
+pub mod feature_checks;
+#[cfg(test)]
+mod feature_checks_tests;
 pub mod file_load;
 #[cfg(any(test, feature = "test-support"))]
 pub mod file_load_tests;

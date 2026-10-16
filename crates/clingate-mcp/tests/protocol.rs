@@ -214,6 +214,7 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "replay_case",
         "update_rule",
         "copy_rules",
+        "check_features",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -1703,4 +1704,35 @@ fn a_population_s_rules_are_copied_to_its_sibling_over_the_protocol() {
     assert!(listed.to_string().contains("Tmem of 2"), "{listed}");
     let refused = server.call("copy_rules", json!({"from": "1", "to": []}));
     assert_ne!(refused["outcome"], "ok", "{refused}");
+}
+
+/// The features to try over the protocol: each with its steps, and the
+/// checks run on the open workspace.
+#[test]
+fn the_features_to_try_are_checked_over_the_protocol() {
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("mcp-features");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let checked = server.call("check_features", json!({}));
+
+    assert_eq!(checked["outcome"], "ok", "{checked}");
+    let features = checked["result"]["features"].as_array().unwrap();
+    assert_eq!(
+        features.len(),
+        clingate_core::feature_checks::FEATURES.len()
+    );
+    let polygon = features
+        .iter()
+        .find(|f| f["id"] == "polygon_saved")
+        .unwrap();
+    assert_eq!(polygon["checked"]["passed"], true, "{polygon}");
+    assert!(!polygon["steps"].as_array().unwrap().is_empty());
+    let pick = features.iter().find(|f| f["id"] == "pick_rule").unwrap();
+    assert!(pick.get("checked").is_none(), "{pick}");
+    assert_eq!(pick["feedback"]["tried"], "not_yet");
 }

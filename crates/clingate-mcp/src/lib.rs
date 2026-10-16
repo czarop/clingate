@@ -164,6 +164,10 @@ a run reads it; a file written any other way is checked by nothing, and a \
 marker or file name in it is not one a run can find. With no workspace open, \
 ask the user which folder to open before writing any rule.
 
+When the user asks what there is to test, or how a new feature went, \
+check_features runs the checks that need nobody and lists the rest, each with \
+its steps and what to send back. Say which checks failed first.
+
 To give sibling populations the rules one of them has - CD8 T cells those of \
 CD4 T cells, say - copy_rules copies every rule under one population to the \
 same gates under the others in one step, rather than a rule at a time. Show \
@@ -1278,6 +1282,16 @@ impl Clingate {
             s.replay_case(&changes, scope, &args.case)
         })
         .await
+    }
+
+    /// The features waiting for the user to try: where each is, the steps, what to send back,
+    /// what the user has said of it so far, and - for those a check can try without them - the
+    /// check run on the open workspace (copying rules to siblings as a dry run, a rectangle made
+    /// a polygon and saved, the rules' names as a run reads them, the gating saved and read
+    /// back). Changes nothing.
+    #[tool(annotations(read_only_hint = true))]
+    async fn check_features(&self) -> String {
+        self.run(|s| Ok(s.check_features())).await
     }
 
     /// Copy every rule written for a gate directly under one population to the gate of the
