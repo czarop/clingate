@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -23,10 +24,11 @@ use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::score::{GateScore, Score, ScoreRow, least_agreeing_first, score_rules};
 use crate::gate_rules::trial::{sample_type_name, specimen_name};
 use crate::gates::GateState;
+use crate::gates::gate_store::NodeId;
 
 /// What the report tests, and the version of what it says.
 pub const SUITE: &str = "rule picker";
-pub const SUITE_VERSION: u32 = 2;
+pub const SUITE_VERSION: u32 = 3;
 /// The folder in a workspace reports are kept in.
 pub const FOLDER: &str = "test_reports";
 
@@ -76,6 +78,9 @@ pub fn test_report(
     report.push(header(job));
     report.push(workspace(job));
     report.push(copies(job));
+    let section = spillover(job, cancel, &mut report);
+    report.push(section);
+    stopped(cancel)?;
     report.push(settings(&job.settings));
 
     let targets = pickable_targets(&job.inputs.rules);
@@ -316,6 +321,54 @@ pub(crate) fn copies(job: &TestJob) -> String {
     }
     if !any {
         out.push_str("| (no population with rules has a sibling) | | | |\n");
+    }
+    out
+}
+
+/// Spillover errors and autofluorescence left in, in the first population at
+/// the top of the gating, on a spread of specimens - see [`crate::spillover`].
+pub(crate) fn spillover(job: &TestJob, cancel: &AtomicBool, report: &mut Report) -> String {
+    let mut out = String::from("\n## Compensation and unmixing\n\n");
+    let names = crate::gates::gate_paths::unique_names(&job.gates);
+    let roots = job.gates.root_nodes();
+    let mut tops: Vec<(NodeId, Arc<str>)> = names
+        .into_iter()
+        .filter(|(node, _)| {
+            job.gates
+                .parent_node(node)
+                .is_none_or(|parent| roots.contains(&parent))
+        })
+        .collect();
+    tops.sort_by(|a, b| crate::gate_rules::rule_store::human_order(&a.1, &b.1));
+    let Some((top, name)) = tops.into_iter().next() else {
+        out.push_str("No gating is loaded, so nothing was checked.\n");
+        return out;
+    };
+    let mut inputs = job.inputs.clone();
+    let (read, total) = inputs.keep_specimens(crate::session::SPILLOVER_SPECIMENS, &[]);
+    let checked = report.timed("Checking compensation and unmixing", || {
+        let check = crate::spillover::job_for(&job.gates, &inputs, &top)?;
+        crate::spillover::run(&check, cancel, |_, _| {})
+    });
+    let checked = match checked {
+        Ok(checked) => checked,
+        Err(why) => {
+            out.push_str(&format!("Looked in {name}: not checked - {why}.\n"));
+            return out;
+        }
+    };
+    out.push_str(&format!(
+        "Looked in {name} on {read} of {total} specimens: {} stained and {} unstained files.\n\n",
+        checked.stained, checked.unstained
+    ));
+    if checked.findings.is_empty() {
+        out.push_str("Nothing leans by a negative's width or more.\n");
+    }
+    for finding in &checked.findings {
+        out.push_str(&format!("- {}\n", finding.says()));
+    }
+    for problem in checked.problems {
+        report.problem(format!("Checking compensation and unmixing: {problem}"));
     }
     out
 }

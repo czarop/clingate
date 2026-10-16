@@ -1,6 +1,14 @@
 # Plan: a compensation and unmixing check
 
-Status: planned, not built. Questions to settle first are at the end.
+Status: first part built - `crates/clingate-core/src/spillover.rs`, the
+Workspace tab's "Check compensation and unmixing", `check_spillover` for
+Claude, and a test report section. Built: the pairwise lean with its
+consistency across samples (1, 2), AF in stained samples by side scatter
+(4), confirmed on the unstained files where the metadata marks any U or
+Unstained, and the unmixed channel to look in (5, without raw detectors).
+Not yet: the unstained's channels moving together (3), pictures per
+finding, the nearest unstained for a donor without one, and the raw
+unstained file. Questions still open are at the end.
 
 ## What it is for
 

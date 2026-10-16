@@ -1320,6 +1320,8 @@ pub fn WorkspaceWindow() -> Element {
                 on_action: move |action: CompensationAction| handles.compensation_action(action),
             }
 
+            crate::gate_editor::spillover_panel::SpilloverPanel {}
+
             for which in [Which::Metadata, Which::Scaling, Which::Gating] {
                 PartRow {
                     key: "{which.title()}",

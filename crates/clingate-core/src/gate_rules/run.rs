@@ -80,6 +80,56 @@ impl RunInputs {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+
+    /// Keep only `wanted` specimens spread evenly through the files - each
+    /// with all its files - and any file `also` names; files no specimen
+    /// claims are kept up to `wanted`. How many specimens are kept, of how
+    /// many.
+    pub fn keep_specimens(&mut self, wanted: usize, also: &[String]) -> (usize, usize) {
+        let column = &self.rules.pairing.sample_id_column;
+        let of_each: Vec<(Option<Arc<str>>, Option<String>)> = self
+            .files
+            .iter()
+            .map(|(name, _)| {
+                let id = self.names.get(name).cloned();
+                let specimen = id
+                    .as_ref()
+                    .and_then(|id| self.metadata.get(id))
+                    .and_then(|row| row.get(column))
+                    .map(|s| s.to_string());
+                (id, specimen)
+            })
+            .collect();
+        let mut specimens: Vec<&String> = of_each.iter().filter_map(|(_, s)| s.as_ref()).collect();
+        specimens.sort_by(|a, b| crate::gate_rules::rule_store::human_order(a, b));
+        specimens.dedup();
+        let total = specimens.len();
+        let chosen: std::collections::HashSet<&String> = if total <= wanted {
+            specimens.into_iter().collect()
+        } else {
+            (0..wanted).map(|i| specimens[i * total / wanted]).collect()
+        };
+        let read = chosen.len();
+        let mut without = 0;
+        let keep: Vec<bool> = of_each
+            .iter()
+            .map(|(id, specimen)| {
+                if id.as_ref().is_some_and(|i| also.iter().any(|a| **a == **i)) {
+                    return true;
+                }
+                match specimen {
+                    Some(s) => chosen.contains(s),
+                    None => {
+                        without += 1;
+                        without <= wanted
+                    }
+                }
+            })
+            .collect();
+        let mut kept = keep.into_iter();
+        self.files.retain(|_| kept.next().unwrap_or(false));
+        (read, total)
+    }
 }
 
 /// `rules` with every name as a run reads it: a parameter or marker given by

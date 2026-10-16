@@ -50,28 +50,29 @@ pub fn events(seed: u64, n: usize) -> Vec<Vec<f32>> {
 /// FMX) and `sample2_FS.fcs` (specimen "two", a full stain) - with metadata,
 /// scaling and gating, in a fresh scratch folder.
 pub fn two_samples(name: &str) -> PathBuf {
+    workspace_of(
+        name,
+        &[
+            ("sample1", "one", "FMX", events(1, 3_000)),
+            ("sample2", "two", "FS", events(2, 3_000)),
+        ],
+    )
+}
+
+/// A workspace folder holding `samples` - each its id, specimen, sample type
+/// and events, written as `{id}_{type}.fcs` - with metadata, scaling and
+/// gating.
+fn workspace_of(name: &str, samples: &[(&str, &str, &str, Vec<Vec<f32>>)]) -> PathBuf {
     let dir = scratch(name);
     let mut channels: Vec<(&str, Option<&str>)> = vec![("FSC-A", None), ("SSC-A", None)];
     channels.extend(FLUORESCENCE.iter().map(|c| (*c, None)));
-    write_fcs_rows(
-        &dir.join("sample1_FMX.fcs"),
-        &channels,
-        &events(1, 3_000),
-        &[],
-    );
-    write_fcs_rows(
-        &dir.join("sample2_FS.fcs"),
-        &channels,
-        &events(2, 3_000),
-        &[],
-    );
-    std::fs::write(
-        dir.join("metadata.csv"),
-        "OmiqID,Filename,test,Type,SampleType\n\
-         sample1,sample1_FMX.fcs,one,one,FMX\n\
-         sample2,sample2_FS.fcs,two,two,FS\n",
-    )
-    .unwrap();
+    let mut metadata = String::from("OmiqID,Filename,test,Type,SampleType\n");
+    for (id, specimen, kind, rows) in samples {
+        let file = format!("{id}_{kind}.fcs");
+        write_fcs_rows(&dir.join(&file), &channels, rows, &[]);
+        metadata.push_str(&format!("{id},{file},{specimen},{specimen},{kind}\n"));
+    }
+    std::fs::write(dir.join("metadata.csv"), metadata).unwrap();
     let mut scaling = String::from(
         "Feature Name (Primary),Feature Name (Secondary),Scaling Type,Cofactor,Min,Max,Min Z,Max Z\n\
          FSC-A,,None (linear),0,0,4194304,0,0\n\
@@ -86,6 +87,75 @@ pub fn two_samples(name: &str) -> PathBuf {
             .join("tests/fixtures/quadrant_with_boolean_child.omiqgt"),
         dir.join("gating.omiqgt"),
     )
+    .unwrap();
+    dir
+}
+
+/// Where [`spilling_samples`] spills from and into, by how much, and where
+/// its autofluorescence shows.
+pub const SPILLS_FROM: &str = "BUV805-A";
+pub const SPILLS_INTO: &str = "BUV737-A";
+pub const SPILL: f32 = 0.1;
+pub const GLOWS_IN: &str = "BV785-A";
+
+/// Scatter inside population "1"; every other cell negative everywhere, the
+/// rest positive in one channel each. The top fifth by side scatter glow by
+/// 1000 - three negative widths - in [`GLOWS_IN`]; where `spill`, a tenth of
+/// [`SPILLS_FROM`] is left in [`SPILLS_INTO`].
+pub fn spilling_events(seed: u64, n: usize, spill: bool) -> Vec<Vec<f32>> {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let forward = Uniform::new(1_200_000.0f32, 2_100_000.0).unwrap();
+    let side = Uniform::new(150_000.0f32, 900_000.0).unwrap();
+    let negative = Normal::new(0.0f32, 300.0).unwrap();
+    let positive = Normal::new(40_000.0f32, 8_000.0).unwrap();
+    let column = |channel: &str| 2 + FLUORESCENCE.iter().position(|c| *c == channel).unwrap();
+    (0..n)
+        .map(|i| {
+            let mut row = vec![forward.sample(&mut rng), side.sample(&mut rng)];
+            for c in 0..FLUORESCENCE.len() {
+                row.push(if i % 16 == c {
+                    positive.sample(&mut rng)
+                } else {
+                    negative.sample(&mut rng)
+                });
+            }
+            if row[1] > 750_000.0 {
+                row[column(GLOWS_IN)] += 1_000.0;
+            }
+            if spill {
+                row[column(SPILLS_INTO)] += SPILL * row[column(SPILLS_FROM)];
+            }
+            row
+        })
+        .collect()
+}
+
+/// Four full stains with [`spilling_events`]' spill and autofluorescence,
+/// specimens "a" to "d", and unstained files for "a" and "b" with the
+/// autofluorescence alone; a rules file with no rules, telling specimens apart
+/// by the `test` column.
+pub fn spilling_samples(name: &str) -> PathBuf {
+    use crate::gate_rules::rule_store::{RuleStore, SamplePairing};
+    let mut samples: Vec<(&str, &str, &str, Vec<Vec<f32>>)> = ["a", "b", "c", "d"]
+        .iter()
+        .zip(1..)
+        .map(|(specimen, seed)| {
+            (
+                *specimen,
+                *specimen,
+                "FS",
+                spilling_events(seed, 8_000, true),
+            )
+        })
+        .collect();
+    samples.push(("ua", "a", "U", spilling_events(11, 8_000, false)));
+    samples.push(("ub", "b", "U", spilling_events(12, 8_000, false)));
+    let dir = workspace_of(name, &samples);
+    RuleStore::with_pairing(SamplePairing {
+        sample_id_column: "test".into(),
+        ..SamplePairing::default()
+    })
+    .save(&crate::workspace::rules_file(&dir))
     .unwrap();
     dir
 }

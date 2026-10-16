@@ -80,3 +80,45 @@ fn the_report_says_what_copying_rules_to_siblings_would_do() {
         "{section}"
     );
 }
+
+/// The fixture's spill and autofluorescence, found in the first population
+/// at the top of the gating - see `test_workspace::spilling_events`.
+#[test]
+fn the_report_tells_the_spill_from_the_autofluorescence() {
+    use crate::session::Session;
+    use crate::test_workspace::{GLOWS_IN, SPILLS_FROM, SPILLS_INTO};
+    let folder = crate::test_workspace::spilling_samples("test-report-spillover");
+    let job = Session::open(&folder)
+        .unwrap()
+        .test_job("now".into())
+        .unwrap();
+    let mut report = Report::default();
+
+    let section = crate::test_report::spillover(&job, &AtomicBool::new(false), &mut report);
+
+    assert!(
+        section.contains("Looked in 1 on 4 of 4 specimens: 4 stained and 2 unstained files."),
+        "{section}"
+    );
+    assert!(
+        section.contains(&format!(
+            "- {SPILLS_INTO} rises with {SPILLS_FROM} on all 4 samples"
+        )),
+        "{section}"
+    );
+    assert!(
+        section.contains(&format!("look in {GLOWS_IN}, where they are brightest")),
+        "{section}"
+    );
+}
+
+#[test]
+fn the_report_says_nothing_was_checked_without_gating() {
+    let section =
+        crate::test_report::spillover(&empty("w"), &AtomicBool::new(false), &mut Report::default());
+
+    assert!(
+        section.contains("No gating is loaded, so nothing was checked."),
+        "{section}"
+    );
+}

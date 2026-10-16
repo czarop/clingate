@@ -29,6 +29,7 @@ mod rules;
 mod fit;
 mod pick;
 mod score;
+mod spillover;
 mod test_report;
 
 pub use copy::{CopiedRule, CopyAnswer, LeftOut};
@@ -48,6 +49,7 @@ pub use rules::{
 };
 pub use fit::{FIT_SHOWN, FitAnswer, FitAsk};
 pub use pick::{PickAnswer, PickedRule};
+pub use spillover::{SPILLOVER_SPECIMENS, SPILLOVER_SPECIMENS_MAX, SpilloverAnswer};
 pub use score::{SCORE_ROWS, SCORE_ROWS_MAX, ScoreAnswer};
 pub use test_report::{RuleReportAnswer, TestReportAnswer};
 

@@ -42,6 +42,7 @@ use crate::components::toast::ToastProvider;
 use crate::gate_editor::copy_rules_panel::CopyRun;
 use crate::gate_editor::edits::Edits;
 use crate::gate_editor::features_window::FeatureRun;
+use crate::gate_editor::spillover_panel::SpilloverRun;
 use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
@@ -62,6 +63,7 @@ struct Held {
     rule_report_run: RuleReportRun,
     copy_run: CopyRun,
     feature_run: FeatureRun,
+    spillover_run: SpilloverRun,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -99,6 +101,7 @@ fn Probe(holder: Holder) -> Element {
         rule_report_run: RuleReportRun::from_context(),
         copy_run: CopyRun::from_context(),
         feature_run: FeatureRun::from_context(),
+        spillover_run: SpilloverRun::from_context(),
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -1847,4 +1850,46 @@ fn the_test_features_tab_checks_as_the_tools_do_and_keeps_feedback_for_them() {
         .find(|s| s.feature.id == "polygon_saved")
         .unwrap();
     assert_eq!(polygon.feedback.tried, Tried::Problem);
+}
+
+/// The Workspace tab checks compensation and unmixing as the tools do: the
+/// same specimens read, the same findings.
+#[test]
+fn the_workspace_tab_checks_spillover_as_the_tools_do() {
+    use clingate_core::session::SPILLOVER_SPECIMENS;
+    let tools = clingate_core::test_workspace::spilling_samples("spillover-tools");
+    let ours = clingate_core::test_workspace::spilling_samples("spillover-app");
+    let answer = Session::open(&tools)
+        .unwrap()
+        .check_spillover("1", None)
+        .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let ready = app.with(|held| {
+        let (node, _) = held
+            .spillover_run
+            .populations()
+            .into_iter()
+            .find(|(_, path)| path == "1")
+            .expect("population 1 is offered");
+        held.spillover_run.job(&node, SPILLOVER_SPECIMENS).unwrap()
+    });
+    let checked = clingate_core::spillover::run(
+        &ready.job,
+        &std::sync::atomic::AtomicBool::new(false),
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        (ready.specimens_read, ready.specimens),
+        (answer.specimens_read, answer.specimens)
+    );
+    assert_eq!(checked.findings, answer.findings);
+    assert_eq!(checked.findings.len(), 2, "{:?}", checked.findings);
+    assert_eq!(
+        (checked.stained, checked.unstained),
+        (answer.stained_files, answer.unstained_files)
+    );
 }

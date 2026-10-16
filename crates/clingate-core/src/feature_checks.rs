@@ -42,10 +42,30 @@ pub enum Check {
     RuleNames,
     /// The gating saved and read back, then saved again: the same file.
     GatingSaved,
+    /// What the spillover check would read: its channels, side scatter, and
+    /// which files it takes as unstained.
+    SpilloverReads,
 }
 
 /// What the features are, newest first.
 pub const FEATURES: &[Feature] = &[
+    Feature {
+        id: "spillover",
+        title: "Telling spillover errors from autofluorescence",
+        place: "Workspace tab - \"Check compensation and unmixing\"; check_spillover for Claude",
+        steps: &[
+            "Choose a clean population - single live cells or lymphocytes - and Check.",
+            "Read each finding: a spillover value to change, samples whose dye to check, or \
+             autofluorescence to extract with the channel to look in on the unstained.",
+            "Compare with what you know of the panel: a pair you know spills, a tandem you know \
+             degrades, cells you know are autofluorescent (monocytes, granulocytes).",
+            "If it names a value to change, change it in the compensation section above, and \
+             Check again: that finding should go.",
+        ],
+        send_back: "The findings it gave, which you agree with and which not (and why), and a \
+                    picture of a plot that shows a finding it missed.",
+        check: Some(Check::SpilloverReads),
+    },
     Feature {
         id: "copy_rules",
         title: "Copying rules to sibling populations",
@@ -191,6 +211,7 @@ pub fn run_check(check: Check, on: &CheckInputs) -> Checked {
         Check::PolygonSaved => polygon_saved(on),
         Check::RuleNames => rule_names(on),
         Check::GatingSaved => gating_saved(on),
+        Check::SpilloverReads => spillover_reads(on),
     }
 }
 
@@ -345,6 +366,60 @@ fn rule_names(on: &CheckInputs) -> Checked {
         said.push("every name the rules hold is as a run reads it".into());
     }
     Checked { passed, said }
+}
+
+fn spillover_reads(on: &CheckInputs) -> Checked {
+    let Some(root) = on.gates.root_nodes().into_iter().next() else {
+        return Checked {
+            passed: false,
+            said: vec!["no gating is loaded: the check looks in a population".into()],
+        };
+    };
+    let job = match crate::spillover::job_for(on.gates, on.inputs, &root) {
+        Ok(job) => job,
+        Err(why) => {
+            return Checked {
+                passed: false,
+                said: vec![why],
+            };
+        }
+    };
+    let has_side_scatter = on
+        .axes
+        .values()
+        .any(|axis| axis.param.fluoro == job.side_scatter);
+    let mut said = vec![
+        format!(
+            "{} fluorescence channels: {}",
+            job.channels.len(),
+            job.channels.join(", ")
+        ),
+        format!("{} stained files", job.stained.len()),
+    ];
+    said.push(match job.unstained.len() {
+        0 => "no file's sample type reads as unstained (U or Unstained): the autofluorescence \
+              finding will say it could not confirm on the unstained"
+            .into(),
+        _ => format!(
+            "{} unstained: {}",
+            job.unstained.len(),
+            job.unstained
+                .iter()
+                .map(|file| file.sample.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    });
+    if !has_side_scatter {
+        said.push(format!(
+            "the files have no {}, which the check reads to find large, granular cells",
+            job.side_scatter
+        ));
+    }
+    Checked {
+        passed: has_side_scatter,
+        said,
+    }
 }
 
 fn gating_saved(on: &CheckInputs) -> Checked {

@@ -4,6 +4,19 @@
 
 ### Added
 
+- **A compensation and unmixing check** (Workspace tab, "Check compensation
+  and unmixing"; `check_spillover` in the tools for Claude). Tells a
+  spillover error from autofluorescence the unmixing left in, in a
+  population across a spread of specimens. A channel rising with another by
+  the same amount on every sample is the matrix's, and it says which
+  spillover value to change by how much; a lean on some samples only is
+  those samples' dye (a tandem breaking down). Large, granular cells negative
+  for everything sitting higher in a channel are autofluorescence to
+  extract, and it names the channel to look in on the unstained. Unstained
+  files - sample type U or Unstained - are optional: where there are none it
+  says the autofluorescence could not be confirmed on them. The test report
+  has a section on it, and the Test features tab checks what it would read.
+
 - **A Test features tab** (and `check_features` in the tools for Claude).
   Every feature waiting to be tried, with where it is, the steps, and what to
   send back. Where a feature can be tried without you, a check tries it on

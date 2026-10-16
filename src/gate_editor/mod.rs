@@ -1,5 +1,6 @@
 pub mod compensation_panel;
 pub mod copy_rules_panel;
+pub mod spillover_panel;
 pub mod edits;
 pub mod features_window;
 pub mod gallery;

@@ -56,7 +56,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, pick_rule, preview_rules, test_report, rule_report - only \
+fit_rule, pick_rule, preview_rules, test_report, rule_report, check_spillover - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -167,6 +167,16 @@ ask the user which folder to open before writing any rule.
 When the user asks what there is to test, or how a new feature went, \
 check_features runs the checks that need nobody and lists the rest, each with \
 its steps and what to send back. Say which checks failed first.
+
+When events sit where they should not - a population smeared up a channel, \
+a diagonal on a plot - check_spillover tells a compensation error from \
+autofluorescence the unmixing left in: a lean alike on every sample is the \
+matrix's, and says which value to change by how much; a lean on some samples \
+is their dye's; large granular cells raised in a channel are autofluorescence \
+to extract, and it names the channel to look in on the unstained. Run it on \
+a clean population - single live cells or lymphocytes - not one gated on the \
+markers in question. The unstained files are optional: without them it says \
+so. It changes nothing; the fix is made in the compensation or the unmixing.
 
 To give sibling populations the rules one of them has - CD8 T cells those of \
 CD4 T cells, say - copy_rules copies every rule under one population to the \
@@ -483,6 +493,16 @@ pub struct GateProfileArgs {
     /// line each.
     pub population: Option<String>,
     /// How many specimens to read, spread evenly through the dataset (default 12, at most 60).
+    pub specimens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CheckSpillover {
+    /// The population to look in, by its gate names: a clean one, single live cells or
+    /// lymphocytes.
+    pub population: String,
+    /// How many specimens to read, spread evenly through the dataset, each with its unstained
+    /// file where it has one (default 24, at most 200).
     pub specimens: Option<usize>,
 }
 
@@ -1284,11 +1304,23 @@ impl Clingate {
         .await
     }
 
+    /// Tell compensation errors from autofluorescence left in by the unmixing, in one
+    /// population across a spread of specimens: a channel rising with another alike on every
+    /// sample (the spillover value to change, by how much), on some samples only (their dye),
+    /// or large granular cells negative for everything sitting higher in a channel, on the
+    /// unstained too (autofluorescence to extract, and the channel to look in on the
+    /// unstained). Reads the samples' events: only when the user asks. Changes nothing.
+    #[tool(annotations(read_only_hint = true))]
+    async fn check_spillover(&self, Parameters(args): Parameters<CheckSpillover>) -> String {
+        self.run(move |s| s.check_spillover(&args.population, args.specimens))
+            .await
+    }
+
     /// The features waiting for the user to try: where each is, the steps, what to send back,
     /// what the user has said of it so far, and - for those a check can try without them - the
     /// check run on the open workspace (copying rules to siblings as a dry run, a rectangle made
     /// a polygon and saved, the rules' names as a run reads them, the gating saved and read
-    /// back). Changes nothing.
+    /// back, what the spillover check would read). Changes nothing.
     #[tool(annotations(read_only_hint = true))]
     async fn check_features(&self) -> String {
         self.run(|s| Ok(s.check_features())).await

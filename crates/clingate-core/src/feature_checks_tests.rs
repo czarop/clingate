@@ -159,3 +159,60 @@ fn feedback_is_kept_in_the_workspace_and_sent_on_with_each_check() {
     );
     assert!(markdown.contains("## Picking the best rule for every gate\n\n- Where: Gate Rules tab - \"Pick the best rule\"; pick_rule for Claude\n- Tried: Not tried\n"), "{markdown}");
 }
+
+#[test]
+fn the_spillover_check_says_which_files_it_takes_as_unstained() {
+    let folder = crate::test_workspace::spilling_samples("check-spillover");
+
+    let checked = checked_on_workspace(&folder, Check::SpilloverReads);
+
+    assert!(checked.passed, "{checked:?}");
+    assert_eq!(
+        checked.said[0],
+        format!("8 fluorescence channels: {}", {
+            let mut channels = crate::test_workspace::FLUORESCENCE.to_vec();
+            channels.sort();
+            channels.join(", ")
+        })
+    );
+    assert_eq!(checked.said[1], "4 stained files");
+    assert_eq!(checked.said[2], "2 unstained: ua_U.fcs, ub_U.fcs");
+}
+
+#[test]
+fn the_spillover_check_says_when_no_file_is_unstained() {
+    let folder = crate::test_workspace::two_samples("check-spillover-none");
+
+    let checked = checked_on_workspace(&folder, Check::SpilloverReads);
+
+    assert!(checked.passed, "{checked:?}");
+    assert!(
+        checked.said[2].starts_with("no file's sample type"),
+        "{checked:?}"
+    );
+}
+
+#[test]
+fn the_spillover_check_fails_without_side_scatter() {
+    let folder = crate::test_workspace::spilling_samples("check-spillover-no-ssc");
+    let scaling = folder.join("scaling.csv");
+    let without: String = std::fs::read_to_string(&scaling)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("SSC-A"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    std::fs::write(&scaling, without).unwrap();
+
+    let checked = checked_on_workspace(&folder, Check::SpilloverReads);
+
+    assert!(!checked.passed, "{checked:?}");
+    assert!(
+        checked
+            .said
+            .last()
+            .unwrap()
+            .starts_with("the files have no SSC-A"),
+        "{checked:?}"
+    );
+}

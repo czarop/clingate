@@ -4640,3 +4640,78 @@ fn the_features_to_try_are_listed_with_their_checks_and_the_user_s_feedback() {
         .collect();
     assert!(failed.is_empty(), "{failed:?}: {checks:?}");
 }
+
+#[test]
+fn check_spillover_tells_the_spill_from_the_autofluorescence() {
+    use clingate_core::spillover::Finding;
+    use clingate_core::test_workspace::{
+        GLOWS_IN, SPILL, SPILLS_FROM, SPILLS_INTO, spilling_samples,
+    };
+    let session = Session::open(&spilling_samples("session-spillover")).unwrap();
+
+    let checked = session.check_spillover("1", None).unwrap();
+
+    assert_eq!(
+        (checked.specimens_read, checked.specimens),
+        (4, 4),
+        "{checked:?}"
+    );
+    assert_eq!((checked.stained_files, checked.unstained_files), (4, 2));
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(checked.findings.len(), 2, "{:#?}", checked.findings);
+    assert_eq!(checked.says.len(), 2);
+    let Finding::Spillover {
+        from,
+        into,
+        coefficient,
+        samples,
+        ..
+    } = &checked.findings[0]
+    else {
+        panic!("{:?}", checked.findings[0]);
+    };
+    assert_eq!((from.as_ref(), into.as_ref()), (SPILLS_FROM, SPILLS_INTO));
+    assert!((coefficient - SPILL as f64).abs() < 0.005, "{coefficient}");
+    assert_eq!(*samples, 4);
+    let Finding::Autofluorescence {
+        channels,
+        in_unstained,
+        look_in,
+    } = &checked.findings[1]
+    else {
+        panic!("{:?}", checked.findings[1]);
+    };
+    assert_eq!(
+        channels.iter().map(|(c, _)| c.as_ref()).collect::<Vec<_>>(),
+        [GLOWS_IN]
+    );
+    assert_eq!(*in_unstained, Some(true));
+    assert_eq!(look_in.as_ref(), GLOWS_IN);
+}
+
+#[test]
+fn check_spillover_reads_the_unstained_of_the_specimens_it_reads() {
+    let session = Session::open(&clingate_core::test_workspace::spilling_samples(
+        "session-spillover-some",
+    ))
+    .unwrap();
+
+    let checked = session.check_spillover("1", Some(2)).unwrap();
+
+    // Two of four specimens spread evenly are "a" and "c"; only "a" has an
+    // unstained file.
+    assert_eq!((checked.specimens_read, checked.specimens), (2, 4));
+    assert_eq!((checked.stained_files, checked.unstained_files), (2, 1));
+}
+
+#[test]
+fn check_spillover_refuses_a_population_not_there() {
+    let session = Session::open(&clingate_core::test_workspace::spilling_samples(
+        "session-spillover-none",
+    ))
+    .unwrap();
+
+    let refused = session.check_spillover("no such cells", None).unwrap_err();
+
+    assert!(refused.to_string().contains("no such cells"), "{refused}");
+}

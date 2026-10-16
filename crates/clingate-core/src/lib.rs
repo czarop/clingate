@@ -39,6 +39,9 @@ pub mod sample_pairs;
 #[cfg(test)]
 mod sample_pairs_tests;
 pub mod session;
+pub mod spillover;
+#[cfg(test)]
+mod spillover_tests;
 pub mod test_report;
 #[cfg(test)]
 mod test_report_tests;

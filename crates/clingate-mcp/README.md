@@ -189,6 +189,7 @@ Privacy & Security, Files and Folders (or Full Disk Access).
 | `update_rule` | Writes one rule into the workspace's rules file. Only on the user's word, after the replay. |
 | `copy_rules` | Copy every rule under one population to the gates of the same names under others - CD4 T cells' rules to CD8 and MAIT cells - with the gates they read moved across too. Says what it would copy and what it leaves out and why; writes only with `write`, and replaces a gate's own rule only with `replace`. |
 | `check_features` | The features waiting for the user to try, each with its steps and what to send back, what the user has said of it in the app's Test features tab, and - where a check can try it without them - the check run on the open workspace. Changes nothing. |
+| `check_spillover` | Tell compensation errors from autofluorescence left in by the unmixing, in one population across a spread of specimens: a spillover value to change and by how much, samples whose dye to check, or autofluorescence to extract with the channel to look in on the unstained. Reads the events; changes nothing. |
 
 ## The working copy
 
