@@ -83,16 +83,23 @@ and the channels of the panel:
   `check_spillover`, read-only.
 - A section in the test report.
 
-## Questions to settle before building
+## Settled
 
-1. **Are the unstained (U) files available to clingate?** Your metadata has
-   a U file per donor and day, but the workspace I saw holds only FS and FMX
-   (71 files). The AF test needs U.
-2. **Do your exported FCS files carry the raw detector channels** (V1-V16,
-   B1-B14, ...), or only the unmixed fluors? Without raw detectors the check
-   can still say *that* AF is unextracted and which unmixed channels it
-   lands in, but can only suggest a detector from the fluors' peaks.
-3. **Where is the unmixing done** - SpectroFlo, or Omiq - and was AF
-   extracted (one AF, or several)? That decides whether the advice is
-   "extract AF" or "add an AF spectrum for this cell type".
-4. **Instrument configuration** - five-laser Aurora (UV, V, B, YG, R)?
+- **Unstained files are optional.** Not every donor has one. Where a donor
+  has none, the AF test uses the nearest unstained - same plate, then same
+  day - and says which it used; with none at all, it relies on the stained
+  samples' high-SSC against low-SSC test alone, and says the verdict is weaker.
+- **Unmixed files only, plus one optional raw unstained file per
+  experiment.** The workspace's FCS files carry only unmixed fluors. The
+  detector layout does not change between experiments, so the workspace can
+  name one raw unstained file (detector channels, not in the gating) that the
+  check reads to name the exact detector where AF is brightest, and the cells
+  it is brightest in. Without it, the detector is suggested from the fluors'
+  peaks.
+
+## Still open
+
+- Where the unmixing is done (SpectroFlo or Omiq), and whether AF is already
+  extracted - one AF, or several: this decides whether the advice is "extract
+  AF" or "add an AF spectrum for this cell type".
+- The instrument configuration - a five-laser Aurora (UV, V, B, YG, R)?

@@ -76,11 +76,17 @@ few targeted questions instead of guessing, e.g.:
 
 The answers go into the proposal's justification, kept with the rule.
 
-## Questions to settle before building
+## Settled
 
-1. **Conditions on metadata, on the data, or both?** Data conditions are
-   more general (a new donor is placed by what it looks like) but harder to
-   audit; metadata conditions are simple but only cover known groups.
-2. **Where do the "good" and "bad" labels come from for you** - mostly hand
-   gating (score_rules), or the review after a run?
-3. **How many variants per rule** - two (one alternative), or more?
+- **Conditions are on the data,** decided per specimen: a specimen's FMX and
+  full stain always get the same rule, the one its full stain's data calls
+  for. A new donor is placed by what its data looks like.
+
+## Still open
+
+- Where the "this rule failed on these samples" labels mostly come from:
+  hand gating scored by `score_rules`, the review after a run (flags,
+  reports, gates moved by hand), or rule reports marked up by the user. All
+  three can feed it; the order to build them in follows which there is most
+  of.
+- How many variants per rule - two, or more.
