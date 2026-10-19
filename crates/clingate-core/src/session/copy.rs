@@ -16,7 +16,8 @@ pub struct CopiedRule {
     pub rule: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replaces: Option<String>,
-    /// What will stop the rule placing its gate, though it is copied.
+    /// What may stop the rule placing its gate on some samples, though it
+    /// is copied.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
 }
@@ -66,18 +67,11 @@ impl Session {
             }
             let copy = copy_rules(&self.gates, &rules, &from_node, &to_node, replace);
             rules = copy.written_into(&rules);
-            copied.extend(copy.copied.into_iter().map(|c| {
-                CopiedRule {
-                    population: c.target.describe(),
-                    rule: describe_rule(&c.rule),
-                    replaces: c.replaces.as_ref().map(describe_rule),
-                    problems: self
-                        .check_target(&c.target, &c.rule)
-                        .err()
-                        .map(|refused| refused.to_string())
-                        .into_iter()
-                        .collect(),
-                }
+            copied.extend(copy.copied.into_iter().map(|c| CopiedRule {
+                population: c.target.describe(),
+                rule: describe_rule(&c.rule),
+                replaces: c.replaces.as_ref().map(describe_rule),
+                problems: c.problems,
             }));
             left_out.extend(copy.not_copied.into_iter().map(|n| LeftOut {
                 population: n.target.describe(),

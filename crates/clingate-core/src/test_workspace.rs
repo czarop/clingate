@@ -187,6 +187,55 @@ pub fn two_samples_with_a_rule(name: &str) -> PathBuf {
     dir
 }
 
+/// A gate at the top called `number`, drawn as "1" is, holding a Tmem drawn
+/// as 1's is and a teff_naive drawn on `teff_naive_on` and BUV563-A.
+fn add_sibling_of_1(dir: &Path, number: char, teff_naive_on: &str) {
+    let gating = dir.join("gating.omiqgt");
+    let mut document: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&gating).unwrap()).unwrap();
+    let tree = &mut document["tree"];
+    let id = |stem: &str| format!("{stem}{number}");
+    for (from, to, name) in [
+        ("uN8Y", id("uN8"), number.to_string()),
+        ("4ECA", id("4EC"), "Tmem".to_string()),
+        ("hu4H", id("hu4"), "teff_naive".to_string()),
+    ] {
+        let mut container = tree["filterContainers"][from].clone();
+        container["id"] = to.clone().into();
+        container["name"] = name.into();
+        tree["filterContainers"][to] = container;
+    }
+    let teff_naive = &mut tree["filterContainers"][id("hu4")];
+    teff_naive["defaultFilter"]["f1"] = teff_naive_on.into();
+    if let Some(files) = teff_naive
+        .get_mut("perFileFilters")
+        .and_then(|files| files.as_object_mut())
+    {
+        for filter in files.values_mut() {
+            filter["f1"] = teff_naive_on.into();
+        }
+    }
+    for (node, parent, container) in [
+        (id("fn1"), String::new(), id("uN8")),
+        (id("URs"), id("fn1"), id("4EC")),
+        (id("7yV"), id("fn1"), id("hu4")),
+    ] {
+        tree["nodes"][node.clone()] = serde_json::json!({
+            "id": node, "parentId": parent, "filterContainerId": container,
+            "ord": 1, "collapsed": false
+        });
+    }
+    std::fs::write(&gating, document.to_string()).unwrap();
+}
+
+/// [`two_samples_with_siblings`] with a third gate at the top, "3", drawn as
+/// "1" is, with its Tmem and teff_naive drawn as 1's are.
+pub fn three_siblings(name: &str) -> PathBuf {
+    let dir = two_samples_with_siblings(name);
+    add_sibling_of_1(&dir, '3', "BUV805-A");
+    dir
+}
+
 /// [`two_samples`] with a second gate at the top, "2", drawn as "1" is and
 /// holding a Tmem drawn as 1's is and a teff_naive drawn on BV785-A rather than
 /// BUV805-A - two sibling populations with the same gates under them. Rules
@@ -197,41 +246,7 @@ pub fn two_samples_with_siblings(name: &str) -> PathBuf {
         Bound, GateRule, MeasuredOn, RuleStore, RuleTarget, SamplePairing,
     };
     let dir = two_samples(name);
-    let gating = dir.join("gating.omiqgt");
-    let mut document: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&gating).unwrap()).unwrap();
-    let tree = &mut document["tree"];
-    for (from, to, name) in [
-        ("uN8Y", "uN82", "2"),
-        ("4ECA", "4EC2", "Tmem"),
-        ("hu4H", "hu42", "teff_naive"),
-    ] {
-        let mut container = tree["filterContainers"][from].clone();
-        container["id"] = to.into();
-        container["name"] = name.into();
-        tree["filterContainers"][to] = container;
-    }
-    tree["filterContainers"]["hu42"]["defaultFilter"]["f1"] = "BV785-A".into();
-    if let Some(files) = tree["filterContainers"]["hu42"]
-        .get_mut("perFileFilters")
-        .and_then(|files| files.as_object_mut())
-    {
-        for filter in files.values_mut() {
-            filter["f1"] = "BV785-A".into();
-        }
-    }
-    for (id, parent, container) in [
-        ("fn12", "", "uN82"),
-        ("URs2", "fn12", "4EC2"),
-        ("7yV2", "fn12", "hu42"),
-    ] {
-        tree["nodes"][id] = serde_json::json!({
-            "id": id, "parentId": parent, "filterContainerId": container,
-            "ord": 1, "collapsed": false
-        });
-    }
-    std::fs::write(&gating, document.to_string()).unwrap();
-
+    add_sibling_of_1(&dir, '2', "BV785-A");
     let mut store = RuleStore::with_pairing(SamplePairing {
         sample_id_column: "test".into(),
         ..SamplePairing::default()

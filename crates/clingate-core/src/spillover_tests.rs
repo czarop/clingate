@@ -230,3 +230,29 @@ fn a_channel_with_no_negative_is_left_out_and_the_rest_still_measured() {
     // C's autofluorescence: 300 units, three widths.
     assert!((offsets[2] - 3.0).abs() < 0.5, "{offsets:?}");
 }
+
+#[test]
+fn the_reverse_of_a_spill_is_measured_but_not_said_as_a_second_spill() {
+    let stained: Vec<Measured> = (0..6)
+        .map(|n| measured(&format!("s{n}"), 10 + n, 0.1, 0.0))
+        .collect();
+
+    let findings = check(&channels(), &stained, &[]);
+
+    // A's cells carried over B's line make A seem to rise with B too.
+    let reverse = stained[0].leans[1][0].expect("A on B among B's positives");
+    assert!(
+        reverse.1.abs() >= crate::spillover::LEAN_WIDTHS,
+        "{reverse:?}"
+    );
+    let pairs: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|finding| match finding {
+            Finding::Spillover { from, into, .. } | Finding::SampleSpecific { from, into, .. } => {
+                (&**from, &**into)
+            }
+            Finding::Autofluorescence { .. } => ("", ""),
+        })
+        .collect();
+    assert_eq!(pairs, [("A", "B")]);
+}

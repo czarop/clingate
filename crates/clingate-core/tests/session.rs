@@ -4605,7 +4605,7 @@ fn the_features_to_try_are_listed_with_their_checks_and_the_user_s_feedback() {
         Feedback {
             tried: Tried::Works,
             note: "fine".into(),
-            checked: None,
+            ..Feedback::default()
         },
     );
     save_feedback(&folder, &said).unwrap();
@@ -4750,4 +4750,74 @@ fn check_spillover_refuses_when_no_stained_file_can_be_read() {
             .contains("no stained sample could be read"),
         "{refused}"
     );
+}
+
+/// 1's rules copied to 2 and 3 in one call: 3's teff_naive, drawn as 1's,
+/// takes its rule where 2's, on BV785-A, cannot. A preview made under the old
+/// rules is dropped. Copied again after 1's Tmem changes, 2's and 3's keep
+/// their own unless replaced.
+#[test]
+fn rules_are_copied_to_several_siblings_at_once_and_replace_only_when_asked() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    use clingate_core::review::replay::RuleChange;
+    let folder = clingate_core::test_workspace::three_siblings("session-copy-several");
+    let mut session = Session::open(&folder).unwrap();
+    let to = ["2".to_string(), "3".to_string()];
+    session.preview_rules().unwrap();
+
+    let first = session.copy_rules("1", &to, false, true).unwrap();
+
+    let populations = |answer: &clingate_core::session::CopyAnswer| -> Vec<String> {
+        answer.copied.iter().map(|c| c.population.clone()).collect()
+    };
+    assert_eq!(
+        populations(&first),
+        ["Tmem of 2", "Tmem of 3", "teff_naive of 3"]
+    );
+    assert_eq!(first.left_out.len(), 1);
+    assert_eq!(first.left_out[0].population, "teff_naive of 2");
+    assert!(
+        session.apply_previewed_rules().is_err(),
+        "the preview made under the old rules is dropped"
+    );
+
+    let mut changed = session
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::under("Tmem", "1"))
+        .unwrap()
+        .clone();
+    changed.rule = Rule::TailFraction(TailFractionRule::new((0.03, 0.06)));
+    session
+        .update_rule(RuleChange {
+            target: RuleTarget::under("Tmem", "1"),
+            rule: changed.clone(),
+        })
+        .unwrap();
+
+    let kept = session.copy_rules("1", &to, false, false).unwrap();
+    let replaced = session.copy_rules("1", &to, true, true).unwrap();
+
+    assert!(kept.copied.is_empty(), "{:?}", populations(&kept));
+    assert!(
+        kept.left_out
+            .iter()
+            .filter(|l| l.population.starts_with("Tmem of"))
+            .all(|l| l
+                .reason
+                .starts_with("already has a rule of its own, kept: ")),
+        "{:?}",
+        kept.left_out
+    );
+    assert_eq!(populations(&replaced), ["Tmem of 2", "Tmem of 3"]);
+    assert!(replaced.copied.iter().all(|c| c.replaces.is_some()));
+    let reopened = Session::open(&folder).unwrap();
+    let rules = reopened.rules().unwrap();
+    for population in ["2", "3"] {
+        assert_eq!(
+            rules.get(&RuleTarget::under("Tmem", population)),
+            Some(&changed)
+        );
+    }
 }

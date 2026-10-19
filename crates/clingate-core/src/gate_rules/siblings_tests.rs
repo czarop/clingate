@@ -150,11 +150,20 @@ fn a_gate_not_drawn_on_the_rule_s_parameter_is_left_out() {
     );
 }
 
+/// [`tree`], with a Z under B drawn as A's, and a C at the top with an X.
+fn tree_with_z_under_b_and_c() -> GateState {
+    let mut state = tree();
+    add(&mut state, "bz", "Z", ("CD3", "CD4"), Some("b"));
+    add(&mut state, "c", "C", ("FSC-A", "SSC-A"), None);
+    add(&mut state, "cx", "X", ("CD3", "CD4"), Some("c"));
+    state
+}
+
 #[test]
 fn a_gate_read_under_the_old_parent_is_read_under_the_new_one_and_elsewhere_stays() {
-    let state = tree();
+    let state = tree_with_z_under_b_and_c();
     let mut rules = RuleStore::default();
-    rules.insert(RuleTarget::under("X", "A"), shape_of("Y", "A"));
+    rules.insert(RuleTarget::under("X", "A"), shape_of("Z", "A"));
     let elsewhere = GateRule {
         parameter: "CD3".into(),
         bound: Bound::Above,
@@ -182,10 +191,193 @@ fn a_gate_read_under_the_old_parent_is_read_under_the_new_one_and_elsewhere_stay
         false,
     );
 
-    assert_eq!(into_b.copied[0].rule, shape_of("Y", "B"));
+    assert_eq!(left_out(&into_b), []);
+    assert_eq!(into_b.copied[0].rule, shape_of("Z", "B"));
+    assert_eq!(left_out(&kept), []);
     assert_eq!(
         kept.copied[0].rule, elsewhere,
         "the fallback is under neither"
+    );
+}
+
+#[test]
+fn the_gates_a_next_to_or_an_edge_rule_reads_are_read_under_the_new_parent() {
+    use crate::gate_rules::rule::{EdgeFrom, NextToRule, Side};
+    let state = tree_with_z_under_b_and_c();
+    let next_to = |parent: &str| GateRule {
+        parameter: "".into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::NextToGate(NextToRule {
+            anchor: RuleTarget::under("Z", parent),
+            parameter: "CD3".into(),
+            side: Side::Lower,
+            meet: Default::default(),
+            gap: 0.0,
+        }),
+    };
+    let edge = |parent: &str| GateRule {
+        parameter: "".into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::FromAnotherGate(FromGateRule {
+            same_shape_as: None,
+            edges: vec![EdgeFrom {
+                anchor: RuleTarget::under("Z", parent),
+                parameter: "CD3".into(),
+                side: Side::Lower,
+                anchor_side: Side::Upper,
+                gap: 0.0,
+            }],
+        }),
+    };
+    let (a, b) = (node(&state, "a"), node(&state, "b"));
+
+    for (rule, expected) in [(next_to("A"), next_to("B")), (edge("A"), edge("B"))] {
+        let mut rules = RuleStore::default();
+        rules.insert(RuleTarget::under("X", "A"), rule);
+
+        let copy = copy_rules(&state, &rules, &a, &b, false);
+
+        assert_eq!(left_out(&copy), []);
+        assert_eq!(copy.copied[0].rule, expected);
+    }
+}
+
+#[test]
+fn a_copy_update_rule_would_refuse_is_left_out_with_its_reason() {
+    let state = tree();
+    let mut rules = RuleStore::default();
+    // Y is drawn on CD3 and CD4 under A, as X is; under B on CD8 and CD4.
+    rules.insert(RuleTarget::under("X", "A"), shape_of("Y", "A"));
+
+    let copy = copy_rules(
+        &state,
+        &rules,
+        &node(&state, "a"),
+        &node(&state, "b"),
+        false,
+    );
+
+    assert!(copy.copied.is_empty());
+    assert_eq!(
+        left_out(&copy),
+        [(
+            "X of B".to_string(),
+            "Y of B is drawn on CD8 and CD4, and X of B on CD3 and CD4, so it cannot take that \
+             shape"
+                .to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_copy_that_would_give_one_gate_drawn_in_two_places_two_rules_is_left_out() {
+    let mut state = tree_with_z_under_b_and_c();
+    // B's X is drawn under C too, as one gate.
+    let x_of_c = node(&state, "cx");
+    state
+        .link_node_to_gate(&x_of_c, &node(&state, "bx"))
+        .unwrap();
+    let mut rules = RuleStore::default();
+    rules.insert(RuleTarget::under("X", "A"), band("CD3", 0.01));
+    rules.insert(RuleTarget::under("X", "C"), band("CD3", 0.05));
+
+    let copy = copy_rules(
+        &state,
+        &rules,
+        &node(&state, "a"),
+        &node(&state, "b"),
+        false,
+    );
+
+    assert!(copy.copied.is_empty(), "{:?}", copy.copied);
+    let reasons = left_out(&copy);
+    assert_eq!(reasons.len(), 1);
+    assert!(
+        reasons[0].1.contains("X of B") && reasons[0].1.contains("X of C"),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn a_rule_for_every_gate_of_the_name_is_kept_unless_replaced() {
+    let state = tree();
+    let mut rules = RuleStore::default();
+    rules.insert(RuleTarget::under("X", "A"), band("CD3", 0.01));
+    rules.insert(RuleTarget::named("X"), band("CD3", 0.05));
+    let (a, b) = (node(&state, "a"), node(&state, "b"));
+
+    let kept = copy_rules(&state, &rules, &a, &b, false);
+    let replaced = copy_rules(&state, &rules, &a, &b, true);
+
+    assert!(kept.copied.is_empty());
+    assert!(
+        left_out(&kept)[0]
+            .1
+            .starts_with("already reached by the rule for every X gate, kept: "),
+        "{:?}",
+        left_out(&kept)
+    );
+    assert_eq!(copied_to(&replaced), ["X of B"]);
+    assert_eq!(replaced.copied[0].replaces, Some(band("CD3", 0.05)));
+}
+
+#[test]
+fn a_phenotype_rule_moves_no_one_parameter_but_its_pinned_edges_must_be_on_the_gate() {
+    use crate::gate_rules::rule::PhenotypeRule;
+    let state = tree();
+    let phenotype = |pinned: &[&str]| GateRule {
+        parameter: "SSC-A".into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::File("qc".into()),
+        rule: Rule::MatchThePhenotype(PhenotypeRule {
+            pinned: pinned.iter().map(|m| Arc::from(*m)).collect(),
+            ..PhenotypeRule::default()
+        }),
+    };
+    let (a, b) = (node(&state, "a"), node(&state, "b"));
+    let copy_of = |rule: GateRule| {
+        let mut rules = RuleStore::default();
+        rules.insert(RuleTarget::under("Y", "A"), rule);
+        copy_rules(&state, &rules, &a, &b, false)
+    };
+
+    let unpinned = copy_of(phenotype(&[]));
+    let pinned = copy_of(phenotype(&["CD3"]));
+
+    assert_eq!(copied_to(&unpinned), ["Y of B"]);
+    assert_eq!(
+        left_out(&pinned),
+        [(
+            "Y of B".to_string(),
+            "Y of B is drawn on CD8 and CD4, so it has no edge on CD3 to pin".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_rule_with_no_parameter_where_it_needs_one_is_left_out() {
+    let state = tree();
+    let mut rules = RuleStore::default();
+    rules.insert(RuleTarget::under("X", "A"), band("", 0.01));
+
+    let copy = copy_rules(
+        &state,
+        &rules,
+        &node(&state, "a"),
+        &node(&state, "b"),
+        false,
+    );
+
+    assert_eq!(
+        left_out(&copy),
+        [(
+            "X of B".to_string(),
+            "X of B is drawn on CD3 and CD4, so a rule for it slides its edge along one of \
+             those - not "
+                .to_string()
+        )]
     );
 }
 

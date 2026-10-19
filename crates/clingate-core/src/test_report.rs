@@ -46,6 +46,11 @@ pub struct TestJob {
 /// How far a report has got.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TestStep {
+    /// Reading files for the compensation and unmixing check.
+    CheckingSpillover {
+        done: usize,
+        total: usize,
+    },
     Picking(Picking),
     Scoring(&'static str),
 }
@@ -54,6 +59,9 @@ impl TestStep {
     /// The step in a line.
     pub fn describe(self) -> String {
         match self {
+            TestStep::CheckingSpillover { done, total } => {
+                format!("Checking compensation and unmixing: {done} of {total} files read")
+            }
             TestStep::Picking(picking) => format!("Picking: {}", picking.describe()),
             TestStep::Scoring(what) => format!("Scoring {what} against your gating"),
         }
@@ -62,7 +70,8 @@ impl TestStep {
     /// How far through the report, 0 to 1: the pick is most of it.
     pub fn fraction(self) -> f64 {
         match self {
-            TestStep::Picking(picking) => picking.fraction() * 0.8,
+            TestStep::CheckingSpillover { done, total } => done as f64 / total.max(1) as f64 * 0.1,
+            TestStep::Picking(picking) => 0.1 + picking.fraction() * 0.7,
             TestStep::Scoring(_) => 0.9,
         }
     }
@@ -78,7 +87,7 @@ pub fn test_report(
     report.push(header(job));
     report.push(workspace(job));
     report.push(copies(job));
-    let section = spillover(job, cancel, &mut report);
+    let section = spillover(job, cancel, &mut report, &progress);
     report.push(section);
     stopped(cancel)?;
     report.push(settings(&job.settings));
@@ -327,7 +336,12 @@ pub(crate) fn copies(job: &TestJob) -> String {
 
 /// Spillover errors and autofluorescence left in, in the first population at
 /// the top of the gating, on a spread of specimens - see [`crate::spillover`].
-pub(crate) fn spillover(job: &TestJob, cancel: &AtomicBool, report: &mut Report) -> String {
+pub(crate) fn spillover(
+    job: &TestJob,
+    cancel: &AtomicBool,
+    report: &mut Report,
+    progress: &(impl Fn(TestStep) + Sync),
+) -> String {
     let mut out = String::from("\n## Compensation and unmixing\n\n");
     let names = crate::gates::gate_paths::unique_names(&job.gates);
     let roots = job.gates.root_nodes();
@@ -348,7 +362,9 @@ pub(crate) fn spillover(job: &TestJob, cancel: &AtomicBool, report: &mut Report)
     let (read, total) = inputs.keep_specimens(crate::session::SPILLOVER_SPECIMENS, &[]);
     let checked = report.timed("Checking compensation and unmixing", || {
         let check = crate::spillover::job_for(&job.gates, &inputs, &top)?;
-        crate::spillover::run(&check, cancel, |_, _| {})
+        crate::spillover::run(&check, cancel, |done, total| {
+            progress(TestStep::CheckingSpillover { done, total })
+        })
     });
     let checked = match checked {
         Ok(checked) => checked,

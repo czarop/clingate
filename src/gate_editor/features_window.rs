@@ -114,14 +114,14 @@ pub fn FeaturesWindow() -> Element {
     });
     let mut checking = use_signal(|| false);
 
+    let mut keep = move || {
+        if let Err(why) = run.keep(&feedback.peek()) {
+            warn(&toasts, why);
+        }
+    };
     let mut change =
         move |id: &'static str, edit: &dyn Fn(&mut clingate_core::feature_checks::Feedback)| {
-            let mut all = feedback.peek().clone();
-            edit(all.entry(id.to_string()).or_default());
-            if let Err(why) = run.keep(&all) {
-                warn(&toasts, why);
-            }
-            feedback.set(all);
+            edit(feedback.write().entry(id.to_string()).or_default());
         };
 
     let check_every = move |_| {
@@ -136,14 +136,15 @@ pub fn FeaturesWindow() -> Element {
             match done {
                 Ok(results) => {
                     let failed = results.iter().filter(|(_, c)| !c.passed).count();
-                    let mut all = feedback.peek().clone();
+                    let (when, _) = clingate_core::test_report::stamped_now();
                     for (id, checked) in results {
-                        all.entry(id.to_string()).or_default().checked = Some(checked);
+                        feedback
+                            .write()
+                            .entry(id.to_string())
+                            .or_default()
+                            .keep_check(checked, when.clone());
                     }
-                    if let Err(why) = run.keep(&all) {
-                        warn(&toasts, why);
-                    }
-                    feedback.set(all);
+                    keep();
                     if failed == 0 {
                         say(&toasts, "Every check passed");
                     } else {
@@ -171,7 +172,7 @@ pub fn FeaturesWindow() -> Element {
         div { class: "features",
             h2 { "Test features" }
             p { class: "features-hint",
-                "New features waiting for you to try. Run the checks first: they try what they can on the open workspace and change nothing. For the rest, follow the steps, say how it went, and copy your feedback for Claude when you are done. What you write here is kept in the workspace's test_reports folder."
+                "New features waiting for you to try. Run the checks first: they try what they can on the open workspace and change nothing. For the rest, follow the steps, say how it went, and copy your feedback for Claude when you are done. What you write here is kept in the workspace's test_reports folder as you leave each box."
             }
             div { class: "features-bar",
                 button {
@@ -187,8 +188,12 @@ pub fn FeaturesWindow() -> Element {
                     key: "{feature.id}",
                     feature: *feature,
                     given: feedback.read().get(feature.id).cloned().unwrap_or_default(),
-                    on_tried: move |(id, tried): (&'static str, Tried)| change(id, &|f| f.tried = tried),
+                    on_tried: move |(id, tried): (&'static str, Tried)| {
+                        change(id, &|f| f.tried = tried);
+                        keep();
+                    },
                     on_note: move |(id, note): (&'static str, String)| change(id, &|f| f.note = note.clone()),
+                    on_note_done: move |_| keep(),
                 }
             }
         }
@@ -201,6 +206,8 @@ fn FeatureCard(
     given: clingate_core::feature_checks::Feedback,
     on_tried: EventHandler<(&'static str, Tried)>,
     on_note: EventHandler<(&'static str, String)>,
+    /// The note is kept when the box is left, not at every key.
+    on_note_done: EventHandler<()>,
 ) -> Element {
     let id = feature.id;
     rsx! {
@@ -216,6 +223,7 @@ fn FeatureCard(
             if let Some(checked) = &given.checked {
                 p { class: if checked.passed { "features-passed" } else { "features-failed" },
                     if checked.passed { "Check passed" } else { "Check FAILED" }
+                    "{given.checked_when()}"
                 }
                 ul { class: "features-said",
                     for (at , line) in checked.said.iter().enumerate() {
@@ -243,6 +251,7 @@ fn FeatureCard(
                 placeholder: "What happened - what worked, what did not, anything odd",
                 value: "{given.note}",
                 oninput: move |e| on_note.call((id, e.value())),
+                onchange: move |_| on_note_done.call(()),
             }
         }
     }

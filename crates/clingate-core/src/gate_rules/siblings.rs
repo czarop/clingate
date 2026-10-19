@@ -10,24 +10,28 @@
 //!
 //! A rule is left out, saying why, where the new population has no gate of
 //! that name, where that gate is not drawn on the parameter the rule moves,
-//! where a gate it reads is not under the new population, or where the gate
-//! already has a rule and the copy is not to replace it.
+//! where a gate it reads is not under the new population, where it fails a
+//! check `update_rule` makes of a rule written by hand, or where a rule
+//! already reaches the gate - its own, or one for every gate of that name -
+//! and the copy is not to replace it.
 
 use std::sync::Arc;
 
 use serde::Serialize;
 
 use crate::gate_rules::rule::Rule;
-use crate::gate_rules::rule_store::{GateRule, RuleStore, RuleTarget};
+use crate::gate_rules::rule_store::{GateRule, RuleEntry, RuleStore, RuleTarget};
 use crate::gates::GateState;
 use crate::gates::gate_store::NodeId;
 
-/// A rule copied: where it is written, and the rule it replaces.
+/// A rule copied: where it is written, the rule that reached the gate
+/// before, and what may still stop it placing the gate.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Copied {
     pub target: RuleTarget,
     pub rule: GateRule,
     pub replaces: Option<GateRule>,
+    pub problems: Vec<String>,
 }
 
 /// A rule not copied, and why.
@@ -89,6 +93,7 @@ pub fn copy_rules(
     };
     let under_to = gates_under(state, to);
     let mut copy = Copy::default();
+    let mut written = rules.clone();
     for (gate, _) in gates_under(state, from) {
         let Some(rule) = rules.get(&RuleTarget::under(gate.clone(), from_name.clone())) else {
             continue;
@@ -114,20 +119,79 @@ pub fn copy_rules(
             refuse(why);
             continue;
         }
-        match rules.get(&target) {
-            Some(existing) if *existing == rule => refuse("already has this rule".into()),
-            Some(existing) if !replace => refuse(format!(
-                "already has a rule of its own, kept: {}",
-                existing.rule.describe()
-            )),
-            existing => copy.copied.push(Copied {
-                target,
-                rule,
-                replaces: existing.cloned(),
-            }),
+        let reaching = written.entry_for(&gate, Some(&to_name)).cloned();
+        match &reaching {
+            Some(entry) if entry.rule == rule => {
+                refuse("already has this rule".into());
+                continue;
+            }
+            Some(entry) if !replace => {
+                refuse(format!(
+                    "{}, kept: {}",
+                    reached_by(entry),
+                    entry.rule.rule.describe()
+                ));
+                continue;
+            }
+            _ => {}
         }
+        let mut with_copy = written.clone();
+        with_copy.insert(target.clone(), rule.clone());
+        if let Some(why) = why_update_rule_refuses(state, &with_copy, &target, &rule) {
+            refuse(why);
+            continue;
+        }
+        let problems = crate::gate_rules::autogate::edges_over_their_anchors(state, &with_copy)
+            .into_iter()
+            .filter(|problem| problem.target == target)
+            .map(|problem| problem.reason)
+            .collect();
+        written = with_copy;
+        copy.copied.push(Copied {
+            target,
+            rule,
+            replaces: reaching.map(|entry| entry.rule),
+            problems,
+        });
     }
     copy
+}
+
+/// How the rule in `entry` reaches the gate a copy is for.
+fn reached_by(entry: &RuleEntry) -> String {
+    match entry.target.parent {
+        Some(_) => "already has a rule of its own".into(),
+        None => format!(
+            "already reached by the rule for every {} gate",
+            entry.target.gate
+        ),
+    }
+}
+
+/// What `update_rule` would refuse of `rule` written for `target`, `rules`
+/// holding it: a gate it cannot place, a gate drawn in several places given
+/// rules that disagree, or an anchor it cannot read.
+fn why_update_rule_refuses(
+    state: &GateState,
+    rules: &RuleStore,
+    target: &RuleTarget,
+    rule: &GateRule,
+) -> Option<String> {
+    use crate::gate_rules::autogate::{anchor_problems, linked_conflicts};
+    if let Err(refused) = crate::session::rule_check::check_target(state, target, rule) {
+        return Some(refused.to_string());
+    }
+    let described = target.describe();
+    linked_conflicts(state, rules)
+        .into_iter()
+        .find(|conflict| conflict.rules.contains(&described))
+        .map(|conflict| conflict.reason)
+        .or_else(|| {
+            anchor_problems(state, rules)
+                .into_iter()
+                .find(|problem| problem.target == *target)
+                .map(|problem| problem.reason)
+        })
 }
 
 /// Why `rule`, copied to a gate drawn on `params` under `to_name`, could not

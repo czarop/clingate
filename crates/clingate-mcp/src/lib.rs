@@ -183,7 +183,8 @@ To give sibling populations the rules one of them has - CD8 T cells those of \
 CD4 T cells, say - copy_rules copies every rule under one population to the \
 same gates under the others in one step, rather than a rule at a time. Show \
 the user what it would copy and what it leaves out, and why, then write it \
-on their word; replace a rule a gate already has only when they say so.
+on their word; replace a rule that already reaches a gate - its own, or one \
+for every gate of that name - only when they say so.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -644,7 +645,8 @@ pub struct CopyRules {
     pub from: String,
     /// The populations to copy them to, each named the same way, e.g. ['CD4-CD8+', 'TCRgd+'].
     pub to: Vec<String>,
-    /// Replace a rule a gate there already has (default false: it is kept).
+    /// Replace a rule that already reaches a gate there - its own, or one for every gate of
+    /// that name (default false: it is kept).
     pub replace: Option<bool>,
     /// Write the copies into the rules file (default false: say what would be written).
     pub write: Option<bool>,
@@ -1331,9 +1333,11 @@ impl Clingate {
     /// same name under each of several others - a panel's rules from CD4 T cells to CD8, MAIT
     /// and gamma-delta T cells. A gate a rule reads under the old population (one it takes the
     /// shape of, sits next to or falls back to) is read under the new one. Says which rules are
-    /// copied, which replace a rule there, and which are left out and why: no gate of that
-    /// name, a gate not drawn on the rule's parameter, a gate it reads missing, or a rule there
-    /// already (kept unless replace). Writes only with write, on the user's word.
+    /// copied, which replace a rule there and what may still stop them placing their gate, and
+    /// which are left out and why: no gate of that name, a gate not drawn on the rule's
+    /// parameter, a gate it reads missing, a check update_rule would refuse it on, or a rule
+    /// reaching the gate already (kept unless replace). Writes only with write, on the user's
+    /// word.
     #[tool(annotations(read_only_hint = false, destructive_hint = true))]
     async fn copy_rules(&self, Parameters(args): Parameters<CopyRules>) -> String {
         self.run(move |s| {

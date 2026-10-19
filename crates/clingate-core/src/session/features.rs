@@ -57,7 +57,9 @@ impl Session {
                 .collect(),
             next: "tell the user which checks failed and what they found, then which features \
                    they have not tried yet, with the steps and what to send back; their \
-                   feedback is kept by the app's Test features tab",
+                   feedback is kept by the app's Test features tab. checked is each check run \
+                   now; feedback.checked is what the tab last found, at checked_at, on the \
+                   workspace as it was then",
         }
     }
 }

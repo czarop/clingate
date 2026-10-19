@@ -143,6 +143,7 @@ fn feedback_is_kept_in_the_workspace_and_sent_on_with_each_check() {
                 passed: false,
                 said: vec!["1 to 2: 0 would be copied, 1 left out".into()],
             }),
+            checked_at: Some("2026-10-19 09:30:00 +01:00".into()),
         },
     );
 
@@ -153,7 +154,7 @@ fn feedback_is_kept_in_the_workspace_and_sent_on_with_each_check() {
     assert_eq!(read, feedback);
     assert!(
         markdown.contains(
-            "## Copying rules to sibling populations\n\n- Where: Gate Rules tab - \"Copy rules to sibling populations\"; copy_rules for Claude\n- Tried: Problem\n- Said: IL2 was left out\n- Check: FAILED\n  - 1 to 2: 0 would be copied, 1 left out\n"
+            "## Copying rules to sibling populations\n\n- Where: Gate Rules tab - \"Copy rules to sibling populations\"; copy_rules for Claude\n- Tried: Problem\n- Said: IL2 was left out\n- Check: FAILED (run 2026-10-19 09:30:00 +01:00)\n  - 1 to 2: 0 would be copied, 1 left out\n"
         ),
         "{markdown}"
     );

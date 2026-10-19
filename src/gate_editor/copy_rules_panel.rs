@@ -63,6 +63,13 @@ pub fn CopyRulesPanel() -> Element {
     let mut replace = use_signal(|| false);
 
     let sources = use_memo(move || populations_with_rules(&gates.read(), &rules.read()));
+    use_effect(move || {
+        let chosen = from.peek().clone();
+        if chosen.is_some_and(|node| !sources.read().iter().any(|(n, _)| *n == node)) {
+            from.set(None);
+            to.set(Vec::new());
+        }
+    });
     let siblings = use_memo(move || {
         from()
             .map(|node| siblings_of(&gates.read(), &node))
@@ -139,7 +146,7 @@ pub fn CopyRulesPanel() -> Element {
                         checked: replace(),
                         onchange: move |e| replace.set(e.checked()),
                     }
-                    " Replace a rule a gate there already has"
+                    " Replace a rule that already reaches a gate there"
                 }
             }
             if let Some(copy) = preview() {
@@ -157,8 +164,11 @@ pub fn CopyRulesPanel() -> Element {
                                     td { "{copied.target.describe()}" }
                                     td {
                                         "{copied.rule.rule.describe()}"
-                                        if copied.replaces.is_some() {
-                                            " - replaces its rule"
+                                        if let Some(was) = copied.replaces.as_ref() {
+                                            " - in place of {was.rule.describe()}"
+                                        }
+                                        for (at , problem) in copied.problems.iter().enumerate() {
+                                            div { key: "{at}", class: "gate_rules-weak", "{problem}" }
                                         }
                                     }
                                 }

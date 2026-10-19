@@ -487,12 +487,32 @@ impl Tried {
     }
 }
 
-/// What the user says of one feature, and what its check last found.
+/// What the user says of one feature, and what its check found when last
+/// run from the Test features tab - the workspace may have changed since.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Feedback {
     pub tried: Tried,
     pub note: String,
     pub checked: Option<Checked>,
+    /// When `checked` was run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+}
+
+impl Feedback {
+    /// Keep what a check found, run `when`.
+    pub fn keep_check(&mut self, checked: Checked, when: String) {
+        self.checked = Some(checked);
+        self.checked_at = Some(when);
+    }
+
+    /// When the kept check was run, as a clause: " (run 2026-10-19 ...)".
+    pub fn checked_when(&self) -> String {
+        self.checked_at
+            .as_deref()
+            .map(|when| format!(" (run {when})"))
+            .unwrap_or_default()
+    }
 }
 
 /// Every feature's feedback, by id.
@@ -543,8 +563,9 @@ pub fn feedback_markdown(feedback: &Feedbacks) -> String {
         }
         if let Some(checked) = &given.checked {
             out.push_str(&format!(
-                "- Check: {}\n",
-                if checked.passed { "passed" } else { "FAILED" }
+                "- Check: {}{}\n",
+                if checked.passed { "passed" } else { "FAILED" },
+                given.checked_when()
             ));
             for line in &checked.said {
                 out.push_str(&format!("  - {line}\n"));

@@ -94,7 +94,12 @@ fn the_report_tells_the_spill_from_the_autofluorescence() {
         .unwrap();
     let mut report = Report::default();
 
-    let section = crate::test_report::spillover(&job, &AtomicBool::new(false), &mut report);
+    let steps = std::sync::Mutex::new(Vec::new());
+
+    let section =
+        crate::test_report::spillover(&job, &AtomicBool::new(false), &mut report, &|step| {
+            steps.lock().unwrap().push(step)
+        });
 
     assert!(
         section.contains("Looked in 1 on 4 of 4 specimens: 4 stained and 2 unstained files."),
@@ -110,12 +115,33 @@ fn the_report_tells_the_spill_from_the_autofluorescence() {
         section.contains(&format!("look in {GLOWS_IN}, where they stand out most")),
         "{section}"
     );
+    // Before the first file, then as each of the six is read, in whatever
+    // order the reads finish.
+    let mut read: Vec<usize> = steps
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|step| match step {
+            crate::test_report::TestStep::CheckingSpillover { done, total: 6 } => done,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    read.sort();
+    assert_eq!(read, [0, 1, 2, 3, 4, 5, 6]);
+    assert_eq!(
+        crate::test_report::TestStep::CheckingSpillover { done: 6, total: 6 }.fraction(),
+        0.1
+    );
 }
 
 #[test]
 fn the_report_says_nothing_was_checked_without_gating() {
-    let section =
-        crate::test_report::spillover(&empty("w"), &AtomicBool::new(false), &mut Report::default());
+    let section = crate::test_report::spillover(
+        &empty("w"),
+        &AtomicBool::new(false),
+        &mut Report::default(),
+        &|_| {},
+    );
 
     assert!(
         section.contains("No gating is loaded, so nothing was checked."),

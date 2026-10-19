@@ -59,22 +59,7 @@ impl Session {
         &self,
         node: &NodeId,
     ) -> Option<(RuleTarget, GateId, (String, String))> {
-        let gate_id = self.gates.gate_for_node(node)?.clone();
-        let gate = self.gates.registered_gate(&gate_id)?;
-        let names = crate::gates::gate_paths::unique_names(&self.gates);
-        let parent = self
-            .gates
-            .parent_node(node)
-            .and_then(|p| names.get(&p).cloned());
-        let target = RuleTarget {
-            gate: self
-                .gates
-                .population_name(&gate_id)
-                .unwrap_or_else(|| Arc::from(gate.get_name())),
-            parent,
-        };
-        let (x, y) = gate.get_params();
-        Some((target, gate_id, (x.to_string(), y.to_string())))
+        target_of(&self.gates, node)
     }
 
     /// The workspace's files, cut down to `wanted` specimens spread evenly
@@ -346,4 +331,24 @@ impl Session {
         }
         out
     }
+}
+
+/// A population's gate as the rules name it: its name, and its parent's
+/// name made unique the way a rule's target reads it.
+pub(crate) fn target_of(
+    gates: &crate::gates::GateState,
+    node: &NodeId,
+) -> Option<(RuleTarget, GateId, (String, String))> {
+    let gate_id = gates.gate_for_node(node)?.clone();
+    let gate = gates.registered_gate(&gate_id)?;
+    let names = crate::gates::gate_paths::unique_names(gates);
+    let parent = gates.parent_node(node).and_then(|p| names.get(&p).cloned());
+    let target = RuleTarget {
+        gate: gates
+            .population_name(&gate_id)
+            .unwrap_or_else(|| Arc::from(gate.get_name())),
+        parent,
+    };
+    let (x, y) = gate.get_params();
+    Some((target, gate_id, (x.to_string(), y.to_string())))
 }

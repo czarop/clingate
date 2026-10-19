@@ -24,7 +24,7 @@ pub mod lookup;
 mod profile;
 mod replay;
 mod review;
-mod rule_check;
+pub(crate) mod rule_check;
 mod rules;
 mod fit;
 mod pick;

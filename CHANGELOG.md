@@ -35,8 +35,11 @@
   first population - one it takes the shape of, sits next to or falls back
   to - is read under the new one. A rule is left out, saying why, where there
   is no gate of its name, the gate is not drawn on the rule's parameter, a gate
-  it reads is missing, or the gate has a rule of its own (kept unless replace
-  is chosen). The test report says what each copy would do.
+  it reads is missing, `update_rule` would refuse it (a gate drawn in several
+  places given rules that disagree, an anchor it cannot read), or a rule
+  already reaches the gate - its own, or one for every gate of that name -
+  kept unless replace is chosen. What may still stop a copied rule placing
+  its gate is said beside it. The test report says what each copy would do.
 
 - **A rule report** (Review tab, "Report on this rule"; `rule_report` in the
   tools for Claude). How the rule of the gate shown did in the last applied

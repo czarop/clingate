@@ -1772,3 +1772,70 @@ fn spillover_and_autofluorescence_are_told_apart_over_the_protocol() {
     let refused = server.call("check_spillover", json!({"population": "nobody"}));
     assert_ne!(refused["outcome"], "ok", "{refused}");
 }
+
+/// One population's rules copied to two over the protocol, then copied again
+/// after its rule changes: kept unless replace.
+#[test]
+fn rules_are_copied_to_several_populations_and_replaced_only_when_asked_over_the_protocol() {
+    let folder = clingate_core::test_workspace::three_siblings("mcp-copy-several");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let first = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2", "3"], "write": true}),
+    );
+    let populations = |answer: &serde_json::Value| -> Vec<String> {
+        answer["result"]["copied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["population"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(first["outcome"], "ok", "{first}");
+    assert_eq!(
+        populations(&first),
+        ["Tmem of 2", "Tmem of 3", "teff_naive of 3"]
+    );
+
+    let changed = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "parent": "1",
+            "rule": {
+                "parameter": "BUV805-A",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {"kind": "TailFraction", "band": [0.03, 0.06]}
+            }
+        }),
+    );
+    assert_eq!(changed["outcome"], "ok", "{changed}");
+    let kept = server.call("copy_rules", json!({"from": "1", "to": ["2", "3"]}));
+    let replaced = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2", "3"], "replace": true}),
+    );
+
+    assert!(populations(&kept).is_empty(), "{kept}");
+    assert!(
+        kept.to_string()
+            .contains("already has a rule of its own, kept"),
+        "{kept}"
+    );
+    assert_eq!(populations(&replaced), ["Tmem of 2", "Tmem of 3"]);
+    assert!(
+        replaced["result"]["copied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("replaces").is_some()),
+        "{replaced}"
+    );
+}
