@@ -513,9 +513,16 @@ pub fn load_feedback(folder: &Path) -> Feedbacks {
         .unwrap_or_default()
 }
 
+/// Write `feedback` to the workspace. A file there that cannot be read as
+/// feedback is kept beside it, not written over.
 pub fn save_feedback(folder: &Path, feedback: &Feedbacks) -> std::io::Result<()> {
     let path = feedback_file(folder);
     crate::workspace::make_parent(&path)?;
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && serde_json::from_str::<Feedbacks>(&text).is_err()
+    {
+        std::fs::rename(&path, path.with_extension("unreadable.json"))?;
+    }
     std::fs::write(path, serde_json::to_string_pretty(feedback)?)
 }
 

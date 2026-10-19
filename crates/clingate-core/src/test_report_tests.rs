@@ -102,12 +102,12 @@ fn the_report_tells_the_spill_from_the_autofluorescence() {
     );
     assert!(
         section.contains(&format!(
-            "- {SPILLS_INTO} rises with {SPILLS_FROM} on all 4 samples"
+            "- {SPILLS_INTO} rises with {SPILLS_FROM} alike on the 4 samples read"
         )),
         "{section}"
     );
     assert!(
-        section.contains(&format!("look in {GLOWS_IN}, where they are brightest")),
+        section.contains(&format!("look in {GLOWS_IN}, where they stand out most")),
         "{section}"
     );
 }

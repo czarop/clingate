@@ -82,9 +82,9 @@ pub enum Finding {
         /// Whether unstained cells show it too; `None` where no unstained
         /// sample was read.
         in_unstained: Option<bool>,
-        /// Where to look in the unstained for AF: the channel its large
-        /// granular cells are brightest in, or the stained samples' where no
-        /// unstained was read.
+        /// Where to look in the unstained for AF: the channel where its large
+        /// granular cells sit furthest above its small ones, in widths, or
+        /// the stained samples' worst where no unstained was read.
         look_in: Arc<str>,
     },
 }
@@ -99,13 +99,28 @@ impl Finding {
                 coefficient,
                 widths,
                 samples,
-            } => format!(
-                "{into} rises with {from} on all {samples} samples - by {widths:.1} of its \
-                 negative's widths across {from}'s positives: the matrix leaves {:+.2}% of {from} \
-                 in {into}. Change the {from} → {into} spillover value by {:+.2}%.",
-                coefficient * 100.0,
-                coefficient * 100.0
-            ),
+            } => {
+                let share = coefficient.abs() * 100.0;
+                let (moves, matrix, change) = if *coefficient >= 0.0 {
+                    (
+                        "rises with",
+                        format!("leaves {share:.2}% of {from} in {into}"),
+                        "Raise",
+                    )
+                } else {
+                    (
+                        "falls as",
+                        format!("takes {share:.2}% too much of {from} out of {into}"),
+                        "Lower",
+                    )
+                };
+                format!(
+                    "{into} {moves} {from} alike on the {samples} samples read - by {:.1} of \
+                     its negative's widths across {from}'s positives: the matrix {matrix}. \
+                     {change} the {from} → {into} spillover value by {share:.2}%.",
+                    widths.abs()
+                )
+            }
             Finding::SampleSpecific {
                 from,
                 into,
@@ -130,7 +145,7 @@ impl Finding {
                 "Large, granular cells negative for everything sit higher in {}{}: \
                  autofluorescence left in by the unmixing, not a spillover error - editing the \
                  matrix only moves it. Extract AF: in the unstained, gate the high side scatter \
-                 cells, and look in {look_in}, where they are brightest.",
+                 cells, and look in {look_in}, where they stand out most.",
                 channels
                     .iter()
                     .map(|(channel, widths)| format!("{channel} ({widths:.1} widths)"))
@@ -146,14 +161,19 @@ impl Finding {
     }
 }
 
-/// A channel's negative: its centre and width, read off the events below
-/// the median - most cells are negative for most markers - so that a bright
-/// positive does not widen it.
+/// A channel's negative: centred where the values are densest - most cells
+/// are negative for most markers - and as wide as its peak is at half its
+/// height, on the side it falls off sooner. Positives above it, and cells
+/// carried below it by too much compensation, sit well clear of the peak and
+/// move neither.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Negative {
     pub centre: f64,
     pub width: f64,
 }
+
+/// A normal's half width at half its height, in its widths.
+const HALF_HEIGHT_WIDTHS: f64 = 1.1774;
 
 impl Negative {
     pub fn of(values: &[f32]) -> Option<Self> {
@@ -166,17 +186,24 @@ impl Negative {
             return None;
         }
         sorted.sort_by(f64::total_cmp);
-        let centre = densest(&sorted);
-        // The cells below the peak are all negative, however many positives
-        // there are: the negative's spread, mirrored. 0.6745 widths is the
-        // median distance of a normal's half from its centre.
-        let mut below: Vec<f64> = sorted
-            .iter()
-            .take_while(|v| **v <= centre)
-            .map(|v| centre - v)
-            .collect();
-        let width = median(&mut below)? / 0.6745;
-        (width > 0.0).then_some(Self { centre, width })
+        let (mut centre, reach) = densest(&sorted);
+        if reach <= 0.0 {
+            return None;
+        }
+        let mut half = half_height(&sorted, centre, reach)?;
+        // The densest run's middle wanders by a fraction of the width, and the
+        // side that falls sooner would take the wander as narrowness: centre
+        // on the middle of the cells within the half height first.
+        for _ in 0..3 {
+            let near = &sorted[sorted.partition_point(|v| *v < centre - half)
+                ..sorted.partition_point(|v| *v <= centre + half)];
+            centre = quantile(near, 0.5);
+            half = half_height(&sorted, centre, reach)?;
+        }
+        Some(Self {
+            centre,
+            width: half / HALF_HEIGHT_WIDTHS,
+        })
     }
 
     pub fn positive_above(&self) -> f64 {
@@ -184,16 +211,42 @@ impl Negative {
     }
 }
 
-/// The middle of the narrowest run of a tenth of the sorted values: where
-/// the negative peaks.
-fn densest(sorted: &[f64]) -> f64 {
+/// The middle of the narrowest run of a tenth of the sorted values - where
+/// the negative peaks - and half that run's span.
+fn densest(sorted: &[f64]) -> (f64, f64) {
     let run = (sorted.len() / 10).max(2);
     let start = (0..=sorted.len() - run)
         .min_by(|&x, &y| {
             (sorted[x + run - 1] - sorted[x]).total_cmp(&(sorted[y + run - 1] - sorted[y]))
         })
         .unwrap_or(0);
-    (sorted[start] + sorted[start + run - 1]) / 2.0
+    (
+        (sorted[start] + sorted[start + run - 1]) / 2.0,
+        (sorted[start + run - 1] - sorted[start]) / 2.0,
+    )
+}
+
+/// How far from `centre` the sorted values thin to half as many within
+/// `reach` as at it, on the side they thin sooner.
+fn half_height(sorted: &[f64], centre: f64, reach: f64) -> Option<f64> {
+    let height = |at: f64| count_within(sorted, at, reach);
+    let peak = height(centre);
+    let span = sorted[sorted.len() - 1] - sorted[0];
+    let fall = |direction: f64| {
+        (1..)
+            .map(|n| n as f64 * reach / 4.0)
+            .take_while(|distance| *distance <= span)
+            .find(|distance| height(centre + direction * distance) * 2 < peak)
+    };
+    [fall(-1.0), fall(1.0)]
+        .into_iter()
+        .flatten()
+        .reduce(f64::min)
+}
+
+/// How many of the sorted values lie within `reach` of `at`.
+fn count_within(sorted: &[f64], at: f64, reach: f64) -> usize {
+    sorted.partition_point(|v| *v <= at + reach) - sorted.partition_point(|v| *v < at - reach)
 }
 
 /// The `q` quantile of sorted values, by linear interpolation.
@@ -203,7 +256,7 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     sorted[low] + (sorted[high] - sorted[low]) * (at - low as f64)
 }
 
-fn mean(values: &mut [f64]) -> Option<f64> {
+fn mean(values: &[f64]) -> Option<f64> {
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
 }
 
@@ -215,8 +268,6 @@ fn median(values: &mut [f64]) -> Option<f64> {
     Some(quantile(values, 0.5))
 }
 
-/// How B leans on A in one sample: the slope of B on A among cells positive
-/// for A and not for B, and how far that moves B across A's positives, in
 /// How B leans on A in one sample: the slope of B on A among cells positive
 /// for A, and how far that moves B across A's positives, in B's negative's
 /// widths. Cells far above the trend are positive for B and left out; cells
@@ -248,7 +299,7 @@ pub fn lean(
         return None;
     }
     // Bright B cells are out: means now, which a skewed bin does not bias.
-    let (slope, _) = trend(&negative_for_b, mean)?;
+    let (slope, _) = trend(&negative_for_b, |values| mean(values))?;
     let a_values: Vec<f64> = negative_for_b.iter().map(|c| c.0).collect();
     let span = quantile(&a_values, 0.9) - quantile(&a_values, 0.1);
     Some((slope, slope * span / b_negative.width))
@@ -286,38 +337,47 @@ fn trend(cells: &[(f64, f64)], centre: fn(&mut [f64]) -> Option<f64>) -> Option<
     Some((slope, mean_b - slope * mean_a))
 }
 
-/// How much higher B's negatives sit in large granular cells than in small
-/// ones, in B's widths: among cells negative for every channel, the top fifth
-/// by side scatter against the bottom half.
-pub fn granular_offsets(sample: &SampleEvents, negatives: &[Negative]) -> Vec<f64> {
+/// How much higher each channel's negatives sit in large granular cells than
+/// in small ones, in its widths: among cells negative for every channel, the
+/// top fifth by side scatter against the bottom half. A channel with no
+/// negative is 0; `None` with too few cells negative everywhere.
+pub fn granular_offsets(sample: &SampleEvents, negatives: &[Option<Negative>]) -> Option<Vec<f64>> {
     let negative_everywhere: Vec<usize> = (0..sample.side_scatter.len())
         .filter(|&row| {
             sample
                 .values
                 .iter()
                 .zip(negatives)
-                .all(|(channel, negative)| f64::from(channel[row]) < negative.positive_above())
+                .all(|(channel, negative)| {
+                    negative.is_none_or(|n| f64::from(channel[row]) < n.positive_above())
+                })
         })
         .collect();
     let mut by_scatter = negative_everywhere.clone();
     by_scatter.sort_by(|x, y| sample.side_scatter[*x].total_cmp(&sample.side_scatter[*y]));
     let n = by_scatter.len();
     if n < 100 {
-        return vec![0.0; negatives.len()];
+        return None;
     }
     let (low, high) = (&by_scatter[..n / 2], &by_scatter[n - n / 5..]);
-    sample
-        .values
-        .iter()
-        .zip(negatives)
-        .map(|(channel, negative)| {
-            let at = |rows: &[usize]| {
-                let mut values: Vec<f64> = rows.iter().map(|&r| f64::from(channel[r])).collect();
-                median(&mut values).unwrap_or(0.0)
-            };
-            (at(high) - at(low)) / negative.width
-        })
-        .collect()
+    Some(
+        sample
+            .values
+            .iter()
+            .zip(negatives)
+            .map(|(channel, negative)| {
+                let Some(negative) = negative else {
+                    return 0.0;
+                };
+                let at = |rows: &[usize]| {
+                    let mut values: Vec<f64> =
+                        rows.iter().map(|&r| f64::from(channel[r])).collect();
+                    median(&mut values).unwrap_or(0.0)
+                };
+                (at(high) - at(low)) / negative.width
+            })
+            .collect(),
+    )
 }
 
 /// One sample reduced to what the check reads of it, so a plate of files
@@ -328,26 +388,28 @@ pub struct Measured {
     /// The lean of each channel on each other, `leans[from][into]`, as
     /// [`lean`] gives it; `None` where it could not be measured.
     pub leans: Vec<Vec<Option<(f64, f64)>>>,
-    /// Each channel's [`granular_offsets`]; `None` where a channel has no
-    /// negative to read.
+    /// Each channel's [`granular_offsets`]; `None` where too few cells are
+    /// negative everywhere.
     pub offsets: Option<Vec<f64>>,
+    /// The channels with no negative to read - too few values, or all alike -
+    /// left out of every lean and offset.
+    pub no_negative: Vec<usize>,
 }
 
 /// What the check reads of `sample`.
 pub fn measure(sample: &SampleEvents) -> Measured {
-    let negatives: Option<Vec<Negative>> = sample.values.iter().map(|v| Negative::of(v)).collect();
+    let negatives: Vec<Option<Negative>> = sample.values.iter().map(|v| Negative::of(v)).collect();
     let channels = sample.values.len();
     let leans = (0..channels)
         .map(|from| {
             (0..channels)
                 .map(|into| {
-                    let negatives = negatives.as_ref()?;
                     (from != into).then_some(())?;
                     lean(
                         &sample.values[from],
                         &sample.values[into],
-                        negatives[from],
-                        negatives[into],
+                        negatives[from]?,
+                        negatives[into]?,
                     )
                 })
                 .collect()
@@ -356,7 +418,8 @@ pub fn measure(sample: &SampleEvents) -> Measured {
     Measured {
         sample: sample.sample.clone(),
         leans,
-        offsets: negatives.map(|negatives| granular_offsets(sample, &negatives)),
+        offsets: granular_offsets(sample, &negatives),
+        no_negative: (0..channels).filter(|c| negatives[*c].is_none()).collect(),
     }
 }
 
@@ -407,8 +470,9 @@ fn leans(channels: &[Arc<str>], stained: &[Measured]) -> Vec<Finding> {
         .collect()
 }
 
-/// What the leans of B on A, sample by sample, say.
-/// Its typical slope beside it, to tell a spill from its reverse.
+/// What the leans of `into` on `from`, sample by sample, say - a spill, or a
+/// lean of some samples only - with their typical slope, to tell a spill
+/// from its reverse.
 fn lean_finding(
     from: &Arc<str>,
     into: &Arc<str>,
@@ -608,7 +672,15 @@ pub fn run(
         let mut problems = Vec::new();
         for one in read {
             match one {
-                Ok(m) => measured.push(m),
+                Ok(m) => {
+                    problems.extend(m.no_negative.iter().map(|c| {
+                        format!(
+                            "{}: {} has no negative to read, so it is left out",
+                            m.sample, job.channels[*c]
+                        )
+                    }));
+                    measured.push(m);
+                }
                 Err(why) => problems.push(why),
             }
         }
@@ -621,6 +693,15 @@ pub fn run(
         return Err("stopped".into());
     }
     problems.extend(unread);
+    if stained.is_empty() {
+        return Err(format!(
+            "no stained sample could be read - {}",
+            problems
+                .first()
+                .map(String::as_str)
+                .unwrap_or("there were none")
+        ));
+    }
     Ok(SpilloverCheck {
         findings: check(&job.channels, &stained, &unstained),
         stained: stained.len(),

@@ -216,3 +216,21 @@ fn the_spillover_check_fails_without_side_scatter() {
         "{checked:?}"
     );
 }
+
+#[test]
+fn feedback_that_cannot_be_read_is_kept_beside_the_new_not_written_over() {
+    let folder = crate::file_load_tests::scratch("feedback-unreadable");
+    let file = crate::feature_checks::feedback_file(&folder);
+    crate::workspace::make_parent(&file).unwrap();
+    std::fs::write(&file, "{ half written").unwrap();
+    let mut said = crate::feature_checks::Feedbacks::new();
+    said.insert("copy_rules".into(), Feedback::default());
+
+    save_feedback(&folder, &said).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(file.with_extension("unreadable.json")).unwrap(),
+        "{ half written"
+    );
+    assert_eq!(load_feedback(&folder), said);
+}

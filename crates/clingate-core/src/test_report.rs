@@ -362,7 +362,15 @@ pub(crate) fn spillover(job: &TestJob, cancel: &AtomicBool, report: &mut Report)
         checked.stained, checked.unstained
     ));
     if checked.findings.is_empty() {
-        out.push_str("Nothing leans by a negative's width or more.\n");
+        out.push_str(&format!(
+            "Nothing leans by a negative's width or more on the {} stained files read{}\n",
+            checked.stained,
+            if checked.problems.is_empty() {
+                "."
+            } else {
+                " - see the problems for what could not be read."
+            }
+        ));
     }
     for finding in &checked.findings {
         out.push_str(&format!("- {}\n", finding.says()));

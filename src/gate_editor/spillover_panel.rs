@@ -195,7 +195,10 @@ pub fn SpilloverPanel() -> Element {
                     "Read {read} of {of} specimens: {checked.stained} stained and {checked.unstained} unstained files."
                 }
                 if checked.findings.is_empty() {
-                    p { "Nothing leans by a negative's width or more." }
+                    p {
+                        "Nothing leans by a negative's width or more on the {checked.stained} stained files read"
+                        if checked.problems.is_empty() { "." } else { " - but see what could not be read below." }
+                    }
                 }
                 ul { class: "workspace-findings",
                     for (at , finding) in checked.findings.iter().enumerate() {

@@ -148,7 +148,7 @@ pub fn CopyRulesPanel() -> Element {
                         thead {
                             tr {
                                 th { "Gate" }
-                                th { "" }
+                                th { "Rule" }
                             }
                         }
                         tbody {

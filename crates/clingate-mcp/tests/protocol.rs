@@ -1658,7 +1658,7 @@ fn the_instructions_say_rules_are_written_only_through_update_rule() {
 
     assert!(
         instructions
-            .contains("Write rules only with update_rule, and only with the workspace open"),
+            .contains("Write rules only with update_rule, or copy_rules for a population's rules"),
         "{instructions}"
     );
     assert!(

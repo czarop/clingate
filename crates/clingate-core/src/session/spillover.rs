@@ -58,7 +58,8 @@ impl Session {
             next: "tell the user each finding and what to do about it: a spillover value to \
                    change in the compensation, samples whose dye to check, or autofluorescence \
                    to extract in the unmixing, with the channel to look in on the unstained. \
-                   An empty list means nothing leans by a negative's width or more",
+                   An empty list means nothing leans by a negative's width or more on the files \
+                   read; say what problems lists could not be read",
         })
     }
 }

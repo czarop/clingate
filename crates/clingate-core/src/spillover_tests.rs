@@ -49,13 +49,13 @@ fn sample(name: &str, seed: u64, spill: f32, af: f32) -> SampleEvents {
 }
 
 #[test]
-fn a_negative_is_read_off_the_cells_below_the_median_whatever_the_positives() {
+fn a_negative_is_read_off_the_densest_values_and_the_cells_below_them() {
     let events = sample("s", 1, 0.0, 0.0);
 
     let a = Negative::of(&events.values[0]).unwrap();
 
-    // A third of A is positive, so the median sits in the negative's upper
-    // half (67); the negative is still read at 0, 100 wide.
+    // A third of A is positive, which a median or a spread over every cell
+    // would follow; the negative is still read at 0, 100 wide.
     assert!(a.centre.abs() < 15.0, "{a:?}");
     assert!((a.width - 100.0).abs() < 10.0, "{a:?}");
     assert_eq!(a.positive_above(), a.centre + 4.0 * a.width);
@@ -102,7 +102,7 @@ fn the_same_lean_on_every_sample_is_the_matrix_with_the_value_to_change() {
     assert!(
         findings[0]
             .says()
-            .contains("Change the A → B spillover value by +10."),
+            .contains("Raise the A → B spillover value by 10."),
         "{}",
         findings[0].says()
     );
@@ -192,4 +192,41 @@ fn u_and_unstained_in_any_case_are_unstained_and_nothing_else_is() {
     for stained in ["FS", "FMX", "US", "Ustain", "stained", ""] {
         assert!(!crate::spillover::is_unstained_type(stained), "{stained}");
     }
+}
+
+#[test]
+fn too_much_of_a_taken_out_of_b_is_the_matrix_with_the_value_to_lower() {
+    let stained: Vec<Measured> = (0..6)
+        .map(|n| measured(&format!("s{n}"), 10 + n, -0.1, 0.0))
+        .collect();
+
+    let findings = check(&channels(), &stained, &[]);
+
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    let Finding::Spillover { coefficient, .. } = &findings[0] else {
+        panic!("{findings:?}")
+    };
+    assert!((coefficient + 0.1).abs() < 0.01, "{coefficient}");
+    let says = findings[0].says();
+    assert!(says.starts_with("B falls as A alike"), "{says}");
+    assert!(
+        says.contains("takes 10.") && says.contains("Lower the A → B spillover value by 10."),
+        "{says}"
+    );
+}
+
+#[test]
+fn a_channel_with_no_negative_is_left_out_and_the_rest_still_measured() {
+    let mut events = sample("s", 1, 0.1, 300.0);
+    events.values.push(vec![0.0; CELLS]);
+
+    let measured = measure(&events);
+
+    assert_eq!(measured.no_negative, [3]);
+    assert!(measured.leans[0][1].is_some(), "A on B is measured");
+    assert!(measured.leans[0][3].is_none() && measured.leans[3][0].is_none());
+    let offsets = measured.offsets.expect("cells negative everywhere else");
+    assert_eq!(offsets[3], 0.0);
+    // C's autofluorescence: 300 units, three widths.
+    assert!((offsets[2] - 3.0).abs() < 0.5, "{offsets:?}");
 }

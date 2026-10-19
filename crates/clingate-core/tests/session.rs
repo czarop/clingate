@@ -4715,3 +4715,39 @@ fn check_spillover_refuses_a_population_not_there() {
 
     assert!(refused.to_string().contains("no such cells"), "{refused}");
 }
+
+#[test]
+fn check_spillover_says_which_files_it_could_not_read_and_checks_the_rest() {
+    let folder = clingate_core::test_workspace::spilling_samples("session-spillover-unread");
+    let session = Session::open(&folder).unwrap();
+    std::fs::remove_file(folder.join("a_FS.fcs")).unwrap();
+
+    let checked = session.check_spillover("1", None).unwrap();
+
+    assert_eq!(checked.stained_files, 3);
+    assert_eq!(checked.problems.len(), 1, "{:?}", checked.problems);
+    assert!(
+        checked.problems[0].starts_with("a_FS.fcs could not be read"),
+        "{:?}",
+        checked.problems
+    );
+    assert_eq!(checked.findings.len(), 2, "{:?}", checked.findings);
+}
+
+#[test]
+fn check_spillover_refuses_when_no_stained_file_can_be_read() {
+    let folder = clingate_core::test_workspace::spilling_samples("session-spillover-unreadable");
+    let session = Session::open(&folder).unwrap();
+    for specimen in ["a", "b", "c", "d"] {
+        std::fs::remove_file(folder.join(format!("{specimen}_FS.fcs"))).unwrap();
+    }
+
+    let refused = session.check_spillover("1", None).unwrap_err();
+
+    assert!(
+        refused
+            .to_string()
+            .contains("no stained sample could be read"),
+        "{refused}"
+    );
+}
