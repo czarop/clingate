@@ -604,6 +604,13 @@
 
 ### Fixed
 
+- **The gallery shows the gates chosen, as they are now.** Each plot on the
+  Gallery tab, and on the Review tab's tiles, worked out its gates from the
+  population, axes and size it was first shown with. Choosing another gate
+  or another size on the tab, without leaving it, kept the plots on the old
+  ones - a gate drawn as it had been, a rectangle since made a polygon and
+  moved, say. A plot now follows what it is asked to show.
+
 - **A rule naming a marker or a file name runs as meant.** A rules file
   written by hand, or by an older clingate, could name a rule's parameter by
   its marker (`CD3`) or its reference by its file name; the run looked for

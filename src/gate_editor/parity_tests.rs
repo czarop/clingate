@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use clingate_core::axis_store::Param;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::run::run_rules;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
@@ -64,6 +65,10 @@ struct Held {
     copy_run: CopyRun,
     feature_run: FeatureRun,
     spillover_run: SpilloverRun,
+    /// A gallery plot of `sample1_FMX.fcs`, and the population and axes it
+    /// is asked to show - at first the top of the gating, on FSC-A and SSC-A.
+    gallery_plot: Memo<Option<crate::gate_editor::gallery::plot::Setup>>,
+    gallery_shows: Signal<(Arc<str>, Param, Param)>,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -93,6 +98,21 @@ fn root(holder: Holder) -> Element {
 
 #[component]
 fn Probe(holder: Holder) -> Element {
+    let gallery_shows = use_signal(|| {
+        (
+            clingate_core::gates::gate_store::ROOTGATE.clone(),
+            scatter("FSC-A"),
+            scatter("SSC-A"),
+        )
+    });
+    let gallery_plot = crate::gate_editor::gallery::plot::use_plot_setup(
+        ReadSignal::new(Signal::new(Arc::from("sample1_FMX.fcs"))),
+        ReadSignal::new(Signal::new(PathBuf::from("sample1_FMX.fcs"))),
+        use_memo(move || gallery_shows.read().0.clone()).into(),
+        use_memo(move || gallery_shows.read().1.clone()).into(),
+        use_memo(move || gallery_shows.read().2.clone()).into(),
+        ReadSignal::new(Signal::new(260)),
+    );
     let held = Held {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
@@ -102,6 +122,8 @@ fn Probe(holder: Holder) -> Element {
         copy_run: CopyRun::from_context(),
         feature_run: FeatureRun::from_context(),
         spillover_run: SpilloverRun::from_context(),
+        gallery_plot,
+        gallery_shows,
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -113,6 +135,13 @@ fn Probe(holder: Holder) -> Element {
     };
     *holder.0.borrow_mut() = Some(held);
     rsx! {}
+}
+
+fn scatter(channel: &str) -> Param {
+    Param {
+        marker: Arc::from(channel),
+        fluoro: Arc::from(channel),
+    }
 }
 
 struct App {
@@ -1892,4 +1921,141 @@ fn the_workspace_tab_checks_spillover_as_the_tools_do() {
         (checked.stained, checked.unstained),
         (answer.stained_files, answer.unstained_files)
     );
+}
+
+/// A rectangle made a polygon in the editor, then moved and saved, is drawn
+/// on the gallery as the polygon where it was moved to - as the editor shows
+/// it on the same sample.
+#[test]
+fn the_gallery_draws_a_rectangle_made_a_polygon_and_moved_as_the_editor_does() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, ShapeTarget, act};
+    use clingate_core::gates::gate_drag::GateDragData;
+    use clingate_core::gates::gate_single::polygon_gate::PolygonGate;
+    use clingate_core::gates::gate_store::GateStateImplExt;
+    let gate: Arc<str> = Arc::from("uN8Y");
+    let folder = clingate_core::test_workspace::two_samples("gallery-polygon");
+    let mut app = App::new();
+    app.open(&folder);
+    let editor_shows = |app: &mut App| {
+        app.with(|held| {
+            let groups = held
+                .metadata
+                .metadata()
+                .peek()
+                .get("sample1")
+                .cloned()
+                .unwrap();
+            held.gates
+                .peek()
+                .get_current_sample(Arc::from("sample1"), &groups)
+        })
+    };
+    let outline = |shown: &Arc<dyn clingate_core::gates::gate_traits::DrawableGate>| {
+        clingate_core::gates::gate_contact::outline(shown, &gate, "FSC-A", "SSC-A").unwrap()
+    };
+    let gallery_shows = |app: &mut App| {
+        app.with(|held| {
+            held.gallery_plot
+                .read()
+                .as_ref()
+                .expect("the gallery has the sample")
+                .drawn
+                .iter()
+                .find(|drawn| drawn.get_id() == gate)
+                .cloned()
+                .expect("1 is drawn at the top of the gating")
+        })
+    };
+    let before = outline(&gallery_shows(&mut app));
+
+    let resolver = editor_shows(&mut app);
+    app.with(|held| {
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[],
+            ("FSC-A", "SSC-A"),
+            &ShapeMenu {
+                gate_id: gate.clone(),
+                target: ShapeTarget::Rectangle,
+                at_pixel: (0.0, 0.0),
+                at: (0.0, 0.0),
+            },
+            ShapeAction::ConvertToPolygon,
+        )
+    })
+    .unwrap();
+    let resolver = editor_shows(&mut app);
+    app.with(|held| {
+        let mut gates = held.gates;
+        gates
+            .move_gate(
+                GateDragData::new(gate.clone(), (0.0, 0.0), (50_000.0, 20_000.0)),
+                &resolver,
+                &[],
+            )
+            .unwrap()
+    });
+    app.with(|held| held.edits.save()).unwrap();
+
+    let shown = gallery_shows(&mut app);
+    let in_editor = editor_shows(&mut app).resolve_drawable(&gate).unwrap();
+    assert!(
+        shown.as_any().downcast_ref::<PolygonGate>().is_some(),
+        "a polygon"
+    );
+    assert_ne!(outline(&shown), before, "moved");
+    assert_eq!(outline(&shown), outline(&in_editor));
+}
+
+/// A gallery plot asked for another population on other axes - another gate
+/// chosen in the gallery - draws that population's gates, not the ones it
+/// was first asked for.
+#[test]
+fn a_gallery_plot_asked_for_another_population_draws_its_gates() {
+    let folder = clingate_core::test_workspace::two_samples("gallery-another-population");
+    let mut app = App::new();
+    app.open(&folder);
+    let drawn = |app: &mut App| {
+        app.with(|held| {
+            let mut ids: Vec<String> = held
+                .gallery_plot
+                .read()
+                .as_ref()
+                .expect("the gallery has the sample")
+                .drawn
+                .iter()
+                .map(|gate| gate.get_id().to_string())
+                .collect();
+            ids.sort();
+            ids
+        })
+    };
+    assert_eq!(
+        drawn(&mut app),
+        ["Z2Ti", "uN8Y"],
+        "1 and NOT 1, at the top on FSC-A and SSC-A"
+    );
+
+    app.with(|held| {
+        let node = held
+            .gates
+            .peek()
+            .root_nodes()
+            .into_iter()
+            .flat_map(|root| held.gates.peek().child_nodes(&root))
+            .find(|node| {
+                held.gates.peek().gate_for_node(node).map(|g| g.to_string()) == Some("uN8Y".into())
+            })
+            .expect("1 is at the top");
+        held.gallery_shows.clone().set((
+            Arc::from(node.as_str()),
+            scatter("BUV805-A"),
+            scatter("BUV563-A"),
+        ));
+    });
+
+    // Tmem and teff_naive, drawn under 1 on BUV805-A and BUV563-A.
+    assert_eq!(drawn(&mut app), ["4ECA", "hu4H"]);
 }
