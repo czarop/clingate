@@ -29,6 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use clingate_core::axis_store::Param;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::run::run_rules;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
@@ -39,7 +40,10 @@ use dioxus::prelude::*;
 use dioxus_core::NoOpMutations;
 
 use crate::components::toast::ToastProvider;
+use crate::gate_editor::copy_rules_panel::CopyRun;
 use crate::gate_editor::edits::Edits;
+use crate::gate_editor::features_window::FeatureRun;
+use crate::gate_editor::spillover_panel::SpilloverRun;
 use crate::gate_editor::gate_rules_window::RulesRun;
 use crate::gate_editor::gate_sidebar::OpenBranches;
 use crate::gate_editor::pick_panel::{PickRun, Typed};
@@ -58,6 +62,13 @@ struct Held {
     pick_run: PickRun,
     test_report_run: TestReportRun,
     rule_report_run: RuleReportRun,
+    copy_run: CopyRun,
+    feature_run: FeatureRun,
+    spillover_run: SpilloverRun,
+    /// A gallery plot of `sample1_FMX.fcs`, and the population and axes it
+    /// is asked to show - at first the top of the gating, on FSC-A and SSC-A.
+    gallery_plot: Memo<Option<crate::gate_editor::gallery::plot::Setup>>,
+    gallery_shows: Signal<(Arc<str>, Param, Param)>,
     open_branches: OpenBranches,
     loaded: Signal<crate::gate_editor::workspace_window::Loaded>,
     edits: Edits,
@@ -87,12 +98,32 @@ fn root(holder: Holder) -> Element {
 
 #[component]
 fn Probe(holder: Holder) -> Element {
+    let gallery_shows = use_signal(|| {
+        (
+            clingate_core::gates::gate_store::ROOTGATE.clone(),
+            scatter("FSC-A"),
+            scatter("SSC-A"),
+        )
+    });
+    let gallery_plot = crate::gate_editor::gallery::plot::use_plot_setup(
+        ReadSignal::new(Signal::new(Arc::from("sample1_FMX.fcs"))),
+        ReadSignal::new(Signal::new(PathBuf::from("sample1_FMX.fcs"))),
+        use_memo(move || gallery_shows.read().0.clone()).into(),
+        use_memo(move || gallery_shows.read().1.clone()).into(),
+        use_memo(move || gallery_shows.read().2.clone()).into(),
+        ReadSignal::new(Signal::new(260)),
+    );
     let held = Held {
         workspace: Handles::from_context(),
         rules_run: RulesRun::from_context(),
         pick_run: PickRun::from_context(),
         test_report_run: TestReportRun::from_context(),
         rule_report_run: RuleReportRun::from_context(),
+        copy_run: CopyRun::from_context(),
+        feature_run: FeatureRun::from_context(),
+        spillover_run: SpilloverRun::from_context(),
+        gallery_plot,
+        gallery_shows,
         open_branches: use_context(),
         loaded: use_context(),
         edits: use_context(),
@@ -104,6 +135,13 @@ fn Probe(holder: Holder) -> Element {
     };
     *holder.0.borrow_mut() = Some(held);
     rsx! {}
+}
+
+fn scatter(channel: &str) -> Param {
+    Param {
+        marker: Arc::from(channel),
+        fluoro: Arc::from(channel),
+    }
 }
 
 struct App {
@@ -1750,4 +1788,274 @@ fn the_open_branches_are_each_workspace_s_own() {
     assert!(!is_open(&app, &lymph), "another workspace's tree is its own");
     app.open(&first);
     assert!(is_open(&app, &lymph), "as it was left");
+}
+
+/// The Gate Rules tab copies a population's rules to its sibling as the tools
+/// do: the same rules copied, the same left out, the same rules after.
+#[test]
+fn the_rules_tab_copies_rules_to_a_sibling_as_the_tools_do() {
+    use clingate_core::gate_rules::siblings::{populations_with_rules, siblings_of};
+    let tools = clingate_core::test_workspace::two_samples_with_siblings("copy-rules-tools");
+    let ours = clingate_core::test_workspace::two_samples_with_siblings("copy-rules-app");
+    let mut session = Session::open(&tools).unwrap();
+    let answer = session
+        .copy_rules("1", &["2".to_string()], false, true)
+        .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let copy = app.with(|held| {
+        let gates = held.gates.peek().clone();
+        let rules = held.rules.peek().clone();
+        let (from, _) = populations_with_rules(&gates, &rules)
+            .into_iter()
+            .find(|(_, name)| &**name == "1")
+            .expect("1 has rules to copy");
+        let to: Vec<_> = siblings_of(&gates, &from)
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect();
+        let copy = held.copy_run.copy(&from, &to, false);
+        let mut run = held.copy_run;
+        run.take(&copy);
+        copy
+    });
+
+    let copied: Vec<String> = copy.copied.iter().map(|c| c.target.describe()).collect();
+    let left: Vec<String> = copy
+        .not_copied
+        .iter()
+        .map(|n| n.target.describe())
+        .collect();
+    assert_eq!(
+        copied,
+        answer
+            .copied
+            .iter()
+            .map(|c| c.population.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        left,
+        answer
+            .left_out
+            .iter()
+            .map(|l| l.population.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        app.rules(),
+        serde_json::to_value(session.rules().unwrap()).unwrap()
+    );
+}
+
+/// The Test features tab's checks find what the tools' check_features finds,
+/// and feedback kept from the tab is what the tools read.
+#[test]
+fn the_test_features_tab_checks_as_the_tools_do_and_keeps_feedback_for_them() {
+    use clingate_core::feature_checks::{Feedbacks, Tried};
+    let tools = clingate_core::test_workspace::two_samples_with_siblings("features-tools");
+    let ours = clingate_core::test_workspace::two_samples_with_siblings("features-app");
+    let theirs: Vec<_> = Session::open(&tools)
+        .unwrap()
+        .check_features()
+        .features
+        .into_iter()
+        .filter_map(|state| state.checked.map(|checked| (state.feature.id, checked)))
+        .collect();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let mine = app.with(|held| held.feature_run.snapshot().check_every());
+    let mut feedback = Feedbacks::new();
+    feedback.entry("polygon_saved".into()).or_default().tried = Tried::Problem;
+    app.with(|held| held.feature_run.keep(&feedback)).unwrap();
+
+    assert_eq!(mine, theirs);
+    let read = Session::open(&ours).unwrap().check_features();
+    let polygon = read
+        .features
+        .iter()
+        .find(|s| s.feature.id == "polygon_saved")
+        .unwrap();
+    assert_eq!(polygon.feedback.tried, Tried::Problem);
+}
+
+/// The Workspace tab checks compensation and unmixing as the tools do: the
+/// same specimens read, the same findings.
+#[test]
+fn the_workspace_tab_checks_spillover_as_the_tools_do() {
+    use clingate_core::session::SPILLOVER_SPECIMENS;
+    let tools = clingate_core::test_workspace::spilling_samples("spillover-tools");
+    let ours = clingate_core::test_workspace::spilling_samples("spillover-app");
+    let answer = Session::open(&tools)
+        .unwrap()
+        .check_spillover("1", None)
+        .unwrap();
+
+    let mut app = App::new();
+    app.open(&ours);
+    let ready = app.with(|held| {
+        let (node, _) = held
+            .spillover_run
+            .populations()
+            .into_iter()
+            .find(|(_, path)| path == "1")
+            .expect("population 1 is offered");
+        held.spillover_run.job(&node, SPILLOVER_SPECIMENS).unwrap()
+    });
+    let checked = clingate_core::spillover::run(
+        &ready.job,
+        &std::sync::atomic::AtomicBool::new(false),
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        (ready.specimens_read, ready.specimens),
+        (answer.specimens_read, answer.specimens)
+    );
+    assert_eq!(checked.findings, answer.findings);
+    assert_eq!(checked.findings.len(), 2, "{:?}", checked.findings);
+    assert_eq!(
+        (checked.stained, checked.unstained),
+        (answer.stained_files, answer.unstained_files)
+    );
+}
+
+/// A rectangle made a polygon in the editor, then moved and saved, is drawn
+/// on the gallery as the polygon where it was moved to - as the editor shows
+/// it on the same sample.
+#[test]
+fn the_gallery_draws_a_rectangle_made_a_polygon_and_moved_as_the_editor_does() {
+    use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, ShapeTarget, act};
+    use clingate_core::gates::gate_drag::GateDragData;
+    use clingate_core::gates::gate_single::polygon_gate::PolygonGate;
+    use clingate_core::gates::gate_store::GateStateImplExt;
+    let gate: Arc<str> = Arc::from("uN8Y");
+    let folder = clingate_core::test_workspace::two_samples("gallery-polygon");
+    let mut app = App::new();
+    app.open(&folder);
+    let editor_shows = |app: &mut App| {
+        app.with(|held| {
+            let groups = held
+                .metadata
+                .metadata()
+                .peek()
+                .get("sample1")
+                .cloned()
+                .unwrap();
+            held.gates
+                .peek()
+                .get_current_sample(Arc::from("sample1"), &groups)
+        })
+    };
+    let outline = |shown: &Arc<dyn clingate_core::gates::gate_traits::DrawableGate>| {
+        clingate_core::gates::gate_contact::outline(shown, &gate, "FSC-A", "SSC-A").unwrap()
+    };
+    let gallery_shows = |app: &mut App| {
+        app.with(|held| {
+            held.gallery_plot
+                .read()
+                .as_ref()
+                .expect("the gallery has the sample")
+                .drawn
+                .iter()
+                .find(|drawn| drawn.get_id() == gate)
+                .cloned()
+                .expect("1 is drawn at the top of the gating")
+        })
+    };
+    let before = outline(&gallery_shows(&mut app));
+
+    let resolver = editor_shows(&mut app);
+    app.with(|held| {
+        act(
+            held.gates,
+            held.edits,
+            &resolver,
+            &[],
+            ("FSC-A", "SSC-A"),
+            &ShapeMenu {
+                gate_id: gate.clone(),
+                target: ShapeTarget::Rectangle,
+                at_pixel: (0.0, 0.0),
+                at: (0.0, 0.0),
+            },
+            ShapeAction::ConvertToPolygon,
+        )
+    })
+    .unwrap();
+    let resolver = editor_shows(&mut app);
+    app.with(|held| {
+        let mut gates = held.gates;
+        gates
+            .move_gate(
+                GateDragData::new(gate.clone(), (0.0, 0.0), (50_000.0, 20_000.0)),
+                &resolver,
+                &[],
+            )
+            .unwrap()
+    });
+    app.with(|held| held.edits.save()).unwrap();
+
+    let shown = gallery_shows(&mut app);
+    let in_editor = editor_shows(&mut app).resolve_drawable(&gate).unwrap();
+    assert!(
+        shown.as_any().downcast_ref::<PolygonGate>().is_some(),
+        "a polygon"
+    );
+    assert_ne!(outline(&shown), before, "moved");
+    assert_eq!(outline(&shown), outline(&in_editor));
+}
+
+/// A gallery plot asked for another population on other axes - another gate
+/// chosen in the gallery - draws that population's gates, not the ones it
+/// was first asked for.
+#[test]
+fn a_gallery_plot_asked_for_another_population_draws_its_gates() {
+    let folder = clingate_core::test_workspace::two_samples("gallery-another-population");
+    let mut app = App::new();
+    app.open(&folder);
+    let drawn = |app: &mut App| {
+        app.with(|held| {
+            let mut ids: Vec<String> = held
+                .gallery_plot
+                .read()
+                .as_ref()
+                .expect("the gallery has the sample")
+                .drawn
+                .iter()
+                .map(|gate| gate.get_id().to_string())
+                .collect();
+            ids.sort();
+            ids
+        })
+    };
+    assert_eq!(
+        drawn(&mut app),
+        ["Z2Ti", "uN8Y"],
+        "1 and NOT 1, at the top on FSC-A and SSC-A"
+    );
+
+    app.with(|held| {
+        let node = held
+            .gates
+            .peek()
+            .root_nodes()
+            .into_iter()
+            .flat_map(|root| held.gates.peek().child_nodes(&root))
+            .find(|node| {
+                held.gates.peek().gate_for_node(node).map(|g| g.to_string()) == Some("uN8Y".into())
+            })
+            .expect("1 is at the top");
+        held.gallery_shows.clone().set((
+            Arc::from(node.as_str()),
+            scatter("BUV805-A"),
+            scatter("BUV563-A"),
+        ));
+    });
+
+    // Tmem and teff_naive, drawn under 1 on BUV805-A and BUV563-A.
+    assert_eq!(drawn(&mut app), ["4ECA", "hu4H"]);
 }

@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -23,10 +24,11 @@ use crate::gate_rules::run::RunInputs;
 use crate::gate_rules::score::{GateScore, Score, ScoreRow, least_agreeing_first, score_rules};
 use crate::gate_rules::trial::{sample_type_name, specimen_name};
 use crate::gates::GateState;
+use crate::gates::gate_store::NodeId;
 
 /// What the report tests, and the version of what it says.
 pub const SUITE: &str = "rule picker";
-pub const SUITE_VERSION: u32 = 1;
+pub const SUITE_VERSION: u32 = 3;
 /// The folder in a workspace reports are kept in.
 pub const FOLDER: &str = "test_reports";
 
@@ -44,6 +46,11 @@ pub struct TestJob {
 /// How far a report has got.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TestStep {
+    /// Reading files for the compensation and unmixing check.
+    CheckingSpillover {
+        done: usize,
+        total: usize,
+    },
     Picking(Picking),
     Scoring(&'static str),
 }
@@ -52,6 +59,9 @@ impl TestStep {
     /// The step in a line.
     pub fn describe(self) -> String {
         match self {
+            TestStep::CheckingSpillover { done, total } => {
+                format!("Checking compensation and unmixing: {done} of {total} files read")
+            }
             TestStep::Picking(picking) => format!("Picking: {}", picking.describe()),
             TestStep::Scoring(what) => format!("Scoring {what} against your gating"),
         }
@@ -60,7 +70,8 @@ impl TestStep {
     /// How far through the report, 0 to 1: the pick is most of it.
     pub fn fraction(self) -> f64 {
         match self {
-            TestStep::Picking(picking) => picking.fraction() * 0.8,
+            TestStep::CheckingSpillover { done, total } => done as f64 / total.max(1) as f64 * 0.1,
+            TestStep::Picking(picking) => 0.1 + picking.fraction() * 0.7,
             TestStep::Scoring(_) => 0.9,
         }
     }
@@ -75,6 +86,10 @@ pub fn test_report(
     let mut report = Report::default();
     report.push(header(job));
     report.push(workspace(job));
+    report.push(copies(job));
+    let section = spillover(job, cancel, &mut report, &progress);
+    report.push(section);
+    stopped(cancel)?;
     report.push(settings(&job.settings));
 
     let targets = pickable_targets(&job.inputs.rules);
@@ -283,6 +298,103 @@ fn workspace(job: &TestJob) -> String {
         pickable_targets(rules).len(),
         inputs.cofactors.len(),
     )
+}
+
+/// What copying each population's rules to its siblings would copy and leave
+/// out, and why - nothing is copied.
+pub(crate) fn copies(job: &TestJob) -> String {
+    use crate::gate_rules::siblings::{copy_rules, populations_with_rules, siblings_of};
+    let rules = &job.inputs.rules;
+    let mut out = String::from(
+        "\n## Copying rules to siblings\n\n\
+         | From | To | Would copy | Left out, and why |\n|---|---|---|---|\n",
+    );
+    let mut any = false;
+    for (from, from_name) in populations_with_rules(&job.gates, rules) {
+        for (to, to_name) in siblings_of(&job.gates, &from) {
+            any = true;
+            let copy = copy_rules(&job.gates, rules, &from, &to, false);
+            let reasons: Vec<String> = copy
+                .not_copied
+                .iter()
+                .map(|n| format!("{}: {}", n.target.gate, n.reason))
+                .collect();
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                cell(&from_name),
+                cell(&to_name),
+                copy.copied.len(),
+                cell(&reasons.join("; "))
+            ));
+        }
+    }
+    if !any {
+        out.push_str("| (no population with rules has a sibling) | | | |\n");
+    }
+    out
+}
+
+/// Spillover errors and autofluorescence left in, in the first population at
+/// the top of the gating, on a spread of specimens - see [`crate::spillover`].
+pub(crate) fn spillover(
+    job: &TestJob,
+    cancel: &AtomicBool,
+    report: &mut Report,
+    progress: &(impl Fn(TestStep) + Sync),
+) -> String {
+    let mut out = String::from("\n## Compensation and unmixing\n\n");
+    let names = crate::gates::gate_paths::unique_names(&job.gates);
+    let roots = job.gates.root_nodes();
+    let mut tops: Vec<(NodeId, Arc<str>)> = names
+        .into_iter()
+        .filter(|(node, _)| {
+            job.gates
+                .parent_node(node)
+                .is_none_or(|parent| roots.contains(&parent))
+        })
+        .collect();
+    tops.sort_by(|a, b| crate::gate_rules::rule_store::human_order(&a.1, &b.1));
+    let Some((top, name)) = tops.into_iter().next() else {
+        out.push_str("No gating is loaded, so nothing was checked.\n");
+        return out;
+    };
+    let mut inputs = job.inputs.clone();
+    let (read, total) = inputs.keep_specimens(crate::session::SPILLOVER_SPECIMENS, &[]);
+    let checked = report.timed("Checking compensation and unmixing", || {
+        let check = crate::spillover::job_for(&job.gates, &inputs, &top)?;
+        crate::spillover::run(&check, cancel, |done, total| {
+            progress(TestStep::CheckingSpillover { done, total })
+        })
+    });
+    let checked = match checked {
+        Ok(checked) => checked,
+        Err(why) => {
+            out.push_str(&format!("Looked in {name}: not checked - {why}.\n"));
+            return out;
+        }
+    };
+    out.push_str(&format!(
+        "Looked in {name} on {read} of {total} specimens: {} stained and {} unstained files.\n\n",
+        checked.stained, checked.unstained
+    ));
+    if checked.findings.is_empty() {
+        out.push_str(&format!(
+            "Nothing leans by a negative's width or more on the {} stained files read{}\n",
+            checked.stained,
+            if checked.problems.is_empty() {
+                "."
+            } else {
+                " - see the problems for what could not be read."
+            }
+        ));
+    }
+    for finding in &checked.findings {
+        out.push_str(&format!("- {}\n", finding.says()));
+    }
+    for problem in checked.problems {
+        report.problem(format!("Checking compensation and unmixing: {problem}"));
+    }
+    out
 }
 
 fn counted(items: impl Iterator<Item = String>) -> BTreeMap<String, usize> {

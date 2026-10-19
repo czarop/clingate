@@ -56,7 +56,7 @@ in: arcsinh-scaled where the scaling says so.
 
 Read the samples' events - population_stats, distribution, compare_samples, \
 compare_to_peers, gate_profile, gate_picture, try_rules, score_rules, \
-fit_rule, pick_rule, preview_rules, test_report, rule_report - only \
+fit_rule, pick_rule, preview_rules, test_report, rule_report, check_spillover - only \
 when the user asks you to, or asks for something that cannot be done without \
 them. Writing, changing or explaining a rule does not need them: say what the \
 rule does, and offer to look at the data rather than looking. Never read the \
@@ -157,12 +157,34 @@ the closest are on the Gallery tab to compare by eye. test_report runs the \
 same pick on every gate and scores the picks sample by sample into one report \
 the user can send on, kept in the workspace.
 
-Write rules only with update_rule, and only with the workspace open - never \
-by writing or editing a rules file yourself. update_rule checks every name \
+Write rules only with update_rule, or copy_rules for a population's rules, \
+and only with the workspace open - never by writing or editing a rules file \
+yourself. update_rule checks every name \
 against the workspace's own metadata, scaling and gating, and stores it the way \
 a run reads it; a file written any other way is checked by nothing, and a \
 marker or file name in it is not one a run can find. With no workspace open, \
 ask the user which folder to open before writing any rule.
+
+When the user asks what there is to test, or how a new feature went, \
+check_features runs the checks that need nobody and lists the rest, each with \
+its steps and what to send back. Say which checks failed first.
+
+When events sit where they should not - a population smeared up a channel, \
+a diagonal on a plot - check_spillover tells a compensation error from \
+autofluorescence the unmixing left in: a lean alike on every sample is the \
+matrix's, and says which value to change by how much; a lean on some samples \
+is their dye's; large granular cells raised in a channel are autofluorescence \
+to extract, and it names the channel to look in on the unstained. Run it on \
+a clean population - single live cells or lymphocytes - not one gated on the \
+markers in question. The unstained files are optional: without them it says \
+so. It changes nothing; the fix is made in the compensation or the unmixing.
+
+To give sibling populations the rules one of them has - CD8 T cells those of \
+CD4 T cells, say - copy_rules copies every rule under one population to the \
+same gates under the others in one step, rather than a rule at a time. Show \
+the user what it would copy and what it leaves out, and why, then write it \
+on their word; replace a rule that already reaches a gate - its own, or one \
+for every gate of that name - only when they say so.
 
 Writing a rule: name its parameter and markers by marker or channel, and a \
 reference file by any words that pick out one sample - they are stored as the \
@@ -477,6 +499,16 @@ pub struct GateProfileArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CheckSpillover {
+    /// The population to look in, by its gate names: a clean one, single live cells or
+    /// lymphocytes.
+    pub population: String,
+    /// How many specimens to read, spread evenly through the dataset, each with its unstained
+    /// file where it has one (default 24, at most 200).
+    pub specimens: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GatePictureArgs {
     /// The population whose gate to draw, by its gate names.
     pub population: String,
@@ -604,6 +636,20 @@ pub struct ReplayCase {
     pub rule_changes: Option<serde_json::Value>,
     /// The same scope given to replay_rules, if any.
     pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CopyRules {
+    /// The population whose rules to copy - the parent of the gates they place, by its gate
+    /// names, e.g. 'CD4+CD8-'.
+    pub from: String,
+    /// The populations to copy them to, each named the same way, e.g. ['CD4-CD8+', 'TCRgd+'].
+    pub to: Vec<String>,
+    /// Replace a rule that already reaches a gate there - its own, or one for every gate of
+    /// that name (default false: it is kept).
+    pub replace: Option<bool>,
+    /// Write the copies into the rules file (default false: say what would be written).
+    pub write: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1257,6 +1303,50 @@ impl Clingate {
             let changes = rule_changes(args.rule_changes)?;
             let scope = scope(args.scope)?;
             s.replay_case(&changes, scope, &args.case)
+        })
+        .await
+    }
+
+    /// Tell compensation errors from autofluorescence left in by the unmixing, in one
+    /// population across a spread of specimens: a channel rising with another alike on every
+    /// sample (the spillover value to change, by how much), on some samples only (their dye),
+    /// or large granular cells negative for everything sitting higher in a channel, on the
+    /// unstained too (autofluorescence to extract, and the channel to look in on the
+    /// unstained). Reads the samples' events: only when the user asks. Changes nothing.
+    #[tool(annotations(read_only_hint = true))]
+    async fn check_spillover(&self, Parameters(args): Parameters<CheckSpillover>) -> String {
+        self.run(move |s| s.check_spillover(&args.population, args.specimens))
+            .await
+    }
+
+    /// The features waiting for the user to try: where each is, the steps, what to send back,
+    /// what the user has said of it so far, and - for those a check can try without them - the
+    /// check run on the open workspace (copying rules to siblings as a dry run, a rectangle made
+    /// a polygon and saved, the rules' names as a run reads them, the gating saved and read
+    /// back, what the spillover check would read). Changes nothing.
+    #[tool(annotations(read_only_hint = true))]
+    async fn check_features(&self) -> String {
+        self.run(|s| Ok(s.check_features())).await
+    }
+
+    /// Copy every rule written for a gate directly under one population to the gate of the
+    /// same name under each of several others - a panel's rules from CD4 T cells to CD8, MAIT
+    /// and gamma-delta T cells. A gate a rule reads under the old population (one it takes the
+    /// shape of, sits next to or falls back to) is read under the new one. Says which rules are
+    /// copied, which replace a rule there and what may still stop them placing their gate, and
+    /// which are left out and why: no gate of that name, a gate not drawn on the rule's
+    /// parameter, a gate it reads missing, a check update_rule would refuse it on, or a rule
+    /// reaching the gate already (kept unless replace). Writes only with write, on the user's
+    /// word.
+    #[tool(annotations(read_only_hint = false, destructive_hint = true))]
+    async fn copy_rules(&self, Parameters(args): Parameters<CopyRules>) -> String {
+        self.run(move |s| {
+            s.copy_rules(
+                &args.from,
+                &args.to,
+                args.replace.unwrap_or(false),
+                args.write.unwrap_or(false),
+            )
         })
         .await
     }

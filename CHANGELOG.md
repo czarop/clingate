@@ -4,6 +4,43 @@
 
 ### Added
 
+- **A compensation and unmixing check** (Workspace tab, "Check compensation
+  and unmixing"; `check_spillover` in the tools for Claude). Tells a
+  spillover error from autofluorescence the unmixing left in, in a
+  population across a spread of specimens. A channel rising with another by
+  the same amount on every sample is the matrix's, and it says which
+  spillover value to change by how much; a lean on some samples only is
+  those samples' dye (a tandem breaking down). Large, granular cells negative
+  for everything sitting higher in a channel are autofluorescence to
+  extract, and it names the channel to look in on the unstained. Unstained
+  files - sample type U or Unstained - are optional: where there are none it
+  says the autofluorescence could not be confirmed on them. The test report
+  has a section on it, and the Test features tab checks what it would read.
+
+- **A Test features tab** (and `check_features` in the tools for Claude).
+  Every feature waiting to be tried, with where it is, the steps, and what to
+  send back. Where a feature can be tried without you, a check tries it on
+  the open workspace and changes nothing: copying rules to siblings as a dry
+  run, a rectangle made a polygon then saved and read back, the rules' names
+  as a run reads them, and the gating saved, read back and saved again. Say
+  how each went - not tried, works, problem, and a note - and it is kept in
+  the workspace's `test_reports` folder; "Copy feedback for Claude" puts it
+  all, checks included, on the clipboard as one note.
+
+- **Copying rules to sibling populations** (Gate Rules tab, "Copy rules to
+  sibling populations"; `copy_rules` in the tools for Claude). Every rule
+  written for a gate directly under one population is copied to the gate of
+  the same name under the populations chosen - CD4 T cells' rules to CD8,
+  MAIT and gamma-delta T cells in one step. A gate a rule reads under the
+  first population - one it takes the shape of, sits next to or falls back
+  to - is read under the new one. A rule is left out, saying why, where there
+  is no gate of its name, the gate is not drawn on the rule's parameter, a gate
+  it reads is missing, `update_rule` would refuse it (a gate drawn in several
+  places given rules that disagree, an anchor it cannot read), or a rule
+  already reaches the gate - its own, or one for every gate of that name -
+  kept unless replace is chosen. What may still stop a copied rule placing
+  its gate is said beside it. The test report says what each copy would do.
+
 - **A rule report** (Review tab, "Report on this rule"; `rule_report` in the
   tools for Claude). How the rule of the gate shown did in the last applied
   run, on every sample: the rule then and now, where each line went, how sure
@@ -569,6 +606,13 @@
   the setting stayed in the form but no longer did anything.
 
 ### Fixed
+
+- **The gallery shows the gates chosen, as they are now.** Each plot on the
+  Gallery tab, and on the Review tab's tiles, worked out its gates from the
+  population, axes and size it was first shown with. Choosing another gate
+  or another size on the tab, without leaving it, kept the plots on the old
+  ones - a gate drawn as it had been, a rectangle since made a polygon and
+  moved, say. A plot now follows what it is asked to show.
 
 - **A rule naming a marker or a file name runs as meant.** A rules file
   written by hand, or by an older clingate, could name a rule's parameter by

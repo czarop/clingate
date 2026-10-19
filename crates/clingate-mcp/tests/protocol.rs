@@ -213,6 +213,9 @@ fn claude_desktop_can_open_a_workspace_and_ask_about_it() {
         "replay_rules",
         "replay_case",
         "update_rule",
+        "copy_rules",
+        "check_features",
+        "check_spillover",
     ] {
         assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
     }
@@ -1655,11 +1658,184 @@ fn the_instructions_say_rules_are_written_only_through_update_rule() {
 
     assert!(
         instructions
-            .contains("Write rules only with update_rule, and only with the workspace open"),
+            .contains("Write rules only with update_rule, or copy_rules for a population's rules"),
         "{instructions}"
     );
     assert!(
         instructions.contains("never by writing or editing a rules file yourself"),
         "{instructions}"
+    );
+}
+
+/// A population's rules copied to its sibling over the protocol: shown first,
+/// written only when asked, into the workspace's rules file.
+#[test]
+fn a_population_s_rules_are_copied_to_its_sibling_over_the_protocol() {
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("mcp-copy-rules");
+    let file = clingate_core::workspace::rules_file(&folder);
+    let before = std::fs::read_to_string(&file).unwrap();
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let shown = server.call("copy_rules", json!({"from": "1", "to": ["2"]}));
+
+    assert_eq!(shown["outcome"], "ok", "{shown}");
+    assert_eq!(
+        shown["result"]["copied"][0]["population"], "Tmem of 2",
+        "{shown}"
+    );
+    assert_eq!(
+        shown["result"]["left_out"][0]["population"],
+        "teff_naive of 2"
+    );
+    assert!(shown["result"]["written"].is_null());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+
+    let written = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2"], "write": true}),
+    );
+
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let listed = server.call("list_rules", json!({}));
+    assert!(listed.to_string().contains("Tmem of 2"), "{listed}");
+    let refused = server.call("copy_rules", json!({"from": "1", "to": []}));
+    assert_ne!(refused["outcome"], "ok", "{refused}");
+}
+
+/// The features to try over the protocol: each with its steps, and the
+/// checks run on the open workspace.
+#[test]
+fn the_features_to_try_are_checked_over_the_protocol() {
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("mcp-features");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let checked = server.call("check_features", json!({}));
+
+    assert_eq!(checked["outcome"], "ok", "{checked}");
+    let features = checked["result"]["features"].as_array().unwrap();
+    assert_eq!(
+        features.len(),
+        clingate_core::feature_checks::FEATURES.len()
+    );
+    let polygon = features
+        .iter()
+        .find(|f| f["id"] == "polygon_saved")
+        .unwrap();
+    assert_eq!(polygon["checked"]["passed"], true, "{polygon}");
+    assert!(!polygon["steps"].as_array().unwrap().is_empty());
+    let pick = features.iter().find(|f| f["id"] == "pick_rule").unwrap();
+    assert!(pick.get("checked").is_none(), "{pick}");
+    assert_eq!(pick["feedback"]["tried"], "not_yet");
+}
+
+/// The spillover check over the protocol: the spill alike on every sample
+/// named as the matrix's, the autofluorescence with the channel to look in on
+/// the unstained.
+#[test]
+fn spillover_and_autofluorescence_are_told_apart_over_the_protocol() {
+    use clingate_core::test_workspace::{GLOWS_IN, SPILLS_FROM, SPILLS_INTO, spilling_samples};
+    let folder = spilling_samples("mcp-spillover");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let checked = server.call("check_spillover", json!({"population": "1"}));
+
+    assert_eq!(checked["outcome"], "ok", "{checked}");
+    let findings = checked["result"]["findings"].as_array().unwrap();
+    let kinds: Vec<&str> = findings
+        .iter()
+        .map(|f| f["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["spillover", "autofluorescence"], "{checked}");
+    assert_eq!(findings[0]["from"], SPILLS_FROM);
+    assert_eq!(findings[0]["into"], SPILLS_INTO);
+    assert_eq!(findings[1]["look_in"], GLOWS_IN);
+    assert_eq!(findings[1]["in_unstained"], true);
+    assert_eq!(checked["result"]["unstained_files"], 2);
+    let says = checked["result"]["says"].to_string();
+    assert!(says.contains("Extract AF"), "{says}");
+
+    let refused = server.call("check_spillover", json!({"population": "nobody"}));
+    assert_ne!(refused["outcome"], "ok", "{refused}");
+}
+
+/// One population's rules copied to two over the protocol, then copied again
+/// after its rule changes: kept unless replace.
+#[test]
+fn rules_are_copied_to_several_populations_and_replaced_only_when_asked_over_the_protocol() {
+    let folder = clingate_core::test_workspace::three_siblings("mcp-copy-several");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let first = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2", "3"], "write": true}),
+    );
+    let populations = |answer: &serde_json::Value| -> Vec<String> {
+        answer["result"]["copied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["population"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(first["outcome"], "ok", "{first}");
+    assert_eq!(
+        populations(&first),
+        ["Tmem of 2", "Tmem of 3", "teff_naive of 3"]
+    );
+
+    let changed = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "parent": "1",
+            "rule": {
+                "parameter": "BUV805-A",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {"kind": "TailFraction", "band": [0.03, 0.06]}
+            }
+        }),
+    );
+    assert_eq!(changed["outcome"], "ok", "{changed}");
+    let kept = server.call("copy_rules", json!({"from": "1", "to": ["2", "3"]}));
+    let replaced = server.call(
+        "copy_rules",
+        json!({"from": "1", "to": ["2", "3"], "replace": true}),
+    );
+
+    assert!(populations(&kept).is_empty(), "{kept}");
+    assert!(
+        kept.to_string()
+            .contains("already has a rule of its own, kept"),
+        "{kept}"
+    );
+    assert_eq!(populations(&replaced), ["Tmem of 2", "Tmem of 3"]);
+    assert!(
+        replaced["result"]["copied"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("replaces").is_some()),
+        "{replaced}"
     );
 }

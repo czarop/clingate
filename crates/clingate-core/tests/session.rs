@@ -4531,3 +4531,293 @@ fn a_rule_report_needs_a_run_and_a_gate() {
     assert!(session.rule_report("CD999+").is_err());
     assert!(!folder.join("test_reports").exists());
 }
+
+/// 1's rules copied to 2: Tmem, drawn alike, gets 1's rule; teff_naive,
+/// drawn on BV785-A, is left out for it - shown first, written only when
+/// asked, and the run then places 2's Tmem.
+#[test]
+fn a_population_s_rules_are_copied_to_its_sibling_when_asked() {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("session-copy-rules");
+    let mut session = Session::open(&folder).unwrap();
+    let file = clingate_core::workspace::rules_file(&folder);
+    let before = std::fs::read_to_string(&file).unwrap();
+
+    let shown = session
+        .copy_rules("1", &["2".to_string()], false, false)
+        .unwrap();
+
+    assert_eq!(shown.written, None);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        before,
+        "nothing written"
+    );
+    let copied: Vec<&str> = shown.copied.iter().map(|c| c.population.as_str()).collect();
+    assert_eq!(copied, ["Tmem of 2"]);
+    assert!(shown.copied[0].problems.is_empty(), "{:?}", shown.copied);
+    assert_eq!(shown.left_out.len(), 1, "{:?}", shown.left_out);
+    assert_eq!(shown.left_out[0].population, "teff_naive of 2");
+    assert!(
+        shown.left_out[0].reason.contains("BV785-A"),
+        "{:?}",
+        shown.left_out
+    );
+
+    let written = session
+        .copy_rules("1", &["2".to_string()], false, true)
+        .unwrap();
+
+    assert_eq!(written.written.as_deref(), Some(file.as_path()));
+    let reopened = Session::open(&folder).unwrap();
+    let rules = reopened.rules().unwrap();
+    assert_eq!(
+        rules.get(&RuleTarget::under("Tmem", "2")),
+        rules.get(&RuleTarget::under("Tmem", "1"))
+    );
+    assert!(rules.get(&RuleTarget::under("teff_naive", "2")).is_none());
+    let preview = session.preview_rules().unwrap();
+    let placed: Vec<String> = preview
+        .would_move
+        .iter()
+        .map(|p| p.gate.clone())
+        .chain(preview.already_in_place.iter().map(|k| k.gate.clone()))
+        .collect();
+    assert!(placed.iter().any(|g| g == "Tmem of 2"), "{placed:?}");
+
+    assert!(
+        session
+            .copy_rules("1", &["1".to_string()], false, false)
+            .is_err()
+    );
+    assert!(session.copy_rules("1", &[], false, false).is_err());
+}
+
+/// Every feature waiting to be tried, each check run on the workspace, and
+/// what the user has said of each read from the workspace.
+#[test]
+fn the_features_to_try_are_listed_with_their_checks_and_the_user_s_feedback() {
+    use clingate_core::feature_checks::{FEATURES, Feedback, Feedbacks, Tried, save_feedback};
+    let folder = clingate_core::test_workspace::two_samples_with_siblings("session-features");
+    let mut said = Feedbacks::new();
+    said.insert(
+        "copy_rules".into(),
+        Feedback {
+            tried: Tried::Works,
+            note: "fine".into(),
+            ..Feedback::default()
+        },
+    );
+    save_feedback(&folder, &said).unwrap();
+    let session = Session::open(&folder).unwrap();
+
+    let checks = session.check_features();
+
+    assert_eq!(checks.features.len(), FEATURES.len());
+    for state in &checks.features {
+        assert_eq!(
+            state.checked.is_some(),
+            state.feature.check.is_some(),
+            "{state:?}"
+        );
+    }
+    let copy = checks
+        .features
+        .iter()
+        .find(|s| s.feature.id == "copy_rules")
+        .unwrap();
+    assert_eq!(copy.feedback.tried, Tried::Works);
+    assert_eq!(copy.feedback.note, "fine");
+    assert_eq!(
+        copy.checked.as_ref().unwrap().said[0],
+        "1 to 2: 1 would be copied, 1 left out"
+    );
+    let failed: Vec<&str> = checks
+        .features
+        .iter()
+        .filter(|s| s.checked.as_ref().is_some_and(|c| !c.passed))
+        .map(|s| s.feature.id)
+        .collect();
+    assert!(failed.is_empty(), "{failed:?}: {checks:?}");
+}
+
+#[test]
+fn check_spillover_tells_the_spill_from_the_autofluorescence() {
+    use clingate_core::spillover::Finding;
+    use clingate_core::test_workspace::{
+        GLOWS_IN, SPILL, SPILLS_FROM, SPILLS_INTO, spilling_samples,
+    };
+    let session = Session::open(&spilling_samples("session-spillover")).unwrap();
+
+    let checked = session.check_spillover("1", None).unwrap();
+
+    assert_eq!(
+        (checked.specimens_read, checked.specimens),
+        (4, 4),
+        "{checked:?}"
+    );
+    assert_eq!((checked.stained_files, checked.unstained_files), (4, 2));
+    assert!(checked.problems.is_empty(), "{:?}", checked.problems);
+    assert_eq!(checked.findings.len(), 2, "{:#?}", checked.findings);
+    assert_eq!(checked.says.len(), 2);
+    let Finding::Spillover {
+        from,
+        into,
+        coefficient,
+        samples,
+        ..
+    } = &checked.findings[0]
+    else {
+        panic!("{:?}", checked.findings[0]);
+    };
+    assert_eq!((from.as_ref(), into.as_ref()), (SPILLS_FROM, SPILLS_INTO));
+    assert!((coefficient - SPILL as f64).abs() < 0.005, "{coefficient}");
+    assert_eq!(*samples, 4);
+    let Finding::Autofluorescence {
+        channels,
+        in_unstained,
+        look_in,
+    } = &checked.findings[1]
+    else {
+        panic!("{:?}", checked.findings[1]);
+    };
+    assert_eq!(
+        channels.iter().map(|(c, _)| c.as_ref()).collect::<Vec<_>>(),
+        [GLOWS_IN]
+    );
+    assert_eq!(*in_unstained, Some(true));
+    assert_eq!(look_in.as_ref(), GLOWS_IN);
+}
+
+#[test]
+fn check_spillover_reads_the_unstained_of_the_specimens_it_reads() {
+    let session = Session::open(&clingate_core::test_workspace::spilling_samples(
+        "session-spillover-some",
+    ))
+    .unwrap();
+
+    let checked = session.check_spillover("1", Some(2)).unwrap();
+
+    // Two of four specimens spread evenly are "a" and "c"; only "a" has an
+    // unstained file.
+    assert_eq!((checked.specimens_read, checked.specimens), (2, 4));
+    assert_eq!((checked.stained_files, checked.unstained_files), (2, 1));
+}
+
+#[test]
+fn check_spillover_refuses_a_population_not_there() {
+    let session = Session::open(&clingate_core::test_workspace::spilling_samples(
+        "session-spillover-none",
+    ))
+    .unwrap();
+
+    let refused = session.check_spillover("no such cells", None).unwrap_err();
+
+    assert!(refused.to_string().contains("no such cells"), "{refused}");
+}
+
+#[test]
+fn check_spillover_says_which_files_it_could_not_read_and_checks_the_rest() {
+    let folder = clingate_core::test_workspace::spilling_samples("session-spillover-unread");
+    let session = Session::open(&folder).unwrap();
+    std::fs::remove_file(folder.join("a_FS.fcs")).unwrap();
+
+    let checked = session.check_spillover("1", None).unwrap();
+
+    assert_eq!(checked.stained_files, 3);
+    assert_eq!(checked.problems.len(), 1, "{:?}", checked.problems);
+    assert!(
+        checked.problems[0].starts_with("a_FS.fcs could not be read"),
+        "{:?}",
+        checked.problems
+    );
+    assert_eq!(checked.findings.len(), 2, "{:?}", checked.findings);
+}
+
+#[test]
+fn check_spillover_refuses_when_no_stained_file_can_be_read() {
+    let folder = clingate_core::test_workspace::spilling_samples("session-spillover-unreadable");
+    let session = Session::open(&folder).unwrap();
+    for specimen in ["a", "b", "c", "d"] {
+        std::fs::remove_file(folder.join(format!("{specimen}_FS.fcs"))).unwrap();
+    }
+
+    let refused = session.check_spillover("1", None).unwrap_err();
+
+    assert!(
+        refused
+            .to_string()
+            .contains("no stained sample could be read"),
+        "{refused}"
+    );
+}
+
+/// 1's rules copied to 2 and 3 in one call: 3's teff_naive, drawn as 1's,
+/// takes its rule where 2's, on BV785-A, cannot. A preview made under the old
+/// rules is dropped. Copied again after 1's Tmem changes, 2's and 3's keep
+/// their own unless replaced.
+#[test]
+fn rules_are_copied_to_several_siblings_at_once_and_replace_only_when_asked() {
+    use clingate_core::gate_rules::rule::{Rule, TailFractionRule};
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    use clingate_core::review::replay::RuleChange;
+    let folder = clingate_core::test_workspace::three_siblings("session-copy-several");
+    let mut session = Session::open(&folder).unwrap();
+    let to = ["2".to_string(), "3".to_string()];
+    session.preview_rules().unwrap();
+
+    let first = session.copy_rules("1", &to, false, true).unwrap();
+
+    let populations = |answer: &clingate_core::session::CopyAnswer| -> Vec<String> {
+        answer.copied.iter().map(|c| c.population.clone()).collect()
+    };
+    assert_eq!(
+        populations(&first),
+        ["Tmem of 2", "Tmem of 3", "teff_naive of 3"]
+    );
+    assert_eq!(first.left_out.len(), 1);
+    assert_eq!(first.left_out[0].population, "teff_naive of 2");
+    assert!(
+        session.apply_previewed_rules().is_err(),
+        "the preview made under the old rules is dropped"
+    );
+
+    let mut changed = session
+        .rules()
+        .unwrap()
+        .get(&RuleTarget::under("Tmem", "1"))
+        .unwrap()
+        .clone();
+    changed.rule = Rule::TailFraction(TailFractionRule::new((0.03, 0.06)));
+    session
+        .update_rule(RuleChange {
+            target: RuleTarget::under("Tmem", "1"),
+            rule: changed.clone(),
+        })
+        .unwrap();
+
+    let kept = session.copy_rules("1", &to, false, false).unwrap();
+    let replaced = session.copy_rules("1", &to, true, true).unwrap();
+
+    assert!(kept.copied.is_empty(), "{:?}", populations(&kept));
+    assert!(
+        kept.left_out
+            .iter()
+            .filter(|l| l.population.starts_with("Tmem of"))
+            .all(|l| l
+                .reason
+                .starts_with("already has a rule of its own, kept: ")),
+        "{:?}",
+        kept.left_out
+    );
+    assert_eq!(populations(&replaced), ["Tmem of 2", "Tmem of 3"]);
+    assert!(replaced.copied.iter().all(|c| c.replaces.is_some()));
+    let reopened = Session::open(&folder).unwrap();
+    let rules = reopened.rules().unwrap();
+    for population in ["2", "3"] {
+        assert_eq!(
+            rules.get(&RuleTarget::under("Tmem", population)),
+            Some(&changed)
+        );
+    }
+}
