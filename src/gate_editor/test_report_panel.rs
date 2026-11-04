@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dioxus::prelude::*;
 
-use clingate_core::gate_rules::pick::{Picking, kept_settings};
+use clingate_core::gate_rules::pick::kept_settings;
 use clingate_core::test_report::{TestJob, TestStep, keep, stamped_now, test_report};
 
 use crate::components::toast::{note, say, use_toast, warn};
@@ -81,10 +81,7 @@ pub(crate) fn TestReportPanel(typed: Signal<Typed>) -> Element {
                 Ok(ready) => ready,
                 Err(why) => return warn(&toasts, why),
             };
-            progress.set(Some(TestStep::Picking(Picking::Reading {
-                done: 0,
-                total: 0,
-            })));
+            progress.set(Some(TestStep::CheckingSpillover { done: 0, total: 0 }));
             let flag = Arc::new(AtomicBool::new(false));
             cancel.set(Some(flag.clone()));
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TestStep>();

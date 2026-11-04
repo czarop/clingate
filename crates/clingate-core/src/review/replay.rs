@@ -534,11 +534,13 @@ pub(crate) fn solve(events: &KeptEvents, rules: &RuleStore) -> Solved {
         };
         match measure_population(&file, &id, name, parent, &gate, rule, &frame) {
             Ok(mut m) => {
-                m.beside = sample
-                    .beside
-                    .iter()
-                    .map(|(name, outline)| (Arc::from(name.as_str()), outline.clone()))
-                    .collect();
+                if !rule.ignore_other_gates {
+                    m.beside = sample
+                        .beside
+                        .iter()
+                        .map(|(name, outline)| (Arc::from(name.as_str()), outline.clone()))
+                        .collect();
+                }
                 measured.push(m);
             }
             Err(u) => {
@@ -1350,6 +1352,7 @@ mod tests {
 
     fn rule(kind: Rule, on: MeasuredOn) -> GateRule {
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from("m"),
             bound: Bound::Above,
             measured_on: on,

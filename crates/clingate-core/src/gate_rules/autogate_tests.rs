@@ -512,6 +512,7 @@ fn fmx_rule() -> crate::gate_rules::rule_store::RuleStore {
     store.insert(
         RuleTarget::named("CD134+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Partner(Arc::from("FMX")),
@@ -625,6 +626,7 @@ fn a_rule_naming_another_parameter_leaves_the_gate_alone() {
     store.insert(
         RuleTarget::named("CD134+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from("BV421-A"),
             bound: Bound::Above,
             measured_on: MeasuredOn::Partner(Arc::from("FMX")),
@@ -1334,6 +1336,7 @@ fn rule_measured_on(file: &str) -> crate::gate_rules::rule_store::RuleStore {
     store.insert(
         RuleTarget::named("CD134+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(file)),
@@ -1435,6 +1438,7 @@ fn above_the_negative_rule(file: &str) -> crate::gate_rules::rule_store::RuleSto
     store.insert(
         RuleTarget::named("CD134+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(file)),
@@ -1914,6 +1918,7 @@ fn a_specimen_is_read_from_its_full_stain_not_whichever_file_sorted_first() {
     store.insert(
         crate::gate_rules::rule_store::RuleTarget::named("CD134+"),
         crate::gate_rules::rule_store::GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1996,6 +2001,7 @@ fn valley_rule(file: &str) -> crate::gate_rules::rule_store::RuleStore {
     store.insert(
         RuleTarget::named("CD134+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(file)),
@@ -2596,6 +2602,7 @@ fn phenotype_rule(
     store.insert(
         RuleTarget::named("MAIT"),
         GateRule {
+            ignore_other_gates: false,
             // Neither is read by this rule; they are on every rule, and a
             // phenotype rule ignores them.
             parameter: Arc::from(X),
@@ -2986,6 +2993,7 @@ fn a_phenotype_rule_measured_on_a_partner_is_refused() {
     rules.insert(
         RuleTarget::named("MAIT"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Partner(Arc::from("FMX")),
@@ -3021,6 +3029,7 @@ fn a_phenotype_rule_measured_on_itself_is_refused() {
     rules.insert(
         RuleTarget::named("MAIT"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -3618,6 +3627,7 @@ mod columns_read {
 
     fn ruled(parameter: &str, rule: Rule) -> GateRule {
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(parameter),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,

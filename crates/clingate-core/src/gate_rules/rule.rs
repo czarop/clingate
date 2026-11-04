@@ -888,6 +888,20 @@ impl Rule {
         }
     }
 
+    /// [`Rule::anchors`], to change.
+    pub fn anchors_mut(&mut self) -> Vec<&mut crate::gate_rules::rule_store::RuleTarget> {
+        match self {
+            Rule::FromAnotherGate(r) => r
+                .same_shape_as
+                .iter_mut()
+                .chain(r.edges.iter_mut().map(|e| &mut e.anchor))
+                .collect(),
+            Rule::ValleyOrSmear(r) => r.fallback.iter_mut().collect(),
+            Rule::NextToGate(r) => vec![&mut r.anchor],
+            _ => Vec::new(),
+        }
+    }
+
     /// The name of the kind, for the Gate Rules tab's list.
     pub fn kind(&self) -> &'static str {
         match self {

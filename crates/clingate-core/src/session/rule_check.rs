@@ -11,9 +11,12 @@
 
 use std::sync::Arc;
 
+use super::profile::target_of;
 use super::{Refusal, Session, failed};
 use crate::gate_rules::rule::Rule;
 use crate::gate_rules::rule_store::{GateRule, MeasuredOn, Named, RuleTarget, SamplePairing};
+use crate::gates::GateState;
+use crate::gates::gate_store::NodeId;
 
 impl Session {
     /// `rule` with every name put the way the rules file holds it, and a line
@@ -72,261 +75,7 @@ impl Session {
 
     /// Refuses a rule for gates that are not there, or that it cannot move.
     pub(crate) fn check_target(&self, target: &RuleTarget, rule: &GateRule) -> Result<(), Refusal> {
-        let (nodes, _) = self.population_facts();
-        let mut same_name = Vec::new();
-        let mut matched = Vec::new();
-        for node in &nodes {
-            let Some((here, _, params)) = self.target_of(node) else {
-                continue;
-            };
-            if here.gate != target.gate {
-                continue;
-            }
-            if target.parent.is_none() || target.parent == here.parent {
-                matched.push((here.clone(), params));
-            }
-            same_name.push(here);
-        }
-        if same_name.is_empty() {
-            return Err(failed(format!(
-                "there is no gate called {} - a rule names a gate as list_populations shows it",
-                target.gate
-            )));
-        }
-        if matched.is_empty() {
-            return Err(failed(format!(
-                "no {} gate is drawn under {} - its parents are: {}. A parent is named as \
-                 shortly as it can be while naming only itself, so under a subset it can be \
-                 a path like 'CD161+Va7.2+ / CD4+CD8-'.",
-                target.gate,
-                target.parent.as_deref().unwrap_or(""),
-                list(
-                    &same_name
-                        .iter()
-                        .map(|t| Arc::from(t.parent.as_deref().unwrap_or("(the top)")))
-                        .collect::<Vec<Arc<str>>>()
-                )
-            )));
-        }
-        if let Rule::FromAnotherGate(from) = &rule.rule {
-            return self.check_follow(target, from);
-        }
-        if let Rule::NextToGate(next) = &rule.rule {
-            return self.check_next_to(target, next);
-        }
-        if let Rule::MatchThePhenotype(wanted) = &rule.rule {
-            if !matches!(rule.measured_on, MeasuredOn::File(_)) {
-                return Err(failed(
-                    "a phenotype rule describes the population from one sample gated by hand, so \
-                     it is measured on one named file: {\"File\": \"<sample>\"}",
-                ));
-            }
-            return check_pinned(wanted, &matched);
-        }
-        if matches!(rule.rule, Rule::ValleyOrSmear(_))
-            && !matches!(rule.measured_on, MeasuredOn::File(_))
-        {
-            return Err(failed(
-                "a valley-or-smear rule places every sample from one gated by hand, so it is \
-                 measured on one named file: {\"File\": \"<sample>\"}",
-            ));
-        }
-        for (here, (x, y)) in &matched {
-            if *rule.parameter != **x && *rule.parameter != **y {
-                return Err(failed(format!(
-                    "{} is drawn on {x} and {y}, so a rule for it slides its edge along one of \
-                     those - not {}",
-                    here.describe(),
-                    rule.parameter
-                )));
-            }
-        }
-        let fallback = match &rule.rule {
-            Rule::ValleyOrSmear(either) => either.fallback_rule(&rule.parameter, rule.bound),
-            _ => None,
-        };
-        if let Some(fallback) = fallback {
-            return self.check_follow(target, &fallback);
-        }
-        Ok(())
-    }
-
-    /// Refuses a rule next to another gate that could never place its gate:
-    /// another gate that is not one gate, the gate itself, one not on the same
-    /// plot, a shape that cannot be brought up to it, or a parameter the gate
-    /// is not drawn on.
-    fn check_next_to(
-        &self,
-        target: &RuleTarget,
-        next: &crate::gate_rules::rule::NextToRule,
-    ) -> Result<(), Refusal> {
-        use crate::gate_rules::autogate::anchor_gate;
-        if let Some(problem) = crate::gate_rules::rule::gap_problem(next.gap) {
-            return Err(failed(problem.to_string()));
-        }
-        let anchor = anchor_gate(&self.gates, &next.anchor).map_err(failed)?;
-        let identity = |id: &crate::gates::gate_store::GateId| self.gates.gate_identity(id);
-        let anchor_gate = self
-            .gates
-            .registered_gate(&anchor)
-            .ok_or_else(|| failed(format!("{} has no gate", next.anchor.describe())))?;
-        let (nodes, _) = self.population_facts();
-        for node in &nodes {
-            let Some((here, id, (x, y))) = self.target_of(node) else {
-                continue;
-            };
-            if here.gate != target.gate || (target.parent.is_some() && target.parent != here.parent)
-            {
-                continue;
-            }
-            if identity(&id) == identity(&anchor) {
-                return Err(failed(format!(
-                    "{} cannot sit next to itself - name the gate beside it",
-                    target.describe()
-                )));
-            }
-            let shaped = self.gates.registered_gate(&id).and_then(|g| {
-                g.get_gate_ref(None).map(|inner| {
-                    matches!(
-                        inner.geometry,
-                        flow_gates::GateGeometry::Rectangle { .. }
-                            | flow_gates::GateGeometry::Polygon { .. }
-                    )
-                })
-            });
-            if shaped != Some(true) {
-                return Err(failed(format!(
-                    "{} is not a rectangle or a polygon, so it cannot be brought up to another gate",
-                    target.describe()
-                )));
-            }
-            if *next.parameter != *x && *next.parameter != *y {
-                return Err(failed(format!(
-                    "{} is drawn on {x} and {y}, so it does not move along {}",
-                    target.describe(),
-                    next.parameter
-                )));
-            }
-            let parent = self.gates.parent_node(node);
-            let anchor_axes = anchor_gate.get_params();
-            let beside = self
-                .gates
-                .nodes_for_gate(&anchor)
-                .iter()
-                .any(|at| self.gates.parent_node(at) == parent)
-                && crate::gates::gate_contact::same_axes(
-                    &anchor_axes,
-                    &(Arc::from(x.as_str()), Arc::from(y.as_str())),
-                );
-            if !beside {
-                return Err(failed(format!(
-                    "{} is not on the same plot as {} - the gate it sits next to is drawn \
-                     beside it, under the same parent and on the same two parameters",
-                    next.anchor.describe(),
-                    target.describe()
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// Refuses a rule from another gate that could never place its gate: an
-    /// anchor that is not one gate, the gate itself, a shape it cannot take,
-    /// or an edge on a parameter one of the two is not drawn on.
-    fn check_follow(
-        &self,
-        target: &RuleTarget,
-        from: &crate::gate_rules::rule::FromGateRule,
-    ) -> Result<(), Refusal> {
-        use crate::gate_rules::autogate::anchor_gate;
-        if let Some(problem) = from.problem() {
-            return Err(failed(problem));
-        }
-        let (nodes, _) = self.population_facts();
-        let mine: Vec<(crate::gates::gate_store::GateId, (String, String))> = nodes
-            .iter()
-            .filter_map(|node| self.target_of(node))
-            .filter(|(here, _, _)| {
-                here.gate == target.gate
-                    && (target.parent.is_none() || target.parent == here.parent)
-            })
-            .map(|(_, id, params)| (id, params))
-            .collect();
-        let anchor = |named: &RuleTarget| {
-            let id = anchor_gate(&self.gates, named).map_err(failed)?;
-            if mine
-                .iter()
-                .any(|(own, _)| self.gates.gate_identity(own) == self.gates.gate_identity(&id))
-            {
-                return Err(failed(format!(
-                    "{} cannot follow itself - name the gate it takes its position from",
-                    target.describe()
-                )));
-            }
-            self.gates
-                .registered_gate(&id)
-                .map(|gate| (id, gate))
-                .ok_or_else(|| failed(format!("{} has no gate", named.describe())))
-        };
-        let same_axes = |a: &(String, String), b: (&str, &str)| {
-            (a.0 == b.0 && a.1 == b.1) || (a.0 == b.1 && a.1 == b.0)
-        };
-        if let Some(named) = &from.same_shape_as {
-            let (_, theirs) = anchor(named)?;
-            let (tx, ty) = theirs.get_params();
-            for (id, params) in &mine {
-                if !same_axes(params, (&tx, &ty)) {
-                    return Err(failed(format!(
-                        "{} is drawn on {tx} and {ty}, and {} on {} and {}, so it cannot take                          that shape",
-                        named.describe(),
-                        target.describe(),
-                        params.0,
-                        params.1
-                    )));
-                }
-                let here = self.gates.registered_gate(id);
-                if here.is_some_and(|g| g.is_composite() != theirs.is_composite()) {
-                    return Err(failed(format!(
-                        "one of {} and {} is a quadrant and the other is not, so one cannot                          take the other's shape",
-                        target.describe(),
-                        named.describe()
-                    )));
-                }
-            }
-        }
-        for edge in &from.edges {
-            let (_, theirs) = anchor(&edge.anchor)?;
-            let (tx, ty) = theirs.get_params();
-            if *edge.parameter != *tx && *edge.parameter != *ty {
-                return Err(failed(format!(
-                    "{} is drawn on {tx} and {ty}, so it has no edge on {}",
-                    edge.anchor.describe(),
-                    edge.parameter
-                )));
-            }
-            for (own, params) in &mine {
-                if *edge.parameter != *params.0 && *edge.parameter != *params.1 {
-                    return Err(failed(format!(
-                        "{} is drawn on {} and {}, so it has no edge on {} to set",
-                        target.describe(),
-                        params.0,
-                        params.1,
-                        edge.parameter
-                    )));
-                }
-                if self
-                    .gates
-                    .registered_gate(own)
-                    .is_some_and(|g| g.is_composite())
-                {
-                    return Err(failed(format!(
-                        "{} is a quadrant, whose edges are its lines - it follows another                          quadrant with same_shape_as",
-                        target.describe()
-                    )));
-                }
-            }
-        }
-        Ok(())
+        check_target(&self.gates, target, rule)
     }
 
     /// What is wrong with a rule already in the rules file, if anything - for
@@ -450,4 +199,259 @@ fn list(names: &[Arc<str>]) -> String {
         .map(|n| n.to_string())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Refuses a rule for gates that are not there, or that it cannot move.
+pub(crate) fn check_target(
+    gates: &GateState,
+    target: &RuleTarget,
+    rule: &GateRule,
+) -> Result<(), Refusal> {
+    let nodes: Vec<NodeId> = gates.placements().map(|(node, _)| node.clone()).collect();
+    let mut same_name = Vec::new();
+    let mut matched = Vec::new();
+    for node in &nodes {
+        let Some((here, _, params)) = target_of(gates, node) else {
+            continue;
+        };
+        if here.gate != target.gate {
+            continue;
+        }
+        if target.parent.is_none() || target.parent == here.parent {
+            matched.push((here.clone(), params));
+        }
+        same_name.push(here);
+    }
+    if same_name.is_empty() {
+        return Err(failed(format!(
+            "there is no gate called {} - a rule names a gate as list_populations shows it",
+            target.gate
+        )));
+    }
+    if matched.is_empty() {
+        return Err(failed(format!(
+            "no {} gate is drawn under {} - its parents are: {}. A parent is named as \
+             shortly as it can be while naming only itself, so under a subset it can be \
+             a path like 'CD161+Va7.2+ / CD4+CD8-'.",
+            target.gate,
+            target.parent.as_deref().unwrap_or(""),
+            list(
+                &same_name
+                    .iter()
+                    .map(|t| Arc::from(t.parent.as_deref().unwrap_or("(the top)")))
+                    .collect::<Vec<Arc<str>>>()
+            )
+        )));
+    }
+    if let Rule::FromAnotherGate(from) = &rule.rule {
+        return check_follow(gates, target, from);
+    }
+    if let Rule::NextToGate(next) = &rule.rule {
+        return check_next_to(gates, target, next);
+    }
+    if let Rule::MatchThePhenotype(wanted) = &rule.rule {
+        if !matches!(rule.measured_on, MeasuredOn::File(_)) {
+            return Err(failed(
+                "a phenotype rule describes the population from one sample gated by hand, so \
+                 it is measured on one named file: {\"File\": \"<sample>\"}",
+            ));
+        }
+        return check_pinned(wanted, &matched);
+    }
+    if matches!(rule.rule, Rule::ValleyOrSmear(_))
+        && !matches!(rule.measured_on, MeasuredOn::File(_))
+    {
+        return Err(failed(
+            "a valley-or-smear rule places every sample from one gated by hand, so it is \
+             measured on one named file: {\"File\": \"<sample>\"}",
+        ));
+    }
+    for (here, (x, y)) in &matched {
+        if *rule.parameter != **x && *rule.parameter != **y {
+            return Err(failed(format!(
+                "{} is drawn on {x} and {y}, so a rule for it slides its edge along one of \
+                 those - not {}",
+                here.describe(),
+                rule.parameter
+            )));
+        }
+    }
+    let fallback = match &rule.rule {
+        Rule::ValleyOrSmear(either) => either.fallback_rule(&rule.parameter, rule.bound),
+        _ => None,
+    };
+    if let Some(fallback) = fallback {
+        return check_follow(gates, target, &fallback);
+    }
+    Ok(())
+}
+
+/// Refuses a rule next to another gate that could never place its gate:
+/// another gate that is not one gate, the gate itself, one not on the same
+/// plot, a shape that cannot be brought up to it, or a parameter the gate
+/// is not drawn on.
+fn check_next_to(
+    gates: &GateState,
+    target: &RuleTarget,
+    next: &crate::gate_rules::rule::NextToRule,
+) -> Result<(), Refusal> {
+    use crate::gate_rules::autogate::anchor_gate;
+    if let Some(problem) = crate::gate_rules::rule::gap_problem(next.gap) {
+        return Err(failed(problem.to_string()));
+    }
+    let anchor = anchor_gate(gates, &next.anchor).map_err(failed)?;
+    let identity = |id: &crate::gates::gate_store::GateId| gates.gate_identity(id);
+    let anchor_gate = gates
+        .registered_gate(&anchor)
+        .ok_or_else(|| failed(format!("{} has no gate", next.anchor.describe())))?;
+    let nodes: Vec<NodeId> = gates.placements().map(|(node, _)| node.clone()).collect();
+    for node in &nodes {
+        let Some((here, id, (x, y))) = target_of(gates, node) else {
+            continue;
+        };
+        if here.gate != target.gate || (target.parent.is_some() && target.parent != here.parent) {
+            continue;
+        }
+        if identity(&id) == identity(&anchor) {
+            return Err(failed(format!(
+                "{} cannot sit next to itself - name the gate beside it",
+                target.describe()
+            )));
+        }
+        let shaped = gates.registered_gate(&id).and_then(|g| {
+            g.get_gate_ref(None).map(|inner| {
+                matches!(
+                    inner.geometry,
+                    flow_gates::GateGeometry::Rectangle { .. }
+                        | flow_gates::GateGeometry::Polygon { .. }
+                )
+            })
+        });
+        if shaped != Some(true) {
+            return Err(failed(format!(
+                "{} is not a rectangle or a polygon, so it cannot be brought up to another gate",
+                target.describe()
+            )));
+        }
+        if *next.parameter != *x && *next.parameter != *y {
+            return Err(failed(format!(
+                "{} is drawn on {x} and {y}, so it does not move along {}",
+                target.describe(),
+                next.parameter
+            )));
+        }
+        let parent = gates.parent_node(node);
+        let anchor_axes = anchor_gate.get_params();
+        let beside = gates
+            .nodes_for_gate(&anchor)
+            .iter()
+            .any(|at| gates.parent_node(at) == parent)
+            && crate::gates::gate_contact::same_axes(
+                &anchor_axes,
+                &(Arc::from(x.as_str()), Arc::from(y.as_str())),
+            );
+        if !beside {
+            return Err(failed(format!(
+                "{} is not on the same plot as {} - the gate it sits next to is drawn \
+                 beside it, under the same parent and on the same two parameters",
+                next.anchor.describe(),
+                target.describe()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a rule from another gate that could never place its gate: an
+/// anchor that is not one gate, the gate itself, a shape it cannot take,
+/// or an edge on a parameter one of the two is not drawn on.
+fn check_follow(
+    gates: &GateState,
+    target: &RuleTarget,
+    from: &crate::gate_rules::rule::FromGateRule,
+) -> Result<(), Refusal> {
+    use crate::gate_rules::autogate::anchor_gate;
+    if let Some(problem) = from.problem() {
+        return Err(failed(problem));
+    }
+    let nodes: Vec<NodeId> = gates.placements().map(|(node, _)| node.clone()).collect();
+    let mine: Vec<(crate::gates::gate_store::GateId, (String, String))> = nodes
+        .iter()
+        .filter_map(|node| target_of(gates, node))
+        .filter(|(here, _, _)| {
+            here.gate == target.gate && (target.parent.is_none() || target.parent == here.parent)
+        })
+        .map(|(_, id, params)| (id, params))
+        .collect();
+    let anchor = |named: &RuleTarget| {
+        let id = anchor_gate(gates, named).map_err(failed)?;
+        if mine
+            .iter()
+            .any(|(own, _)| gates.gate_identity(own) == gates.gate_identity(&id))
+        {
+            return Err(failed(format!(
+                "{} cannot follow itself - name the gate it takes its position from",
+                target.describe()
+            )));
+        }
+        gates
+            .registered_gate(&id)
+            .map(|gate| (id, gate))
+            .ok_or_else(|| failed(format!("{} has no gate", named.describe())))
+    };
+    let same_axes = |a: &(String, String), b: (&str, &str)| {
+        (a.0 == b.0 && a.1 == b.1) || (a.0 == b.1 && a.1 == b.0)
+    };
+    if let Some(named) = &from.same_shape_as {
+        let (_, theirs) = anchor(named)?;
+        let (tx, ty) = theirs.get_params();
+        for (id, params) in &mine {
+            if !same_axes(params, (&tx, &ty)) {
+                return Err(failed(format!(
+                    "{} is drawn on {tx} and {ty}, and {} on {} and {}, so it cannot take that shape",
+                    named.describe(),
+                    target.describe(),
+                    params.0,
+                    params.1
+                )));
+            }
+            let here = gates.registered_gate(id);
+            if here.is_some_and(|g| g.is_composite() != theirs.is_composite()) {
+                return Err(failed(format!(
+                    "one of {} and {} is a quadrant and the other is not, so one cannot take the other's shape",
+                    target.describe(),
+                    named.describe()
+                )));
+            }
+        }
+    }
+    for edge in &from.edges {
+        let (_, theirs) = anchor(&edge.anchor)?;
+        let (tx, ty) = theirs.get_params();
+        if *edge.parameter != *tx && *edge.parameter != *ty {
+            return Err(failed(format!(
+                "{} is drawn on {tx} and {ty}, so it has no edge on {}",
+                edge.anchor.describe(),
+                edge.parameter
+            )));
+        }
+        for (own, params) in &mine {
+            if *edge.parameter != *params.0 && *edge.parameter != *params.1 {
+                return Err(failed(format!(
+                    "{} is drawn on {} and {}, so it has no edge on {} to set",
+                    target.describe(),
+                    params.0,
+                    params.1,
+                    edge.parameter
+                )));
+            }
+            if gates.registered_gate(own).is_some_and(|g| g.is_composite()) {
+                return Err(failed(format!(
+                    "{} is a quadrant, whose edges are its lines - it follows another quadrant with same_shape_as",
+                    target.describe()
+                )));
+            }
+        }
+    }
+    Ok(())
 }

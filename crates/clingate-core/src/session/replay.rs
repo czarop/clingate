@@ -164,10 +164,15 @@ pub fn describe_rule(rule: &GateRule) -> String {
         MeasuredOn::File(file) => format!("the file {file}"),
     };
     format!(
-        "{} ({side}), read on {on}: {} [{}]",
+        "{} ({side}), read on {on}: {} [{}]{}",
         rule.parameter,
         rule.rule.describe(),
-        rule.rule.kind()
+        rule.rule.kind(),
+        if rule.ignore_other_gates {
+            " - placed over other gates on its plot if need be"
+        } else {
+            ""
+        }
     )
 }
 
@@ -503,7 +508,7 @@ impl Session {
 
     /// The rules file, when there is one that read cleanly - never one that
     /// did not, which would be written over with what was lost.
-    fn rules_file_to_write(&self) -> Result<PathBuf, Refusal> {
+    pub(super) fn rules_file_to_write(&self) -> Result<PathBuf, Refusal> {
         match &self.parts.rules {
             super::PartState::Loaded { file } => Ok(file.clone()),
             super::PartState::Failed { file, reason } => Err(failed(format!(

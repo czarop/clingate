@@ -16,20 +16,25 @@
 //! editor does per plot; nothing is kept between questions but the workspace
 //! itself.
 
+mod copy;
 mod edits;
+mod features;
 mod gates;
 pub mod lookup;
 mod profile;
 mod replay;
 mod review;
-mod rule_check;
+pub(crate) mod rule_check;
 mod rules;
 mod fit;
 mod pick;
 mod score;
+mod spillover;
 mod test_report;
 
+pub use copy::{CopiedRule, CopyAnswer, LeftOut};
 pub use edits::{EditState, Exported, Saved};
+pub use features::{FeatureChecks, FeatureState};
 pub use gates::{CompareRow, Comparison, GateDetails, ParameterRow};
 pub use profile::{
     PICTURE_TILES, PROFILE_SPECIMENS, PROFILE_SPECIMENS_MAX, Picture, ProfileAnswer,
@@ -44,6 +49,7 @@ pub use rules::{
 };
 pub use fit::{FIT_SHOWN, FitAnswer, FitAsk};
 pub use pick::{PickAnswer, PickedRule};
+pub use spillover::{SPILLOVER_SPECIMENS, SPILLOVER_SPECIMENS_MAX, SpilloverAnswer};
 pub use score::{SCORE_ROWS, SCORE_ROWS_MAX, ScoreAnswer};
 pub use test_report::{RuleReportAnswer, TestReportAnswer};
 
