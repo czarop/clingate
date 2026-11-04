@@ -955,6 +955,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -1044,6 +1045,7 @@ mod tests {
             rules.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1386,6 +1388,7 @@ mod tests {
             rules.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1852,6 +1855,7 @@ mod tests {
             let change = RuleChange {
                 target: RuleTarget::named("CD134+"),
                 rule: GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1889,6 +1893,107 @@ mod tests {
             }
             assert!(after.iter().any(|c| c.verdict == Verdict::Broken));
             let _ = b;
+        }
+
+        /// CD134+, starting above a gate up to `WALL` on X: kept clear of it,
+        /// the run holds its edge at the wall; replayed ignoring other gates,
+        /// it goes down to where the band puts it.
+        #[test]
+        fn a_replay_of_a_rule_ignoring_other_gates_is_not_held_back() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::replay::{ReviewedRun, RuleChange, replay_run};
+            const WALL: f32 = 5_000.0;
+            let inputs = three_donor_inputs("replay-ignoring");
+            let (mut state, id) = positive_gate();
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, WALL + 1_000.0),
+                &GateSource::Global,
+            );
+            let wall_geometry = flow_gates::create_rectangle_geometry(
+                vec![(-1e16, -1e16), (WALL, -1e16), (WALL, 1e16), (-1e16, 1e16)],
+                X,
+                Y,
+            )
+            .unwrap();
+            let wall: Arc<dyn DrawableGate> = Arc::new(
+                crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                    flow_gates::Gate {
+                        id: Arc::from("Wall"),
+                        name: "Wall".into(),
+                        geometry: wall_geometry,
+                        mode: flow_gates::GateMode::Global,
+                        parameters: (Arc::from(X), Arc::from(Y)),
+                        label_position: None,
+                    },
+                    true,
+                )
+                .unwrap(),
+            );
+            state.place_gate(&[Arc::from("Wall")], &wall, &GateSource::Global);
+            state.place_new_gate(None, Arc::from("Wall")).unwrap();
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &inputs.metadata,
+            );
+            let samples = crate::review::run_record::Samples::new(
+                &inputs.names,
+                &inputs.metadata,
+                &inputs.rules.pairing,
+            );
+            crate::review::RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            )
+            .applied(&folder_of(&inputs), &outcome.events)
+            .unwrap();
+            let run =
+                ReviewedRun::from_workspace(&folder_of(&inputs), &state, &inputs.metadata).unwrap();
+            let mut ignoring = inputs
+                .rules
+                .get(&RuleTarget::named("CD134+"))
+                .unwrap()
+                .clone();
+            ignoring.ignore_other_gates = true;
+            assert_eq!(
+                ignoring.rule,
+                Rule::TailFraction(TailFractionRule::new((0.05, 0.08)))
+            );
+
+            let (_, kept_clear) = replay_run(&run, &[]);
+            let (_, ignored) = replay_run(
+                &run,
+                &[RuleChange {
+                    target: RuleTarget::named(id.as_ref()),
+                    rule: ignoring,
+                }],
+            );
+
+            for (kept, free) in kept_clear.iter().zip(&ignored) {
+                let held = kept.replay_decided.as_ref().unwrap().line.at.unwrap();
+                let placed = free.replay_decided.as_ref().unwrap().line.at.unwrap();
+                assert!(
+                    (held - f64::from(WALL)).abs() < 1e-3,
+                    "{}: {held}",
+                    kept.sample.id
+                );
+                assert!(
+                    placed < f64::from(WALL) - 100.0,
+                    "{}: {placed}",
+                    free.sample.id
+                );
+                let beyond = free.replay_decided.as_ref().unwrap().line.beyond.unwrap();
+                assert!(
+                    (0.05..=0.08).contains(&beyond),
+                    "{}: {beyond}",
+                    free.sample.id
+                );
+            }
+            assert!(!kept_clear.is_empty());
         }
 
         #[test]
@@ -2240,6 +2345,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -2520,6 +2626,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     // What the QC admits is already in the band, so every
@@ -2686,6 +2793,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2752,6 +2860,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2877,6 +2986,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD3+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(M),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2996,6 +3106,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),

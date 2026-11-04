@@ -94,6 +94,7 @@ fn the_rules_names_are_said_as_a_run_reads_them_and_one_it_cannot_fails() {
         },
     );
     let band = |parameter: &str, on: MeasuredOn| GateRule {
+        ignore_other_gates: false,
         parameter: parameter.into(),
         bound: Bound::Above,
         measured_on: on,

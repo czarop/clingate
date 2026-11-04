@@ -199,7 +199,11 @@ cannot run, under problems; fix those before previewing.
 
 A run never places a gate over another gate on the same plot: a rule that \
 moves a line is held back until its gate touches the other, and anything else \
-that would overlap is left where it was. Ruled gates on one plot are placed in \
+that would overlap is left where it was - unless the rule sets \
+ignore_other_gates true, when its gate goes where the rule puts it, over \
+other gates or not (gates beside it still keep clear of it). Set it only when \
+the user wants the gate to overlap, or when a gate held back is the problem. \
+Ruled gates on one plot are placed in \
 the order their rules are listed. A run places gates down the tree: a gate under another gate a rule moves is \
 measured only after that gate is placed, whatever order the rules are listed \
 in - that order counts only between ruled gates on one plot. So settle the rules for the gates higher up before those under them. \
@@ -660,7 +664,8 @@ pub struct UpdateRule {
     /// 'of' in list_populations' rule_target: the shortest path that names only that parent,
     /// e.g. 'CD4+' or 'CD161+Va7.2+ / CD4+CD8-'.
     pub parent: Option<String>,
-    /// The whole rule: {"parameter", "bound", "measured_on", "rule": {"kind", ...}}, as in a
+    /// The whole rule: {"parameter", "bound", "measured_on", "rule": {"kind", ...}}, and
+    /// "ignore_other_gates": true to place the gate over other gates on its plot, as in a
     /// replay's rule_changes.
     pub rule: serde_json::Value,
 }

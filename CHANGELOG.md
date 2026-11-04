@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A rule can ignore other gates on its plot** (Gate Rules tab, "ignore
+  other gates on the plot" in the rule form; `"ignore_other_gates": true` in
+  `update_rule` for Claude). A run keeps a gate clear of the others on its
+  plot - holding a line back where the two meet, refusing any other move
+  that would overlap. Ticked for a rule, its gate goes where the rule puts
+  it, over other gates or not; gates beside it still keep clear of it. The
+  rules list says which rules ignore other gates, and replays and copies to
+  siblings keep the setting.
+
 - **A compensation and unmixing check** (Workspace tab, "Check compensation
   and unmixing"; `check_spillover` in the tools for Claude). Tells a
   spillover error from autofluorescence the unmixing left in, in a

@@ -339,6 +339,7 @@ fn workspace_with_rules(name: &str) -> PathBuf {
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: parameter.into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -371,6 +372,7 @@ fn workspace_with_teff_over_tmem(name: &str) -> PathBuf {
     store.insert(
         RuleTarget::named("teff_naive"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1584,6 +1586,7 @@ fn a_rule_named_loosely_in_the_file_previews_as_meant_over_the_protocol() {
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "CD69".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
@@ -1837,5 +1840,47 @@ fn rules_are_copied_to_several_populations_and_replaced_only_when_asked_over_the
             .iter()
             .all(|c| c.get("replaces").is_some()),
         "{replaced}"
+    );
+}
+
+/// A rule set to ignore other gates over the protocol: written, and listed
+/// so.
+#[test]
+fn a_rule_ignoring_other_gates_is_written_and_listed_over_the_protocol() {
+    let folder = clingate_core::test_workspace::two_samples_with_a_rule("mcp-ignoring");
+    let mut server = Server::start();
+    let opened = server.call(
+        "open_workspace",
+        json!({"folder": folder.to_str().unwrap()}),
+    );
+    assert_eq!(opened["outcome"], "ok", "{opened}");
+
+    let written = server.call(
+        "update_rule",
+        json!({
+            "gate": "Tmem",
+            "rule": {
+                "parameter": "BUV805-A",
+                "bound": "Above",
+                "measured_on": "Itself",
+                "rule": {"kind": "TailFraction", "band": [0.01, 0.02]},
+                "ignore_other_gates": true
+            }
+        }),
+    );
+
+    assert_eq!(written["outcome"], "ok", "{written}");
+    let listed = server.call("list_rules", json!({}));
+    assert_eq!(
+        listed["result"]["rules"][0]["ignores_other_gates"], true,
+        "{listed}"
+    );
+    let file: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(clingate_core::workspace::rules_file(&folder)).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        file.to_string().contains("\"ignore_other_gates\":true"),
+        "{file}"
     );
 }

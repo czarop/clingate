@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn gate_rule(bound: Bound, band: (f64, f64)) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: Arc::from("eFluor 660-A"),
         bound,
         measured_on: MeasuredOn::Partner(Arc::from("FMX")),
@@ -208,6 +209,7 @@ fn a_store_round_trips_through_its_sidecar() {
     original.insert(
         RuleTarget::under("CD38+", "CD19+CD33-"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from("RB613-A"),
             bound: Bound::Below,
             measured_on: MeasuredOn::Itself,
@@ -843,6 +845,7 @@ fn a_phenotype_rule_survives_a_save_and_a_load() {
     store.insert(
         RuleTarget::under("MAIT", "CD3+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from("FSC-A"),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("qc")),
@@ -936,6 +939,7 @@ fn a_phenotype_sidecar_can_be_written_for_trying_the_app() {
                 .as_str(),
         ),
         GateRule {
+            ignore_other_gates: false,
             // Neither is read by this rule. They are on every rule.
             parameter: Arc::from("FSC-A"),
             bound: Bound::Above,
@@ -1107,4 +1111,30 @@ fn the_order_survives_being_saved_and_read_back() {
     let read = RuleStore::load(&path).unwrap();
     let _ = std::fs::remove_file(&path);
     assert_eq!(listed(&read), listed(&store));
+}
+
+#[test]
+fn a_rule_ignoring_other_gates_says_so_in_its_file_and_one_that_does_not_is_as_before() {
+    let rule = |ignore: bool| GateRule {
+        ignore_other_gates: ignore,
+        parameter: "CD3".into(),
+        bound: Bound::Above,
+        measured_on: MeasuredOn::Itself,
+        rule: Rule::TailFraction(TailFractionRule::new((0.1, 0.2))),
+    };
+
+    let ignoring = serde_json::to_value(rule(true)).unwrap();
+    let keeping = serde_json::to_value(rule(false)).unwrap();
+
+    assert_eq!(ignoring["ignore_other_gates"], true);
+    assert!(keeping.get("ignore_other_gates").is_none(), "{keeping}");
+    assert_eq!(
+        serde_json::from_value::<GateRule>(ignoring).unwrap(),
+        rule(true)
+    );
+    assert_eq!(
+        serde_json::from_value::<GateRule>(keeping).unwrap(),
+        rule(false),
+        "a rules file from before reads as keeping clear"
+    );
 }

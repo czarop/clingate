@@ -275,6 +275,7 @@ fn rule_in(
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: parameter.into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1414,6 +1415,7 @@ fn a_rule_is_not_written_where_there_is_no_rules_file_or_one_that_did_not_read()
     let change = clingate_core::review::replay::RuleChange {
         target: clingate_core::gate_rules::rule_store::RuleTarget::named("Tmem"),
         rule: clingate_core::gate_rules::rule_store::GateRule {
+            ignore_other_gates: false,
             parameter: "BUV805-A".into(),
             bound: clingate_core::gate_rules::rule_store::Bound::Above,
             measured_on: clingate_core::gate_rules::rule_store::MeasuredOn::Itself,
@@ -1960,6 +1962,7 @@ fn marked_workspace(name: &str) -> std::path::PathBuf {
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "BUV805-A".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1986,6 +1989,7 @@ fn change(
             None => RuleTarget::named(gate),
         },
         rule: GateRule {
+            ignore_other_gates: false,
             parameter: parameter.into(),
             bound: Bound::Above,
             measured_on,
@@ -2070,6 +2074,7 @@ fn a_rule_already_written_with_the_wrong_names_is_listed_as_wrong_and_run_as_mea
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "CD69".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
@@ -2079,6 +2084,7 @@ fn a_rule_already_written_with_the_wrong_names_is_listed_as_wrong_and_run_as_mea
     store.insert(
         RuleTarget::named("teff_naive"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "BUV805-A".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Partner("FMO".into()),
@@ -2132,6 +2138,7 @@ fn a_rule_already_written_with_the_wrong_names_is_listed_as_wrong_and_run_as_mea
     nothing.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             parameter: "CD999".into(),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -2376,6 +2383,7 @@ fn candidates_are_tried_under_the_names_a_run_reads_and_a_bad_one_is_named_by_it
     use clingate_core::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
     let session = Session::open(&marked_workspace("session-try-names")).unwrap();
     let candidate = |parameter: &str, measured_on: MeasuredOn| GateRule {
+        ignore_other_gates: false,
         parameter: parameter.into(),
         bound: Bound::Above,
         measured_on,
@@ -2511,6 +2519,7 @@ fn rules_already_fighting_over_a_linked_gate_are_flagged_in_the_list_and_left_al
         store.insert(
             RuleTarget::under("Shared", parent),
             GateRule {
+                ignore_other_gates: false,
                 parameter: "SSC-A".into(),
                 bound: Bound::Above,
                 measured_on: MeasuredOn::Itself,
@@ -2849,6 +2858,7 @@ fn a_loop_already_in_the_rules_file_is_flagged_on_both_rules() {
         store.insert(
             RuleTarget::named(gate),
             GateRule {
+                ignore_other_gates: false,
                 parameter: "".into(),
                 bound: Bound::Above,
                 measured_on: MeasuredOn::Itself,
@@ -4119,6 +4129,7 @@ fn candidates_given_are_tried_beside_the_rule_as_it_stands() {
     let session = Session::open(&folder).unwrap();
     let channel = session.gate("Tmem", None).unwrap().parameters[0].clone();
     let valley = GateRule {
+        ignore_other_gates: false,
         parameter: channel.trim_end_matches("-A").into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
@@ -4820,4 +4831,37 @@ fn rules_are_copied_to_several_siblings_at_once_and_replace_only_when_asked() {
             Some(&changed)
         );
     }
+}
+
+/// A rule written to ignore other gates on its plot is kept so in the rules
+/// file, listed so, and said so where a rule is described.
+#[test]
+fn a_rule_ignoring_other_gates_is_written_listed_and_read_back_so() {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    use clingate_core::review::replay::RuleChange;
+    let folder = clingate_core::test_workspace::two_samples_with_a_rule("session-ignoring");
+    let mut session = Session::open(&folder).unwrap();
+    let target = RuleTarget::named("Tmem");
+    let mut rule = session.rules().unwrap().get(&target).unwrap().clone();
+    assert!(!rule.ignore_other_gates, "the fixture's rule keeps clear");
+    rule.ignore_other_gates = true;
+
+    let updated = session
+        .update_rule(RuleChange {
+            target: target.clone(),
+            rule: rule.clone(),
+        })
+        .unwrap();
+
+    assert!(
+        updated
+            .now
+            .ends_with(" - placed over other gates on its plot if need be"),
+        "{}",
+        updated.now
+    );
+    let listed = session.rules_view().unwrap();
+    assert!(listed.rules[0].ignores_other_gates);
+    let reopened = Session::open(&folder).unwrap();
+    assert_eq!(reopened.rules().unwrap().get(&target), Some(&rule));
 }

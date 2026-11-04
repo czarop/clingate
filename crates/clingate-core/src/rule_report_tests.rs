@@ -261,12 +261,14 @@ fn a_rule_is_said_with_the_side_it_keeps_and_without_a_parameter_it_has_not() {
     use crate::gate_rules::rule::PhenotypeRule;
     use crate::gate_rules::rule_store::{Bound, GateRule, MeasuredOn};
     let band = GateRule {
+        ignore_other_gates: false,
         parameter: "BUV805-A".into(),
         bound: Bound::Below,
         measured_on: MeasuredOn::Itself,
         rule: Rule::TailFraction(TailFractionRule::new((0.01, 0.02))),
     };
     let phenotype = GateRule {
+        ignore_other_gates: false,
         parameter: "".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::File("sample1".into()),

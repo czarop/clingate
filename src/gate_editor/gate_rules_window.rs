@@ -438,6 +438,7 @@ pub fn GateRulesWindow() -> Element {
     let mut follow_mode = use_signal(|| "shape".to_string());
     let mut follow_anchor = use_signal(String::new);
     let mut follow_edges = use_signal(Vec::<EdgeForm>::new);
+    let mut ignore_other_gates = use_signal(|| false);
     // A rule next to another gate: that gate, as `RuleTarget::describe`
     // writes it, which side of it, and how it is met.
     let mut next_anchor = use_signal(String::new);
@@ -723,6 +724,7 @@ pub fn GateRulesWindow() -> Element {
         smear_example.set(String::new());
         lowest_before.set(false);
         smallest_dip.set(String::new());
+        ignore_other_gates.set(entry.rule.ignore_other_gates);
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -962,6 +964,7 @@ pub fn GateRulesWindow() -> Element {
         let described = target.describe();
         let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
+            ignore_other_gates: ignore_other_gates(),
             // A rule from another gate reads its own sample, and positions
             // along no parameter of its own.
             parameter: Arc::from(if follows { "" } else { param.as_str() }),
@@ -1062,13 +1065,14 @@ pub fn GateRulesWindow() -> Element {
                                 // panel is the only place the two are
                                 // connected, and it lives here rather than in
                                 // the rule.
-                                match &entry.rule.rule {
-                                    Rule::MatchThePhenotype(r) => rsx! {
-                                        td { "{describe_phenotype(r, &panel.read())}" }
-                                    },
-                                    other => rsx! {
-                                        td { "{other.describe()}" }
-                                    },
+                                td {
+                                    match &entry.rule.rule {
+                                        Rule::MatchThePhenotype(r) => describe_phenotype(r, &panel.read()),
+                                        other => other.describe(),
+                                    }
+                                    if entry.rule.ignore_other_gates {
+                                        div { class: "gate_rules-hint", "ignores other gates on the plot" }
+                                    }
                                 }
                                 td { class: "gate_rules-actions",
                                     button {
@@ -1663,6 +1667,19 @@ pub fn GateRulesWindow() -> Element {
                             }
                         }
                     }
+                }
+
+                label { "Other gates" }
+                label {
+                    input {
+                        r#type: "checkbox",
+                        checked: ignore_other_gates(),
+                        onchange: move |e: FormEvent| ignore_other_gates.set(e.checked()),
+                    }
+                    " ignore other gates on the plot"
+                }
+                p { class: "gate_rules-hint gate_rules-span",
+                    "Unticked, a run never puts this gate over another gate on its plot: a line is held back where the two meet, and any other move that would overlap is not made. Ticked, the gate goes where the rule puts it, over other gates or not. Gates beside it still keep clear of it."
                 }
 
                 button { class: "gate_rules-add", onclick: move |_| add(), "Add rule" }

@@ -50,6 +50,24 @@ pub enum Check {
 /// What the features are, newest first.
 pub const FEATURES: &[Feature] = &[
     Feature {
+        id: "ignore_other_gates",
+        title: "A rule that ignores other gates on its plot",
+        place: "Gate Rules tab - the rule form, \"ignore other gates on the plot\"; update_rule \
+                for Claude",
+        steps: &[
+            "Choose a gate a run holds back against another gate - its confidence says \
+             \"held back so as not to overlap\" that gate.",
+            "Edit its rule, tick \"ignore other gates on the plot\", Add rule, Save the rules \
+             and run.",
+            "It should go where the rule puts it, over the other gate; a gate beside it with a \
+             rule of its own should still keep clear of it.",
+            "Untick it and run again: it is held back as before.",
+        ],
+        send_back: "Which gate, where it went with the box ticked and unticked, and whether the \
+                    gate beside it still kept clear.",
+        check: None,
+    },
+    Feature {
         id: "spillover",
         title: "Telling spillover errors from autofluorescence",
         place: "Workspace tab - \"Check compensation and unmixing\"; check_spillover for Claude",

@@ -164,10 +164,15 @@ pub fn describe_rule(rule: &GateRule) -> String {
         MeasuredOn::File(file) => format!("the file {file}"),
     };
     format!(
-        "{} ({side}), read on {on}: {} [{}]",
+        "{} ({side}), read on {on}: {} [{}]{}",
         rule.parameter,
         rule.rule.describe(),
-        rule.rule.kind()
+        rule.rule.kind(),
+        if rule.ignore_other_gates {
+            " - placed over other gates on its plot if need be"
+        } else {
+            ""
+        }
     )
 }
 

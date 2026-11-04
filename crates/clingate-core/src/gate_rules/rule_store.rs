@@ -285,6 +285,12 @@ pub struct GateRule {
     pub bound: Bound,
     pub measured_on: MeasuredOn,
     pub rule: Rule,
+    /// Place the gate wherever the rule puts it, over other gates on its
+    /// plot or not; otherwise it is kept clear of them (see
+    /// [`crate::gate_rules::clearance`]). Gates beside it still keep clear
+    /// of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_other_gates: bool,
 }
 
 impl GateRule {

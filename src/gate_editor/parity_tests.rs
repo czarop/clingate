@@ -428,6 +428,7 @@ fn a_rule_naming_a_marker_and_a_file_name_runs_the_same_in_the_app_and_the_tools
         store.insert(
             RuleTarget::named("Tmem"),
             GateRule {
+                ignore_other_gates: false,
                 parameter: "CD69".into(),
                 bound: Bound::Above,
                 measured_on: MeasuredOn::File("sample1_FMX.fcs".into()),
@@ -806,6 +807,7 @@ fn rules_that_stop_at_a_parent(gates: &clingate_core::gates::GateState) -> RuleS
         })
         .expect("a shaped gate with a shaped gate under it");
     let rule = |parameter: Arc<str>, measured_on| GateRule {
+        ignore_other_gates: false,
         parameter,
         bound: Bound::Above,
         measured_on,
@@ -2058,4 +2060,33 @@ fn a_gallery_plot_asked_for_another_population_draws_its_gates() {
 
     // Tmem and teff_naive, drawn under 1 on BUV805-A and BUV563-A.
     assert_eq!(drawn(&mut app), ["4ECA", "hu4H"]);
+}
+
+/// A rules file whose rule ignores other gates is read so by the Gate Rules
+/// tab, as by the tools.
+#[test]
+fn the_rules_tab_reads_a_rule_ignoring_other_gates_as_the_tools_do() {
+    use clingate_core::gate_rules::rule_store::RuleTarget;
+    let folder = two_samples_with_a_rule("rules-ignoring");
+    let file = clingate_core::workspace::rules_file(&folder);
+    let mut rules = RuleStore::load(&file).unwrap();
+    let target = RuleTarget::named("Tmem");
+    let mut rule = rules.get(&target).unwrap().clone();
+    rule.ignore_other_gates = true;
+    rules.insert(target.clone(), rule.clone());
+    rules.save(&file).unwrap();
+
+    let mut app = App::new();
+    app.open(&folder);
+
+    let read = app.with(|held| held.rules.peek().get(&target).cloned());
+    assert_eq!(read, Some(rule.clone()));
+    assert_eq!(
+        Session::open(&folder)
+            .unwrap()
+            .rules()
+            .unwrap()
+            .get(&target),
+        Some(&rule)
+    );
 }

@@ -61,6 +61,7 @@ fn node(state: &GateState, id: &str) -> NodeId {
 
 fn band(parameter: &str, low: f64) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: parameter.into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::Partner("FMX".into()),
@@ -70,6 +71,7 @@ fn band(parameter: &str, low: f64) -> GateRule {
 
 fn shape_of(gate: &str, parent: &str) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: "".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::Itself,
@@ -165,6 +167,7 @@ fn a_gate_read_under_the_old_parent_is_read_under_the_new_one_and_elsewhere_stay
     let mut rules = RuleStore::default();
     rules.insert(RuleTarget::under("X", "A"), shape_of("Z", "A"));
     let elsewhere = GateRule {
+        ignore_other_gates: false,
         parameter: "CD3".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::File("qc".into()),
@@ -205,6 +208,7 @@ fn the_gates_a_next_to_or_an_edge_rule_reads_are_read_under_the_new_parent() {
     use crate::gate_rules::rule::{EdgeFrom, NextToRule, Side};
     let state = tree_with_z_under_b_and_c();
     let next_to = |parent: &str| GateRule {
+        ignore_other_gates: false,
         parameter: "".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::Itself,
@@ -217,6 +221,7 @@ fn the_gates_a_next_to_or_an_edge_rule_reads_are_read_under_the_new_parent() {
         }),
     };
     let edge = |parent: &str| GateRule {
+        ignore_other_gates: false,
         parameter: "".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::Itself,
@@ -328,6 +333,7 @@ fn a_phenotype_rule_moves_no_one_parameter_but_its_pinned_edges_must_be_on_the_g
     use crate::gate_rules::rule::PhenotypeRule;
     let state = tree();
     let phenotype = |pinned: &[&str]| GateRule {
+        ignore_other_gates: false,
         parameter: "SSC-A".into(),
         bound: Bound::Above,
         measured_on: MeasuredOn::File("qc".into()),

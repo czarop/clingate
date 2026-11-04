@@ -277,6 +277,7 @@ pub fn profile(
             store.insert(
                 t.target.clone(),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: marker.as_str().into(),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,

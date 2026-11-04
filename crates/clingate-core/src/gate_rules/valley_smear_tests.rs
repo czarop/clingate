@@ -161,6 +161,7 @@ fn rules(reference: &str, either: ValleyOrSmearRule) -> RuleStore {
     store.insert(
         target(),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from(reference)),

@@ -176,6 +176,7 @@ pub fn two_samples_with_a_rule(name: &str) -> PathBuf {
     store.insert(
         RuleTarget::named("Tmem"),
         GateRule {
+            ignore_other_gates: false,
             // Tmem's first parameter in the gating fixture.
             parameter: "BUV805-A".into(),
             bound: Bound::Above,
@@ -255,6 +256,7 @@ pub fn two_samples_with_siblings(name: &str) -> PathBuf {
         store.insert(
             RuleTarget::under(gate, "1"),
             GateRule {
+                ignore_other_gates: false,
                 parameter: "BUV805-A".into(),
                 bound: Bound::Above,
                 measured_on: MeasuredOn::Itself,
