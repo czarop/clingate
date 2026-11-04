@@ -1884,3 +1884,53 @@ fn a_rule_ignoring_other_gates_is_written_and_listed_over_the_protocol() {
         "{file}"
     );
 }
+
+/// Claude is told to leave a rule keeping clear of other gates unless the
+/// gating guide draws it over one, and to ask where that cannot be told -
+/// in the instructions, in update_rule's schema and in the guide to choosing.
+#[test]
+fn claude_is_told_to_ignore_other_gates_only_where_the_guide_overlaps_them_and_to_ask_if_unclear() {
+    let mut server = Server::start();
+    let instructions = clingate_mcp::INSTRUCTIONS.replace('\n', " ");
+
+    let tools = server.request("tools/list", json!({}));
+    let choosing = server.call("rule_guide", json!({}));
+
+    assert!(instructions.contains("Leave it off."), "{instructions}");
+    assert!(
+        instructions.contains("draws the gate overlapping another gate on the same plot"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("cannot be told whether they overlap"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("ask the user before setting it"),
+        "{instructions}"
+    );
+    let update_rule = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "update_rule")
+        .unwrap();
+    let rule_field = update_rule["inputSchema"]["properties"]["rule"]["description"]
+        .as_str()
+        .unwrap()
+        .replace('\n', " ");
+    assert!(
+        rule_field.contains("only where the gating guide draws it overlapping another")
+            && rule_field.contains("ask the user when it is unclear"),
+        "{rule_field}"
+    );
+    let choosing = choosing["result"]["choosing"]
+        .as_str()
+        .unwrap()
+        .replace('\n', " ");
+    assert!(
+        choosing.contains("Does the guide draw this gate over another on its plot?")
+            && choosing.contains("ask before setting it"),
+        "{choosing}"
+    );
+}

@@ -11,7 +11,9 @@
   that would overlap. Ticked for a rule, its gate goes where the rule puts
   it, over other gates or not; gates beside it still keep clear of it. The
   rules list says which rules ignore other gates, and replays and copies to
-  siblings keep the setting.
+  siblings keep the setting. Claude leaves it off unless the gating guide
+  draws the gate overlapping another on its plot, and asks where the guide's
+  gates are close or touching and it cannot tell.
 
 - **A compensation and unmixing check** (Workspace tab, "Check compensation
   and unmixing"; `check_spillover` in the tools for Claude). Tells a

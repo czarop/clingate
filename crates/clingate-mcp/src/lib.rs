@@ -201,8 +201,13 @@ A run never places a gate over another gate on the same plot: a rule that \
 moves a line is held back until its gate touches the other, and anything else \
 that would overlap is left where it was - unless the rule sets \
 ignore_other_gates true, when its gate goes where the rule puts it, over \
-other gates or not (gates beside it still keep clear of it). Set it only when \
-the user wants the gate to overlap, or when a gate held back is the problem. \
+other gates or not (gates beside it still keep clear of it). Leave it off. \
+Set it only where the user's gating guide draws the gate overlapping another \
+gate on the same plot - one over, across or inside the other. Where the guide \
+shows gates on that plot close together or touching, so that it cannot be \
+told whether they overlap, or there is no guide for that plot, ask the user \
+before setting it. A gate a run held back against another is not a reason to \
+set it on your own: say which gate held it, and ask. \
 Ruled gates on one plot are placed in \
 the order their rules are listed. A run places gates down the tree: a gate under another gate a rule moves is \
 measured only after that gate is placed, whatever order the rules are listed \
@@ -665,7 +670,8 @@ pub struct UpdateRule {
     /// e.g. 'CD4+' or 'CD161+Va7.2+ / CD4+CD8-'.
     pub parent: Option<String>,
     /// The whole rule: {"parameter", "bound", "measured_on", "rule": {"kind", ...}}, and
-    /// "ignore_other_gates": true to place the gate over other gates on its plot, as in a
+    /// "ignore_other_gates": true to place the gate over other gates on its plot - only where
+    /// the gating guide draws it overlapping another; ask the user when it is unclear - as in a
     /// replay's rule_changes.
     pub rule: serde_json::Value,
 }

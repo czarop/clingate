@@ -62,9 +62,13 @@ pub const FEATURES: &[Feature] = &[
             "It should go where the rule puts it, over the other gate; a gate beside it with a \
              rule of its own should still keep clear of it.",
             "Untick it and run again: it is held back as before.",
+            "Ask Claude to write rules for a plot from your gating guide: it should leave the \
+             box off unless the guide draws the gates overlapping, and ask where they are drawn \
+             close together or touching.",
         ],
-        send_back: "Which gate, where it went with the box ticked and unticked, and whether the \
-                    gate beside it still kept clear.",
+        send_back: "Which gate, where it went with the box ticked and unticked, whether the gate \
+                    beside it still kept clear, and whether Claude set it or asked when it \
+                    should have.",
         check: None,
     },
     Feature {

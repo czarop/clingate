@@ -25,6 +25,12 @@ rule will read (the FMX, the QC, the sample itself), across the dataset:
 
 Then check the harder questions:
 
+- **Does the guide draw this gate over another on its plot?** A run keeps
+  every gate clear of the others on its plot. Leave `ignore_other_gates`
+  off unless the gating guide draws the gate overlapping another - one
+  over, across or inside the other. Where the guide's gates on that plot sit
+  close together or touch, so it cannot be told whether they overlap, or
+  there is no guide for that plot, ask before setting it.
 - **Does the negative change shape between samples?** Shifts in its median
   are fine for every rule. Changes in its width or skew are not: above the
   negative paces out in widths of the left side and assumes the right side
