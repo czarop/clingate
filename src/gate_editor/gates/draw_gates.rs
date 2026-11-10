@@ -6,7 +6,7 @@ use clingate_core::axis_store::AxisStoreStoreExt;
 use clingate_core::axis_store::PlotMapper;
 use clingate_core::gates::gate_label::{self, PlotAxes, VAlign};
 use clingate_core::gates::gate_store::{
-    GateOverrideResolver, GateStateStoreExt, GateSubStoreStoreExt,
+    GateOverrideResolver, GateStateStoreExt, GateSubStoreStoreExt, KeepApart,
 };
 use clingate_core::gates::{
     GateState,
@@ -17,6 +17,7 @@ use clingate_core::gates::{
     gate_traits::DrawableGate,
     gate_types::{Direction, GateRenderShape, GateStats, PrimaryGateType, ShapeType},
 };
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::{prelude::*, stores::SyncStore};
 use rustc_hash::FxHashMap;
 use std::ops::Deref;
@@ -146,11 +147,20 @@ pub fn GateLayer(
             at,
         })
     };
-    let apart_from = move || -> Vec<Arc<dyn DrawableGate>> {
-        if keep_apart.is_some_and(|keep| *keep.0.peek()) {
-            gates.peek().to_vec()
-        } else {
-            Vec::new()
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let apart_from = move || -> KeepApart {
+        if !keep_apart.is_some_and(|keep| *keep.0.peek()) {
+            return KeepApart::default();
+        }
+        KeepApart {
+            gates: gates.peek().iter().map(|gate| gate.get_id()).collect(),
+            samples: metadata_store
+                .metadata()
+                .peek()
+                .iter()
+                .map(|(file, groups)| (file.clone(), groups.clone()))
+                .collect(),
         }
     };
 

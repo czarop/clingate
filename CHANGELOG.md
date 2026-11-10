@@ -618,6 +618,13 @@
 
 ### Fixed
 
+- **Keep gates apart holds on every sample an edit reaches.** A gate with one
+  position for every sample, moved or edited on one sample, was kept clear
+  of the gates beside it only as that sample had them. Once a rules run had
+  placed those gates sample by sample, the edit could put the gate over them
+  on the other samples. It is now kept clear of them on each sample its
+  position reaches.
+
 - **The gallery shows the gates chosen, as they are now.** Each plot on the
   Gallery tab, and on the Review tab's tiles, worked out its gates from the
   population, axes and size it was first shown with. Choosing another gate

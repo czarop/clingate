@@ -470,7 +470,7 @@ pub fn MainWindow() -> Element {
                         NewGateButtons { callback: move |gate_type| current_gate_type.set(gate_type) }
                         label {
                             class: "keep-apart",
-                            title: "Moving or editing a gate stops where it meets another gate on its plot. Drawing is not stopped.",
+                            title: "Moving or editing a gate stops where it meets another gate on its plot - on every sample the change reaches, where a rule has placed the other gate differently on each. Drawing is not stopped.",
                             input {
                                 r#type: "checkbox",
                                 checked: keep_gates_apart(),

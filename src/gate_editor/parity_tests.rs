@@ -30,6 +30,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use clingate_core::axis_store::Param;
+use clingate_core::gates::gate_store::KeepApart;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::run::run_rules;
 use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
@@ -1209,12 +1210,13 @@ fn a_drag_with_gates_kept_apart_stops_at_the_gate_beside() {
             let resolver = gates
                 .peek()
                 .get_current_sample(Arc::from("no-such-file"), &Default::default());
-            let apart_from: Vec<_> = if keep_apart {
-                [&moving, &beside]
-                    .map(|id| resolver.resolve_drawable(id).unwrap())
-                    .to_vec()
+            let apart_from = if keep_apart {
+                KeepApart {
+                    gates: vec![moving.clone(), beside.clone()],
+                    samples: Vec::new(),
+                }
             } else {
-                Vec::new()
+                KeepApart::default()
             };
             let drag = GateDragData::new(moving.clone(), (50.0, 50.0), (200.0, 50.0));
             gates.move_gate(drag, &resolver, &apart_from).unwrap();
@@ -1335,7 +1337,7 @@ fn from_the_menu(
             held.gates,
             held.edits,
             &resolver,
-            &[],
+            &KeepApart::default(),
             ("FSC-A", "SSC-A"),
             &menu,
             action,
@@ -1520,7 +1522,7 @@ fn an_imported_rectangle_made_a_polygon_is_saved_as_one() {
             held.gates,
             held.edits,
             &resolver,
-            &[],
+            &KeepApart::default(),
             ("Alexa Fluor 700-A", "BUV737-A"),
             &menu,
             ShapeAction::ConvertToPolygon,
@@ -1593,6 +1595,12 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
     let steps = app.standing().undo_steps;
 
     let refused = app.with(|held| {
+        let mut gates = held.gates;
+        gates.write().place_gate(
+            &[Arc::from("n")],
+            &in_the_notch,
+            &clingate_core::gates::gate_store::GateSource::Global,
+        );
         let resolver = held
             .gates
             .peek()
@@ -1607,7 +1615,10 @@ fn a_point_deleted_into_a_gate_kept_apart_is_refused() {
             held.gates,
             held.edits,
             &resolver,
-            &[in_the_notch],
+            &KeepApart {
+                gates: vec![Arc::from("n")],
+                samples: Vec::new(),
+            },
             ("FSC-A", "SSC-A"),
             &menu,
             ShapeAction::DeletePoint,
@@ -1976,7 +1987,7 @@ fn the_gallery_draws_a_rectangle_made_a_polygon_and_moved_as_the_editor_does() {
             held.gates,
             held.edits,
             &resolver,
-            &[],
+            &KeepApart::default(),
             ("FSC-A", "SSC-A"),
             &ShapeMenu {
                 gate_id: gate.clone(),
@@ -1995,7 +2006,7 @@ fn the_gallery_draws_a_rectangle_made_a_polygon_and_moved_as_the_editor_does() {
             .move_gate(
                 GateDragData::new(gate.clone(), (0.0, 0.0), (50_000.0, 20_000.0)),
                 &resolver,
-                &[],
+                &KeepApart::default(),
             )
             .unwrap()
     });
@@ -2089,4 +2100,74 @@ fn the_rules_tab_reads_a_rule_ignoring_other_gates_as_the_tools_do() {
             .get(&target),
         Some(&rule)
     );
+}
+
+
+/// After a run places Tmem sample by sample, teff_naive - one position for
+/// every sample - dragged into Tmem on sample1 with gates kept apart is kept
+/// clear of Tmem as each sample has it, not only as sample1 has it.
+#[test]
+fn a_gate_kept_apart_after_a_run_is_clear_on_every_sample_its_position_reaches() {
+    use clingate_core::gates::gate_contact::{outline, overlaps};
+    use clingate_core::gates::gate_drag::GateDragData;
+    use clingate_core::gates::gate_store::GateStateImplExt;
+    let (tmem, teff_naive): (Arc<str>, Arc<str>) = (Arc::from("4ECA"), Arc::from("hu4H"));
+    let (x, y) = ("BUV805-A", "BUV563-A");
+    let folder = two_samples_with_a_rule("keep-apart-after-a-run");
+    let mut app = App::new();
+    app.open(&folder);
+    app.run_rules();
+
+    let on_each_sample = app.with(|held| {
+        let groups = |sample: &str| {
+            held.metadata
+                .metadata()
+                .peek()
+                .get(sample)
+                .cloned()
+                .unwrap()
+        };
+        let resolver = |sample: &str| {
+            held.gates
+                .peek()
+                .get_current_sample(Arc::from(sample), &groups(sample))
+        };
+        let shown = resolver("sample1");
+        assert_ne!(
+            shown.gate_origins.get(&tmem),
+            resolver("sample2").gate_origins.get(&tmem),
+            "the run placed Tmem sample by sample"
+        );
+        let keep_apart = KeepApart {
+            gates: vec![tmem.clone(), teff_naive.clone()],
+            samples: held
+                .metadata
+                .metadata()
+                .peek()
+                .iter()
+                .map(|(file, groups)| (file.clone(), groups.clone()))
+                .collect(),
+        };
+        let corner = |gate: &Arc<str>| {
+            let points = outline(&shown.resolve_drawable(gate).unwrap(), gate, x, y).unwrap();
+            (points[0].0 as f32, points[0].1 as f32)
+        };
+        let mut gates = held.gates;
+        gates
+            .move_gate(
+                GateDragData::new(teff_naive.clone(), corner(&teff_naive), corner(&tmem)),
+                &shown,
+                &keep_apart,
+            )
+            .unwrap();
+        ["sample1", "sample2"].map(|sample| {
+            let now = resolver(sample);
+            let shape = |gate: &Arc<str>| {
+                outline(&now.resolve_drawable(gate).unwrap(), gate, x, y).unwrap()
+            };
+            (sample, overlaps(&shape(&tmem), &shape(&teff_naive)))
+        })
+    });
+
+    assert_eq!(on_each_sample, [("sample1", false), ("sample2", false)]);
 }

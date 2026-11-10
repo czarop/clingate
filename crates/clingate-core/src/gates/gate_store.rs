@@ -1693,19 +1693,20 @@ impl GateState {
     }
 
     /// `reshape`, an edit of the gate `gate_id`'s outline, made to the
-    /// position `resolver` shows, as a drag is, kept apart from
-    /// `apart_from` - refused when that leaves it where it was. See
+    /// position `resolver` shows, as a drag is, kept apart as `apart` says -
+    /// refused when that leaves it where it was. See
     /// [`crate::gates::gate_shape_edit`].
     pub fn reshape_gate(
         &mut self,
         gate_id: &GateId,
         resolver: &GateOverrideResolver,
-        apart_from: &[Arc<dyn DrawableGate>],
+        apart: &KeepApart,
         reshape: impl FnOnce(&Arc<dyn DrawableGate>) -> anyhow::Result<Arc<dyn DrawableGate>>,
     ) -> anyhow::Result<()> {
         let current = resolver.resolve_drawable(gate_id)?;
         let reshaped = reshape(&current)?;
-        let (ids, gate, origin) = edit_to_write(gate_id, &current, reshaped, resolver, apart_from)?;
+        let (ids, gate, origin) =
+            edit_to_write(self, gate_id, &current, reshaped, resolver, apart)?;
         if Arc::ptr_eq(&gate, &current) {
             return Err(anyhow!("it would overlap another gate on its plot"));
         }
@@ -2490,19 +2491,67 @@ impl GateState {
 /// shows it, kept apart from `apart_from`: the ids to write it under, the
 /// gate, and the tier it was resolved from.
 fn edit_to_write(
+    state: &GateState,
     gate_id: &GateId,
     current: &Arc<dyn DrawableGate>,
     edited: Arc<dyn DrawableGate>,
     resolver: &GateOverrideResolver,
-    apart_from: &[Arc<dyn DrawableGate>],
+    apart: &KeepApart,
 ) -> anyhow::Result<(Vec<GateId>, Arc<dyn DrawableGate>, GateSource)> {
-    let gate = crate::gate_rules::clearance::kept_apart(current, &edited, gate_id, apart_from);
     let origin = resolver
         .gate_origins
         .get(gate_id)
         .ok_or_else(|| anyhow!("error finding gate source for {}", gate_id))?
         .clone();
+    let neighbours = apart.neighbours(state, gate_id, &origin, resolver);
+    let gate = crate::gate_rules::clearance::kept_apart(current, &edited, gate_id, &neighbours);
     Ok((GateSubStore::ids_for(&gate, gate_id), gate, origin))
+}
+
+/// What an edit in the editor is kept clear of: the other gates on its
+/// plot, and every sample, so that an edit reaching several samples - a gate
+/// with one position for all of them, beside gates a rule placed sample by
+/// sample - is kept clear of them as each of those samples has them. Empty
+/// keeps nothing apart.
+#[derive(Clone, Debug, Default)]
+pub struct KeepApart {
+    pub gates: Vec<GateId>,
+    pub samples: Vec<(FileId, FxHashMap<MetaDataParameter, GroupId>)>,
+}
+
+impl KeepApart {
+    /// The other gates as every sample an edit of `gate_id`'s position from
+    /// `origin` lands on has them, `shown` - the sample on screen - first;
+    /// each distinct position once.
+    fn neighbours(
+        &self,
+        state: &GateState,
+        gate_id: &GateId,
+        origin: &GateSource,
+        shown: &GateOverrideResolver,
+    ) -> Vec<Arc<dyn DrawableGate>> {
+        let mut found: Vec<Arc<dyn DrawableGate>> = Vec::new();
+        let mut add = |resolver: &GateOverrideResolver| {
+            for id in self.gates.iter().filter(|id| *id != gate_id) {
+                if let Ok(gate) = resolver.resolve_drawable(id)
+                    && !found.iter().any(|held| Arc::ptr_eq(held, &gate))
+                {
+                    found.push(gate);
+                }
+            }
+        };
+        if self.gates.is_empty() {
+            return found;
+        }
+        add(shown);
+        for (file, groups) in &self.samples {
+            let resolver = state.get_current_sample(file.clone(), groups);
+            if resolver.gate_origins.get(gate_id) == Some(origin) {
+                add(&resolver);
+            }
+        }
+        found
+    }
 }
 
 #[store(pub name = GateStateImplExt)]
@@ -2635,7 +2684,7 @@ impl<Lens> Store<GateState, Lens> {
         new_point: (f32, f32),
         plot_map: &PlotMapper,
         resolver: &GateOverrideResolver,
-        apart_from: &[Arc<dyn DrawableGate>],
+        apart: &KeepApart,
     ) -> anyhow::Result<()> {
         let current = resolver.resolve_drawable(&gate_id)?;
         let point_idx = drag.point_index();
@@ -2644,11 +2693,12 @@ impl<Lens> Store<GateState, Lens> {
         }
         let new_gate = current.replace_point(new_point, point_idx, drag.anchor(), plot_map)?;
         let (ids, gate, origin) = edit_to_write(
+            &self.peek(),
             &gate_id,
             &current,
             Arc::from(new_gate),
             resolver,
-            apart_from,
+            apart,
         )?;
         self.gate_store().with_mut(|state| {
             state.insert_for_source(&ids, &gate, &origin);
@@ -2675,17 +2725,18 @@ impl<Lens> Store<GateState, Lens> {
         &mut self,
         gate_drag_data: GateDragData,
         resolver: &GateOverrideResolver,
-        apart_from: &[Arc<dyn DrawableGate>],
+        apart: &KeepApart,
     ) -> anyhow::Result<()> {
         let gate_id = gate_drag_data.gate_id();
         let current = resolver.resolve_drawable(&gate_id)?;
         if let Some(new_gate) = current.replace_points(gate_drag_data)? {
             let (ids, gate, origin) = edit_to_write(
+                &self.peek(),
                 &gate_id,
                 &current,
                 Arc::from(new_gate),
                 resolver,
-                apart_from,
+                apart,
             )?;
             self.gate_store().with_mut(|state| {
                 state.insert_for_source(&ids, &gate, &origin);
@@ -2699,16 +2750,17 @@ impl<Lens> Store<GateState, Lens> {
         gate_id: GateId,
         current_position: (f32, f32),
         resolver: &GateOverrideResolver,
-        apart_from: &[Arc<dyn DrawableGate>],
+        apart: &KeepApart,
     ) -> anyhow::Result<()> {
         let current = resolver.resolve_drawable(&gate_id)?;
         if let Some(new_gate) = current.rotate_gate(current_position)? {
             let (ids, gate, origin) = edit_to_write(
+                &self.peek(),
                 &gate_id,
                 &current,
                 Arc::from(new_gate),
                 resolver,
-                apart_from,
+                apart,
             )?;
             self.gate_store().with_mut(|state| {
                 state.insert_for_source(&ids, &gate, &origin);

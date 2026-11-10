@@ -114,7 +114,7 @@ pub fn FeaturesWindow() -> Element {
     });
     let mut checking = use_signal(|| false);
 
-    let mut keep = move || {
+    let keep = move || {
         if let Err(why) = run.keep(&feedback.peek()) {
             warn(&toasts, why);
         }
