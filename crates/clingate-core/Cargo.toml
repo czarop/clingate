@@ -8,8 +8,8 @@ description = "Everything clingate computes - FCS files, compensation, gates, ru
 # must never depend on the renderer, the webview or GTK: only the reactive
 # core, so the stores the app watches can be declared here.
 [dependencies]
-dioxus-stores = "0.7.10"
-dioxus-signals = "0.7.10"
+dioxus-stores = { version = "=0.8.0-alpha.3"}
+dioxus-signals = { version = "=0.8.0-alpha.3"}
 thiserror = "2.0.12"
 anyhow = "1"
 # Diagnostics. Never printed to stdout: a tool server speaks its protocol
