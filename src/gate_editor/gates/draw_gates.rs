@@ -19,6 +19,7 @@ use clingate_core::gates::{
 };
 use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
 use dioxus::{prelude::*, stores::SyncStore};
+use dioxus_html::input_data::MouseButton;
 use rustc_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -57,7 +58,7 @@ pub struct KeepGatesApart(pub Signal<bool>);
 
 /// The plot's size on screen, measured when a press starts, so a drag can
 /// turn window coordinates into the plot's own.
-type ClientRect = dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>;
+type ClientRect = dioxus_html::geometry::PixelsRect;
 
 /// A label being dragged: whose, where the press started (window
 /// coordinates), and where the label's point was then (plot pixels) - the
@@ -276,7 +277,7 @@ pub fn GateLayer(
     let mut last_processed_pos = use_signal(|| (0.0f64, 0.0f64));
     let mut last_update = use_signal(std::time::Instant::now);
     let mut cached_rect: Signal<
-        Option<dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>>,
+        Option<ClientRect>,
     > = use_signal(|| None);
 
     let mut svg_data: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
@@ -615,7 +616,7 @@ pub fn GateLayer(
                     evt.stop_propagation();
 
                     match evt.trigger_button() {
-                        Some(dioxus_elements::input_data::MouseButton::Primary) => {
+                        Some(MouseButton::Primary) => {
                             shape_menu.set(None);
                             let div_data = svg_data.read().clone();
                             spawn(async move {
@@ -660,7 +661,7 @@ pub fn GateLayer(
                                 }
                             }
                         }
-                        Some(dioxus_elements::input_data::MouseButton::Secondary) => {
+                        Some(MouseButton::Secondary) => {
                             let local = evt.data.coordinates().element();
                             let opened = draft_gate.peek().is_none()
                                 .then(|| menu_at(&gates.peek(), (local.x as f32, local.y as f32)))
@@ -905,7 +906,7 @@ fn RenderLabel(
                 let (Some(id), Some(mut control)) = (pressed.clone(), control) else {
                     return;
                 };
-                if evt.trigger_button() != Some(dioxus_elements::input_data::MouseButton::Primary) {
+                if evt.trigger_button() != Some(MouseButton::Primary) {
                     return;
                 }
                 // Handled here, not by the plot: the plot would read the press
@@ -1053,7 +1054,7 @@ fn RenderShape(
                                     | ShapeType::CompositePoint(index, ..)
                                     | ShapeType::UndraggablePoint(index) => {
                                         match evt.trigger_button() {
-                                            Some(dioxus_elements::input_data::MouseButton::Primary) => {
+                                            Some(MouseButton::Primary) => {
                                                 let local_coords = &evt.data.coordinates().element();
                                                 let px = local_coords.x as f32;
                                                 let py = local_coords.y as f32;

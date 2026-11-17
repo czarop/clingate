@@ -311,12 +311,12 @@ fn GroupPanel(
                         onmounted: focus,
                         oninput: move |e| renaming.set(Some(e.value())),
                         onkeydown: move |e| {
-                            if e.key() == Key::Enter {
+                            if e.key() == Key::Named(NamedKey::Enter) {
                                 if let Some(name) = renaming.peek().clone() {
                                     on_action.call(CompensationAction::Rename(id, name));
                                 }
                                 renaming.set(None);
-                            } else if e.key() == Key::Escape {
+                            } else if e.key() == Key::Named(NamedKey::Escape) {
                                 renaming.set(None);
                             }
                         },
