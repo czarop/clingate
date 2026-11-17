@@ -8,7 +8,7 @@
 
 use clingate_core::file_load::FcsFiles;
 use clingate_core::gate_rules::rule_store::RuleStore;
-use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataImplExt, MetaDataStore};
 use dioxus::prelude::*;
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ pub fn PairingColumns() -> Element {
         use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
     let mut rules = use_context::<Signal<RuleStore>>();
 
-    let columns = use_memo(move || metadata_columns(&metadata_store.metadata().read()));
+    let columns = use_memo(move || metadata_columns(&metadata_store.rows()));
 
     let filehandler = use_context::<Signal<Option<FcsFiles>>>();
 
@@ -69,10 +69,8 @@ pub fn PairingColumns() -> Element {
         let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
             return (0, 0);
         };
-        let ids = metadata_store.file_name_to_gating_id();
-        let ids = ids.read();
-        let lens = metadata_store.metadata();
-        let metadata = lens.read();
+        let ids = metadata_store.gating_ids();
+        let metadata = metadata_store.rows();
 
         let matched = files
             .iter()
@@ -100,10 +98,8 @@ pub fn PairingColumns() -> Element {
         let Some(files) = filehandler.read().as_ref().map(|f| f.file_list().to_vec()) else {
             return (Vec::<(Arc<str>, usize)>::new(), 0usize);
         };
-        let ids = metadata_store.file_name_to_gating_id();
-        let ids = ids.read();
-        let lens = metadata_store.metadata();
-        let metadata = lens.read();
+        let ids = metadata_store.gating_ids();
+        let metadata = metadata_store.rows();
 
         let mut counts: Vec<(Arc<str>, usize)> = Vec::new();
         let mut untyped = 0usize;

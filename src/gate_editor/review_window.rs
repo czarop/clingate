@@ -21,12 +21,12 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::file_load::FcsFiles;
 use clingate_core::gate_rules::autogate::describe;
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::{GateId, NodeId};
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 use clingate_core::review::RunRecord;
 use clingate_core::review::assess::{Unplaced, assess};
 use clingate_core::review::board::{Board, Entry, LooksRight, Pile, board};
@@ -96,8 +96,7 @@ pub fn use_board(tab: Tab) -> (Memo<Option<Arc<Board>>>, Memo<Option<Arc<HeldRun
     let sorted = use_memo(move || {
         let held = held.read().clone()?;
         let state = gates.read();
-        let files = metadata.metadata();
-        let files = files.read();
+        let files = metadata.rows();
         let assessment = assess(&held.0.run, Some((&state, &files)));
         Some(Arc::new(board(
             &held.0.run,
@@ -503,12 +502,7 @@ fn ReviewTile(
     let toasts = use_toast();
 
     let drawn = {
-        let params: Vec<Param> = axis_store
-            .sorted_settings()
-            .read()
-            .iter()
-            .cloned()
-            .collect();
+        let params: Vec<Param> = axis_store.params().into_iter().collect();
         where_drawn(
             &gates.read(),
             &params,

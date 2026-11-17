@@ -31,7 +31,7 @@ fn tmem(name: &str) -> (Session, GateId, NodeId, NodeId) {
 }
 
 fn params(session: &Session) -> Vec<Param> {
-    session.axes().sorted_settings.iter().cloned().collect()
+    session.axes().sorted_params().cloned().collect()
 }
 
 fn name_of(state: &GateState, node: &NodeId) -> String {

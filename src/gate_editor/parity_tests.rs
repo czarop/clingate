@@ -33,7 +33,7 @@ use clingate_core::axis_store::Param;
 use clingate_core::gates::gate_store::KeepApart;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gate_rules::run::run_rules;
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 use clingate_core::session::Session;
 use clingate_core::test_workspace::two_samples_with_a_rule;
 use clingate_core::workspace::{RECOVERY_GATING, SAVED_GATING, SAVED_SCALING};
@@ -241,9 +241,9 @@ impl App {
         self.dom.in_scope(ScopeId::APP, || {
             clingate_core::omiq::serialise::to_omiq_document(
                 &held.gates.peek(),
-                &held.metadata.metadata().peek(),
+                &held.metadata.peek_rows(),
                 &Default::default(),
-                &held.axes.peek().settings,
+                held.axes.peek().settings(),
             )
             .unwrap()
         })
@@ -289,7 +289,7 @@ fn working(session: &Session) -> serde_json::Value {
         session.gates(),
         session.metadata().metadata(),
         &Default::default(),
-        &session.axes().settings,
+        session.axes().settings(),
     )
     .unwrap()
 }
@@ -528,7 +528,7 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
             .unwrap()
             .unwrap();
         let state = h.gates.peek();
-        let files = h.metadata.metadata().peek().clone();
+        let files = h.metadata.peek_rows();
         clingate_core::review::assess::assess(&run, Some((&state, &files)))
     });
     assert_eq!(from_tools.gates, from_app.gates);
@@ -536,7 +536,7 @@ fn a_rules_run_undo_redo_export_and_save_come_out_the_same() {
     // assess_run.
     let board = app.with(|h| {
         let state = h.gates.peek();
-        let files = h.metadata.metadata().peek().clone();
+        let files = h.metadata.peek_rows();
         clingate_core::review::board::board_in(&ours, &state, &files)
             .unwrap()
             .unwrap()
@@ -728,13 +728,7 @@ fn a_report_and_a_review_come_out_the_same() {
             })
             .map(|(n, _)| n.clone())
             .expect("Tmem is in the tree");
-        let sample = h
-            .metadata
-            .file_name_to_gating_id()
-            .peek()
-            .get("sample1_FMX.fcs")
-            .cloned()
-            .unwrap();
+        let sample = h.metadata.peek_gating_id_of("sample1_FMX.fcs").unwrap();
         h.rules_run
             .report_job(clingate_core::review::ReportRequest {
                 node,
@@ -831,10 +825,10 @@ fn rules_that_stop_at_a_parent(gates: &clingate_core::gates::GateState) -> RuleS
 
 #[test]
 fn a_paused_run_holds_each_gate_on_its_sample_and_the_editor_opens_on_it() {
-    use clingate_core::axis_store::{AxisStoreStoreExt, Param};
+    use clingate_core::axis_store::{AxisStoreImplExt, Param};
     use clingate_core::gate_rules::run::run_rules_pausing;
     use clingate_core::gates::gate_store::GateSource;
-    use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+    use clingate_core::omiq::metadata::MetaDataImplExt;
 
     let folder = two_samples_with_a_rule("paused-run-app");
     let mut app = App::new();
@@ -856,9 +850,9 @@ fn a_paused_run_holds_each_gate_on_its_sample_and_the_editor_opens_on_it() {
 
     app.with(|held| {
         let gates = held.gates.peek();
-        let metadata = held.metadata.metadata().peek().clone();
-        let params: Vec<Param> = held.axes.sorted_settings().peek().iter().cloned().collect();
-        let names = held.metadata.file_name_to_gating_id().peek().clone();
+        let metadata = held.metadata.peek_rows();
+        let params: Vec<Param> = held.axes.peek_params().into_iter().collect();
+        let names = held.metadata.peek_gating_ids();
         let files: Vec<Arc<str>> = names.keys().cloned().collect();
         let mut specimens = Vec::new();
         for need in &needs {
@@ -1106,7 +1100,7 @@ fn a_run_going_on_from_a_pause_is_told_to_continue_not_to_run_again() {
 #[test]
 fn a_change_of_mode_from_the_menu_is_one_step_that_undo_takes_back() {
     use clingate_core::gates::gate_positions::{self, Mode};
-    use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+    use clingate_core::omiq::metadata::MetaDataImplExt;
     let mut app = App::new();
     app.open(&two_samples_with_a_rule("position-menu-step"));
     let (gate_id, file, files) = app.with(|held| {
@@ -1119,7 +1113,7 @@ fn a_change_of_mode_from_the_menu_is_one_step_that_undo_takes_back() {
                 Some(id.clone())
             })
             .expect("a gate with a shape");
-        let files = held.metadata.metadata().peek().clone();
+        let files = held.metadata.peek_rows();
         let file = files.keys().min().unwrap().clone();
         (gate_id, file, files)
     });
@@ -1951,13 +1945,7 @@ fn the_gallery_draws_a_rectangle_made_a_polygon_and_moved_as_the_editor_does() {
     app.open(&folder);
     let editor_shows = |app: &mut App| {
         app.with(|held| {
-            let groups = held
-                .metadata
-                .metadata()
-                .peek()
-                .get("sample1")
-                .cloned()
-                .unwrap();
+            let groups = held.metadata.peek_row("sample1").unwrap();
             held.gates
                 .peek()
                 .get_current_sample(Arc::from("sample1"), &groups)
@@ -2119,14 +2107,7 @@ fn a_gate_kept_apart_after_a_run_is_clear_on_every_sample_its_position_reaches()
     app.run_rules();
 
     let on_each_sample = app.with(|held| {
-        let groups = |sample: &str| {
-            held.metadata
-                .metadata()
-                .peek()
-                .get(sample)
-                .cloned()
-                .unwrap()
-        };
+        let groups = |sample: &str| held.metadata.peek_row(sample).unwrap();
         let resolver = |sample: &str| {
             held.gates
                 .peek()
@@ -2140,13 +2121,7 @@ fn a_gate_kept_apart_after_a_run_is_clear_on_every_sample_its_position_reaches()
         );
         let keep_apart = KeepApart {
             gates: vec![tmem.clone(), teff_naive.clone()],
-            samples: held
-                .metadata
-                .metadata()
-                .peek()
-                .iter()
-                .map(|(file, groups)| (file.clone(), groups.clone()))
-                .collect(),
+            samples: held.metadata.peek_rows().into_iter().collect(),
         };
         let corner = |gate: &Arc<str>| {
             let points = outline(&shown.resolve_drawable(gate).unwrap(), gate, x, y).unwrap();

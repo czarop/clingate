@@ -8,7 +8,7 @@ use std::sync::Arc;
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
 
-use clingate_core::axis_store::{AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStoreImplExt, Param};
 use clingate_core::gate_rules::autogate::describe;
 use clingate_core::gate_rules::autogate::rule_levels;
 use clingate_core::gate_rules::rule_store::RuleStore;
@@ -17,7 +17,7 @@ use clingate_core::gate_rules::run::{
 };
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::NodeId;
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 
 use crate::components::toast::{note, use_toast, warn};
 use crate::gate_editor::gate_rules_window::RulesRun;
@@ -214,12 +214,12 @@ pub(crate) fn show_need(at: usize) {
     let Some(need) = want else {
         return;
     };
-    let params: Vec<Param> = axes.sorted_settings().peek().iter().cloned().collect();
+    let params: Vec<Param> = axes.peek_params().into_iter().collect();
     focus.set(focus_for(
         &need,
         &gates.peek(),
         &params,
-        &metadata.file_name_to_gating_id().peek(),
+        &metadata.peek_gating_ids(),
     ));
 }
 

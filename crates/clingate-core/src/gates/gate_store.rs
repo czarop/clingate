@@ -2560,13 +2560,86 @@ impl<Lens> Store<GateState, Lens> {
     /// every tier, and the tree - and to nothing else. Selecting a gate writes
     /// the store as well, and a caller asking whether the gating changed should
     /// not wake for that.
-    fn subscribe_to_gating(&self) {
+    pub fn subscribe_to_gating(&self) {
         let _ = self.gate_store().read();
         let _ = self.hierarchy().read();
         let _ = self.placements().read();
     }
 
-    fn get_current_sample(
+    /// Subscribe the caller to the gate tree alone.
+    pub fn subscribe_to_tree(&self) {
+        let _ = self.hierarchy().read();
+    }
+
+    /// The selected gate, subscribing the caller to the selection.
+    pub fn selection(&self) -> Option<GateId> {
+        self.selected_gate().read().clone()
+    }
+
+    /// The selected gate, without subscribing.
+    pub fn peek_selection(&self) -> Option<GateId> {
+        self.selected_gate().peek().clone()
+    }
+
+    /// Select `gate`, or nothing.
+    pub fn select(&mut self, gate: Option<GateId>) {
+        self.selected_gate().set(gate);
+    }
+
+    /// The gate `gate_id` as drawn, subscribing the caller to the drawn gates.
+    pub fn drawn_gate(&self, gate_id: &str) -> Option<Arc<dyn DrawableGate>> {
+        self.gate_store()
+            .primary_and_subgate_registry()
+            .read()
+            .get(gate_id)
+            .cloned()
+    }
+
+    /// The gate `gate_id` as drawn, without subscribing.
+    pub fn peek_drawn_gate(&self, gate_id: &str) -> Option<Arc<dyn DrawableGate>> {
+        self.gate_store()
+            .primary_and_subgate_registry()
+            .peek()
+            .get(gate_id)
+            .cloned()
+    }
+
+    /// The nodes at the top of the gate tree, subscribing the caller to the tree.
+    pub fn roots(&self) -> Vec<NodeId> {
+        self.hierarchy()
+            .read()
+            .get_roots()
+            .into_iter()
+            .map(NodeId::from)
+            .collect()
+    }
+
+    /// The nodes directly under `node`, subscribing the caller to the tree.
+    pub fn children_of(&self, node: &NodeId) -> Vec<NodeId> {
+        self.hierarchy()
+            .read()
+            .get_children(node.as_str())
+            .into_iter()
+            .cloned()
+            .map(NodeId::from)
+            .collect()
+    }
+
+    /// The node `node` is directly under, subscribing the caller to the tree.
+    pub fn parent_of(&self, node: &NodeId) -> Option<NodeId> {
+        self.hierarchy()
+            .read()
+            .get_parent(node.as_str())
+            .cloned()
+            .map(NodeId::from)
+    }
+
+    /// Whether `node` is at the top of the tree, subscribing the caller to it.
+    pub fn is_root(&self, node: &NodeId) -> bool {
+        self.hierarchy().read().is_root(node.as_str())
+    }
+
+    pub fn get_current_sample(
         &mut self,
         file_id: FileId,
         group_ids: &FxHashMap<MetaDataParameter, GroupId>,
@@ -2600,7 +2673,7 @@ impl<Lens> Store<GateState, Lens> {
         resolver.resolve_drawable(&id).ok()
     }
 
-    fn add_gate(
+    pub fn add_gate(
         &mut self,
         mapper: &PlotMapper,
         click_x: f32,
@@ -2626,7 +2699,7 @@ impl<Lens> Store<GateState, Lens> {
         Ok(())
     }
 
-    fn add_boolean_gate(
+    pub fn add_boolean_gate(
         &mut self,
         name: Option<String>,
         operation: BooleanOperation,
@@ -2666,7 +2739,7 @@ impl<Lens> Store<GateState, Lens> {
         Ok(())
     }
 
-    fn remove_gate(&mut self, gate_id: GateId) -> anyhow::Result<()> {
+    pub fn remove_gate(&mut self, gate_id: GateId) -> anyhow::Result<()> {
         self.write().remove_gate(gate_id)
     }
 
@@ -2677,7 +2750,7 @@ impl<Lens> Store<GateState, Lens> {
     /// been written. Every later move of the same drag reuses it, which is what
     /// keeps the gate pinned once the pointer crosses it - see
     /// [`PointDragData::anchor`].
-    fn move_gate_point(
+    pub fn move_gate_point(
         &mut self,
         gate_id: GateId,
         drag: &mut PointDragData,
@@ -2708,7 +2781,7 @@ impl<Lens> Store<GateState, Lens> {
 
     /// Move a gate's label, for a drag in progress - see
     /// [`GateSubStore::move_label`].
-    fn move_label(
+    pub fn move_label(
         &mut self,
         gate_id: GateId,
         at: (f32, f32),
@@ -2721,7 +2794,7 @@ impl<Lens> Store<GateState, Lens> {
         moved
     }
 
-    fn move_gate(
+    pub fn move_gate(
         &mut self,
         gate_drag_data: GateDragData,
         resolver: &GateOverrideResolver,
@@ -2745,7 +2818,7 @@ impl<Lens> Store<GateState, Lens> {
         Ok(())
     }
 
-    fn rotate_gate(
+    pub fn rotate_gate(
         &mut self,
         gate_id: GateId,
         current_position: (f32, f32),
@@ -2769,7 +2842,7 @@ impl<Lens> Store<GateState, Lens> {
         Ok(())
     }
 
-    fn get_gates_for_plot<T>(
+    pub fn get_gates_for_plot<T>(
         &mut self,
         x_axis_title: T,
         y_axis_title: T,
@@ -2803,7 +2876,7 @@ impl<Lens> Store<GateState, Lens> {
         Ok(gate_list)
     }
 
-    fn match_gates_to_plot<T>(
+    pub fn match_gates_to_plot<T>(
         &mut self,
         x_axis_title: T,
         y_axis_title: T,
@@ -2841,7 +2914,7 @@ impl<Lens> Store<GateState, Lens> {
     }
 
     /// See [`GateSubStore::rescale_channel`].
-    fn rescale_gates(
+    pub fn rescale_gates(
         &mut self,
         marker: &Arc<str>,
         old_axis_options: &AxisInfo,
@@ -2855,7 +2928,7 @@ impl<Lens> Store<GateState, Lens> {
     }
 
     /// See [`GateSubStore::relimit_channel`].
-    fn set_current_axis_limits(
+    pub fn set_current_axis_limits(
         &mut self,
         axis_name: Arc<str>,
         lower: f32,

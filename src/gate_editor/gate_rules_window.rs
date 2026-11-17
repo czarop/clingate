@@ -7,7 +7,7 @@
 use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt};
 use clingate_core::gate_rules::autogate::{PhenotypeRead, Report, describe};
 use clingate_core::gate_rules::choices::{
     EdgeForm, GateChoices, beside, carry_over, choices, describe_phenotype, every_target,
@@ -24,7 +24,7 @@ use clingate_core::gate_rules::rule_store::{
 use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules_pausing};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::GateStateImplExt;
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
@@ -221,9 +221,9 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
     use_effect(move || {
         gates.subscribe_to_gating();
         let _ = compensation.read();
-        let _ = metadata.metadata().read();
-        let _ = metadata.file_name_to_gating_id().read();
-        let _ = axes.settings().read();
+        let _ = metadata.rows();
+        let _ = metadata.gating_ids();
+        let _ = axes.axes();
         let _ = rules.read();
         let _ = files.read();
         if let Some(flag) = cancel.peek().as_ref() {
@@ -264,7 +264,7 @@ impl RulesRun {
     /// for Claude assemble it - and the axis settings, compared whole: any
     /// new scaling is a new workspace as far as the answers are concerned.
     pub(crate) fn inputs_now(&self) -> (RunInputs, clingate_core::omiq::serialise::AxisSettings) {
-        let axes = self.axes.settings().read().clone();
+        let axes = self.axes.axes();
         let inputs = RunInputs::assemble(
             self.files.read().as_ref(),
             &self.compensation.read(),
@@ -386,11 +386,11 @@ pub fn GateRulesWindow() -> Element {
             .as_ref()
             .map(|files| files.file_list().iter().map(|stub| stub.name.clone()).collect())
             .unwrap_or_default();
-        loaded_files(&metadata_store.file_name_to_gating_id().read(), &loaded)
+        loaded_files(&metadata_store.gating_ids(), &loaded)
     });
     // Every file the metadata names, for naming files a rule or a report
     // already holds - they need not be loaded now.
-    let named_files = use_memo(move || every_named_file(&metadata_store.file_name_to_gating_id().read()));
+    let named_files = use_memo(move || every_named_file(&metadata_store.gating_ids()));
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -658,14 +658,7 @@ pub fn GateRulesWindow() -> Element {
     // The gate's own two parameters are not enough: a population is identified
     // by markers the plot it is drawn on says nothing about, which is the
     // entire reason that rule exists.
-    let panel = use_memo(move || {
-        axis_store
-            .sorted_settings()
-            .read()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-    });
+    let panel = use_memo(move || axis_store.params().into_iter().collect::<Vec<_>>());
     // The gate's own axes, as the panel names its channels: the markers a
     // phenotype rule can pin.
     let gate_markers = use_memo(move || {
@@ -2392,7 +2385,7 @@ mod tests {
         use super::*;
         use crate::gate_editor::workspace_window::{AxesStore, GateStore, MetadataStore};
         use clingate_core::axis_store::PlotMapper;
-        use clingate_core::gates::gate_store::{GateSource, GateStateStoreExt};
+        use clingate_core::gates::gate_store::{GateSource, GateStateImplExt};
         use clingate_core::gates::gate_types::PrimaryGateType;
         use dioxus::stores::use_store_sync;
         use dioxus_core::{NoOpMutations, generation};
@@ -2551,11 +2544,8 @@ mod tests {
         #[test]
         fn new_metadata_stops_it() {
             assert!(stops_for(|held| {
-                let metadata = held.metadata;
-                metadata
-                    .metadata()
-                    .write()
-                    .insert(Arc::from("f1"), Default::default());
+                let mut metadata = held.metadata;
+                *metadata.write() = clingate_core::omiq::metadata::MetaDataStore::default();
             }));
         }
 
@@ -2586,9 +2576,9 @@ mod tests {
         #[test]
         fn selecting_a_gate_does_not_stop_it() {
             assert!(!stops_for(|held| {
-                let gates = held.gates;
+                let mut gates = held.gates;
                 let id = gates.peek().registered_ids()[0].clone();
-                *gates.selected_gate().write() = Some(id);
+                gates.select(Some(id));
             }));
         }
 

@@ -6,7 +6,6 @@ use crate::gate_editor::plots::plot_window::{PLOT_SIZE, PlotWindow};
 use crate::gate_editor::workspace_window::Generation;
 use clingate_core::axis_store::AxisStore;
 use clingate_core::axis_store::AxisStoreImplExt;
-use clingate_core::axis_store::AxisStoreStoreExt;
 use clingate_core::axis_store::{index_of_fluoro, resolve_axes};
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::omiq::metadata::MetaDataStore;
@@ -14,7 +13,6 @@ use clingate_core::sample_pairs::{Pair, SecondChoice, landing, pair_files, pair_
 
 use crate::searchable_select::SearchableSelectSet;
 use crate::{gate_editor::gate_sidebar::GateSidebar, searchable_select::SearchableSelectList};
-use clingate_core::AxisInfo;
 use clingate_core::axis_info::AxisEdit;
 use clingate_core::axis_store::Param;
 use clingate_core::file_load::FcsFiles;
@@ -23,7 +21,7 @@ use clingate_core::gates::{
     gate_store::{GateStateImplExt, ROOTGATE},
     gate_types::PrimaryGateType,
 };
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 use dioxus::prelude::*;
 
 use std::sync::Arc;
@@ -114,8 +112,8 @@ pub fn MainWindow() -> Element {
         let keys: Vec<Arc<str>> = files.iter().map(|f| f.name.clone()).collect();
         pair_files(
             &keys,
-            &metadata_store.file_name_to_gating_id().read(),
-            &metadata_store.metadata().read(),
+            &metadata_store.gating_ids(),
+            &metadata_store.rows(),
             &rules.read().pairing,
         )
     });
@@ -166,18 +164,12 @@ pub fn MainWindow() -> Element {
     // fetch the axis limits from the settings dict when axis changed
     let x_axis_limits = use_memo(move || {
         let param = x_axis_marker.read();
-        match axis_store.settings().read().get(&param.fluoro) {
-            Some(d) => d.clone(),
-            None => AxisInfo::default(),
-        }
+        axis_store.axis(&param.fluoro).unwrap_or_default()
     });
 
     let y_axis_limits = use_memo(move || {
         let param = y_axis_marker.read();
-        match axis_store.settings().read().get(&param.fluoro) {
-            Some(d) => d.clone(),
-            None => AxisInfo::default(),
-        }
+        axis_store.axis(&param.fluoro).unwrap_or_default()
     });
 
     // One of an axis's boxes was committed: check the number, apply it, and
@@ -190,7 +182,7 @@ pub fn MainWindow() -> Element {
     // range the wrong way round, so the app went down (B-AX-1).
     let mut edit_axis = move |marker: Signal<Param>, edit: AxisEdit, value: f64| -> bool {
         let channel = marker.peek().fluoro.clone();
-        let Some(current) = axis_store.settings().peek().get(&channel).cloned() else {
+        let Some(current) = axis_store.peek_axis(&channel) else {
             warn(&toasts, format!("{channel} has no scaling loaded"));
             return false;
         };
@@ -257,11 +249,11 @@ pub fn MainWindow() -> Element {
     // key built from the channel alone can never match by equality.
     let x_axis_selected_index = use_memo(move || {
         let curr = x_axis_marker.read().fluoro.clone();
-        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
+        index_of_fluoro(&axis_store.params(), &curr).unwrap_or(0)
     });
     let y_axis_selected_index = use_memo(move || {
         let curr = y_axis_marker.read().fluoro.clone();
-        index_of_fluoro(&axis_store.sorted_settings().read(), &curr).unwrap_or(0)
+        index_of_fluoro(&axis_store.params(), &curr).unwrap_or(0)
     });
 
     // Pick the opening axes once, when the scaling export lands. Only while the
@@ -278,7 +270,7 @@ pub fn MainWindow() -> Element {
     // does not re-run on its own writes, or when a person picks an axis.
     use_effect(move || {
         let Some((x, y)) = resolve_axes(
-            &axis_store.sorted_settings().read(),
+            &axis_store.params(),
             &x_axis_marker.peek(),
             &y_axis_marker.peek(),
         ) else {
@@ -321,12 +313,7 @@ pub fn MainWindow() -> Element {
         let Some(want) = focus.read().clone() else {
             return;
         };
-        let params: Vec<Param> = axis_store
-            .sorted_settings()
-            .peek()
-            .iter()
-            .cloned()
-            .collect();
+        let params: Vec<Param> = axis_store.peek_params().into_iter().collect();
         let files: Vec<Arc<str>> = filehandler
             .peek()
             .as_ref()
@@ -361,7 +348,7 @@ pub fn MainWindow() -> Element {
             }
         };
     }
-    if metadata_store.metadata().read().is_empty() {
+    if metadata_store.rows().is_empty() {
         return rsx! {
             document::Stylesheet { href: CSS_STYLE }
             div { class: "spinner-container",
@@ -398,7 +385,7 @@ pub fn MainWindow() -> Element {
                     div { class: "axis-controls-grid", style: "width: 600px;",
                         div { class: "grid-label", "X-Axis" }
                         SearchableSelectSet {
-                            items: axis_store.sorted_settings()(),
+                            items: axis_store.params(),
                             on_select: move |(_, k): (_, Param)| {
                                 x_axis_marker.set(k.clone());
                             },
@@ -432,7 +419,7 @@ pub fn MainWindow() -> Element {
 
                         div { class: "grid-label", "Y-Axis" }
                         SearchableSelectSet {
-                            items: axis_store.sorted_settings()(),
+                            items: axis_store.params(),
                             on_select: move |(_, k): (_, Param)| {
                                 // if let Some(axis) = axis_store.settings().peek().get(&k.clone()) {
                                 y_axis_marker.set(k.clone());

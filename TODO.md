@@ -16,7 +16,9 @@ that makes the code usable as tools. Decided:
 - The core keeps `derive(Store)` and its store methods, so the app keeps its
   fine-grained reactivity, and depends on `dioxus-stores` only - the reactive
   core, no renderer, webview or GTK. Nothing in the core may use components,
-  `rsx!`, `use_context` or other UI.
+  `rsx!`, `use_context` or other UI. The app reaches a store through its
+  public store methods (`selection`, `axis`, `gating_id_of`, ...), never its
+  fields, which stay private to the core.
 
 Each stage leaves behaviour unchanged and is checked with the full suite and in
 the running app.

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_positions::{self, Mode};
-use clingate_core::gates::gate_store::{GateStateStoreExt, NodeId};
-use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataStoreStoreExt};
+use clingate_core::gates::gate_store::{GateStateImplExt, NodeId};
+use clingate_core::omiq::metadata::{MetaDataFileMap, MetaDataImplExt};
 use dioxus::prelude::*;
 
 use crate::components::toast::{Toasts, note, use_toast, warn};
@@ -79,12 +79,8 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
     let mut search = use_signal(String::new);
     let mut chosen = use_signal(Vec::<Arc<str>>::new);
 
-    let selected = gates.selected_gate().read().clone();
-    let file = metadata
-        .file_name_to_gating_id()
-        .read()
-        .get(&sample_name)
-        .cloned();
+    let selected = gates.selection();
+    let file = metadata.gating_id_of(&sample_name);
     let parent = parental_gate().map(NodeId::from);
     let target = selected_target(
         &gates.read(),
@@ -104,7 +100,7 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
         };
     };
     let file = target.sample.clone();
-    let files: MetaDataFileMap = metadata.metadata().read().clone();
+    let files: MetaDataFileMap = metadata.rows();
     let mode = gate_positions::mode(&gates.read(), &gate_id);
     let mut columns: Vec<(Arc<str>, Arc<str>)> = files
         .get(&file)
@@ -133,12 +129,7 @@ pub fn PositionMenu(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
                 .unwrap_or_default(),
         ),
         _ => {
-            let mut names: Vec<(Arc<str>, Arc<str>)> = metadata
-                .file_name_to_gating_id()
-                .read()
-                .iter()
-                .map(|(name, id)| (name.clone(), id.clone()))
-                .collect();
+            let mut names: Vec<(Arc<str>, Arc<str>)> = metadata.gating_ids().into_iter().collect();
             names.sort();
             (names, file.clone())
         }

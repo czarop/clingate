@@ -49,7 +49,7 @@ use crate::components::toast::{Toasts, note, say, use_toast, warn};
 use crate::gate_editor::compensation_panel::{CompensationAction, CompensationPanel, ExportFor};
 use crate::gate_editor::path_picker::{Chosen, Pick, UNAVAILABLE, choose};
 use clingate_core::axis_store::{
-    AxisStore, AxisStoreStoreExt, ScalingInfoSource, read_axis_configs,
+    AxisStore, AxisStoreImplExt, ScalingInfoSource, read_axis_configs,
 };
 use clingate_core::compensation::groups::{Compensation, GroupId, Source};
 use clingate_core::compensation::{Spillover, own_matrices};
@@ -57,8 +57,7 @@ use clingate_core::file_load::FcsFiles;
 use clingate_core::gate_rules::rule_store::{RuleStore, SamplePairing};
 use clingate_core::gates::GateState;
 use clingate_core::omiq::metadata::{
-    MetaDataImplExt, MetaDataOrigin, MetaDataStore, MetaDataStoreStoreExt, OMIQ_FILE_NAME_COLUMN,
-    OMIQ_ID_COLUMN,
+    MetaDataImplExt, MetaDataOrigin, MetaDataStore, OMIQ_FILE_NAME_COLUMN, OMIQ_ID_COLUMN,
 };
 use clingate_core::workspace::{
     Found, Remembered, RulesRead, ScalingCarried, WORKSPACE_FILE, carry_to_scaling, detect,
@@ -315,7 +314,7 @@ impl Handles {
         .await;
         match flatten(result) {
             Ok(warnings) => {
-                let rows = self.metadata.metadata().peek().len();
+                let rows = self.metadata.peek_rows().len();
                 say(&self.toasts, metadata_loaded(&path, rows));
                 self.set_part(Which::Metadata, Part::Loaded(path));
                 for warning in warnings {
@@ -401,8 +400,8 @@ impl Handles {
 
     /// Import a gating file, or wait for what it needs.
     async fn load_gating(self, path: PathBuf, why: GatingLoad) -> bool {
-        let metadata = self.metadata.metadata().peek().clone();
-        let axes = self.axes.settings().peek().clone();
+        let metadata = self.metadata.peek_rows();
+        let axes = self.axes.peek_axes();
         let needs = gating_needs(&metadata, &axes);
         if let Some(needs) = needs {
             if why == GatingLoad::Chosen {
@@ -1388,8 +1387,7 @@ fn FcsSection(
     // Only counted once some metadata has loaded: before that every file is
     // unmatched, and saying so would be noise.
     let unmatched: Vec<std::sync::Arc<str>> = {
-        let names = metadata.file_name_to_gating_id();
-        let known = names.read();
+        let known = metadata.gating_ids();
         if known.is_empty() {
             Vec::new()
         } else {

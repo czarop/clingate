@@ -1,8 +1,8 @@
 use crate::components::context_menu::*;
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_paths::{path_names, places_of};
-use clingate_core::gates::gate_store::{GateStateImplExt, GateStateStoreExt, NodeId, ROOTGATE};
+use clingate_core::gates::gate_store::{GateStateImplExt, NodeId, ROOTGATE};
 use dioxus::prelude::*;
 use dioxus::stores::SyncStore;
 use rustc_hash::FxHashSet;
@@ -104,8 +104,7 @@ pub fn GateSidebar(
     // let gate_store: Store<GateState> = use_context::<Store<GateState>>();
     let gate_store = use_context::<SyncStore<GateState>>();
     let edits = use_context::<crate::gate_editor::edits::Edits>();
-    let hierarchy = gate_store.hierarchy();
-    let roots = hierarchy.read().get_roots();
+    let roots = gate_store.roots();
     // Which gates carry a per-specimen or per-file position, worked out once
     // for the whole tree: the override maps hold an entry per specimen, so
     // asking per row would be a scan of thousands each time.
@@ -214,7 +213,7 @@ pub fn GateSidebar(
                 div { class: "sidebar-tree-inner",
 
                     for root_id in roots {
-                        for child_id in hierarchy.read().get_children(&root_id) {
+                        for child_id in gate_store.children_of(&root_id).into_iter().map(|child| child.as_arc().clone()) {
                             GateNode {
                                 key: "{child_id}",
                                 node_id: child_id.clone(),
@@ -287,15 +286,14 @@ fn GateNode(
     let is_linked = gate_store.read().is_linked(&gate_id);
 
     // Fetch children
-    let hierarchy = gate_store.hierarchy();
-    let children = hierarchy
-        .read()
-        .get_children(&node_id)
+    let node = NodeId::from(node_id.clone());
+    let children: Vec<Arc<str>> = gate_store
+        .children_of(&node)
         .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|child| child.as_arc().clone())
+        .collect();
     let has_children = !children.is_empty();
-    let is_root = hierarchy.read().is_root(&node_id);
+    let is_root = gate_store.is_root(&node);
 
     // The plot this node's children are drawn on is keyed by the parent node,
     // so a linked gate's two placements open two different plots.
@@ -303,17 +301,12 @@ fn GateNode(
         if is_root {
             node_id.clone()
         } else {
-            hierarchy.read().get_parent(&node_id).unwrap().clone()
+            gate_store.parent_of(&node).unwrap().as_arc().clone()
         }
     };
 
     let gate_name = {
-        if let Some(gate) = gate_store
-            .gate_store()
-            .peek()
-            .primary_and_subgate_registry
-            .get(&gate_id)
-        {
+        if let Some(gate) = gate_store.peek_drawn_gate(&gate_id) {
             if gate.is_composite() {
                 if let Some(subgate) = gate.get_gate_ref(Some(&gate_id)) {
                     subgate.name.clone()
@@ -381,18 +374,15 @@ fn GateNode(
                             }
 
                             let Some((x, y)) = gate_store
-                                .gate_store()
-                                .peek()
-                                .primary_and_subgate_registry
-                                .get(&gate_id_clone)
+                                .peek_drawn_gate(&gate_id_clone)
                                 .map(|g| g.get_params()) else { return };
                             let (new_x, new_y);
-                            if let Some(x_axis_settings) = axis_store.settings().peek().get(&x) {
+                            if let Some(x_axis_settings) = axis_store.peek_axis(&x) {
                                 new_x = Some(x_axis_settings.param.clone());
                             } else {
                                 new_x = None;
                             }
-                            if let Some(y_axis_settings) = axis_store.settings().peek().get(&y) {
+                            if let Some(y_axis_settings) = axis_store.peek_axis(&y) {
                                 new_y = Some(y_axis_settings.param.clone());
                             } else {
                                 new_y = None;
@@ -405,7 +395,7 @@ fn GateNode(
                                 // on it: whatever was selected on the plot
                                 // before is cleared, and nothing is selected
                                 // until a gate on the plot is clicked.
-                                *gate_store.selected_gate().write() = None;
+                                gate_store.select(None);
                             }
 
                         },
@@ -424,18 +414,15 @@ fn GateNode(
                                     // IMPORTANT: Stop the row's onclick from firing
                                     e.stop_propagation();
                                     let Some((x, y)) = gate_store
-                                        .gate_store()
-                                        .peek()
-                                        .primary_and_subgate_registry
-                                        .get(&gate_id)
+                                        .peek_drawn_gate(&gate_id)
                                         .map(|g| g.get_params()) else { return };
                                     let (new_x, new_y);
-                                    if let Some(x_axis_settings) = axis_store.settings().peek().get(&x) {
+                                    if let Some(x_axis_settings) = axis_store.peek_axis(&x) {
                                         new_x = Some(x_axis_settings.param.clone());
                                     } else {
                                         new_x = None;
                                     }
-                                    if let Some(y_axis_settings) = axis_store.settings().peek().get(&y) {
+                                    if let Some(y_axis_settings) = axis_store.peek_axis(&y) {
                                         new_y = Some(y_axis_settings.param.clone());
                                     } else {
                                         new_y = None;
@@ -447,7 +434,7 @@ fn GateNode(
                                         // below shows the population *this* node
                                         // sees.
                                         selected.set(Some(node_id.clone()));
-                                        *gate_store.selected_gate().write() = None;
+                                        gate_store.select(None);
                                     }
                                 },
                                 "🎯"

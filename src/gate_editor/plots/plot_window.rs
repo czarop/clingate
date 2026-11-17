@@ -4,15 +4,14 @@ use crate::gate_editor::plots::data_helpers::{
 use crate::gate_editor::plots::draw_plot::PseudoColourPlot;
 use clingate_core::file_load::FcsSampleStub;
 use clingate_core::gates::gate_store::{
-    ComparableGate, GateOverrideResolver, GateStateStoreExt, NodeId,
+    ComparableGate, GateOverrideResolver, GateStateImplExt, NodeId,
 };
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 
 use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
-use clingate_core::AxisInfo;
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::events::EventIndexMapped;
-use clingate_core::gates::{GateState, gate_store::GateStateImplExt};
+use clingate_core::gates::GateState;
 use clingate_core::omiq::metadata::MetaDataStore;
 use dioxus::{CapturedError, prelude::*};
 use polars::frame::DataFrame;
@@ -60,11 +59,7 @@ pub fn PlotWindow(
     // written without the folder in its name is exactly this.
     let unmatched = use_memo(move || {
         let name = sample_stub.read().name.clone();
-        (!metadata_store
-            .file_name_to_gating_id()
-            .read()
-            .contains_key(&name))
-        .then_some(name)
+        metadata_store.gating_id_of(&name).is_none().then_some(name)
     });
 
     // RESOURCE 1: Load FCS File
@@ -82,12 +77,7 @@ pub fn PlotWindow(
         let choice = compensation.read().matrix_for(&sample_path);
         // Looked up by the file's name in the program, not the name on disk -
         // for a file from a sub-folder the two differ.
-        let Some(id) = metadata_store
-            .file_name_to_gating_id()
-            .read()
-            .get(&file_name)
-            .cloned()
-        else {
+        let Some(id) = metadata_store.gating_id_of(&file_name) else {
             return;
         };
 
@@ -136,7 +126,7 @@ pub fn PlotWindow(
     // Only the cofactors decide how the file is scaled, so a change to an
     // axis's range or a gate leaves the scaled file as it is.
     let cofactors = use_memo(move || {
-        clingate_core::gate_rules::run::RunInputs::cofactors_of(&axis_store.settings().read())
+        clingate_core::gate_rules::run::RunInputs::cofactors_of(&axis_store.axes())
     });
 
     let scaled_data = use_resource(move || async move {
@@ -167,23 +157,17 @@ pub fn PlotWindow(
     // fetch the axis limits from the settings dict when axis changed
     let x_axis_limits = use_memo(move || {
         let param = x_axis_marker.read();
-        match axis_store.settings().read().get(&param.fluoro) {
-            Some(d) => d.clone(),
-            None => AxisInfo::default(),
-        }
+        axis_store.axis(&param.fluoro).unwrap_or_default()
     });
 
     let y_axis_limits = use_memo(move || {
         let param = y_axis_marker.read();
-        match axis_store.settings().read().get(&param.fluoro) {
-            Some(d) => d.clone(),
-            None => AxisInfo::default(),
-        }
+        axis_store.axis(&param.fluoro).unwrap_or_default()
     });
 
     let resolver = use_memo(move || {
         let id: Arc<str> = plot_store.current_file_id()();
-        let Some(groups) = metadata_store.metadata()().get(&id).cloned() else {
+        let Some(groups) = metadata_store.row(&id) else {
             return Err(CapturedError::from_display(format!(
                 "no metadata for file {}",
                 id
@@ -218,9 +202,7 @@ pub fn PlotWindow(
     // the chain is; the chain itself is then computed through `peek`, which
     // would otherwise widen the subscription back to every gate write.
     let chain_gates: Memo<Vec<ComparableGate>> = use_memo(move || {
-        // Registers the dependency and releases the guard; the value is not
-        // needed here, only the subscription.
-        drop(gate_store.hierarchy().read());
+        gate_store.subscribe_to_tree();
         let Some(parent) = parental_gate() else {
             return Vec::new();
         };

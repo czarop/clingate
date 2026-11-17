@@ -21,11 +21,11 @@ use dioxus::stores::SyncStore;
 use tokio::sync::Semaphore;
 
 use clingate_core::AxisInfo;
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, GateStateStoreExt};
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, GateStateImplExt};
 use clingate_core::gates::gate_traits::DrawableGate;
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 
 use super::cache::{Fingerprint, PlotCache, scaling_digest};
 use super::overlay::{Flat, StaticGates, flatten_gates};
@@ -103,12 +103,8 @@ pub(crate) fn use_plot_setup(
 
     use_memo(move || {
         let (file_name, path, node, x, y, size) = (name(), path(), node(), x(), y(), size());
-        let file_id = metadata_store
-            .file_name_to_gating_id()
-            .read()
-            .get(&file_name)
-            .cloned()?;
-        let groups = metadata_store.metadata().read().get(&file_id).cloned()?;
+        let file_id = metadata_store.gating_id_of(&file_name)?;
+        let groups = metadata_store.row(&file_id)?;
 
         // Tracked, so a gate moving anywhere re-runs this. The fingerprint
         // then decides whether it changed anything *here* - a memo only
@@ -126,8 +122,7 @@ pub(crate) fn use_plot_setup(
             &y.fluoro,
         );
 
-        let settings = axis_store.settings();
-        let settings = settings.read();
+        let settings = axis_store.axes();
         let x_axis = settings.get(&x.fluoro).cloned().unwrap_or_default();
         let y_axis = settings.get(&y.fluoro).cloned().unwrap_or_default();
         let cofactors: Vec<(Arc<str>, f32)> = settings
@@ -239,14 +234,11 @@ pub fn GalleryPlot(
         let Some(setup) = setup() else {
             return Vec::new();
         };
-        let selected = gate_store.selected_gate().read().clone();
+        let selected = gate_store.selection();
         // Read, so a label moved in the editor redraws the outline here. Only
         // the outline: the picture's fingerprint does not include labels.
-        use clingate_core::gates::gate_store::GateSubStoreStoreExt;
-        let registry = gate_store.gate_store().primary_and_subgate_registry();
-        let registry = registry.read();
         let labelled_from =
-            super::overlay::drawn_by_id(&setup.drawn, |id| registry.get(id).cloned());
+            super::overlay::drawn_by_id(&setup.drawn, |id| gate_store.drawn_gate(id));
         let mut shapes = flatten_gates(
             &setup.drawn,
             &picture.stats,
