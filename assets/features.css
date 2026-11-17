@@ -1,0 +1,13 @@
+.features { padding: 1rem 1.25rem 4rem; overflow-y: auto; height: 100%; font-size: 0.85rem; }
+.features h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+.features-hint { margin: 0 0 1rem; opacity: 0.75; }
+.features-bar { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }
+.features-card { border: 1px solid #3a3a3a; border-radius: 4px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.features-card h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.features-place { opacity: 0.7; margin: 0 0 0.5rem; }
+.features-card ol { margin: 0.25rem 0 0.5rem 1.25rem; padding: 0; }
+.features-tried { display: flex; gap: 0.75rem; margin: 0.5rem 0; }
+.features-note { width: 100%; min-height: 3rem; box-sizing: border-box; }
+.features-passed { color: hsl(130, 50%, 55%); }
+.features-failed { color: hsl(0, 70%, 62%); font-weight: 600; }
+.features-said { margin: 0.25rem 0 0 1rem; padding: 0; list-style: none; white-space: pre-wrap; }

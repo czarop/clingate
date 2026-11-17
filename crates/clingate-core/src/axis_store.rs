@@ -220,14 +220,14 @@ impl std::fmt::Display for Param {
 #[derive(Default, Clone, Store)]
 pub struct AxisStore {
     // all settings
-    pub settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
+    pub(crate) settings: im::HashMap<Arc<str>, AxisInfo, FxBuildHasher>,
     //current file's param names listed by file's internal order
-    pub sorted_settings: indexmap::IndexSet<Param, FxBuildHasher>,
+    pub(crate) sorted_settings: indexmap::IndexSet<Param, FxBuildHasher>,
 }
 
 #[store(pub name = AxisStoreImplExt)]
 impl<Lens> Store<AxisStore, Lens> {
-    fn add_new_default_axis_settings(&mut self, p: &Param, fcs_file: &flow_fcs::Fcs) {
+    pub fn add_new_default_axis_settings(&mut self, p: &Param, fcs_file: &flow_fcs::Fcs) {
         if self.settings().peek().contains_key(&p.fluoro) {
             return;
         }
@@ -259,7 +259,7 @@ impl<Lens> Store<AxisStore, Lens> {
             });
     }
 
-    fn update_cofactor(
+    pub fn update_cofactor(
         &mut self,
         id: &Arc<str>,
         cofactor: f32,
@@ -289,7 +289,7 @@ impl<Lens> Store<AxisStore, Lens> {
         Err(anyhow!("Could not find axis"))
     }
 
-    fn update_lower(
+    pub fn update_lower(
         &mut self,
         id: &GateId,
         lower: f32,
@@ -314,7 +314,7 @@ impl<Lens> Store<AxisStore, Lens> {
             Err(anyhow!("error modifying axis for {}", id.clone()))
         }
     }
-    fn update_upper(
+    pub fn update_upper(
         &mut self,
         id: &GateId,
         upper: f32,
@@ -354,6 +354,36 @@ impl<Lens> Store<AxisStore, Lens> {
         let configs = read_axis_configs(path, source)?;
         self.with_mut(|s| s.replace_axis_configs(configs));
         Ok(())
+    }
+    /// The axis of `channel`, subscribing the caller to every axis.
+    pub fn axis(&self, channel: &str) -> Option<AxisInfo> {
+        self.settings().read().get(channel).cloned()
+    }
+
+    /// The axis of `channel`, without subscribing.
+    pub fn peek_axis(&self, channel: &str) -> Option<AxisInfo> {
+        self.settings().peek().get(channel).cloned()
+    }
+
+    /// Every channel's axis, subscribing the caller to them.
+    pub fn axes(&self) -> crate::omiq::serialise::AxisSettings {
+        self.settings().read().clone()
+    }
+
+    /// Every channel's axis, without subscribing.
+    pub fn peek_axes(&self) -> crate::omiq::serialise::AxisSettings {
+        self.settings().peek().clone()
+    }
+
+    /// The current file's parameters in its own order, subscribing the
+    /// caller to them.
+    pub fn params(&self) -> indexmap::IndexSet<Param, FxBuildHasher> {
+        self.sorted_settings().read().clone()
+    }
+
+    /// The current file's parameters in its own order, without subscribing.
+    pub fn peek_params(&self) -> indexmap::IndexSet<Param, FxBuildHasher> {
+        self.sorted_settings().peek().clone()
     }
 }
 
@@ -432,6 +462,16 @@ pub fn scaling_diff(
 /// The plain-data half of the axis store, so the scaling import can be tested
 /// without a Dioxus runtime.
 impl AxisStore {
+    /// Every channel's axis.
+    pub fn settings(&self) -> &crate::omiq::serialise::AxisSettings {
+        &self.settings
+    }
+
+    /// The current file's parameters in its own order.
+    pub fn sorted_params(&self) -> impl Iterator<Item = &Param> {
+        self.sorted_settings.iter()
+    }
+
     /// Register a batch of axis settings, replacing any existing entry for the
     /// same channel and recording the display order.
     ///

@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use clingate_core::file_load::FcsFiles;
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_store::GateStateStoreExt;
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::gates::gate_store::GateStateImplExt;
+use clingate_core::omiq::metadata::MetaDataImplExt;
 use clingate_core::working_copy::{self, WorkingCopy};
 use dioxus::prelude::*;
 
@@ -70,7 +70,7 @@ impl Edits {
         self.files
             .peek()
             .as_ref()
-            .map(|files| files.gating_ids(&self.metadata.file_name_to_gating_id().peek()))
+            .map(|files| files.gating_ids(&self.metadata.peek_gating_ids()))
             .unwrap_or_default()
     }
 
@@ -157,12 +157,12 @@ impl Edits {
                 .collect()
         };
         let same_tree = nodes(&self.gates.peek()) == nodes(&state.gates);
-        let selected = self.gates.selected_gate().peek().clone();
+        let selected = self.gates.peek_selection();
         let keep = selected.filter(|id| state.gates.is_registered(id));
 
         self.axes.set(state.axes);
         self.gates.set(state.gates);
-        *self.gates.selected_gate().write() = keep;
+        self.gates.select(keep);
 
         let mut generation = self.generation.write();
         generation.restored += 1;
@@ -236,7 +236,7 @@ impl Edits {
             .folder()
             .ok_or("there is no workspace folder to save into")?;
         let state = self.snapshot();
-        let metadata = self.metadata.metadata().peek().clone();
+        let metadata = self.metadata.peek_rows();
         let held = self.held_files();
         let files = self
             .working
@@ -251,7 +251,7 @@ impl Edits {
     /// Write the saved copy - not the working copy - as an Omiq gating file.
     /// Says whether there were unsaved changes it left out.
     pub fn export(&self, target: &Path) -> Result<bool, String> {
-        let metadata = self.metadata.metadata().peek().clone();
+        let metadata = self.metadata.peek_rows();
         self.working
             .peek()
             .export(target, &metadata, &self.held_files())
@@ -268,7 +268,7 @@ impl Edits {
         let turn = RECOVERY_WRITE.fetch_add(1, Ordering::SeqCst) + 1;
         let wanted = self.working.peek().recovery_wanted();
         let state = self.snapshot();
-        let metadata = self.metadata.metadata().peek().clone();
+        let metadata = self.metadata.peek_rows();
         let held = self.held_files();
         spawn(async move {
             let written = tokio::task::spawn_blocking(move || {
@@ -310,7 +310,7 @@ impl Edits {
     /// working copy, unsaved; the saved copy stays as it is.
     pub fn restore_recovery(mut self) -> Result<(), String> {
         let folder = self.folder().ok_or("there is no workspace folder")?;
-        let metadata = self.metadata.metadata().peek().clone();
+        let metadata = self.metadata.peek_rows();
         let state = self.working.write().restore_recovery(&folder, &metadata)?;
         self.axes.set(state.axes);
         self.gates.set(state.gates);

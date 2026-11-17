@@ -21,11 +21,11 @@ use dioxus::stores::SyncStore;
 use tokio::sync::Semaphore;
 
 use clingate_core::AxisInfo;
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, GateStateStoreExt};
+use clingate_core::gates::gate_store::{GateId, GateOverrideResolver, GateStateImplExt};
 use clingate_core::gates::gate_traits::DrawableGate;
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 
 use super::cache::{Fingerprint, PlotCache, scaling_digest};
 use super::overlay::{Flat, StaticGates, flatten_gates};
@@ -84,93 +84,97 @@ impl PartialEq for Setup {
     }
 }
 
+/// What one plot shows - the file, its gates as this sample has them, the
+/// axes and the scaling - kept up to date with the stores and with what the
+/// plot is asked to show.
+pub(crate) fn use_plot_setup(
+    name: ReadSignal<Arc<str>>,
+    path: ReadSignal<PathBuf>,
+    node: ReadSignal<Arc<str>>,
+    x: ReadSignal<Param>,
+    y: ReadSignal<Param>,
+    size: ReadSignal<u32>,
+) -> Memo<Option<Setup>> {
+    let gate_store = use_context::<SyncStore<GateState>>();
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
+    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
+
+    use_memo(move || {
+        let (file_name, path, node, x, y, size) = (name(), path(), node(), x(), y(), size());
+        let file_id = metadata_store.gating_id_of(&file_name)?;
+        let groups = metadata_store.row(&file_id)?;
+
+        // Tracked, so a gate moving anywhere re-runs this. The fingerprint
+        // then decides whether it changed anything *here* - a memo only
+        // notifies when its value differs, and the value is compared by
+        // fingerprint, so a gate edited off this plot's chain stops at this
+        // line.
+        let state = gate_store.read();
+        let resolver = state.get_current_sample(file_id.clone(), &groups);
+
+        let gates = select::dependencies(&state, &node, &resolver);
+        let chain = select::chain_of(&state, &node);
+        let drawn = select::matched_to_axes(
+            &select::drawn_on(&state, &node, &resolver),
+            &x.fluoro,
+            &y.fluoro,
+        );
+
+        let settings = axis_store.axes();
+        let x_axis = settings.get(&x.fluoro).cloned().unwrap_or_default();
+        let y_axis = settings.get(&y.fluoro).cloned().unwrap_or_default();
+        let cofactors: Vec<(Arc<str>, f32)> = settings
+            .iter()
+            .filter_map(|(k, v)| v.get_cofactor().map(|c| (k.clone(), c)))
+            .collect();
+
+        let compensation = compensation.read();
+        Some(Setup {
+            compensation: compensation.matrix_for(&path),
+            fingerprint: Fingerprint {
+                compensation: compensation.digest(&path),
+                scaling: scaling_digest(&cofactors),
+                file: file_id,
+                x: x.fluoro.clone(),
+                y: y.fluoro.clone(),
+                x_axis: x_axis.clone(),
+                y_axis: y_axis.clone(),
+                size,
+                gates,
+            },
+            chain,
+            resolver,
+            cofactors,
+            drawn,
+            x_axis,
+            y_axis,
+            path,
+            size,
+        })
+    })
+}
+
 #[component]
 pub fn GalleryPlot(
     /// The file's name in the program, which is what the metadata is searched
     /// for. Passed rather than taken from `path`: for a file from a sub-folder
     /// the two differ.
-    name: Arc<str>,
-    path: PathBuf,
-    node: Arc<str>,
-    x: Param,
-    y: Param,
-    size: u32,
+    name: ReadSignal<Arc<str>>,
+    path: ReadSignal<PathBuf>,
+    node: ReadSignal<Arc<str>>,
+    x: ReadSignal<Param>,
+    y: ReadSignal<Param>,
+    size: ReadSignal<u32>,
     /// A search's candidate gate on this sample, drawn over the gates as
     /// drawn.
     candidate: ReadSignal<Option<PlacedGate>>,
 ) -> Element {
     let gate_store = use_context::<SyncStore<GateState>>();
-    let metadata_store =
-        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
-    let axis_store = use_context::<Store<AxisStore, CopyValue<AxisStore, SyncStorage>>>();
     let mut cache = use_context::<SyncSignal<PlotCache>>();
     let permits = use_context::<Permits>();
-    let compensation = use_context::<Signal<clingate_core::compensation::groups::Compensation>>();
-
-    let setup = use_memo({
-        let path = path.clone();
-        let file_name = name.clone();
-        let node = node.clone();
-        let x = x.clone();
-        let y = y.clone();
-        move || {
-            let file_id = metadata_store
-                .file_name_to_gating_id()
-                .read()
-                .get(&file_name)
-                .cloned()?;
-            let groups = metadata_store.metadata().read().get(&file_id).cloned()?;
-
-            // Tracked, so a gate moving anywhere re-runs this. The fingerprint
-            // then decides whether it changed anything *here* - a memo only
-            // notifies when its value differs, and the value is compared by
-            // fingerprint, so a gate edited off this plot's chain stops at this
-            // line.
-            let state = gate_store.read();
-            let resolver = state.get_current_sample(file_id.clone(), &groups);
-
-            let gates = select::dependencies(&state, &node, &resolver);
-            let chain = select::chain_of(&state, &node);
-            let drawn = select::matched_to_axes(
-                &select::drawn_on(&state, &node, &resolver),
-                &x.fluoro,
-                &y.fluoro,
-            );
-
-            let settings = axis_store.settings();
-            let settings = settings.read();
-            let x_axis = settings.get(&x.fluoro).cloned().unwrap_or_default();
-            let y_axis = settings.get(&y.fluoro).cloned().unwrap_or_default();
-            let cofactors: Vec<(Arc<str>, f32)> = settings
-                .iter()
-                .filter_map(|(k, v)| v.get_cofactor().map(|c| (k.clone(), c)))
-                .collect();
-
-            let compensation = compensation.read();
-            Some(Setup {
-                compensation: compensation.matrix_for(&path),
-                fingerprint: Fingerprint {
-                    compensation: compensation.digest(&path),
-                    scaling: scaling_digest(&cofactors),
-                    file: file_id,
-                    x: x.fluoro.clone(),
-                    y: y.fluoro.clone(),
-                    x_axis: x_axis.clone(),
-                    y_axis: y_axis.clone(),
-                    size,
-                    gates,
-                },
-                chain,
-                resolver,
-                cofactors,
-                drawn,
-                x_axis,
-                y_axis,
-                path: path.clone(),
-                size,
-            })
-        }
-    });
+    let setup = use_plot_setup(name, path, node, x, y, size);
 
     let image = use_resource(move || {
         let setup = setup();
@@ -230,14 +234,11 @@ pub fn GalleryPlot(
         let Some(setup) = setup() else {
             return Vec::new();
         };
-        let selected = gate_store.selected_gate().read().clone();
+        let selected = gate_store.selection();
         // Read, so a label moved in the editor redraws the outline here. Only
         // the outline: the picture's fingerprint does not include labels.
-        use clingate_core::gates::gate_store::GateSubStoreStoreExt;
-        let registry = gate_store.gate_store().primary_and_subgate_registry();
-        let registry = registry.read();
         let labelled_from =
-            super::overlay::drawn_by_id(&setup.drawn, |id| registry.get(id).cloned());
+            super::overlay::drawn_by_id(&setup.drawn, |id| gate_store.drawn_gate(id));
         let mut shapes = flatten_gates(
             &setup.drawn,
             &picture.stats,
@@ -257,7 +258,7 @@ pub fn GalleryPlot(
         shapes
     });
 
-    let side = size;
+    let side = size();
     match &*image.read() {
         Some(Ok(picture)) => {
             let src = picture.src.clone();

@@ -165,6 +165,7 @@ mod tests {
     fn candidate(upper: f64, among_best: bool, current: bool) -> Candidate {
         Candidate {
             rule: GateRule {
+                ignore_other_gates: false,
                 parameter: Arc::from("CD69"),
                 bound: Bound::Above,
                 measured_on: MeasuredOn::Itself,

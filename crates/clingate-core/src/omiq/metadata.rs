@@ -75,7 +75,7 @@ impl MetaDataStore {
 
 #[store(pub name = MetaDataImplExt)]
 impl<Lens> Store<MetaDataStore, Lens> {
-    fn set_metadata_from_file(
+    pub fn set_metadata_from_file(
         &mut self,
         path: PathBuf,
         file_id_column: &str,
@@ -84,6 +84,46 @@ impl<Lens> Store<MetaDataStore, Lens> {
     ) -> anyhow::Result<Vec<String>> {
         let parsed = parse_metadata_csv(path, file_id_column, file_name_column, metadata_origin)?;
         Ok(self.with_mut(|s| s.replace_with(parsed)))
+    }
+    /// The gating id of the file named `file_name`, subscribing the caller
+    /// to the names.
+    pub fn gating_id_of(&self, file_name: &str) -> Option<FileId> {
+        self.file_name_to_gating_id().read().get(file_name).cloned()
+    }
+
+    /// The gating id of the file named `file_name`, without subscribing.
+    pub fn peek_gating_id_of(&self, file_name: &str) -> Option<FileId> {
+        self.file_name_to_gating_id().peek().get(file_name).cloned()
+    }
+
+    /// Every file name with its gating id, subscribing the caller to them.
+    pub fn gating_ids(&self) -> HashMap<Arc<str>, FileId, FxBuildHasher> {
+        self.file_name_to_gating_id().read().clone()
+    }
+
+    /// Every file name with its gating id, without subscribing.
+    pub fn peek_gating_ids(&self) -> HashMap<Arc<str>, FileId, FxBuildHasher> {
+        self.file_name_to_gating_id().peek().clone()
+    }
+
+    /// The metadata row of `file_id`, subscribing the caller to the metadata.
+    pub fn row(&self, file_id: &str) -> Option<FxHashMap<MetaDataParameter, GroupId>> {
+        self.metadata().read().get(file_id).cloned()
+    }
+
+    /// The metadata row of `file_id`, without subscribing.
+    pub fn peek_row(&self, file_id: &str) -> Option<FxHashMap<MetaDataParameter, GroupId>> {
+        self.metadata().peek().get(file_id).cloned()
+    }
+
+    /// Every file's metadata row, subscribing the caller to them.
+    pub fn rows(&self) -> MetaDataFileMap {
+        self.metadata().read().clone()
+    }
+
+    /// Every file's metadata row, without subscribing.
+    pub fn peek_rows(&self) -> MetaDataFileMap {
+        self.metadata().peek().clone()
     }
 }
 

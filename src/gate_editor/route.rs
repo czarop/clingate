@@ -35,6 +35,7 @@ pub enum Tab {
     Rules,
     Gallery,
     Review,
+    Features,
 }
 
 impl Tab {
@@ -45,6 +46,7 @@ impl Tab {
             Tab::Rules => "📐",
             Tab::Gallery => "🖼",
             Tab::Review => "🔍",
+            Tab::Features => "🧪",
         }
     }
 
@@ -55,16 +57,18 @@ impl Tab {
             Tab::Rules => "Gate rules",
             Tab::Gallery => "Gate gallery",
             Tab::Review => "Review the rules run",
+            Tab::Features => "Test features",
         }
     }
 }
 
-const TABS: [Tab; 5] = [
+const TABS: [Tab; 6] = [
     Tab::Workspace,
     Tab::Editor,
     Tab::Rules,
     Tab::Gallery,
     Tab::Review,
+    Tab::Features,
 ];
 
 /// Every panel is mounted; only the one in front is displayed.
@@ -195,6 +199,9 @@ pub fn Shell() -> Element {
         div { class: panel_class(active(), Tab::Gallery), GalleryWindow {} }
         div { class: panel_class(active(), Tab::Review),
             crate::gate_editor::review_window::ReviewWindow {}
+        }
+        div { class: panel_class(active(), Tab::Features),
+            crate::gate_editor::features_window::FeaturesWindow {}
         }
 
         div { class: "route-nav_bar",

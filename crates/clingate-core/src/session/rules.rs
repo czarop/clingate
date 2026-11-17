@@ -56,6 +56,10 @@ pub struct RuleRow {
     /// Which sample the rule reads to decide where the line goes.
     pub measured_on: String,
     pub rule: String,
+    /// The gate goes where the rule puts it, over other gates on its plot or
+    /// not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignores_other_gates: bool,
     /// Why the rule cannot run as written, if it cannot: a name the run will
     /// not find, a gate that is not there. Rewrite it with update_rule.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -156,6 +160,7 @@ impl Session {
                         MeasuredOn::File(file) => format!("the file {}", self.sample_name(file)),
                     },
                     rule: entry.rule.rule.describe(),
+                    ignores_other_gates: entry.rule.ignore_other_gates,
                     problems: self.rule_problems(&entry.target, &entry.rule),
                 })
                 .collect(),

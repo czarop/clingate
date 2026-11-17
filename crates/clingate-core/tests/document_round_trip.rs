@@ -907,10 +907,10 @@ fn a_saved_working_copy_opens_again_as_it_was_saved() {
         read_axis_configs(files.scaling.clone(), ScalingInfoSource::Omiq).unwrap(),
     );
     let reopened =
-        GateState::from_gating_file(files.gating.clone(), &metadata, reread.settings.clone())
+        GateState::from_gating_file(files.gating.clone(), &metadata, reread.settings().clone())
             .unwrap();
     let after =
-        to_omiq_document(&reopened, &metadata, &Default::default(), &reread.settings).unwrap();
+        to_omiq_document(&reopened, &metadata, &Default::default(), reread.settings()).unwrap();
     assert_eq!(
         after["tree"]["filterContainers"], before["tree"]["filterContainers"],
         "the saved copy opened as something other than what was saved"

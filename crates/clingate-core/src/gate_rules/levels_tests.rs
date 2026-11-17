@@ -111,6 +111,7 @@ fn files(name: &str) -> Vec<(Arc<str>, PathBuf)> {
 /// Keep the top `band` of the parent on `parameter`, read on each sample.
 fn top(parameter: &str, band: (f64, f64)) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: Arc::from(parameter),
         bound: Bound::Above,
         measured_on: MeasuredOn::Itself,
@@ -686,6 +687,7 @@ fn boxed(id: &str, name: &str, x: (f32, f32), y: (f32, f32)) -> Arc<dyn Drawable
 
 fn follows(same_shape_as: Option<RuleTarget>, edges: Vec<EdgeFrom>) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         // Ignored for this rule; given anyway, as a hand-written file might.
         parameter: Arc::from("anything"),
         bound: Bound::Above,
@@ -1872,6 +1874,7 @@ fn valley_on_b(fallback: Option<RuleTarget>) -> (RuleTarget, GateRule) {
     (
         RuleTarget::under("IFNy+", "B"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("fs_a")),
@@ -2146,6 +2149,7 @@ fn next_to(
     (
         RuleTarget::under(gate, "Lymph"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(""),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -2519,4 +2523,58 @@ fn a_rule_that_takes_its_gate_over_the_one_it_follows_is_told_and_one_short_of_i
 fn a_gate_following_one_on_another_plot_is_not_told_it_lies_over_it() {
     let (state, rules) = b_beside_a(2.0, "other");
     assert!(edges_over_their_anchors(&state, &rules).is_empty());
+}
+
+fn ignoring_other_gates((target, rule): (RuleTarget, GateRule)) -> (RuleTarget, GateRule) {
+    (
+        target,
+        GateRule {
+            ignore_other_gates: true,
+            ..rule
+        },
+    )
+}
+
+#[test]
+fn a_rule_ignoring_other_gates_places_its_gate_over_them() {
+    use crate::gate_rules::confidence::HELD_BACK;
+    let files = files("clear-ignored");
+    let state = neg_and_pos();
+    let outcome = run(
+        &state,
+        &files,
+        store(&[ignoring_other_gates(pos_to_the_top_80())]),
+    );
+    let after = applied(&state, &outcome);
+    for file in ["fs_a", "fs_b"] {
+        let pos = edge(&after, "pos", X, file);
+        assert!((pos - 200.0).abs() < 15.0, "{file}: into Neg, to {pos}");
+    }
+    for placed in &outcome.report.positioned {
+        assert!(
+            placed.components.iter().all(|c| c.name != HELD_BACK),
+            "{:?}",
+            placed.components
+        );
+    }
+}
+
+#[test]
+fn a_gate_beside_one_ignoring_other_gates_is_still_kept_clear_of_it() {
+    let files = files("clear-ignored-beside");
+    let state = neg_and_pos();
+    let rules = store(&[
+        ignoring_other_gates(pos_to_the_top_80()),
+        neg_to_the_bottom_half(),
+    ]);
+    let after = applied(&state, &run(&state, &files, rules));
+    for file in ["fs_a", "fs_b"] {
+        let pos = edge(&after, "pos", X, file);
+        assert!((pos - 200.0).abs() < 15.0, "{file}: Pos to {pos}");
+        let neg = upper(&after, "neg", file);
+        assert!(
+            (neg - pos).abs() < 1e-2,
+            "{file}: Neg {neg} held at Pos {pos}"
+        );
+    }
 }

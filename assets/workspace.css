@@ -284,3 +284,10 @@
 .workspace-comp-pick thead th { position: sticky; top: 0; background: var(--primary-color, #fff); }
 .workspace-comp-pick td:first-child { width: 1%; }
 .workspace-comp-pick td:last-child { width: auto; white-space: nowrap; }
+
+.workspace-number { width: 5rem; padding: 0.2rem 0.35rem; }
+.workspace-progress { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0 0.2rem; }
+.workspace-bar { flex: 1; height: 6px; border-radius: 3px; background: #3a3a3a; overflow: hidden; }
+.workspace-bar_fill { height: 100%; border-radius: 3px; background: hsl(210, 80%, 55%); }
+.workspace-findings { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+.workspace-findings li { margin-bottom: 0.4rem; max-width: 90ch; }

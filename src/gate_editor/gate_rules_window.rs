@@ -7,7 +7,7 @@
 use crate::components::toast::{note, say, use_toast, warn};
 use crate::gate_editor::pairing_controls::PairingColumns;
 use crate::gate_editor::path_picker::{Pick, PickPath};
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt};
 use clingate_core::gate_rules::autogate::{PhenotypeRead, Report, describe};
 use clingate_core::gate_rules::choices::{
     EdgeForm, GateChoices, beside, carry_over, choices, describe_phenotype, every_target,
@@ -24,7 +24,7 @@ use clingate_core::gate_rules::rule_store::{
 use clingate_core::gate_rules::run::{Progress, RunInputs, run_rules_pausing};
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::GateStateImplExt;
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 use dioxus::prelude::*;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
@@ -221,9 +221,9 @@ pub(crate) fn use_stop_run_on_change(cancel: Signal<Option<Arc<std::sync::atomic
     use_effect(move || {
         gates.subscribe_to_gating();
         let _ = compensation.read();
-        let _ = metadata.metadata().read();
-        let _ = metadata.file_name_to_gating_id().read();
-        let _ = axes.settings().read();
+        let _ = metadata.rows();
+        let _ = metadata.gating_ids();
+        let _ = axes.axes();
         let _ = rules.read();
         let _ = files.read();
         if let Some(flag) = cancel.peek().as_ref() {
@@ -264,7 +264,7 @@ impl RulesRun {
     /// for Claude assemble it - and the axis settings, compared whole: any
     /// new scaling is a new workspace as far as the answers are concerned.
     pub(crate) fn inputs_now(&self) -> (RunInputs, clingate_core::omiq::serialise::AxisSettings) {
-        let axes = self.axes.settings().read().clone();
+        let axes = self.axes.axes();
         let inputs = RunInputs::assemble(
             self.files.read().as_ref(),
             &self.compensation.read(),
@@ -386,11 +386,11 @@ pub fn GateRulesWindow() -> Element {
             .as_ref()
             .map(|files| files.file_list().iter().map(|stub| stub.name.clone()).collect())
             .unwrap_or_default();
-        loaded_files(&metadata_store.file_name_to_gating_id().read(), &loaded)
+        loaded_files(&metadata_store.gating_ids(), &loaded)
     });
     // Every file the metadata names, for naming files a rule or a report
     // already holds - they need not be loaded now.
-    let named_files = use_memo(move || every_named_file(&metadata_store.file_name_to_gating_id().read()));
+    let named_files = use_memo(move || every_named_file(&metadata_store.gating_ids()));
 
     // The form.
     let mut gate = use_signal(String::new);
@@ -438,6 +438,7 @@ pub fn GateRulesWindow() -> Element {
     let mut follow_mode = use_signal(|| "shape".to_string());
     let mut follow_anchor = use_signal(String::new);
     let mut follow_edges = use_signal(Vec::<EdgeForm>::new);
+    let mut ignore_other_gates = use_signal(|| false);
     // A rule next to another gate: that gate, as `RuleTarget::describe`
     // writes it, which side of it, and how it is met.
     let mut next_anchor = use_signal(String::new);
@@ -657,14 +658,7 @@ pub fn GateRulesWindow() -> Element {
     // The gate's own two parameters are not enough: a population is identified
     // by markers the plot it is drawn on says nothing about, which is the
     // entire reason that rule exists.
-    let panel = use_memo(move || {
-        axis_store
-            .sorted_settings()
-            .read()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-    });
+    let panel = use_memo(move || axis_store.params().into_iter().collect::<Vec<_>>());
     // The gate's own axes, as the panel names its channels: the markers a
     // phenotype rule can pin.
     let gate_markers = use_memo(move || {
@@ -723,6 +717,7 @@ pub fn GateRulesWindow() -> Element {
         smear_example.set(String::new());
         lowest_before.set(false);
         smallest_dip.set(String::new());
+        ignore_other_gates.set(entry.rule.ignore_other_gates);
         match &entry.rule.rule {
             Rule::TailFraction(r) => {
                 kind.set("TailFraction".to_string());
@@ -962,6 +957,7 @@ pub fn GateRulesWindow() -> Element {
         let described = target.describe();
         let follows = matches!(kind().as_str(), "FromAnotherGate" | "NextToGate");
         let rule = GateRule {
+            ignore_other_gates: ignore_other_gates(),
             // A rule from another gate reads its own sample, and positions
             // along no parameter of its own.
             parameter: Arc::from(if follows { "" } else { param.as_str() }),
@@ -1062,13 +1058,14 @@ pub fn GateRulesWindow() -> Element {
                                 // panel is the only place the two are
                                 // connected, and it lives here rather than in
                                 // the rule.
-                                match &entry.rule.rule {
-                                    Rule::MatchThePhenotype(r) => rsx! {
-                                        td { "{describe_phenotype(r, &panel.read())}" }
-                                    },
-                                    other => rsx! {
-                                        td { "{other.describe()}" }
-                                    },
+                                td {
+                                    match &entry.rule.rule {
+                                        Rule::MatchThePhenotype(r) => describe_phenotype(r, &panel.read()),
+                                        other => other.describe(),
+                                    }
+                                    if entry.rule.ignore_other_gates {
+                                        div { class: "gate_rules-hint", "ignores other gates on the plot" }
+                                    }
                                 }
                                 td { class: "gate_rules-actions",
                                     button {
@@ -1665,6 +1662,19 @@ pub fn GateRulesWindow() -> Element {
                     }
                 }
 
+                label { "Other gates" }
+                label {
+                    input {
+                        r#type: "checkbox",
+                        checked: ignore_other_gates(),
+                        onchange: move |e: FormEvent| ignore_other_gates.set(e.checked()),
+                    }
+                    " ignore other gates on the plot"
+                }
+                p { class: "gate_rules-hint gate_rules-span",
+                    "Unticked, a run never puts this gate over another gate on its plot: a line is held back where the two meet, and any other move that would overlap is not made. Ticked, the gate goes where the rule puts it, over other gates or not. Gates beside it still keep clear of it."
+                }
+
                 button { class: "gate_rules-add", onclick: move |_| add(), "Add rule" }
             }
 
@@ -1821,6 +1831,8 @@ pub fn GateRulesWindow() -> Element {
             }
 
             crate::gate_editor::pick_panel::PickPanel {}
+
+            crate::gate_editor::copy_rules_panel::CopyRulesPanel {}
 
             // ── the sidecar ───────────────────────────────────────────────
             fieldset { class: "gate_rules-form",
@@ -2373,7 +2385,7 @@ mod tests {
         use super::*;
         use crate::gate_editor::workspace_window::{AxesStore, GateStore, MetadataStore};
         use clingate_core::axis_store::PlotMapper;
-        use clingate_core::gates::gate_store::{GateSource, GateStateStoreExt};
+        use clingate_core::gates::gate_store::{GateSource, GateStateImplExt};
         use clingate_core::gates::gate_types::PrimaryGateType;
         use dioxus::stores::use_store_sync;
         use dioxus_core::{NoOpMutations, generation};
@@ -2532,11 +2544,8 @@ mod tests {
         #[test]
         fn new_metadata_stops_it() {
             assert!(stops_for(|held| {
-                let metadata = held.metadata;
-                metadata
-                    .metadata()
-                    .write()
-                    .insert(Arc::from("f1"), Default::default());
+                let mut metadata = held.metadata;
+                *metadata.write() = clingate_core::omiq::metadata::MetaDataStore::default();
             }));
         }
 
@@ -2567,9 +2576,9 @@ mod tests {
         #[test]
         fn selecting_a_gate_does_not_stop_it() {
             assert!(!stops_for(|held| {
-                let gates = held.gates;
+                let mut gates = held.gates;
                 let id = gates.peek().registered_ids()[0].clone();
-                *gates.selected_gate().write() = Some(id);
+                gates.select(Some(id));
             }));
         }
 

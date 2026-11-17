@@ -9,6 +9,7 @@ A Rust workspace: the `clingate` app (Dioxus, `src/`), `crates/clingate-core` (e
 - No duplication: look for an existing helper before writing one. Build nothing before it is needed.
 - When a change alters behaviour, update every comment, doc (`docs/`, `CLAUDE.md`, `.claude/`), MCP instruction or tool description, and UI hint that describes the old behaviour.
 - A feature worth checking on the user's own data gets a section in the test report (`crates/clingate-core/src/test_report.rs`, see `docs/test-report.md`), raising `SUITE_VERSION`.
+- A feature for the user to try gets an entry in `crates/clingate-core/src/feature_checks.rs` (the Test features tab): where it is, the steps, what to send back, and a check where one can try it on the open workspace.
 
 ## Tests
 

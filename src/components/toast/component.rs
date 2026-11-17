@@ -27,7 +27,7 @@
 use dioxus::prelude::*;
 use dioxus_primitives::toast::{
     self, Toast, ToastCloseButtonProps, ToastContentProps, ToastDescriptionProps, ToastProps,
-    ToastPropsWithOwner, ToastTitleProps,
+    ToastTitleProps,
 };
 use std::time::Duration;
 
@@ -115,7 +115,7 @@ pub fn ToastProvider(
             class: "dx-toast-container",
             default_duration,
             max_toasts,
-            render_toast: Callback::new(|p: ToastPropsWithOwner| rsx! { StyledToast { ..p } }),
+            render_toast: Callback::new(|p: ToastProps| rsx! { StyledToast { ..p } }),
             attributes,
             {children}
         }

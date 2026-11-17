@@ -1,7 +1,8 @@
 //! A rule never places a gate over another gate on its plot: one no rule in
 //! the run moves, or one a rule has already placed. A rule that moves a line
 //! is held back until its gate just touches; anything else that would
-//! overlap is left where it was, and the run says why.
+//! overlap is left where it was, and the run says why. A rule that sets
+//! `ignore_other_gates` is not kept clear; gates beside it still are.
 
 use std::sync::Arc;
 

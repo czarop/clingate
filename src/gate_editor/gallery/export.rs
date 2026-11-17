@@ -19,11 +19,11 @@ use rayon::prelude::*;
 
 use crate::components::toast::{say, use_toast, warn};
 use crate::gate_editor::path_picker::{Pick, PickPath};
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::gates::GateState;
-use clingate_core::gates::gate_store::{GateStateStoreExt, ROOTGATE};
+use clingate_core::gates::gate_store::{GateStateImplExt, ROOTGATE};
 use clingate_core::gates::gate_traits::DrawableGate;
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 
 use super::overlay::flatten_gates;
 use super::pdf::{Cell, Drawn, Sheet, write_pdf};
@@ -193,19 +193,16 @@ pub fn ExportPdf(
         let mut titles: Vec<(String, usize)> = Vec::new();
         {
             let state = gate_store.read();
-            let settings = axis_store.settings();
-            let settings = settings.read();
+            let settings = axis_store.axes();
             let x_axis = settings.get(&x.fluoro).cloned().unwrap_or_default();
             let y_axis = settings.get(&y.fluoro).cloned().unwrap_or_default();
             let cofactors: Vec<(Arc<str>, f32)> = settings
                 .iter()
                 .filter_map(|(k, v)| v.get_cofactor().map(|c| (k.clone(), c)))
                 .collect();
-            let selected = gate_store.selected_gate().read().clone();
-            let names = metadata_store.file_name_to_gating_id();
-            let names = names.read();
-            let metadata = metadata_store.metadata();
-            let metadata = metadata.read();
+            let selected = gate_store.selection();
+            let names = metadata_store.gating_ids();
+            let metadata = metadata_store.rows();
 
             for (at, card) in cards.iter().enumerate() {
                 titles.push((card.title.clone(), card.slots.len()));

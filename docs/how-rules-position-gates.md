@@ -132,7 +132,10 @@ show, not raw channel values.
    off another gate*; any other placement that would overlap - a phenotype
    match, a copy of another gate, a run's pooled line - is left where it was
    and the run says why. Quadrants are not kept clear of: one covers its
-   whole plot. Touching is not overlapping.
+   whole plot. Touching is not overlapping. A rule that sets
+   `ignore_other_gates` ("ignore other gates on the plot" in the Gate Rules
+   tab) is not kept clear: its gate goes where the rule puts it. Gates beside
+   it are still kept clear of it.
 6. **Write back** (`apply_placements`). A gate has one mode of positioning
    for every sample (`gates::gate_positions`): as drawn, one position per
    value of a metadata column, or one per sample. A gate a run places is put

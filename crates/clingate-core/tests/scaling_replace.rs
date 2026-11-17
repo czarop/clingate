@@ -273,7 +273,7 @@ fn a_channel_the_new_file_drops_is_reported_and_its_gates_left_alone() {
     let dropped: Vec<&str> = carried.diff.dropped.iter().map(|c| &**c).collect();
     assert_eq!(dropped, vec![Y]);
     assert!(
-        axes.settings.get(Y).is_none(),
+        axes.settings().get(Y).is_none(),
         "the scaling is replaced, not merged"
     );
     assert_eq!(membership(&before, &t), membership(&after, &t));
@@ -345,7 +345,7 @@ fn an_unusable_scaling_is_refused_by_the_replace_and_changes_nothing() {
         assert!(error.contains(X), "names the channel: {error}");
         let mut kept = AxisStore::default();
         kept.apply_axis_configs(v1.clone());
-        assert_eq!(axes.settings, kept.settings, "the axes are unchanged");
+        assert_eq!(axes.settings(), kept.settings(), "the axes are unchanged");
         let t = transform_of(&v1, X);
         assert_eq!(
             membership(&after, &t),

@@ -153,6 +153,7 @@ fn store(rule: GateRule) -> RuleStore {
 
 fn band(pool: Pool, measured_on: MeasuredOn) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: Arc::from(X),
         bound: Bound::Above,
         measured_on,
@@ -611,6 +612,7 @@ fn a_gate_is_scored_under_its_parent_as_drawn() {
     both.insert(
         RuleTarget::named("Lymph"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -725,6 +727,7 @@ fn only_the_rules_asked_for_are_scored() {
     both.insert(
         RuleTarget::named("Lymph"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -949,6 +952,7 @@ fn rules_searched_together_come_out_as_each_searched_alone() {
     rules.insert(
         RuleTarget::named("Lymph"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1451,6 +1455,7 @@ fn drawn_by_hand(donors: &Donors) -> GateState {
 /// `rule` for CD69+, calibrated on d2's full stain.
 fn calibrated_on_d2(rule: Rule) -> GateRule {
     GateRule {
+        ignore_other_gates: false,
         parameter: Arc::from(X),
         bound: Bound::Above,
         measured_on: MeasuredOn::File(Arc::from("d2_fs")),
@@ -1697,6 +1702,7 @@ fn a_gate_that_cannot_be_picked_for_says_why() {
     rules.insert(
         lymph.clone(),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,
@@ -1878,6 +1884,7 @@ mod read_as_drawn {
 
     fn ruled(parameter: &str, rule: Rule) -> GateRule {
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(parameter),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("f0")),
@@ -2251,6 +2258,7 @@ mod a_run_reads_names {
 
     fn rule(parameter: &str, measured_on: MeasuredOn, rule: Rule) -> GateRule {
         GateRule {
+            ignore_other_gates: false,
             parameter: parameter.into(),
             bound: Bound::Above,
             measured_on,

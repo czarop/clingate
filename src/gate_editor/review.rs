@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clingate_core::gates::gate_store::{FileId, GateStateStoreExt, NodeId};
-use clingate_core::omiq::metadata::MetaDataStoreStoreExt;
+use clingate_core::gates::gate_store::{FileId, GateStateImplExt, NodeId};
+use clingate_core::omiq::metadata::MetaDataImplExt;
 use clingate_core::review::report::Decision;
 use clingate_core::review::{Problem, ReportRequest, RunRecord};
 use dioxus::prelude::*;
@@ -67,12 +67,8 @@ pub fn ReportButton(sample_name: Arc<str>, parental_gate: ReadSignal<Option<Arc<
     let metadata = use_context::<MetadataStore>();
     let mut open = use_context::<Signal<Option<ReportTarget>>>();
     let target = {
-        let selected = gates.selected_gate().read().clone();
-        let sample = metadata
-            .file_name_to_gating_id()
-            .read()
-            .get(&sample_name)
-            .cloned();
+        let selected = gates.selection();
+        let sample = metadata.gating_id_of(&sample_name);
         let parent = parental_gate().map(NodeId::from);
         selected_target(
             &gates.read(),

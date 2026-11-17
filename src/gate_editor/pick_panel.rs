@@ -524,6 +524,7 @@ mod tests {
 
     fn rule(kind: Rule) -> GateRule {
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from("CD69"),
             bound: Bound::Above,
             measured_on: MeasuredOn::Itself,

@@ -558,7 +558,9 @@ pub fn measure_file_at(
         };
         match measure_population(file, gate_id, name, parent_gate, &gate, rule, &frame) {
             Ok(mut m) => {
-                m.beside = neighbours(state, rules, &names, gate_id, file, metadata);
+                if !rule.ignore_other_gates {
+                    m.beside = neighbours(state, rules, &names, gate_id, file, metadata);
+                }
                 out.push(m);
             }
             Err(u) => unmeasured.push(u),

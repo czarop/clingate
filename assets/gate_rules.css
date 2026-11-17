@@ -133,3 +133,4 @@
 .gate_rules-verify table { font-size: 0.78rem; }
 .gate_rules-verify th { white-space: nowrap; }
 .gate_rules-doubt { color: #b45309; font-weight: 600; }
+.gate_rules-check { display: inline-flex; align-items: center; gap: 0.25rem; margin-right: 0.75rem; }

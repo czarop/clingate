@@ -59,27 +59,12 @@ impl Session {
         &self,
         node: &NodeId,
     ) -> Option<(RuleTarget, GateId, (String, String))> {
-        let gate_id = self.gates.gate_for_node(node)?.clone();
-        let gate = self.gates.registered_gate(&gate_id)?;
-        let names = crate::gates::gate_paths::unique_names(&self.gates);
-        let parent = self
-            .gates
-            .parent_node(node)
-            .and_then(|p| names.get(&p).cloned());
-        let target = RuleTarget {
-            gate: self
-                .gates
-                .population_name(&gate_id)
-                .unwrap_or_else(|| Arc::from(gate.get_name())),
-            parent,
-        };
-        let (x, y) = gate.get_params();
-        Some((target, gate_id, (x.to_string(), y.to_string())))
+        target_of(&self.gates, node)
     }
 
     /// The workspace's files, cut down to `wanted` specimens spread evenly
     /// through them - each with all its files - and any file `also` names.
-    fn some_specimens(
+    pub(super) fn some_specimens(
         &self,
         rules: &RuleStore,
         wanted: usize,
@@ -92,46 +77,8 @@ impl Session {
             &self.axes.settings,
             rules,
         );
-        let column = &rules.pairing.sample_id_column;
-        let specimen_of = |name: &Arc<str>| -> Option<String> {
-            let id = inputs.names.get(name)?;
-            inputs
-                .metadata
-                .get(id)
-                .and_then(|row| row.get(column))
-                .map(|s| s.to_string())
-        };
-        let mut specimens: Vec<String> = inputs
-            .files
-            .iter()
-            .filter_map(|(name, _)| specimen_of(name))
-            .collect();
-        specimens.sort_by(|a, b| crate::gate_rules::rule_store::human_order(a, b));
-        specimens.dedup();
-        let total = specimens.len();
-        let chosen: std::collections::HashSet<String> = if total <= wanted {
-            specimens.into_iter().collect()
-        } else {
-            (0..wanted)
-                .map(|i| specimens[i * total / wanted].clone())
-                .collect()
-        };
-        let mut without = 0;
-        let names = inputs.names.clone();
-        inputs.files.retain(|(name, _)| {
-            let id = names.get(name).map(|i| i.to_string());
-            if id.as_ref().is_some_and(|i| also.contains(i)) {
-                return true;
-            }
-            match specimen_of(name) {
-                Some(s) => chosen.contains(&s),
-                None => {
-                    without += 1;
-                    without <= wanted
-                }
-            }
-        });
-        (inputs, chosen.len().min(total), total)
+        let (read, total) = inputs.keep_specimens(wanted, also);
+        (inputs, read, total)
     }
 
     /// Every population's gate, or those `query` names, profiled across up
@@ -384,4 +331,24 @@ impl Session {
         }
         out
     }
+}
+
+/// A population's gate as the rules name it: its name, and its parent's
+/// name made unique the way a rule's target reads it.
+pub(crate) fn target_of(
+    gates: &crate::gates::GateState,
+    node: &NodeId,
+) -> Option<(RuleTarget, GateId, (String, String))> {
+    let gate_id = gates.gate_for_node(node)?.clone();
+    let gate = gates.registered_gate(&gate_id)?;
+    let names = crate::gates::gate_paths::unique_names(gates);
+    let parent = gates.parent_node(node).and_then(|p| names.get(&p).cloned());
+    let target = RuleTarget {
+        gate: gates
+            .population_name(&gate_id)
+            .unwrap_or_else(|| Arc::from(gate.get_name())),
+        parent,
+    };
+    let (x, y) = gate.get_params();
+    Some((target, gate_id, (x.to_string(), y.to_string())))
 }

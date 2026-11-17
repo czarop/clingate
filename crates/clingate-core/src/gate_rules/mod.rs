@@ -33,6 +33,7 @@ pub mod run;
 pub mod searches;
 pub mod score;
 pub mod shape_fit;
+pub mod siblings;
 pub mod threshold;
 pub mod trial;
 
@@ -59,6 +60,8 @@ mod rule_tests;
 mod runs_tests;
 #[cfg(test)]
 mod shape_fit_tests;
+#[cfg(test)]
+mod siblings_tests;
 mod threshold_tests;
 #[cfg(test)]
 mod valley_smear_tests;

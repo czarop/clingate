@@ -2,12 +2,10 @@ use crate::components::toast::{use_toast, warn};
 use crate::gate_editor::gates::shape_menu::{ShapeAction, ShapeMenu, act, target_at};
 use crate::gate_editor::plots::plot_store::{PlotStore, PlotStoreStoreExt};
 use clingate_core::axis_store::AxisStore;
-use clingate_core::axis_store::AxisStoreStoreExt;
+use clingate_core::axis_store::AxisStoreImplExt;
 use clingate_core::axis_store::PlotMapper;
 use clingate_core::gates::gate_label::{self, PlotAxes, VAlign};
-use clingate_core::gates::gate_store::{
-    GateOverrideResolver, GateStateStoreExt, GateSubStoreStoreExt,
-};
+use clingate_core::gates::gate_store::{GateOverrideResolver, KeepApart};
 use clingate_core::gates::{
     GateState,
     gate_draft::GateDraft,
@@ -17,7 +15,9 @@ use clingate_core::gates::{
     gate_traits::DrawableGate,
     gate_types::{Direction, GateRenderShape, GateStats, PrimaryGateType, ShapeType},
 };
+use clingate_core::omiq::metadata::{MetaDataImplExt, MetaDataStore};
 use dioxus::{prelude::*, stores::SyncStore};
+use dioxus_html::input_data::MouseButton;
 use rustc_hash::FxHashMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -56,7 +56,7 @@ pub struct KeepGatesApart(pub Signal<bool>);
 
 /// The plot's size on screen, measured when a press starts, so a drag can
 /// turn window coordinates into the plot's own.
-type ClientRect = dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>;
+type ClientRect = dioxus_html::geometry::PixelsRect;
 
 /// A label being dragged: whose, where the press started (window
 /// coordinates), and where the label's point was then (plot pixels) - the
@@ -136,7 +136,7 @@ pub fn GateLayer(
     let menu_at = move |gates: &[Arc<dyn DrawableGate>], pixel: (f32, f32)| -> Option<ShapeMenu> {
         let mapper = plot_map.peek().clone()?;
         let at = mapper.pixel_to_data(pixel.0, pixel.1, None, None).ok()?;
-        let selected = gate_store.selected_gate().peek().cloned();
+        let selected = gate_store.peek_selection();
         let (x, y) = (x_channel.peek().clone(), y_channel.peek().clone());
         let (gate_id, target) = target_at(gates, selected.as_ref(), (&x, &y), &mapper, pixel)?;
         Some(ShapeMenu {
@@ -146,11 +146,15 @@ pub fn GateLayer(
             at,
         })
     };
-    let apart_from = move || -> Vec<Arc<dyn DrawableGate>> {
-        if keep_apart.is_some_and(|keep| *keep.0.peek()) {
-            gates.peek().to_vec()
-        } else {
-            Vec::new()
+    let metadata_store =
+        use_context::<Store<MetaDataStore, CopyValue<MetaDataStore, SyncStorage>>>();
+    let apart_from = move || -> KeepApart {
+        if !keep_apart.is_some_and(|keep| *keep.0.peek()) {
+            return KeepApart::default();
+        }
+        KeepApart {
+            gates: gates.peek().iter().map(|gate| gate.get_id()).collect(),
+            samples: metadata_store.peek_rows().into_iter().collect(),
         }
     };
 
@@ -266,7 +270,7 @@ pub fn GateLayer(
     let mut last_processed_pos = use_signal(|| (0.0f64, 0.0f64));
     let mut last_update = use_signal(std::time::Instant::now);
     let mut cached_rect: Signal<
-        Option<dioxus_elements::geometry::euclid::Rect<f64, dioxus_elements::geometry::Pixels>>,
+        Option<ClientRect>,
     > = use_signal(|| None);
 
     let mut svg_data: Signal<Option<std::rc::Rc<MountedData>>> = use_signal(|| None);
@@ -281,7 +285,7 @@ pub fn GateLayer(
     });
     // A label stays picked up only while its gate is selected.
     use_effect(move || {
-        let gate = gate_store.selected_gate().read().clone();
+        let gate = gate_store.selection();
         if selected_label.peek().is_some() && *selected_label.peek() != gate {
             selected_label.set(None);
         }
@@ -330,7 +334,7 @@ pub fn GateLayer(
                         };
 
                         let mut clicked_gate = None;
-                        let selected_gate_op = gate_store.selected_gate().peek().cloned();
+                        let selected_gate_op = gate_store.peek_selection();
 
                         let gates = &*gates.read();
 
@@ -343,13 +347,13 @@ pub fn GateLayer(
                         }
                         if let Some(closest_gate) = clicked_gate {
                             let gate_id = closest_gate.get_id().clone();
-                            gate_store.selected_gate().set(Some(gate_id.clone()));
+                            gate_store.select(Some(gate_id.clone()));
                         } else if selected_gate_op.is_none() {
                             if &PrimaryGateType::Polygon == current_gate_type {
                                 draft_gate_coords.write().push((data_x, data_y));
                             }
                         } else if drag_data.is_none() {
-                            gate_store.selected_gate().set(None);
+                            gate_store.select(None);
                             dbl_click_lockout.set(true);
                             spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -363,7 +367,7 @@ pub fn GateLayer(
                     edits.commit();
                 },
                 ondoubleclick: move |evt| {
-                    if gate_store.selected_gate().peek().is_some() || dbl_click_lockout() {
+                    if gate_store.peek_selection().is_some() || dbl_click_lockout() {
                         return;
                     }
                     let local_coords = evt.data.coordinates().element();
@@ -392,15 +396,11 @@ pub fn GateLayer(
                         current_gate_type.peek().cloned()
                     };
                     let x_p = axis_store
-                        .settings()
-                        .peek()
-                        .get(&x_param.clone())
+                        .peek_axis(x_param)
                         .map(|x_param| x_param.param.marker.clone());
 
                     let y_p = axis_store
-                        .settings()
-                        .peek()
-                        .get(&y_param.clone())
+                        .peek_axis(y_param)
                         .map(|y_param| y_param.param.marker.clone());
 
                     let name = if let (Some(x_m), Some(y_m)) = (x_p, y_p) {
@@ -499,7 +499,7 @@ pub fn GateLayer(
                             return;
                         }
 
-                        let selected_gate_op = gate_store.selected_gate().peek().cloned();
+                        let selected_gate_op = gate_store.peek_selection();
                         let current_resolver_move = current_resolver_move.clone();
                         let Ok(data_coords) = map.pixel_to_data(px as f32, py as f32, None, None) else {
                             return;
@@ -561,7 +561,7 @@ pub fn GateLayer(
                         };
 
                         let new_data = data.clone_with_point(data_coords);
-                        let selected_gate_op = gate_store.selected_gate().peek().cloned();
+                        let selected_gate_op = gate_store.peek_selection();
                         if selected_gate_op.is_none() {
                             return;
                         }
@@ -605,7 +605,7 @@ pub fn GateLayer(
                     evt.stop_propagation();
 
                     match evt.trigger_button() {
-                        Some(dioxus_elements::input_data::MouseButton::Primary) => {
+                        Some(MouseButton::Primary) => {
                             shape_menu.set(None);
                             let div_data = svg_data.read().clone();
                             spawn(async move {
@@ -624,7 +624,7 @@ pub fn GateLayer(
                                 let Ok(data_coords) = mapper.pixel_to_data(norm_x, norm_y, None, None) else {
                                     return;
                                 };
-                                let selected_gate_id = gate_store.selected_gate().peek().cloned();
+                                let selected_gate_id = gate_store.peek_selection();
                                 let gates = &*gates.read();
 
                                 if selected_gate_id.is_some() && draft_gate.peek().is_none()
@@ -650,13 +650,13 @@ pub fn GateLayer(
                                 }
                             }
                         }
-                        Some(dioxus_elements::input_data::MouseButton::Secondary) => {
+                        Some(MouseButton::Secondary) => {
                             let local = evt.data.coordinates().element();
                             let opened = draft_gate.peek().is_none()
                                 .then(|| menu_at(&gates.peek(), (local.x as f32, local.y as f32)))
                                 .flatten();
                             if opened.is_none() {
-                                let _ = gate_store.selected_gate().take();
+                                gate_store.select(None);
                                 draft_gate_coords.write().clear();
                             }
                             shape_menu.set(opened);
@@ -670,11 +670,7 @@ pub fn GateLayer(
                 for (gate_index , gate) in gates.read().0.iter().enumerate() {
 
                     {
-                        let is_selected = if let Some(id) = &*gate_store.selected_gate().read() {
-                            id == &gate.get_id()
-                        } else {
-                            false
-                        };
+                        let is_selected = gate_store.selection().is_some_and(|id| id == gate.get_id());
 
                         let dd = if let Some(dd) = &*drag_data.read() {
                             if is_selected { Some(dd.clone()) } else { None }
@@ -686,12 +682,7 @@ pub fn GateLayer(
                         // The label is measured from the gate as drawn, which
                         // is not what this sample shows when a rule or a hand
                         // has positioned it here.
-                        let drawn = gate_store
-                            .gate_store()
-                            .primary_and_subgate_registry()
-                            .read()
-                            .get(&gate.get_id())
-                            .cloned();
+                        let drawn = gate_store.drawn_gate(&gate.get_id());
 
                         rsx! {
                             RenderGate {
@@ -858,7 +849,7 @@ fn RenderLabel(
     gate_selected: bool,
 ) -> Element {
     let plot_map = use_context::<Signal<Option<Arc<PlotMapper>>>>();
-    let gate_store = use_context::<SyncStore<GateState>>();
+    let mut gate_store = use_context::<SyncStore<GateState>>();
     let control = try_use_context::<LabelControl>();
     let edits = use_context::<crate::gate_editor::edits::Edits>();
     let Some(mapper) = plot_map.read().clone() else {
@@ -895,14 +886,14 @@ fn RenderLabel(
                 let (Some(id), Some(mut control)) = (pressed.clone(), control) else {
                     return;
                 };
-                if evt.trigger_button() != Some(dioxus_elements::input_data::MouseButton::Primary) {
+                if evt.trigger_button() != Some(MouseButton::Primary) {
                     return;
                 }
                 // Handled here, not by the plot: the plot would read the press
                 // as one on a gate's outline or empty space.
                 evt.stop_propagation();
                 if !gate_selected {
-                    gate_store.selected_gate().set(Some(id));
+                    gate_store.select(Some(id));
                     control.selected.set(None);
                     return;
                 }
@@ -1043,7 +1034,7 @@ fn RenderShape(
                                     | ShapeType::CompositePoint(index, ..)
                                     | ShapeType::UndraggablePoint(index) => {
                                         match evt.trigger_button() {
-                                            Some(dioxus_elements::input_data::MouseButton::Primary) => {
+                                            Some(MouseButton::Primary) => {
                                                 let local_coords = &evt.data.coordinates().element();
                                                 let px = local_coords.x as f32;
                                                 let py = local_coords.y as f32;

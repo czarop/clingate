@@ -142,7 +142,7 @@ pub(crate) fn act(
     gates: GateStore,
     edits: Edits,
     resolver: &GateOverrideResolver,
-    apart_from: &[Arc<dyn DrawableGate>],
+    apart_from: &clingate_core::gates::gate_store::KeepApart,
     (x, y): (&str, &str),
     menu: &ShapeMenu,
     action: ShapeAction,

@@ -26,12 +26,12 @@ use crate::gate_editor::gate_sidebar::GateSidebar;
 use crate::gate_editor::route::Tab;
 use crate::gate_editor::workspace_window::{Generation, Loaded};
 use clingate_core::gate_rules::searches::{Search, kept};
-use clingate_core::axis_store::{AxisStore, AxisStoreStoreExt, Param};
+use clingate_core::axis_store::{AxisStore, AxisStoreImplExt, Param};
 use clingate_core::file_load::FcsFiles;
 use clingate_core::gate_rules::rule_store::RuleStore;
 use clingate_core::gates::GateState;
 use clingate_core::gates::gate_store::{NodeId, ROOTGATE};
-use clingate_core::omiq::metadata::{MetaDataStore, MetaDataStoreStoreExt};
+use clingate_core::omiq::metadata::{MetaDataStore, MetaDataImplExt};
 use clingate_core::sample_pairs::{Pair, gallery_rows, pair_files};
 
 use super::cache::PlotCache;
@@ -130,8 +130,8 @@ pub fn GalleryWindow() -> Element {
         let keys: Vec<Arc<str>> = files.iter().map(|f| f.name.clone()).collect();
         pair_files(
             &keys,
-            &metadata_store.file_name_to_gating_id().read(),
-            &metadata_store.metadata().read(),
+            &metadata_store.gating_ids(),
+            &metadata_store.rows(),
             &rules.read().pairing,
         )
     });
@@ -247,21 +247,11 @@ pub fn GalleryWindow() -> Element {
 
     let x_axis = use_memo(move || {
         let param = x_axis_marker.read().fluoro.clone();
-        axis_store
-            .settings()
-            .read()
-            .get(&param)
-            .cloned()
-            .unwrap_or_default()
+        axis_store.axis(&param).unwrap_or_default()
     });
     let y_axis = use_memo(move || {
         let param = y_axis_marker.read().fluoro.clone();
-        axis_store
-            .settings()
-            .read()
-            .get(&param)
-            .cloned()
-            .unwrap_or_default()
+        axis_store.axis(&param).unwrap_or_default()
     });
 
     // Specimens, not cards: a specimen with extra rows is still one specimen.
@@ -344,11 +334,9 @@ pub fn GalleryWindow() -> Element {
                                                             y: y_axis_marker(),
                                                             size: plot_size(),
                                                             candidate: metadata_store
-                                                                .file_name_to_gating_id()
-                                                                .read()
-                                                                .get(&file.name)
+                                                                .gating_id_of(&file.name)
                                                                 .and_then(|id| {
-                                                                    candidate.read().as_ref().and_then(|c| placed_on(c, id))
+                                                                    candidate.read().as_ref().and_then(|c| placed_on(c, &id))
                                                                 }),
                                                         }
                                                     }

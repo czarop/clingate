@@ -136,6 +136,7 @@ fn rule_of(phenotype: PhenotypeRule) -> RuleStore {
     store.insert(
         RuleTarget::named("CD3+CD56+"),
         GateRule {
+            ignore_other_gates: false,
             parameter: Arc::from(X),
             bound: Bound::Above,
             measured_on: MeasuredOn::File(Arc::from("reference")),

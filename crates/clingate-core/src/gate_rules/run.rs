@@ -80,6 +80,56 @@ impl RunInputs {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+
+    /// Keep only `wanted` specimens spread evenly through the files - each
+    /// with all its files - and any file `also` names; files no specimen
+    /// claims are kept up to `wanted`. How many specimens are kept, of how
+    /// many.
+    pub fn keep_specimens(&mut self, wanted: usize, also: &[String]) -> (usize, usize) {
+        let column = &self.rules.pairing.sample_id_column;
+        let of_each: Vec<(Option<Arc<str>>, Option<String>)> = self
+            .files
+            .iter()
+            .map(|(name, _)| {
+                let id = self.names.get(name).cloned();
+                let specimen = id
+                    .as_ref()
+                    .and_then(|id| self.metadata.get(id))
+                    .and_then(|row| row.get(column))
+                    .map(|s| s.to_string());
+                (id, specimen)
+            })
+            .collect();
+        let mut specimens: Vec<&String> = of_each.iter().filter_map(|(_, s)| s.as_ref()).collect();
+        specimens.sort_by(|a, b| crate::gate_rules::rule_store::human_order(a, b));
+        specimens.dedup();
+        let total = specimens.len();
+        let chosen: std::collections::HashSet<&String> = if total <= wanted {
+            specimens.into_iter().collect()
+        } else {
+            (0..wanted).map(|i| specimens[i * total / wanted]).collect()
+        };
+        let read = chosen.len();
+        let mut without = 0;
+        let keep: Vec<bool> = of_each
+            .iter()
+            .map(|(id, specimen)| {
+                if id.as_ref().is_some_and(|i| also.iter().any(|a| **a == **i)) {
+                    return true;
+                }
+                match specimen {
+                    Some(s) => chosen.contains(s),
+                    None => {
+                        without += 1;
+                        without <= wanted
+                    }
+                }
+            })
+            .collect();
+        let mut kept = keep.into_iter();
+        self.files.retain(|_| kept.next().unwrap_or(false));
+        (read, total)
+    }
 }
 
 /// `rules` with every name as a run reads it: a parameter or marker given by
@@ -905,6 +955,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -994,6 +1045,7 @@ mod tests {
             rules.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1336,6 +1388,7 @@ mod tests {
             rules.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1802,6 +1855,7 @@ mod tests {
             let change = RuleChange {
                 target: RuleTarget::named("CD134+"),
                 rule: GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -1839,6 +1893,107 @@ mod tests {
             }
             assert!(after.iter().any(|c| c.verdict == Verdict::Broken));
             let _ = b;
+        }
+
+        /// CD134+, starting above a gate up to `WALL` on X: kept clear of it,
+        /// the run holds its edge at the wall; replayed ignoring other gates,
+        /// it goes down to where the band puts it.
+        #[test]
+        fn a_replay_of_a_rule_ignoring_other_gates_is_not_held_back() {
+            use crate::gate_rules::rule::TailFractionRule;
+            use crate::review::replay::{ReviewedRun, RuleChange, replay_run};
+            const WALL: f32 = 5_000.0;
+            let inputs = three_donor_inputs("replay-ignoring");
+            let (mut state, id) = positive_gate();
+            state.place_gate(
+                &[id.clone()],
+                &gate_with_edge(&id, WALL + 1_000.0),
+                &GateSource::Global,
+            );
+            let wall_geometry = flow_gates::create_rectangle_geometry(
+                vec![(-1e16, -1e16), (WALL, -1e16), (WALL, 1e16), (-1e16, 1e16)],
+                X,
+                Y,
+            )
+            .unwrap();
+            let wall: Arc<dyn DrawableGate> = Arc::new(
+                crate::gates::gate_single::rectangle_gate::RectangleGate::try_new(
+                    flow_gates::Gate {
+                        id: Arc::from("Wall"),
+                        name: "Wall".into(),
+                        geometry: wall_geometry,
+                        mode: flow_gates::GateMode::Global,
+                        parameters: (Arc::from(X), Arc::from(Y)),
+                        label_position: None,
+                    },
+                    true,
+                )
+                .unwrap(),
+            );
+            state.place_gate(&[Arc::from("Wall")], &wall, &GateSource::Global);
+            state.place_new_gate(None, Arc::from("Wall")).unwrap();
+            let outcome = run_rules(&state, &inputs, |_| {}, &Arc::new(AtomicBool::new(false)));
+            crate::gate_rules::autogate::apply_placements(
+                &mut state,
+                &outcome.placements,
+                &inputs.metadata,
+            );
+            let samples = crate::review::run_record::Samples::new(
+                &inputs.names,
+                &inputs.metadata,
+                &inputs.rules.pairing,
+            );
+            crate::review::RunRecord::from_run(
+                &outcome.report,
+                &outcome.placements,
+                &inputs.rules,
+                &samples,
+            )
+            .applied(&folder_of(&inputs), &outcome.events)
+            .unwrap();
+            let run =
+                ReviewedRun::from_workspace(&folder_of(&inputs), &state, &inputs.metadata).unwrap();
+            let mut ignoring = inputs
+                .rules
+                .get(&RuleTarget::named("CD134+"))
+                .unwrap()
+                .clone();
+            ignoring.ignore_other_gates = true;
+            assert_eq!(
+                ignoring.rule,
+                Rule::TailFraction(TailFractionRule::new((0.05, 0.08)))
+            );
+
+            let (_, kept_clear) = replay_run(&run, &[]);
+            let (_, ignored) = replay_run(
+                &run,
+                &[RuleChange {
+                    target: RuleTarget::named(id.as_ref()),
+                    rule: ignoring,
+                }],
+            );
+
+            for (kept, free) in kept_clear.iter().zip(&ignored) {
+                let held = kept.replay_decided.as_ref().unwrap().line.at.unwrap();
+                let placed = free.replay_decided.as_ref().unwrap().line.at.unwrap();
+                assert!(
+                    (held - f64::from(WALL)).abs() < 1e-3,
+                    "{}: {held}",
+                    kept.sample.id
+                );
+                assert!(
+                    placed < f64::from(WALL) - 100.0,
+                    "{}: {placed}",
+                    free.sample.id
+                );
+                let beyond = free.replay_decided.as_ref().unwrap().line.beyond.unwrap();
+                assert!(
+                    (0.05..=0.08).contains(&beyond),
+                    "{}: {beyond}",
+                    free.sample.id
+                );
+            }
+            assert!(!kept_clear.is_empty());
         }
 
         #[test]
@@ -2190,6 +2345,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::Itself,
@@ -2470,6 +2626,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     // What the QC admits is already in the band, so every
@@ -2636,6 +2793,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2702,6 +2860,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2827,6 +2986,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD3+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(M),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
@@ -2946,6 +3106,7 @@ mod tests {
             store.insert(
                 RuleTarget::named("CD134+"),
                 GateRule {
+                    ignore_other_gates: false,
                     parameter: Arc::from(X),
                     bound: Bound::Above,
                     measured_on: MeasuredOn::File(Arc::from("fs_qc")),
